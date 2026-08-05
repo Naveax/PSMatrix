@@ -103,8 +103,14 @@ jobs:
               and target.get('arch') == 'x64'
               and target.get('libc') == 'glibc'
           ]
+          tool_policy = [
+              '--psscriptanalyzer', 'off',
+              '--pester', 'off',
+              '--coverage', 'off',
+          ]
           for target in spec['targets']:
               target['required'] = True
+              target['args'] = list(tool_policy)
           spec['differential'] = {
               'mode': 'strict',
               'baseline_runtime': 'powershell-7.6.4-linux-x64',
@@ -121,6 +127,7 @@ jobs:
           }
           (root / 'preflight-differences.json').write_text(json.dumps(allowances, indent=2, sort_keys=True) + '\n')
           assert len(spec['targets']) == 10
+          assert all(target.get('args') == tool_policy for target in spec['targets'])
           PY
 
       - name: Require all hosted lanes ready
@@ -199,6 +206,11 @@ jobs:
               'hosted_failed': 0,
               'hosted_incomplete': 0,
               'unallowed_differences': 0,
+              'tool_policy': {
+                  'psscriptanalyzer': 'off',
+                  'pester': 'off',
+                  'coverage': 'off',
+              },
               'remaining_target_count': len(missing),
               'remaining_targets': missing,
               'install_results': install.get('results', []),
