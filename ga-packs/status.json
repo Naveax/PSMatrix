@@ -39,9 +39,19 @@
     },
     {
       "id": "03-authoritative-windows",
-      "state": "IN_PROGRESS",
+      "state": "HOSTED_WINDOWS_5_1_PREFLIGHT_PENDING",
       "ga_eligible": false,
-      "remaining": "Establish real Windows worker evidence for Windows PowerShell 4.0, 5.0 and 5.1, including exact runtime identity, Windows-only behavior and reset proof."
+      "preflight": {
+        "workflow": "production-ga-windows-authority-preflight",
+        "workflow_path": ".github/workflows/ga-windows-authority-preflight.yml",
+        "probe_path": "ga-packs/03-authoritative-windows/windows-authority-probe.ps1",
+        "expected_runtime": "Windows PowerShell 5.1 Desktop",
+        "authority_level": "github-hosted-windows-preflight",
+        "authoritative": false,
+        "required_snapshot_reset_available": false
+      },
+      "runner_contract": "ga-packs/03-authoritative-windows/runner-contract.json",
+      "remaining": "Run the hosted Windows PowerShell 5.1 preflight, then establish protected self-hosted Hyper-V workers for exact Windows PowerShell 4.0, 5.0 and 5.1 repeated reset-bound campaigns."
     },
     {"id": "04-public-auth", "state": "PACK_REQUIRED", "ga_eligible": false},
     {"id": "05-external-otlp", "state": "PACK_REQUIRED", "ga_eligible": false},
