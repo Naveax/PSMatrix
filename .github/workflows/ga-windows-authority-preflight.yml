@@ -1,0 +1,127 @@
+name: production-ga-windows-authority-preflight
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: production-ga-windows-authority-preflight
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  hosted-windows-powershell-5-1:
+    name: Hosted Windows PowerShell 5.1 preflight
+    runs-on: windows-2022
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Verify exact Windows PowerShell host
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host "release_commit=$env:GITHUB_SHA"
+          Write-Host "powershell_version=$($PSVersionTable.PSVersion.ToString())"
+          Write-Host "psedition=$($PSVersionTable.PSEdition)"
+          Write-Host "pshome=$PSHOME"
+          if ($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1) {
+              throw "Expected Windows PowerShell 5.1; detected $($PSVersionTable.PSVersion.ToString())"
+          }
+          if ($PSVersionTable.PSEdition -ne 'Desktop') {
+              throw "Expected PSEdition Desktop; detected $($PSVersionTable.PSEdition)"
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $PSHOME 'powershell.exe') -PathType Leaf)) {
+              throw "powershell.exe was not found under $PSHOME"
+          }
+          python --version
+
+      - name: Execute Windows authority probe
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-authority-preflight'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          & .\ga-packs\03-authoritative-windows\windows-authority-probe.ps1 `
+              -ExpectedMajor 5 `
+              -ExpectedMinor 1 `
+              -OutputPath (Join-Path $out 'windows-powershell-5.1-probe.json')
+          Get-Content -LiteralPath (Join-Path $out 'windows-powershell-5.1-probe.json') -Raw
+
+      - name: Enforce hosted Windows preflight
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-authority-preflight'
+          python -c @'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ['RUNNER_TEMP']) / 'psmatrix-windows-authority-preflight'
+          probe_path = root / 'windows-powershell-5.1-probe.json'
+          value = json.loads(probe_path.read_text(encoding='utf-8'))
+
+          assert value.get('kind') == 'psmatrix.windows-authority-probe', value
+          assert value.get('status') == 'PASS', value
+          assert value.get('expected_runtime_line') == '5.1', value
+          assert str(value.get('detected_runtime_version', '')).startswith('5.1.'), value
+          assert value.get('psedition') == 'Desktop', value
+          assert value.get('authority_level') == 'github-hosted-windows-preflight', value
+          assert value.get('authoritative') is False, value
+          assert value.get('ga_eligible') is False, value
+          assert value.get('required_snapshot_reset') is True, value
+          assert value.get('reset_before') == 'UNAVAILABLE_ON_GITHUB_HOSTED_RUNNER', value
+          assert value.get('reset_after') == 'UNAVAILABLE_ON_GITHUB_HOSTED_RUNNER', value
+          assert value.get('failed_count') == 0, value
+          assert value.get('passed_count', 0) >= 11, value
+          checks = value.get('checks', [])
+          assert len(checks) >= 11, value
+          assert all(row.get('status') == 'PASS' for row in checks), value
+
+          status = {
+              'schema': 1,
+              'kind': 'psmatrix.windows-authority-hosted-preflight',
+              'pack': '03-authoritative-windows',
+              'status': 'PASS_PARTIAL',
+              'release_commit': os.environ['GITHUB_SHA'],
+              'ga_eligible': False,
+              'hosted_windows_5_1': 'PASS',
+              'detected_runtime_version': value['detected_runtime_version'],
+              'windows_checks_passed': value['passed_count'],
+              'windows_checks_failed': value['failed_count'],
+              'reset_before': value['reset_before'],
+              'reset_after': value['reset_after'],
+              'remaining': [
+                  'Authoritative clean-snapshot Windows PowerShell 4.0 campaign',
+                  'Authoritative clean-snapshot Windows PowerShell 5.0 campaign',
+                  'Authoritative clean-snapshot Windows PowerShell 5.1 campaign',
+                  'Signed reset-before and reset-after evidence for every campaign',
+                  'Final release binding and protected Windows-lab authority signature',
+              ],
+          }
+          (root / 'preflight-status.json').write_text(
+              json.dumps(status, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          print(json.dumps(status, indent=2, sort_keys=True))
+          '@
+
+      - name: Upload Windows authority preflight evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: production-ga-windows-authority-preflight
+          path: ${{ runner.temp }}\psmatrix-windows-authority-preflight
+          if-no-files-found: error
+          retention-days: 30
