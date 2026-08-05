@@ -46,7 +46,7 @@
     },
     {
       "id": "03-authoritative-windows",
-      "state": "AUTHORITATIVE_WORKFLOW_READY_HOSTED_WINDOWS_5_1_PENDING",
+      "state": "INFRASTRUCTURE_PREFLIGHT_READY_HOSTED_WINDOWS_5_1_PENDING",
       "ga_eligible": false,
       "hosted_preflight": {
         "workflow": "production-ga-windows-authority-preflight",
@@ -58,6 +58,19 @@
         "required_snapshot_reset_available": false,
         "status": "PENDING"
       },
+      "infrastructure_preflight": {
+        "workflow": "production-ga-windows-authority-infrastructure-preflight",
+        "workflow_path": ".github/workflows/ga-windows-authority-infrastructure-preflight.yml",
+        "validator": "scripts/ga/validate_windows_authority_infrastructure.py",
+        "protected_environment": "production-ga-windows-lab",
+        "controller_labels": ["self-hosted", "Windows", "X64", "psmatrix-hyperv"],
+        "checks_release_binding": true,
+        "checks_hyperv_controller": true,
+        "checks_endpoint_and_image_schema": true,
+        "checks_live_authoritative_health": true,
+        "ga_eligible": false,
+        "status": "READY_FOR_INFRASTRUCTURE"
+      },
       "authoritative_workflow": {
         "workflow": "production-ga-authoritative-windows",
         "workflow_path": ".github/workflows/ga-windows-authoritative.yml",
@@ -67,11 +80,12 @@
         "minimum_iterations_per_runtime": 10,
         "exact_runtime_count": 3,
         "release_binding_required": true,
+        "release_manifest_discovery": "exactly-one-2.0.0-or-2.0.0rcN",
         "final_release_version_required_for_ga_eligible": "2.0.0",
         "status": "READY_FOR_INFRASTRUCTURE"
       },
       "runner_contract": "ga-packs/03-authoritative-windows/runner-contract.json",
-      "remaining": "Run the hosted Windows PowerShell 5.1 preflight, then provide the protected Hyper-V controller, exact Windows/WMF images, three worker endpoints/image manifests, release artifacts and protected authority credentials for the 10-iteration reset-bound campaign."
+      "remaining": "Run the hosted Windows PowerShell 5.1 preflight. Then run the protected infrastructure preflight after the Hyper-V controller, exact Windows/WMF images, three worker endpoints/image manifests, signed release inventory and protected public release key are present. Only after that passes should the 10-iteration authoritative campaign run."
     },
     {"id": "04-public-auth", "state": "PACK_REQUIRED", "ga_eligible": false},
     {"id": "05-external-otlp", "state": "PACK_REQUIRED", "ga_eligible": false},
