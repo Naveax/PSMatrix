@@ -453,3 +453,10 @@
 
 - Validated the core against official PowerShell 7.6.4 Linux x64 and added
   official local checksum manifest support.
+
+### Canonical 25-target Production GA matrix operation
+
+- Replace the minimum target-count GA check with an exact canonical 25-lane contract.
+- Require strict differential mode, zero allowances, one source digest and 25 exact PASS target results.
+- Bind full-matrix evidence to the validated commit, signed release manifest, source ZIP and wheel.
+- Add a protected self-hosted controller workflow and operator script for the complete runtime campaign.

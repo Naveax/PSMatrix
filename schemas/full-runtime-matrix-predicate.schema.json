@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://psmatrix.dev/schemas/full-runtime-matrix-predicate.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "kind", "created_at", "report", "canonical_targets", "release_binding"],
+  "properties": {
+    "schema": {"const": 2},
+    "kind": {"const": "psmatrix.full-runtime-matrix"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "report": {"type": "object"},
+    "canonical_targets": {"type": "array", "minItems": 25, "maxItems": 25},
+    "release_binding": {"$ref": "full-matrix-release-binding.schema.json"}
+  }
+}

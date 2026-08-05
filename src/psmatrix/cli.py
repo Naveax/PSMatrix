@@ -57,6 +57,11 @@ from .deployment import build_windows_worker_package, verify_windows_worker_pack
 from .release import build_reproducible_source, create_release_manifest, verify_release_manifest, verify_reproducible_build
 from .hybrid import execute_hybrid_matrix
 from .full_matrix import execute_full_matrix, plan_full_matrix, write_full_matrix_template
+from .full_matrix_ga import (
+    build_full_matrix_release_binding,
+    create_full_matrix_ga_attestation,
+    verify_full_matrix_ga_attestation,
+)
 from .lab_certification import (
     build_certification_kit,
     certify_remote_windows_image,
@@ -826,6 +831,22 @@ def build_parser() -> argparse.ArgumentParser:
     full_test.add_argument("--signing-public-key", type=Path)
     full_test.add_argument("--builder-id")
     full_test.add_argument("--json", action="store_true")
+    full_binding = full_sub.add_parser("release-binding", help="Bind the canonical 25-target matrix to a signed release")
+    full_binding.add_argument("--release-manifest", type=Path, required=True)
+    full_binding.add_argument("--artifact-dir", type=Path, required=True)
+    full_binding.add_argument("--release-public-key", type=Path, required=True)
+    full_binding.add_argument("--release-commit", required=True)
+    full_binding.add_argument("--output", type=Path, required=True)
+    full_attest = full_sub.add_parser("attest", help="Create release-bound canonical 25-target matrix evidence")
+    full_attest.add_argument("--report", type=Path, required=True)
+    full_attest.add_argument("--release-binding", type=Path, required=True)
+    full_attest.add_argument("--private-key", type=Path, required=True)
+    full_attest.add_argument("--public-key", type=Path, required=True)
+    full_attest.add_argument("--output", type=Path, required=True)
+    full_verify = full_sub.add_parser("verify-attestation", help="Verify release-bound canonical full-matrix evidence")
+    full_verify.add_argument("--report", type=Path, required=True)
+    full_verify.add_argument("--attestation", type=Path, required=True)
+    full_verify.add_argument("--public-key", type=Path, required=True)
 
     adversarial = sub.add_parser("adversarial", help="Run the built-in defensive adversarial corpus")
     adversarial_sub = adversarial.add_subparsers(dest="adversarial_command", required=True)
@@ -1771,6 +1792,26 @@ def main(argv: list[str] | None = None) -> int:
                     atomic_write_json(args.output.resolve(), result)
                 print(json.dumps(result, ensure_ascii=False, indent=2))
                 return 0 if result.get("status") == "READY" else 1
+            if args.full_command == "release-binding":
+                result = build_full_matrix_release_binding(
+                    release_manifest=args.release_manifest, artifact_dir=args.artifact_dir,
+                    release_public_key=args.release_public_key, release_commit=args.release_commit, output=args.output,
+                )
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+                return 0
+            if args.full_command == "attest":
+                create_full_matrix_ga_attestation(
+                    report_path=args.report, release_binding_path=args.release_binding,
+                    private_key=args.private_key, public_key=args.public_key, output=args.output,
+                )
+                print(json.dumps({"output": str(args.output.resolve()), "valid": True}, ensure_ascii=False, indent=2))
+                return 0
+            if args.full_command == "verify-attestation":
+                result = verify_full_matrix_ga_attestation(
+                    read_json(args.attestation.resolve()), report_path=args.report, public_key=args.public_key,
+                )
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+                return 0
             if args.full_command == "test":
                 remote_options = {}
                 if args.remote_options is not None:

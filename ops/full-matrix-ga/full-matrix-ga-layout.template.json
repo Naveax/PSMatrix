@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.full-matrix-ga-runner-layout",
+  "controller": {
+    "runner_labels": ["self-hosted", "Linux", "X64", "psmatrix-full-matrix"],
+    "home": "/srv/psmatrix/full-matrix/home",
+    "config_root": "/srv/psmatrix/full-matrix/config",
+    "release_root": "/srv/psmatrix/full-matrix/release"
+  },
+  "required": {
+    "local_lanes": [
+      "linux-6.0.5-x64-glibc", "linux-6.1.6-x64-glibc", "linux-6.2.7-x64-glibc",
+      "linux-7.0.13-x64-glibc", "linux-7.1.7-x64-glibc", "linux-7.2.24-x64-glibc",
+      "linux-7.3.12-x64-glibc", "linux-7.4.18-x64-glibc", "linux-7.5.7-x64-glibc",
+      "linux-7.6.4-x64-glibc", "linux-7.6.4-arm64-glibc", "linux-7.6.4-x64-musl"
+    ],
+    "remote_endpoint_files": [
+      "endpoints/powershell-6.0.5-windows-x64.json", "endpoints/powershell-6.1.6-windows-x64.json",
+      "endpoints/powershell-6.2.7-windows-x64.json", "endpoints/powershell-7.0.13-windows-x64.json",
+      "endpoints/powershell-7.1.7-windows-x64.json", "endpoints/powershell-7.2.24-windows-x64.json",
+      "endpoints/powershell-7.3.12-windows-x64.json", "endpoints/powershell-7.4.18-windows-x64.json",
+      "endpoints/powershell-7.5.7-windows-x64.json", "endpoints/powershell-7.6.4-windows-x64.json",
+      "endpoints/windows-powershell-4.0.json", "endpoints/windows-powershell-5.0.json",
+      "endpoints/windows-powershell-5.1.json"
+    ],
+    "files": ["psmatrix.full.json", "psmatrix.differences.json"]
+  },
+  "security": {
+    "protected_environment": "production-ga-full-matrix",
+    "ci_private_key_controller_only": true,
+    "remote_workers_receive_ci_private_key": false,
+    "differential_mode": "strict",
+    "allowance_rule_count": 0
+  }
+}

@@ -16,6 +16,9 @@ from psmatrix.ga import (
     write_ga_template,
 )
 from psmatrix.lab_provisioning import build_windows_release_binding, create_authoritative_matrix_attestation
+from psmatrix.full_matrix_ga import (
+    build_full_matrix_release_binding, canonical_full_matrix_targets, create_full_matrix_ga_attestation,
+)
 from psmatrix.recovery import list_recovery_cases, sign_recovery_report
 from psmatrix.release import create_release_manifest
 from psmatrix.signing import generate_ed25519_keypair, public_key_id
@@ -132,18 +135,46 @@ class GAGateTests(unittest.TestCase):
         )
         (root / "evidence" / "windows-authoritative.dsse.json").write_text(json.dumps(windows), encoding="utf-8")
 
+        canonical = canonical_full_matrix_targets()
+        coverage_rows = [
+            {"id": item["id"], "kind": item["kind"], "runtime_id": item["runtime_id"], "required": item["required"], "status": "PASS"}
+            for item in canonical
+        ]
+        full_targets = [
+            {
+                "runtime_id": item["runtime_id"], "runtime_version": str(item.get("version") or "5.1"),
+                "source": "tool.ps1", "source_sha256": "9" * 64, "status": "PASS",
+                "runtime": {"matrix_target_id": item["id"], "kind": item["kind"], "required": item["required"]},
+            }
+            for item in canonical
+        ]
         coverage = {
             "declared": 25, "passed": 25, "incomplete": 0, "failed": 0,
-            "missing_required": [], "failed_required": [], "targets": [],
+            "missing_required": [], "failed_required": [], "targets": coverage_rows,
         }
-        full = {"schema": 8, "status": "PASS", "finished_at": datetime.now(UTC).isoformat(), "matrix": {"coverage": coverage, "unallowed_differences": 0}}
+        full = {
+            "schema": 8, "tool_version": "2.0.0", "status": "PASS",
+            "started_at": datetime.now(UTC).isoformat(), "finished_at": datetime.now(UTC).isoformat(),
+            "targets": full_targets, "differential": [], "diagnostics": [],
+            "matrix": {
+                "full": True, "name": "full", "differential_mode": "strict",
+                "baseline_runtime": "powershell-7.6.4-linux-x64", "allowances": [],
+                "allowance_manifest": None, "unallowed_differences": 0, "require_complete": True,
+                "coverage": coverage,
+            },
+        }
         full_path = root / "evidence" / "full-matrix-report.json"
         full_path.write_text(json.dumps(full), encoding="utf-8")
-        full_attestation = create_ga_artifact_attestation(
-            full_path, artifact_type="full-matrix-report", observed_at=full["finished_at"],
-            private_key=roles["ci"][0], public_key=roles["ci"][1],
+        full_binding_path = root / "evidence" / "full-matrix-release-binding.json"
+        build_full_matrix_release_binding(
+            release_manifest=release_manifest_path, artifact_dir=root / "release",
+            release_public_key=roles["release"][1], release_commit="a" * 40, output=full_binding_path,
         )
-        (root / "evidence" / "full-matrix-report.dsse.json").write_text(json.dumps(full_attestation), encoding="utf-8")
+        create_full_matrix_ga_attestation(
+            report_path=full_path, release_binding_path=full_binding_path,
+            private_key=roles["ci"][0], public_key=roles["ci"][1],
+            output=root / "evidence" / "full-matrix-report.dsse.json",
+        )
 
         public = {
             "endpoint": "https://mcp.example.com/mcp",
@@ -373,6 +404,27 @@ class GAGateTests(unittest.TestCase):
             }, *roles["vulnerability-scanner"])
             evaluation = evaluate_ga(policy)
             gate = next(item for item in evaluation.gates if item.gate == "vulnerability-scan")
+            self.assertEqual(gate.status, "FAIL")
+            self.assertIn("validated release commit", gate.message)
+
+    def test_full_matrix_must_bind_final_release_and_commit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            policy, roles = self._complete_fixture(root)
+            matrix_path = root / "evidence" / "full-matrix-report.dsse.json"
+            envelope = json.loads(matrix_path.read_text())
+            from psmatrix.signing import verify_dsse_envelope, canonical_json_bytes, create_dsse_envelope
+            statement = verify_dsse_envelope(envelope, roles["ci"][1])["statement"]
+            binding = statement["predicate"]["release_binding"]
+            binding["release_commit"] = "e" * 40
+            unsigned = dict(binding)
+            unsigned.pop("binding_sha256", None)
+            import hashlib
+            binding["binding_sha256"] = hashlib.sha256(canonical_json_bytes(unsigned)).hexdigest()
+            statement["predicate"]["release_binding"] = binding
+            matrix_path.write_text(json.dumps(create_dsse_envelope(statement, roles["ci"][0], roles["ci"][1])), encoding="utf-8")
+            evaluation = evaluate_ga(policy)
+            gate = next(item for item in evaluation.gates if item.gate == "complete-runtime-matrix")
             self.assertEqual(gate.status, "FAIL")
             self.assertIn("validated release commit", gate.message)
 

@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 
 from .errors import PSMatrixError
 from .lab_provisioning import verify_authoritative_matrix_attestation
+from .full_matrix_ga import verify_full_matrix_ga_attestation
 from .recovery import list_recovery_cases, verify_recovery_report
 from .release import verify_release_manifest
 from .signing import (
@@ -572,34 +573,23 @@ def _matrix_gate(policy: dict[str, Any], base: Path) -> GateResult:
         path = _safe_path(base, record["path"], "complete runtime matrix report")
         attestation = _safe_path(base, record.get("attestation"), "complete runtime matrix attestation")
         key = _authority(policy, base, str(record.get("authority") or "ci"))
-        signed = verify_ga_artifact_attestation(
-            read_json(attestation), artifact=path, artifact_type="full-matrix-report", public_key=key,
-        )
-        report = read_json(path)
-        if not isinstance(report, dict) or report.get("status") != "PASS":
-            raise GAGateError("Complete runtime matrix status is not PASS")
+        result = verify_full_matrix_ga_attestation(read_json(attestation), report_path=path, public_key=key)
         requirements = policy.get("requirements") if isinstance(policy.get("requirements"), dict) else {}
-        _require_fresh(report.get("finished_at"), "full matrix finished_at", max(1, min(int(requirements.get("matrix_max_age_days") or 7), 30)))
-        matrix = report.get("matrix") if isinstance(report.get("matrix"), dict) else {}
-        coverage = matrix.get("coverage") if isinstance(matrix.get("coverage"), dict) else {}
-        required = max(25, int((policy.get("requirements") or {}).get("full_matrix_targets") or 25))
-        if int(coverage.get("declared") or 0) < required or int(coverage.get("passed") or 0) != int(coverage.get("declared") or 0):
-            raise GAGateError("Complete runtime matrix did not pass every declared target")
-        if int(coverage.get("incomplete") or 0) or int(coverage.get("failed") or 0):
-            raise GAGateError("Complete runtime matrix contains incomplete or failed targets")
-        if coverage.get("missing_required") or coverage.get("failed_required"):
-            raise GAGateError("Complete runtime matrix required coverage is incomplete")
-        if int(matrix.get("unallowed_differences") or 0):
-            raise GAGateError("Complete runtime matrix contains unallowed differences")
-        return GateResult(gate, "PASS", "Complete runtime matrix verified", {
-            "path": str(path), "sha256": sha256_file(path), "targets": coverage.get("declared"),
-            "attestation": str(attestation), "key_ids": signed["key_ids"],
+        _require_fresh(result.get("finished_at"), "full matrix finished_at", max(1, min(int(requirements.get("matrix_max_age_days") or 7), 30)))
+        binding = result.get("release_binding") if isinstance(result.get("release_binding"), dict) else {}
+        return GateResult(gate, "PASS", "Release-bound canonical 25-target runtime matrix verified", {
+            "path": str(path), "sha256": result.get("report_sha256"), "targets": result.get("targets"),
+            "attestation": str(attestation), "key_ids": result.get("key_ids"),
+            "release_commit": binding.get("release_commit"),
+            "release_manifest_sha256": binding.get("release_manifest_sha256"),
+            "source_sha256": (binding.get("source") or {}).get("sha256"),
+            "wheel_sha256": (binding.get("wheel") or {}).get("sha256"),
+            "release_binding_sha256": binding.get("binding_sha256"),
         })
     except FileNotFoundError as exc:
         return GateResult(gate, "INCOMPLETE", f"Evidence file is missing: {exc}", {})
     except (PSMatrixError, OSError, ValueError, TypeError) as exc:
         return GateResult(gate, "FAIL", str(exc), {})
-
 
 def _recovery_gate(policy: dict[str, Any], base: Path) -> GateResult:
     gate = "disaster-recovery"
@@ -683,6 +673,20 @@ def _enforce_cross_gate_bindings(results: list[GateResult]) -> list[GateResult]:
             reason = "Authoritative Windows proof does not bind the signed provisioning kit"
         if reason:
             replacements[windows.gate] = GateResult(windows.gate, "FAIL", reason, windows.evidence)
+
+    matrix = by_gate.get("complete-runtime-matrix")
+    if matrix is not None and matrix.status == "PASS":
+        reason = None
+        if matrix.evidence.get("release_commit") != expected_commit:
+            reason = "Full-matrix proof does not bind the validated release commit"
+        elif matrix.evidence.get("release_manifest_sha256") != expected_release:
+            reason = "Full-matrix proof does not bind the signed final release manifest"
+        elif matrix.evidence.get("source_sha256") not in source_digests:
+            reason = "Full-matrix proof does not bind a source ZIP from the signed release"
+        elif matrix.evidence.get("wheel_sha256") not in wheel_digests:
+            reason = "Full-matrix proof does not bind a wheel from the signed release"
+        if reason:
+            replacements[matrix.gate] = GateResult(matrix.gate, "FAIL", reason, matrix.evidence)
 
     review = by_gate.get("security-review")
     if review is not None and review.status == "PASS":

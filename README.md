@@ -462,3 +462,10 @@ otherwise successful OCI test process exits.
 
 See [remote worker documentation](docs/REMOTE_WORKERS.md),
 [architecture](docs/ARCHITECTURE.md), and [security model](SECURITY.md).
+
+## Production GA full 25-target matrix
+
+The final GA matrix uses `scripts/ga/Invoke-PSMatrixFullRuntimeMatrixGA.ps1` on a protected
+`psmatrix-full-matrix` self-hosted controller. Evidence is accepted only when all 25 canonical
+lanes pass in strict differential mode and the proof binds the final signed release source ZIP,
+wheel, manifest and validated commit. See `docs/PRODUCTION_GA_FULL_MATRIX.md`.

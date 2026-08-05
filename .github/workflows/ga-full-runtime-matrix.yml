@@ -1,0 +1,116 @@
+name: production-ga-full-runtime-matrix
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_commit:
+        description: Full 40-character commit SHA of the final release candidate
+        required: true
+        type: string
+      timeout_seconds:
+        description: Per-target timeout
+        required: true
+        default: "1800"
+        type: string
+      jobs:
+        description: Maximum parallel matrix lanes
+        required: true
+        default: "4"
+        type: string
+
+concurrency:
+  group: production-ga-full-runtime-matrix
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  full-runtime-matrix:
+    runs-on: [self-hosted, Linux, X64, psmatrix-full-matrix]
+    environment: production-ga-full-matrix
+    timeout-minutes: 720
+    permissions:
+      contents: read
+    env:
+      PSMATRIX_FULL_MATRIX_ROOT: ${{ vars.PSMATRIX_FULL_MATRIX_ROOT }}
+    steps:
+      - name: Check out exact release revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.release_commit }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up controller Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Verify protected controller layout
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ('${{ inputs.release_commit }}' -notmatch '^[0-9a-fA-F]{40}$') { throw 'release_commit is not a full SHA.' }
+          $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($head -ne '${{ inputs.release_commit }}'.ToLowerInvariant()) { throw "Checked out $head instead of requested commit." }
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_FULL_MATRIX_ROOT)) { throw 'PSMATRIX_FULL_MATRIX_ROOT is missing.' }
+          if (-not (Test-Path -LiteralPath $env:PSMATRIX_FULL_MATRIX_ROOT -PathType Container)) { throw 'Full-matrix controller root is unavailable.' }
+
+      - name: Materialize controller-only CI and release keys
+        shell: pwsh
+        env:
+          CI_PRIVATE_KEY: ${{ secrets.PSMATRIX_CI_PRIVATE_KEY }}
+          CI_PUBLIC_KEY: ${{ secrets.PSMATRIX_CI_PUBLIC_KEY }}
+          RELEASE_PUBLIC_KEY: ${{ secrets.PSMATRIX_RELEASE_PUBLIC_KEY }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($name in @('CI_PRIVATE_KEY','CI_PUBLIC_KEY','RELEASE_PUBLIC_KEY')) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name, 'Process'))) { throw "$name is missing." }
+          }
+          $keyRoot = Join-Path $env:RUNNER_TEMP 'psmatrix-full-matrix-keys'
+          if (Test-Path -LiteralPath $keyRoot) { Remove-Item -LiteralPath $keyRoot -Recurse -Force }
+          New-Item -ItemType Directory -Path $keyRoot | Out-Null
+          [IO.File]::WriteAllText((Join-Path $keyRoot 'ci.private.pem'), $env:CI_PRIVATE_KEY + "`n")
+          [IO.File]::WriteAllText((Join-Path $keyRoot 'ci.public.pem'), $env:CI_PUBLIC_KEY + "`n")
+          [IO.File]::WriteAllText((Join-Path $keyRoot 'release.public.pem'), $env:RELEASE_PUBLIC_KEY + "`n")
+          chmod 700 $keyRoot
+          chmod 600 (Join-Path $keyRoot 'ci.private.pem')
+
+      - name: Execute release-bound exact 25-target matrix
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $keyRoot = Join-Path $env:RUNNER_TEMP 'psmatrix-full-matrix-keys'
+          $output = Join-Path $env:RUNNER_TEMP 'psmatrix-full-matrix-evidence'
+          if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
+          & "$env:GITHUB_WORKSPACE/scripts/ga/Invoke-PSMatrixFullRuntimeMatrixGA.ps1" `
+            -SourceRoot $env:GITHUB_WORKSPACE `
+            -ReleaseCommit '${{ inputs.release_commit }}' `
+            -ReleaseManifest (Join-Path $env:PSMATRIX_FULL_MATRIX_ROOT 'release/psmatrix-2.0.0-release.json') `
+            -ReleaseArtifactDir (Join-Path $env:PSMATRIX_FULL_MATRIX_ROOT 'release') `
+            -ReleasePublicKey (Join-Path $keyRoot 'release.public.pem') `
+            -CiPrivateKey (Join-Path $keyRoot 'ci.private.pem') `
+            -CiPublicKey (Join-Path $keyRoot 'ci.public.pem') `
+            -Home (Join-Path $env:PSMATRIX_FULL_MATRIX_ROOT 'home') `
+            -Spec (Join-Path $env:PSMATRIX_FULL_MATRIX_ROOT 'config/psmatrix.full.json') `
+            -ProjectRoot $env:GITHUB_WORKSPACE `
+            -Entrypoint (Join-Path $env:GITHUB_WORKSPACE 'examples/core-capabilities.ps1') `
+            -OutputDir $output `
+            -TimeoutSeconds ([int]'${{ inputs.timeout_seconds }}') `
+            -Jobs ([int]'${{ inputs.jobs }}')
+
+      - name: Remove controller private key
+        if: always()
+        shell: pwsh
+        run: |
+          $keyRoot = Join-Path $env:RUNNER_TEMP 'psmatrix-full-matrix-keys'
+          if (Test-Path -LiteralPath $keyRoot) { Remove-Item -LiteralPath $keyRoot -Recurse -Force }
+
+      - name: Upload full-matrix evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: production-ga-full-runtime-matrix
+          path: ${{ runner.temp }}/psmatrix-full-matrix-evidence
+          if-no-files-found: error
+          retention-days: 30
