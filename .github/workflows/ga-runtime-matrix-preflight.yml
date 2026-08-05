@@ -43,16 +43,38 @@ jobs:
           ./psmatrix --version
           ./psmatrix --home "$RUNNER_TEMP/psmatrix-home" doctor
 
+      - name: Bootstrap verified legacy Linux x64 Core runtimes
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/runtime-matrix-evidence"
+          python scripts/ga/bootstrap_legacy_core_runtimes.py \
+            --psmatrix ./psmatrix \
+            --home "$RUNNER_TEMP/psmatrix-home" \
+            --engine docker \
+            --output "$RUNNER_TEMP/runtime-matrix-evidence/legacy-bootstrap.json"
+
       - name: Install exact Linux x64 Core runtime lines
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          set +e
           ./psmatrix --home "$RUNNER_TEMP/psmatrix-home" runtime install-matrix core-all \
             --arch x64 \
             --libc glibc \
             --backend auto \
             --engine docker \
-            > "$RUNNER_TEMP/runtime-install.json"
+            > "$RUNNER_TEMP/runtime-install.json" \
+            2> "$RUNNER_TEMP/runtime-install.stderr.log"
+          code=$?
+          set -e
+          echo '===== INSTALL STDERR ====='
+          cat "$RUNNER_TEMP/runtime-install.stderr.log" || true
+          echo '===== INSTALL RESULT ====='
+          cat "$RUNNER_TEMP/runtime-install.json" || true
+          test "$code" -eq 0
           python - "$RUNNER_TEMP/runtime-install.json" <<'PY'
           import json, sys
           value = json.load(open(sys.argv[1], encoding='utf-8'))
@@ -105,7 +127,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/runtime-matrix-evidence"
           ./psmatrix --home "$RUNNER_TEMP/psmatrix-home" full plan \
             --spec ga-packs/02-runtime-matrix/preflight-spec.json \
             --output "$RUNNER_TEMP/runtime-matrix-evidence/hosted-plan.json"
@@ -181,6 +202,7 @@ jobs:
               'remaining_target_count': len(missing),
               'remaining_targets': missing,
               'install_results': install.get('results', []),
+              'legacy_bootstrap_evidence': 'legacy-bootstrap.json',
               'next_requirement': 'Connect ARM64, musl and exact Windows Core/Desktop workers, then run production-ga-full-runtime-matrix.',
           }
           output = Path(os.environ['RUNNER_TEMP']) / 'runtime-matrix-evidence' / 'preflight-status.json'
@@ -188,9 +210,13 @@ jobs:
           PY
 
       - name: Upload hosted runtime matrix evidence
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: production-ga-runtime-matrix-hosted-preflight
-          path: ${{ runner.temp }}/runtime-matrix-evidence
-          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/runtime-matrix-evidence
+            ${{ runner.temp }}/runtime-install.json
+            ${{ runner.temp }}/runtime-install.stderr.log
+          if-no-files-found: warn
           retention-days: 30
