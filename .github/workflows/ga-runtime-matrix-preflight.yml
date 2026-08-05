@@ -2,12 +2,6 @@ name: production-ga-runtime-matrix-preflight
 
 on:
   workflow_dispatch:
-    inputs:
-      jobs:
-        description: Maximum parallel Linux runtime lanes
-        required: true
-        default: "4"
-        type: string
 
 concurrency:
   group: production-ga-runtime-matrix-preflight
@@ -103,14 +97,18 @@ jobs:
               and target.get('arch') == 'x64'
               and target.get('libc') == 'glibc'
           ]
-          tool_policy = [
+          # Pack 02 measures exact PowerShell parser/execution semantics. Strong
+          # sandbox compatibility is enforced by the dedicated sandbox and
+          # adversarial gates, not mixed into the cross-version runtime result.
+          execution_policy = [
+              '--sandbox', 'copy',
               '--psscriptanalyzer', 'off',
               '--pester', 'off',
               '--coverage', 'off',
           ]
           for target in spec['targets']:
               target['required'] = True
-              target['args'] = list(tool_policy)
+              target['args'] = list(execution_policy)
           spec['differential'] = {
               'mode': 'strict',
               'baseline_runtime': 'powershell-7.6.4-linux-x64',
@@ -127,7 +125,7 @@ jobs:
           }
           (root / 'preflight-differences.json').write_text(json.dumps(allowances, indent=2, sort_keys=True) + '\n')
           assert len(spec['targets']) == 10
-          assert all(target.get('args') == tool_policy for target in spec['targets'])
+          assert all(target.get('args') == execution_policy for target in spec['targets'])
           PY
 
       - name: Require all hosted lanes ready
@@ -157,7 +155,7 @@ jobs:
             --root "$GITHUB_WORKSPACE" \
             --spec ga-packs/02-runtime-matrix/preflight-spec.json \
             --timeout 1200 \
-            --jobs '${{ inputs.jobs }}' \
+            --jobs 1 \
             --differential strict \
             --report-json "$out/hosted-report.json" \
             --report-junit "$out/hosted-report.junit.xml" \
@@ -206,7 +204,9 @@ jobs:
               'hosted_failed': 0,
               'hosted_incomplete': 0,
               'unallowed_differences': 0,
-              'tool_policy': {
+              'execution_policy': {
+                  'jobs': 1,
+                  'sandbox': 'copy',
                   'psscriptanalyzer': 'off',
                   'pester': 'off',
                   'coverage': 'off',
