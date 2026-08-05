@@ -1,0 +1,19 @@
+{
+  "valid": true,
+  "version": "2.0.0rc2",
+  "artifacts": [
+    "psmatrix-2.0.0rc2-py3-none-any.whl",
+    "psmatrix-2.0.0rc2-real-7.6.4-report.json",
+    "psmatrix-2.0.0rc2-security-hardening-report.json",
+    "psmatrix-2.0.0rc2-security-hardening-verification.json",
+    "psmatrix-2.0.0rc2-security-hardening.dsse.json",
+    "psmatrix-2.0.0rc2-source.tar.gz",
+    "psmatrix-2.0.0rc2-source.zip"
+  ],
+  "signature": {
+    "valid": true,
+    "key_ids": [
+      "sha256:d908350cbb62dbeaf0155bc72e2928a27d710887762a5f73667adca2f978e2aa"
+    ]
+  }
+}

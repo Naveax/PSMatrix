@@ -1,0 +1,9 @@
+0f8140b1ff5f7b74d2dfd3f93d7c9986c2e01bf825513cce65efc555de5b5484  psmatrix-2.0.0rc2-windows-authoritative-operation-package.json
+7b730134373c36e2748a45a540f527d6dd1fca24394a3c1218b248d986a80875  psmatrix-2.0.0rc2-independent-security-review-operation.zip
+7f2b9896c4ec2aed13b36d48f95238e98972ef8cd6ef0a27e44d240f999f56bd  psmatrix-2.0.0rc2-windows-authoritative-operation.zip
+81cca53593456b3fdf86ccdedafc6b998ccea31879612853dd107615246b8061  psmatrix-2.0.0rc2-release-verification.json
+b14f6fa40e85cf7397fb861f4da283a822a9ff5e98dce7c4be844abcde720eb7  psmatrix-2.0.0rc2-ga-vulnerability-pipeline.zip
+eb02dc9704d7e3650223cded0b68ae81b5a803892c885a0b4273c2f32f7f53dc  psmatrix-2.0.0rc2-security-hardening.zip
+ebe3041f5e24b3d9fc21d50a3a33585e399ae505271fdf8900a0b49750188b83  psmatrix-2.0.0rc2-release-public.pem
+eeb93063f8532b0b3f70f8956e4ae2c008a20d6f8f69e17ce20b8658a6300952  psmatrix-2.0.0rc2-ga-vulnerability-pipeline.sha256
+ef62c97ae9e5d7d9908086ebcb06d02a13e995d8c5dd2802ed676c98eef7305b  psmatrix-2.0.0rc2-release.json

@@ -1,0 +1,8 @@
+
+# Release artifacts are binary and should not be rendered as text diffs.
+release-assets/**/*.zip binary
+release-assets/**/*.whl binary
+release-assets/**/*.gz binary
+release-assets/**/*.pem text eol=lf
+release-assets/**/*.json text eol=lf
+release-assets/**/SHA256SUMS.txt text eol=lf

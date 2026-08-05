@@ -1,0 +1,32 @@
+{
+  "artifact": {
+    "name": "psmatrix-2.0.0rc2-windows-authoritative-operation.zip",
+    "path": "/mnt/data/psmatrix-2.0.0rc2-windows-authoritative-operation.zip",
+    "sha256": "7f2b9896c4ec2aed13b36d48f95238e98972ef8cd6ef0a27e44d240f999f56bd",
+    "size": 2221681
+  },
+  "authoritative_campaign_executed": false,
+  "automated_tests": {
+    "failed": 0,
+    "passed": 242,
+    "total": 242
+  },
+  "deterministic_zip": true,
+  "ga_eligible": false,
+  "kind": "psmatrix.windows-authoritative-operation-package",
+  "manifest_entries": 28,
+  "private_key_scan": "PASS",
+  "production_ga_gate": "INCOMPLETE",
+  "release_binding": {
+    "binding_sha256": "c56324fe7eaa4100e18cfb71d0177a8cf97d1b79c02930d64e5635fd66b037b8",
+    "release_manifest_sha256": "7c50ca1ff01a092c0e7b77e0bf6c609fc2bbda5cc2e991ceba6b7750d8c3db8f",
+    "source_sha256": "62e140fc6465243c218cfafee2d3966ab54407119299fee5e4879b3bfca51f7b",
+    "valid": true,
+    "windows_certification_kit_sha256": "e2a22118c0e2b4a9c056947c7ab2a04ff3e252f2b311d49cdfeb6fd33f025365",
+    "windows_provisioning_kit_sha256": "24c7421442fd2f90a8f419de6b53de043114d7bb689db20f2e2e531a6219d54a",
+    "windows_workers_sha256": "8f73e3f61b6901923e98581c768f72cea7812fd496c53d329b18feb262ddf673"
+  },
+  "release_commit": "6d981d6aaeb22020215a37e1d6ce49791497efa8",
+  "schema": 1,
+  "status": "READY_FOR_WINDOWS_HOST"
+}

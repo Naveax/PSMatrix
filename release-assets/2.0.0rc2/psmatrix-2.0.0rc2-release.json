@@ -1,0 +1,56 @@
+{
+  "attestation": {
+    "payload": "eyJfdHlwZSI6Imh0dHBzOi8vaW4tdG90by5pby9TdGF0ZW1lbnQvdjEiLCJwcmVkaWNhdGUiOnsiYXJ0aWZhY3RzIjpbeyJuYW1lIjoicHNtYXRyaXgtMi4wLjByYzItcHkzLW5vbmUtYW55LndobCIsInNoYTI1NiI6Ijc5NTZhNWViZTk1ZmIyNzYyNzM1MjY4ZDFjNjdmNjFmMjBjM2RjM2Q0YTE3NzAzODc4MDQ5YWIyMmYxMjVmMjgiLCJzaXplIjozMjgwNzh9LHsibmFtZSI6InBzbWF0cml4LTIuMC4wcmMyLXJlYWwtNy42LjQtcmVwb3J0Lmpzb24iLCJzaGEyNTYiOiJhOGRlMmNmNTAwYmZhMDA4YTkxOWMwNDQxMTIyNGNmMjU0ZjA0NTE1NWQ3NTVjMGViYzM5ZDllZDE1OTY1ODRlIiwic2l6ZSI6MTE0MDB9LHsibmFtZSI6InBzbWF0cml4LTIuMC4wcmMyLXNlY3VyaXR5LWhhcmRlbmluZy1yZXBvcnQuanNvbiIsInNoYTI1NiI6ImE4ZWM0MDY2NTM0ZmE2ODhjOTY5MzEwOTM1YmRiNTQwZWUzZWU4MDhhMDZjODUxNTgzYTI3NjdjNzM3OGExMjYiLCJzaXplIjoyMDE4fSx7Im5hbWUiOiJwc21hdHJpeC0yLjAuMHJjMi1zZWN1cml0eS1oYXJkZW5pbmctdmVyaWZpY2F0aW9uLmpzb24iLCJzaGEyNTYiOiI4OTU2OTEwMTc0NzRiMjVmZGVkNzkwYmFkZWEyODliNGUzZDk0ZjEwNTY2OTljNGM2ZDU2ZTBjOThiZTY1YmRlIiwic2l6ZSI6MTEzMn0seyJuYW1lIjoicHNtYXRyaXgtMi4wLjByYzItc2VjdXJpdHktaGFyZGVuaW5nLmRzc2UuanNvbiIsInNoYTI1NiI6ImUzOTVlZTFmMWY0NjAzMDgwY2Y5YzE3OWZlMGY3NzE5NGJjMGMxYWE2NDVhNTkzZTY0YjM1NGZmYjQyZDdiM2IiLCJzaXplIjoxOTA4fSx7Im5hbWUiOiJwc21hdHJpeC0yLjAuMHJjMi1zb3VyY2UudGFyLmd6Iiwic2hhMjU2IjoiZmVlOTU4NjJmMDJlODg2ZmEyZWQ1MGIwZjkwZDk0OThhNDRiZjgwOGRhOTk4ZTI0MmFmZTFjYjhkYmRjMTNmYSIsInNpemUiOjQwMzQzMX0seyJuYW1lIjoicHNtYXRyaXgtMi4wLjByYzItc291cmNlLnppcCIsInNoYTI1NiI6ImRmMjY1ZDM5NTE1NTZiY2MxMjE2YmJiNzY5ZGFmNDQ5MmY4ZWE4OWU5MzRjZjJiM2JlMmFiN2U1NGMyYzY0YTQiLCJzaXplIjo1MzIyNjF9XSwiY3JlYXRlZF9hdCI6IjE5NzAtMDEtMDFUMDA6MDA6MDArMDA6MDAiLCJraW5kIjoicHNtYXRyaXgucmVsZWFzZS1tYW5pZmVzdCIsInNjaGVtYSI6MSwidmVyc2lvbiI6IjIuMC4wcmMyIn0sInByZWRpY2F0ZVR5cGUiOiJodHRwczovL3BzbWF0cml4LmRldi9hdHRlc3RhdGlvbi9yZWxlYXNlLW1hbmlmZXN0L3YxIiwic3ViamVjdCI6W3siZGlnZXN0Ijp7InNoYTI1NiI6Ijc5NTZhNWViZTk1ZmIyNzYyNzM1MjY4ZDFjNjdmNjFmMjBjM2RjM2Q0YTE3NzAzODc4MDQ5YWIyMmYxMjVmMjgifSwibmFtZSI6InBzbWF0cml4LTIuMC4wcmMyLXB5My1ub25lLWFueS53aGwifSx7ImRpZ2VzdCI6eyJzaGEyNTYiOiJhOGRlMmNmNTAwYmZhMDA4YTkxOWMwNDQxMTIyNGNmMjU0ZjA0NTE1NWQ3NTVjMGViYzM5ZDllZDE1OTY1ODRlIn0sIm5hbWUiOiJwc21hdHJpeC0yLjAuMHJjMi1yZWFsLTcuNi40LXJlcG9ydC5qc29uIn0seyJkaWdlc3QiOnsic2hhMjU2IjoiYThlYzQwNjY1MzRmYTY4OGM5NjkzMTA5MzViZGI1NDBlZTNlZTgwOGEwNmM4NTE1ODNhMjc2N2M3Mzc4YTEyNiJ9LCJuYW1lIjoicHNtYXRyaXgtMi4wLjByYzItc2VjdXJpdHktaGFyZGVuaW5nLXJlcG9ydC5qc29uIn0seyJkaWdlc3QiOnsic2hhMjU2IjoiODk1NjkxMDE3NDc0YjI1ZmRlZDc5MGJhZGVhMjg5YjRlM2Q5NGYxMDU2Njk5YzRjNmQ1NmUwYzk4YmU2NWJkZSJ9LCJuYW1lIjoicHNtYXRyaXgtMi4wLjByYzItc2VjdXJpdHktaGFyZGVuaW5nLXZlcmlmaWNhdGlvbi5qc29uIn0seyJkaWdlc3QiOnsic2hhMjU2IjoiZTM5NWVlMWYxZjQ2MDMwODBjZjljMTc5ZmUwZjc3MTk0YmMwYzFhYTY0NWE1OTNlNjRiMzU0ZmZiNDJkN2IzYiJ9LCJuYW1lIjoicHNtYXRyaXgtMi4wLjByYzItc2VjdXJpdHktaGFyZGVuaW5nLmRzc2UuanNvbiJ9LHsiZGlnZXN0Ijp7InNoYTI1NiI6ImZlZTk1ODYyZjAyZTg4NmZhMmVkNTBiMGY5MGQ5NDk4YTQ0YmY4MDhkYTk5OGUyNDJhZmUxY2I4ZGJkYzEzZmEifSwibmFtZSI6InBzbWF0cml4LTIuMC4wcmMyLXNvdXJjZS50YXIuZ3oifSx7ImRpZ2VzdCI6eyJzaGEyNTYiOiJkZjI2NWQzOTUxNTU2YmNjMTIxNmJiYjc2OWRhZjQ0OTJmOGVhODllOTM0Y2YyYjNiZTJhYjdlNTRjMmM2NGE0In0sIm5hbWUiOiJwc21hdHJpeC0yLjAuMHJjMi1zb3VyY2UuemlwIn1dfQ==",
+    "payloadType": "application/vnd.in-toto+json",
+    "signatures": [
+      {
+        "algorithm": "Ed25519",
+        "keyid": "sha256:d908350cbb62dbeaf0155bc72e2928a27d710887762a5f73667adca2f978e2aa",
+        "sig": "7LbC0yWjVfyCdGiq174keP4oMBO3/xN0Iqbd4U5v7rg2eC3Z59pQGJHCUMetKV6iiuzsXCh48YRnLJO/VthHDQ=="
+      }
+    ]
+  },
+  "manifest": {
+    "artifacts": [
+      {
+        "name": "psmatrix-2.0.0rc2-py3-none-any.whl",
+        "sha256": "7956a5ebe95fb2762735268d1c67f61f20c3dc3d4a17703878049ab22f125f28",
+        "size": 328078
+      },
+      {
+        "name": "psmatrix-2.0.0rc2-real-7.6.4-report.json",
+        "sha256": "a8de2cf500bfa008a919c04411224cf254f045155d755c0ebc39d9ed1596584e",
+        "size": 11400
+      },
+      {
+        "name": "psmatrix-2.0.0rc2-security-hardening-report.json",
+        "sha256": "a8ec4066534fa688c969310935bdb540ee3ee808a06c851583a2767c7378a126",
+        "size": 2018
+      },
+      {
+        "name": "psmatrix-2.0.0rc2-security-hardening-verification.json",
+        "sha256": "895691017474b25fded790badea289b4e3d94f1056699c4c6d56e0c98be65bde",
+        "size": 1132
+      },
+      {
+        "name": "psmatrix-2.0.0rc2-security-hardening.dsse.json",
+        "sha256": "e395ee1f1f4603080cf9c179fe0f77194bc0c1aa645a593e64b354ffb42d7b3b",
+        "size": 1908
+      },
+      {
+        "name": "psmatrix-2.0.0rc2-source.tar.gz",
+        "sha256": "fee95862f02e886fa2ed50b0f90d9498a44bf808da998e242afe1cb8dbdc13fa",
+        "size": 403431
+      },
+      {
+        "name": "psmatrix-2.0.0rc2-source.zip",
+        "sha256": "df265d3951556bcc1216bbb769daf4492f8ea89e934cf2b3be2ab7e54c2c64a4",
+        "size": 532261
+      }
+    ],
+    "created_at": "1970-01-01T00:00:00+00:00",
+    "kind": "psmatrix.release-manifest",
+    "schema": 1,
+    "version": "2.0.0rc2"
+  }
+}
