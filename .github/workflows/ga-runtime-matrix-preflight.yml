@@ -1,0 +1,196 @@
+name: production-ga-runtime-matrix-preflight
+
+on:
+  workflow_dispatch:
+    inputs:
+      jobs:
+        description: Maximum parallel Linux runtime lanes
+        required: true
+        default: "4"
+        type: string
+
+concurrency:
+  group: production-ga-runtime-matrix-preflight
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  hosted-linux-x64:
+    name: Hosted Linux x64 Core lanes
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Verify hosted controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'release_commit=%s\n' "$GITHUB_SHA"
+          python --version
+          docker version
+          chmod +x ./psmatrix
+          ./psmatrix --version
+          ./psmatrix --home "$RUNNER_TEMP/psmatrix-home" doctor
+
+      - name: Install exact Linux x64 Core runtime lines
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./psmatrix --home "$RUNNER_TEMP/psmatrix-home" runtime install-matrix core-all \
+            --arch x64 \
+            --libc glibc \
+            --backend auto \
+            --engine docker \
+            > "$RUNNER_TEMP/runtime-install.json"
+          python - "$RUNNER_TEMP/runtime-install.json" <<'PY'
+          import json, sys
+          value = json.load(open(sys.argv[1], encoding='utf-8'))
+          rows = value.get('results', [])
+          assert len(rows) == 10, value
+          failed = [row for row in rows if row.get('status') != 'INSTALLED']
+          assert not failed, failed
+          PY
+
+      - name: Create strict hosted preflight specification
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$GITHUB_WORKSPACE/src"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from psmatrix.full_matrix import default_full_matrix_spec
+
+          root = Path('ga-packs/02-runtime-matrix')
+          spec = default_full_matrix_spec()
+          spec['name'] = 'hosted-linux-x64-preflight'
+          spec['targets'] = [
+              target for target in spec['targets']
+              if target.get('kind') == 'local'
+              and target.get('arch') == 'x64'
+              and target.get('libc') == 'glibc'
+          ]
+          for target in spec['targets']:
+              target['required'] = True
+          spec['differential'] = {
+              'mode': 'strict',
+              'baseline_runtime': 'powershell-7.6.4-linux-x64',
+              'allowance_file': 'preflight-differences.json',
+              'allow': [],
+          }
+          spec['requirements'] = {'require_complete': True}
+          (root / 'preflight-spec.json').write_text(json.dumps(spec, indent=2, sort_keys=True) + '\n')
+          allowances = {
+              'schema': 1,
+              'kind': 'psmatrix.differential-allowances',
+              'name': 'hosted-linux-x64-preflight',
+              'rules': [],
+          }
+          (root / 'preflight-differences.json').write_text(json.dumps(allowances, indent=2, sort_keys=True) + '\n')
+          assert len(spec['targets']) == 10
+          PY
+
+      - name: Require all hosted lanes ready
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/runtime-matrix-evidence"
+          ./psmatrix --home "$RUNNER_TEMP/psmatrix-home" full plan \
+            --spec ga-packs/02-runtime-matrix/preflight-spec.json \
+            --output "$RUNNER_TEMP/runtime-matrix-evidence/hosted-plan.json"
+          python - "$RUNNER_TEMP/runtime-matrix-evidence/hosted-plan.json" <<'PY'
+          import json, sys
+          value = json.load(open(sys.argv[1], encoding='utf-8'))
+          coverage = value.get('coverage', {})
+          assert value.get('status') == 'READY', value
+          assert coverage.get('declared') == 10, coverage
+          assert coverage.get('ready') == 10, coverage
+          assert coverage.get('missing_required') == [], coverage
+          PY
+
+      - name: Execute strict hosted Linux matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/runtime-matrix-evidence"
+          ./psmatrix --home "$RUNNER_TEMP/psmatrix-home" full test \
+            ga-packs/02-runtime-matrix/matrix-probe.ps1 \
+            --root "$GITHUB_WORKSPACE" \
+            --spec ga-packs/02-runtime-matrix/preflight-spec.json \
+            --timeout 1200 \
+            --jobs '${{ inputs.jobs }}' \
+            --differential strict \
+            --report-json "$out/hosted-report.json" \
+            --report-junit "$out/hosted-report.junit.xml" \
+            --report-sarif "$out/hosted-report.sarif.json" \
+            --report-html "$out/hosted-report.html" \
+            --report-sbom "$out/hosted-report.sbom.json" \
+            --evidence-bundle "$out/hosted-evidence.zip"
+
+      - name: Enforce hosted preflight result
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$GITHUB_WORKSPACE/src"
+          python - "$RUNNER_TEMP/runtime-matrix-evidence/hosted-report.json" "$RUNNER_TEMP/runtime-install.json" <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          from psmatrix.full_matrix_ga import canonical_full_matrix_targets, canonical_full_matrix_sha256
+
+          report = json.load(open(sys.argv[1], encoding='utf-8'))
+          install = json.load(open(sys.argv[2], encoding='utf-8'))
+          coverage = report.get('matrix', {}).get('coverage', {})
+          assert report.get('status') == 'PASS', report.get('status')
+          assert coverage.get('declared') == 10, coverage
+          assert coverage.get('passed') == 10, coverage
+          assert coverage.get('incomplete') == 0, coverage
+          assert coverage.get('failed') == 0, coverage
+          assert report.get('matrix', {}).get('unallowed_differences') == 0, report.get('matrix')
+
+          canonical = canonical_full_matrix_targets()
+          hosted = {
+              row['id'] for row in canonical
+              if row['kind'] == 'local' and row.get('arch') == 'x64' and row.get('libc') == 'glibc'
+          }
+          missing = [row['id'] for row in canonical if row['id'] not in hosted]
+          status = {
+              'schema': 1,
+              'kind': 'psmatrix.runtime-matrix-hosted-preflight',
+              'pack': '02-runtime-matrix',
+              'status': 'PASS_PARTIAL',
+              'release_commit': os.environ['GITHUB_SHA'],
+              'ga_eligible': False,
+              'canonical_target_count': 25,
+              'canonical_targets_sha256': canonical_full_matrix_sha256(),
+              'hosted_declared': 10,
+              'hosted_passed': 10,
+              'hosted_failed': 0,
+              'hosted_incomplete': 0,
+              'unallowed_differences': 0,
+              'remaining_target_count': len(missing),
+              'remaining_targets': missing,
+              'install_results': install.get('results', []),
+              'next_requirement': 'Connect ARM64, musl and exact Windows Core/Desktop workers, then run production-ga-full-runtime-matrix.',
+          }
+          output = Path(os.environ['RUNNER_TEMP']) / 'runtime-matrix-evidence' / 'preflight-status.json'
+          output.write_text(json.dumps(status, indent=2, sort_keys=True) + '\n')
+          PY
+
+      - name: Upload hosted runtime matrix evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: production-ga-runtime-matrix-hosted-preflight
+          path: ${{ runner.temp }}/runtime-matrix-evidence
+          if-no-files-found: error
+          retention-days: 30
