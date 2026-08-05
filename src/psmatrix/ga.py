@@ -365,11 +365,14 @@ def _proof_gate(policy: dict[str, Any], base: Path, gate: str, proof_type: str, 
 
             reviewed_commit = str(assertions.get("reviewed_commit") or "").lower()
             release_digest = str(assertions.get("reviewed_release_sha256") or "").lower()
+            source_digest = str(assertions.get("reviewed_source_sha256") or "").lower()
             report_digest = str(assertions.get("review_report_sha256") or "").lower()
             if _COMMIT_RE.fullmatch(reviewed_commit) is None:
                 raise GAGateError("Security review commit binding is invalid")
             if _SHA256_RE.fullmatch(release_digest) is None:
                 raise GAGateError("Security review release digest binding is invalid")
+            if _SHA256_RE.fullmatch(source_digest) is None:
+                raise GAGateError("Security review source digest binding is invalid")
             if _SHA256_RE.fullmatch(report_digest) is None:
                 raise GAGateError("Security review report digest binding is invalid")
             artifacts = result.get("artifacts") if isinstance(result.get("artifacts"), list) else []
@@ -393,10 +396,26 @@ def _proof_gate(policy: dict[str, Any], base: Path, gate: str, proof_type: str, 
                 raise GAGateError("Vulnerability proof requires at least two scanner classes")
             if assertions.get("source_scanned") is not True or assertions.get("dependencies_scanned") is not True:
                 raise GAGateError("Vulnerability proof did not scan source and dependencies")
-        return GateResult(gate, "PASS", "Signed proof verified", {
+        gate_evidence: dict[str, Any] = {
             "path": str(path), "sha256": sha256_file(path), "key_ids": proof["key_ids"],
             "observed_at": result.get("observed_at"),
-        })
+        }
+        if proof_type == "security-review":
+            gate_evidence.update({
+                "reviewed_commit": str(assertions.get("reviewed_commit") or "").lower(),
+                "reviewed_release_sha256": str(assertions.get("reviewed_release_sha256") or "").lower(),
+                "reviewed_source_sha256": str(assertions.get("reviewed_source_sha256") or "").lower(),
+                "review_report_sha256": str(assertions.get("review_report_sha256") or "").lower(),
+            })
+        elif proof_type == "vulnerability-scan":
+            release_commit = str(assertions.get("release_commit") or "").lower()
+            wheel_digest = str(assertions.get("release_wheel_sha256") or "").lower()
+            if _COMMIT_RE.fullmatch(release_commit) is None:
+                raise GAGateError("Vulnerability proof release commit binding is invalid")
+            if _SHA256_RE.fullmatch(wheel_digest) is None:
+                raise GAGateError("Vulnerability proof wheel digest binding is invalid")
+            gate_evidence.update({"release_commit": release_commit, "release_wheel_sha256": wheel_digest})
+        return GateResult(gate, "PASS", "Signed proof verified", gate_evidence)
     except FileNotFoundError as exc:
         return GateResult(gate, "INCOMPLETE", f"Evidence file is missing: {exc}", {})
     except (PSMatrixError, OSError, ValueError, KeyError, TypeError) as exc:
@@ -420,6 +439,9 @@ def _validation_gate(policy: dict[str, Any], base: Path) -> GateResult:
             raise GAGateError("Validation summary status is not PASS")
         if value.get("version") != _GA_VERSION:
             raise GAGateError("Validation summary is not for final version 2.0.0")
+        git_commit = str(value.get("git_commit") or "").lower()
+        if _COMMIT_RE.fullmatch(git_commit) is None:
+            raise GAGateError("Validation summary exact git_commit binding is missing or invalid")
         requirements = policy.get("requirements") if isinstance(policy.get("requirements"), dict) else {}
         _require_fresh(value.get("validated_at"), "validation validated_at", max(1, min(int(requirements.get("validation_max_age_days") or 7), 30)))
         tests = value.get("automated_tests") if isinstance(value.get("automated_tests"), dict) else {}
@@ -439,6 +461,7 @@ def _validation_gate(policy: dict[str, Any], base: Path) -> GateResult:
             raise GAGateError("Validation summary lacks valid release signatures")
         return GateResult(gate, "PASS", "Core validation summary passed", {
             "path": str(path), "sha256": sha256_file(path), "tests": total,
+            "git_commit": git_commit,
             "attestation": str(attestation), "key_ids": signed["key_ids"],
         })
     except FileNotFoundError as exc:
@@ -459,8 +482,28 @@ def _release_gate(policy: dict[str, Any], base: Path) -> GateResult:
         result = verify_release_manifest(manifest, artifact_dir, signing_public_key=key)
         if result.get("valid") is not True or result.get("version") != _GA_VERSION:
             raise GAGateError("Signed release is not the final 2.0.0 release")
+        manifest_root = read_json(manifest)
+        manifest_value = manifest_root.get("manifest") if isinstance(manifest_root, dict) else None
+        artifact_items = manifest_value.get("artifacts") if isinstance(manifest_value, dict) else None
+        if not isinstance(artifact_items, list):
+            raise GAGateError("Signed release artifact digest inventory is unavailable")
+        artifact_digests = {
+            str(item.get("name")): str(item.get("sha256")).lower()
+            for item in artifact_items if isinstance(item, dict)
+        }
+        source_digests = sorted(
+            digest for name, digest in artifact_digests.items()
+            if name.endswith("-source.zip") and _SHA256_RE.fullmatch(digest)
+        )
+        wheel_digests = sorted(
+            digest for name, digest in artifact_digests.items()
+            if name.endswith(".whl") and _SHA256_RE.fullmatch(digest)
+        )
+        if not source_digests or not wheel_digests:
+            raise GAGateError("Signed release must bind source ZIP and wheel artifacts")
         return GateResult(gate, "PASS", "Signed 2.0.0 release verified", {
             "manifest": str(manifest), "sha256": sha256_file(manifest), "artifacts": len(result.get("artifacts") or []),
+            "source_sha256s": source_digests, "wheel_sha256s": wheel_digests,
         })
     except FileNotFoundError as exc:
         return GateResult(gate, "INCOMPLETE", f"Evidence file is missing: {exc}", {})
@@ -586,6 +629,43 @@ def load_ga_policy(path: Path) -> tuple[dict[str, Any], Path]:
     return value, policy_path.parent
 
 
+def _enforce_cross_gate_bindings(results: list[GateResult]) -> list[GateResult]:
+    by_gate = {item.gate: item for item in results}
+    validation = by_gate.get("validation-summary")
+    release = by_gate.get("signed-release")
+    if validation is None or release is None or validation.status != "PASS" or release.status != "PASS":
+        return results
+    expected_commit = str(validation.evidence.get("git_commit") or "").lower()
+    expected_release = str(release.evidence.get("sha256") or "").lower()
+    source_digests = set(str(item).lower() for item in release.evidence.get("source_sha256s") or [])
+    wheel_digests = set(str(item).lower() for item in release.evidence.get("wheel_sha256s") or [])
+    replacements: dict[str, GateResult] = {}
+
+    review = by_gate.get("security-review")
+    if review is not None and review.status == "PASS":
+        reason = None
+        if review.evidence.get("reviewed_commit") != expected_commit:
+            reason = "Security review does not bind the validated release commit"
+        elif review.evidence.get("reviewed_release_sha256") != expected_release:
+            reason = "Security review does not bind the signed final release manifest"
+        elif review.evidence.get("reviewed_source_sha256") not in source_digests:
+            reason = "Security review does not bind a source ZIP from the signed release"
+        if reason:
+            replacements[review.gate] = GateResult(review.gate, "FAIL", reason, review.evidence)
+
+    vulnerability = by_gate.get("vulnerability-scan")
+    if vulnerability is not None and vulnerability.status == "PASS":
+        reason = None
+        if vulnerability.evidence.get("release_commit") != expected_commit:
+            reason = "Vulnerability proof does not bind the validated release commit"
+        elif vulnerability.evidence.get("release_wheel_sha256") not in wheel_digests:
+            reason = "Vulnerability proof does not bind a wheel from the signed release"
+        if reason:
+            replacements[vulnerability.gate] = GateResult(vulnerability.gate, "FAIL", reason, vulnerability.evidence)
+
+    return [replacements.get(item.gate, item) for item in results]
+
+
 def evaluate_ga(policy_path: Path, *, output: Path | None = None) -> GAEvaluation:
     policy, base = load_ga_policy(policy_path)
     results = [
@@ -601,6 +681,7 @@ def evaluate_ga(policy_path: Path, *, output: Path | None = None) -> GAEvaluatio
         _proof_gate(policy, base, "security-review", "security-review", "security-review"),
         _proof_gate(policy, base, "vulnerability-scan", "vulnerability-scan", "vulnerability-scanner"),
     ]
+    results = _enforce_cross_gate_bindings(results)
     by_name = {item.gate for item in results}
     if by_name != set(_REQUIRED_GATES):
         raise GAGateError("Internal GA gate coverage mismatch")

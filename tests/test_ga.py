@@ -41,7 +41,10 @@ class GAGateTests(unittest.TestCase):
         path.write_text(json.dumps(create_ga_proof(value, private_key=private, public_key=public)), encoding="utf-8")
 
 
-    def _security_review_assertions(self, *, report_sha256: str = "d" * 64):
+    def _security_review_assertions(
+        self, *, report_sha256: str = "d" * 64, reviewed_commit: str = "a" * 40,
+        release_sha256: str = "b" * 64, source_sha256: str = "c" * 64,
+    ):
         return {
             "independent_review": True,
             "sections": [
@@ -60,8 +63,9 @@ class GAGateTests(unittest.TestCase):
                 "conflict_of_interest": False,
                 "key_controlled_by_reviewer": True,
             },
-            "reviewed_commit": "a" * 40,
-            "reviewed_release_sha256": "b" * 64,
+            "reviewed_commit": reviewed_commit,
+            "reviewed_release_sha256": release_sha256,
+            "reviewed_source_sha256": source_sha256,
             "review_report_sha256": report_sha256,
             "review_hours": 24,
         }
@@ -79,6 +83,7 @@ class GAGateTests(unittest.TestCase):
             "kind": "psmatrix.validation-summary",
             "version": "2.0.0",
             "status": "PASS",
+            "git_commit": "a" * 40,
             "validated_at": datetime.now(UTC).isoformat(),
             "automated_tests": {"passed": 250, "failed": 0, "skipped": 0, "total": 250},
             "reproducibility": {"source_zip": True, "source_tar_gz": True, "wheel": True},
@@ -96,8 +101,11 @@ class GAGateTests(unittest.TestCase):
 
         artifact = root / "release" / "psmatrix-2.0.0.whl"
         artifact.write_bytes(b"wheel")
+        source_artifact = root / "release" / "psmatrix-2.0.0-source.zip"
+        source_artifact.write_bytes(b"source")
+        release_manifest_path = root / "release" / "psmatrix-2.0.0-release.json"
         create_release_manifest(
-            [artifact], root / "release" / "psmatrix-2.0.0-release.json", version="2.0.0",
+            [artifact, source_artifact], release_manifest_path, version="2.0.0",
             signing_private_key=roles["release"][0], signing_public_key=roles["release"][1],
         )
 
@@ -155,15 +163,23 @@ class GAGateTests(unittest.TestCase):
         (root / "evidence" / "recovery.dsse.json").write_text(json.dumps(recovery), encoding="utf-8")
 
         report_digest = "d" * 64
+        release_digest = __import__("psmatrix.util", fromlist=["sha256_file"]).sha256_file(release_manifest_path)
+        source_digest = __import__("psmatrix.util", fromlist=["sha256_file"]).sha256_file(source_artifact)
+        wheel_digest = __import__("psmatrix.util", fromlist=["sha256_file"]).sha256_file(artifact)
         self._proof(
             root / "evidence" / "security-review.dsse.json", "security-review",
-            self._security_review_assertions(report_sha256=report_digest),
+            self._security_review_assertions(
+                report_sha256=report_digest, reviewed_commit="a" * 40,
+                release_sha256=release_digest, source_sha256=source_digest,
+            ),
             *roles["security-review"],
             artifacts=[{"name": "security-review-report.json", "sha256": report_digest}],
         )
         self._proof(root / "evidence" / "vulnerability-scan.dsse.json", "vulnerability-scan", {
             "scanners": ["dependency", "static-code"], "source_scanned": True, "dependencies_scanned": True,
             "findings": {"critical": 0, "high": 0, "medium": 0, "low": 0},
+            "release_commit": "a" * 40,
+            "release_wheel_sha256": wheel_digest,
         }, *roles["vulnerability-scanner"])
 
         policy = json.loads(json.dumps(__import__("psmatrix.ga", fromlist=["default_ga_policy"]).default_ga_policy()))
@@ -225,6 +241,8 @@ class GAGateTests(unittest.TestCase):
             self._proof(root / "evidence" / "vulnerability-scan.dsse.json", "vulnerability-scan", {
                 "scanners": ["dependency", "static-code"], "source_scanned": True, "dependencies_scanned": True,
                 "findings": {"critical": 0, "high": 1},
+                "release_commit": "a" * 40,
+                "release_wheel_sha256": "f" * 64,
             }, *roles["vulnerability-scanner"], observed_at=(datetime.now(UTC) - timedelta(days=45)).isoformat())
             evaluation = evaluate_ga(policy)
             gate = next(item for item in evaluation.gates if item.gate == "vulnerability-scan")
@@ -311,6 +329,39 @@ class GAGateTests(unittest.TestCase):
             gate = next(item for item in evaluation.gates if item.gate == "security-review")
             self.assertEqual(gate.status, "FAIL")
             self.assertIn("commit binding", gate.message)
+
+    def test_security_review_must_bind_final_release_and_validated_commit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            policy, roles = self._complete_fixture(root)
+            assertions = self._security_review_assertions(
+                reviewed_commit="e" * 40,
+                release_sha256="f" * 64,
+                source_sha256="c" * 64,
+            )
+            self._proof(
+                root / "evidence" / "security-review.dsse.json", "security-review", assertions,
+                *roles["security-review"], artifacts=[{"name": "review.json", "sha256": "d" * 64}],
+            )
+            evaluation = evaluate_ga(policy)
+            gate = next(item for item in evaluation.gates if item.gate == "security-review")
+            self.assertEqual(gate.status, "FAIL")
+            self.assertIn("validated release commit", gate.message)
+
+    def test_vulnerability_proof_must_bind_final_wheel_and_commit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            policy, roles = self._complete_fixture(root)
+            self._proof(root / "evidence" / "vulnerability-scan.dsse.json", "vulnerability-scan", {
+                "scanners": ["dependency", "static-code"], "source_scanned": True, "dependencies_scanned": True,
+                "findings": {"critical": 0, "high": 0},
+                "release_commit": "e" * 40,
+                "release_wheel_sha256": "f" * 64,
+            }, *roles["vulnerability-scanner"])
+            evaluation = evaluate_ga(policy)
+            gate = next(item for item in evaluation.gates if item.gate == "vulnerability-scan")
+            self.assertEqual(gate.status, "FAIL")
+            self.assertIn("validated release commit", gate.message)
 
     def test_key_rotation_drill_is_signed_and_valid(self):
         with tempfile.TemporaryDirectory() as temp:

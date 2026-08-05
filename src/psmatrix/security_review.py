@@ -352,6 +352,7 @@ def finalize_security_review(
             },
             "reviewed_commit": str(report["reviewed_commit"]).lower(),
             "reviewed_release_sha256": release_sha,
+            "reviewed_source_sha256": source_sha,
             "review_report_sha256": report_sha,
             "review_hours": report["review_hours"],
         },

@@ -25,6 +25,7 @@
 - The workflow is prepared and locally validated, but the vulnerability gate remains `INCOMPLETE` until it runs in an accessible GitHub repository and its protected signing environment emits a verified DSSE proof.
 - Added a deterministic independent security-review dossier and reviewer-controlled DSSE finalization flow.
 - Hardened the GA security-review gate with reviewer identity, conflict, methodology, exact commit/release and report-subject binding requirements.
+- Added cross-gate binding so security-review and vulnerability proofs must match the final validation commit and signed release source/wheel artifacts.
 
 
 ## 2.0.0rc1 — 2026-08-04

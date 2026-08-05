@@ -181,3 +181,18 @@ Required review sections:
 Required methodologies are architecture review, threat-model review, manual code
 review and test-evidence review. The schema is
 `schemas/independent-security-review.schema.json`.
+
+### Cross-gate release binding
+
+The final validation summary must contain an exact 40-character `git_commit`.
+The signed release must contain at least one source ZIP and one wheel artifact.
+During GA evaluation:
+
+- the independent review `reviewed_commit` must equal the validation commit;
+- `reviewed_release_sha256` must equal the signed final release manifest hash;
+- `reviewed_source_sha256` must identify a source ZIP in that signed release;
+- vulnerability `release_commit` must equal the validation commit;
+- vulnerability `release_wheel_sha256` must identify a wheel in that signed release.
+
+A correctly signed proof for an older candidate therefore fails the final GA
+policy rather than being silently reused.
