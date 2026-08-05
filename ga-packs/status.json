@@ -19,10 +19,30 @@
     },
     {
       "id": "02-runtime-matrix",
-      "state": "IN_PROGRESS",
-      "ga_eligible": false
+      "state": "HOSTED_LINUX_PREFLIGHT_PASS_PARTIAL",
+      "ga_eligible": false,
+      "preflight": {
+        "workflow_run": 31020856970,
+        "release_commit": "83e0629fb9fc8b9bb8cd283c865356f77a1b52dd",
+        "artifact_id": 8936784564,
+        "artifact_sha256": "784718eb3470ae37842a4e8563304d1d5b1a804d298fc209bdc1aac7f2863b12",
+        "canonical_target_count": 25,
+        "hosted_declared": 10,
+        "hosted_passed": 10,
+        "hosted_failed": 0,
+        "hosted_incomplete": 0,
+        "unallowed_differences": 0,
+        "status": "PASS_PARTIAL"
+      },
+      "remaining_target_count": 15,
+      "remaining": "Complete ARM64 glibc, x64 musl, Windows PowerShell Core 6.0.5-7.6.4, and Windows PowerShell Desktop 4.0/5.0/5.1 on authoritative workers."
     },
-    {"id": "03-authoritative-windows", "state": "READY_FOR_INFRASTRUCTURE", "ga_eligible": false},
+    {
+      "id": "03-authoritative-windows",
+      "state": "IN_PROGRESS",
+      "ga_eligible": false,
+      "remaining": "Establish real Windows worker evidence for Windows PowerShell 4.0, 5.0 and 5.1, including exact runtime identity, Windows-only behavior and reset proof."
+    },
     {"id": "04-public-auth", "state": "PACK_REQUIRED", "ga_eligible": false},
     {"id": "05-external-otlp", "state": "PACK_REQUIRED", "ga_eligible": false},
     {"id": "06-independent-review", "state": "READY_FOR_REVIEWER", "ga_eligible": false},
