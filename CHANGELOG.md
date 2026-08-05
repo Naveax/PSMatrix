@@ -11,9 +11,18 @@
 - Isolate scheduler worker subprocesses with an explicit environment allowlist; CI credentials, platform instrumentation sockets, OAuth secrets, and lab passwords are not inherited.
 - Copy only regular project files into sandbox workspaces; Unix sockets, FIFOs, devices, and other special files are ignored to prevent blocking or host-IPC access.
 
+### GA vulnerability pipeline
+
+- Add a manual-only GitHub Actions workflow for Bandit 1.9.4, pip-audit 2.10.1, and CodeQL security-extended scanning.
+- Pin every third-party GitHub Action to a full commit SHA and disable checkout credential persistence.
+- Normalize all scanner outputs fail-closed; missing, malformed, or incomplete results cannot produce a GA proof.
+- Keep vulnerability signing in the protected `production-ga-vulnerability` environment, separate from untrusted scanner jobs.
+- Bind the release commit, reproducible wheel digest, scanner versions, scanner exit codes, installed package inventory, and raw result digests into the signed proof.
+
 ### Evidence boundary
 
 - External Bandit, pip-audit, CodeQL, authoritative Windows, public deployment, and independent-review evidence remain required for final GA. RC2 does not convert local preflight results into GA PASS.
+- The workflow is prepared and locally validated, but the vulnerability gate remains `INCOMPLETE` until it runs in an accessible GitHub repository and its protected signing environment emits a verified DSSE proof.
 
 ## 2.0.0rc1 — 2026-08-04
 
