@@ -114,11 +114,26 @@ jobs:
           if (Test-Path -LiteralPath $output) {
             Remove-Item -LiteralPath $output -Recurse -Force
           }
+
+          $releaseDir = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'release'
+          if (-not (Test-Path -LiteralPath $releaseDir -PathType Container)) {
+            throw "Release directory is missing: $releaseDir"
+          }
+          $releaseManifests = @(
+            Get-ChildItem -LiteralPath $releaseDir -File |
+              Where-Object { $_.Name -match '^psmatrix-2\.0\.0(?:rc[0-9]+)?-release\.json$' }
+          )
+          if ($releaseManifests.Count -ne 1) {
+            throw "Expected exactly one 2.0.0/2.0.0rcN release manifest; found $($releaseManifests.Count)."
+          }
+          $releaseManifest = $releaseManifests[0].FullName
+          Write-Host "release_manifest=$($releaseManifests[0].Name)"
+
           $params = @{
             SourceRoot = $env:GITHUB_WORKSPACE
             ReleaseCommit = '${{ inputs.release_commit }}'
-            ReleaseManifest = (Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'release\psmatrix-2.0.0-release.json')
-            ReleaseArtifactDir = (Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'release')
+            ReleaseManifest = $releaseManifest
+            ReleaseArtifactDir = $releaseDir
             ReleasePublicKey = (Join-Path $keyRoot 'release.public.pem')
             LabPrivateKey = (Join-Path $keyRoot 'windows-lab.private.pem')
             LabPublicKey = (Join-Path $keyRoot 'windows-lab.public.pem')
