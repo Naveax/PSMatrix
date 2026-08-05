@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://psmatrix.dev/schemas/compatibility-report.schema.json",
+  "title": "PSMatrix compatibility execution report",
+  "type": "object",
+  "required": ["schema", "kind", "name", "status", "targets", "summary"],
+  "properties": {
+    "schema": {"const": 1},
+    "kind": {"const": "psmatrix.compatibility-report"},
+    "name": {"type": "string"},
+    "status": {"enum": ["PASS", "FAIL", "INCOMPLETE"]},
+    "targets": {"type": "array"},
+    "summary": {"type": "object"}
+  }
+}

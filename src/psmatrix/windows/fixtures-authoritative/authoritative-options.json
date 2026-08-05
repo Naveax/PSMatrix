@@ -1,0 +1,62 @@
+{
+  "timeout_seconds": 240,
+  "parameters": {},
+  "arguments": [],
+  "environment": {},
+  "verification": [
+    {
+      "kind": "registry_value",
+      "path": "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
+      "name": "ProductName",
+      "equals": "REPLACE-EXPECTED-PRODUCT-NAME"
+    },
+    {
+      "kind": "service_status",
+      "name": "EventLog",
+      "equals": "Running"
+    },
+    {
+      "kind": "service_status",
+      "name": "Schedule",
+      "equals": "Running"
+    },
+    {
+      "kind": "command_available",
+      "name": "Get-WmiObject"
+    },
+    {
+      "kind": "com_object_available",
+      "prog_id": "Scripting.Dictionary"
+    },
+    {
+      "kind": "wmi_query_count",
+      "namespace": "root\\cimv2",
+      "class": "Win32_OperatingSystem",
+      "minimum": 1
+    },
+    {
+      "kind": "event_log_source_exists",
+      "source": "EventLog"
+    },
+    {
+      "kind": "scheduled_task_count",
+      "minimum": 1
+    },
+    {
+      "kind": "ntfs_acl_contains",
+      "path": "C:\\Windows",
+      "identity": "SYSTEM",
+      "rights": "FullControl"
+    },
+    {
+      "kind": "certificate_store_count",
+      "path": "Cert:\\LocalMachine\\Root",
+      "minimum": 1
+    },
+    {
+      "kind": "process_running",
+      "name": "services",
+      "minimum": 1
+    }
+  ]
+}

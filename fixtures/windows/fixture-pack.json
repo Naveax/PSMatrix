@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-read-only-fixture-pack",
+  "entrypoint": "certification-capabilities.ps1",
+  "options_template": "certification-options.json",
+  "supported_runtimes": [
+    "windows-powershell-4.0",
+    "windows-powershell-5.0",
+    "windows-powershell-5.1"
+  ],
+  "capabilities": [
+    "registry",
+    "services",
+    "com",
+    "wmi",
+    "event-log"
+  ],
+  "mutates_system": false,
+  "authoritative_platform_required": true
+}

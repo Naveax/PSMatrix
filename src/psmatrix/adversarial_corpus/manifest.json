@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.adversarial-corpus",
+  "safety": "bounded-defensive-testing-only",
+  "cases": [
+    {"id":"static-dynamic-execution","file":"dynamic-execution.ps1","mode":"analysis-only"},
+    {"id":"static-recursive-delete","file":"recursive-delete.ps1","mode":"analysis-only"},
+    {"id":"static-download-execute","file":"download-execute.ps1","mode":"analysis-only","network_target":"example.invalid"},
+    {"id":"runtime-network-block","file":"network-attempt.ps1","mode":"sandbox"},
+    {"id":"runtime-output-flood","file":"output-flood.ps1","mode":"sandbox","bounded":true},
+    {"id":"runtime-timeout","file":"cpu-loop.ps1","mode":"sandbox","bounded":true}
+  ]
+}

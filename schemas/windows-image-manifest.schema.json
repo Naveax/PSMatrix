@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://psmatrix.dev/schemas/windows-image-manifest.schema.json",
+  "title": "PSMatrix Windows image manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "kind", "image_id", "worker_id", "runtime_id", "expected_version", "architecture", "os", "hypervisor", "fixture_policy"],
+  "properties": {
+    "schema": {"const": 1},
+    "kind": {"const": "psmatrix.windows-image-manifest"},
+    "image_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+    "worker_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+    "runtime_id": {"enum": ["windows-powershell-4.0", "windows-powershell-5.0", "windows-powershell-5.1"]},
+    "expected_version": {"enum": ["4.0", "5.0", "5.1"]},
+    "architecture": {"enum": ["x64", "x86", "arm64"]},
+    "os": {
+      "type": "object",
+      "additionalProperties": {"type": "string"},
+      "required": ["product_name", "version", "build"],
+      "properties": {
+        "product_name": {"type": "string", "minLength": 1, "maxLength": 256},
+        "version": {"type": "string", "minLength": 1, "maxLength": 64},
+        "build": {"type": "string", "minLength": 1, "maxLength": 64},
+        "service_pack": {"type": "string", "maxLength": 256},
+        "installation_type": {"type": "string", "maxLength": 128}
+      }
+    },
+    "hypervisor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "vm_id", "snapshot_id"],
+      "properties": {
+        "provider": {"enum": ["hyper-v", "vmware", "virtualbox"]},
+        "vm_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "snapshot_id": {"type": "string", "minLength": 1, "maxLength": 256}
+      }
+    },
+    "fixture_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required_capabilities"],
+      "properties": {
+        "required_capabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "minItems": 5,
+          "items": {"enum": ["registry", "services", "com", "wmi", "event-log", "scheduled-tasks", "firewall", "defender", "ntfs"]}
+        },
+        "fixture_pack_sha256": {"type": "string", "pattern": "^$|^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

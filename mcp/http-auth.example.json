@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "mode": "oauth-introspection",
+  "resource_url": "https://mcp.example/mcp",
+  "authorization_servers": ["https://auth.example"],
+  "required_scopes": ["psmatrix:mcp"],
+  "introspection_url": "https://auth.example/oauth2/introspect",
+  "introspection_client_id_env": "PSMATRIX_OAUTH_CLIENT_ID",
+  "introspection_client_secret_env": "PSMATRIX_OAUTH_CLIENT_SECRET",
+  "audience": "https://mcp.example/mcp",
+  "cache_seconds": 30
+}

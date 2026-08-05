@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "run": {
+    "arguments": ["alpha", "beta"],
+    "parameters": {
+      "Count": 3,
+      "Name": "Naveax"
+    },
+    "environment": {
+      "DEMO_SECRET": "masked-value"
+    },
+    "stdin": {
+      "text": "stdin-payload"
+    },
+    "fixtures": [
+      {
+        "source": "input-fixtures/input.txt",
+        "destination": "fixtures/input.txt"
+      }
+    ],
+    "setup": ["input-setup.ps1"],
+    "teardown": ["input-teardown.ps1"],
+    "lockfile": "input-contract.lock.json"
+  },
+  "expect": {
+    "exit_code": 0,
+    "stderr_empty": true,
+    "stdout_contains": ["input-contract-ok"],
+    "files": [
+      {
+        "path": "input-result.json",
+        "exists": true,
+        "valid_json": true
+      }
+    ],
+    "json": [
+      {"path": "input-result.json", "property": "status", "equals": "ok"},
+      {"path": "input-result.json", "property": "count", "equals": 3},
+      {"path": "input-result.json", "property": "name", "equals": "Naveax"},
+      {"path": "input-result.json", "property": "rest.0", "equals": "alpha"},
+      {"path": "input-result.json", "property": "rest.1", "equals": "beta"},
+      {"path": "input-result.json", "property": "environment", "equals": "masked-value"},
+      {"path": "input-result.json", "property": "stdin", "equals": "stdin-payload"},
+      {"path": "input-result.json", "property": "fixture", "equals": "fixture-payload"},
+      {"path": "input-result.json", "property": "setup", "equals": true}
+    ]
+  }
+}

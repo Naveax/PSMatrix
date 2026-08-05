@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://psmatrix.dev/schemas/windows-certification-campaign-predicate.schema.json",
+  "title": "PSMatrix Windows certification campaign predicate",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema", "campaign_id", "image_id", "worker_id", "runtime_id", "fixture_pack_sha256", "run_count", "runs", "all_authoritative", "all_passed", "duplicate_runs"],
+  "properties": {
+    "schema": {"const": 1},
+    "campaign_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+    "image_id": {"type": "string", "minLength": 1},
+    "worker_id": {"type": "string", "minLength": 1},
+    "runtime_id": {"enum": ["windows-powershell-4.0", "windows-powershell-5.0", "windows-powershell-5.1"]},
+    "fixture_pack_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "run_count": {"type": "integer", "minimum": 2, "maximum": 1000},
+    "all_authoritative": {"const": true},
+    "all_passed": {"const": true},
+    "duplicate_runs": {"const": false},
+    "runs": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 1000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["index", "name", "sha256", "worker_result_sha256", "verification_count"],
+        "properties": {
+          "index": {"type": "integer", "minimum": 1},
+          "name": {"type": "string", "pattern": "^[^/\\\\]+$"},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "certified_at": {"type": ["string", "null"]},
+          "worker_result_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "verification_count": {"type": "integer", "minimum": 1}
+        }
+      }
+    }
+  }
+}

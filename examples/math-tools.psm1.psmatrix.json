@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "expect": {
+    "exit_code": 0,
+    "stderr_empty": true,
+    "module": {
+      "name": "math-tools",
+      "exported_commands": ["Add-Numbers"],
+      "commands": [
+        {
+          "name": "Add-Numbers",
+          "parameters": {"Left": 2, "Right": 3},
+          "expect": {"status": "completed", "output_count": 1, "output_equals": 5}
+        },
+        {
+          "name": "Add-Numbers",
+          "parameters": {"Left": -4, "Right": 1},
+          "expect": {"status": "completed", "output_count": 1, "output_equals": -3}
+        }
+      ]
+    },
+    "streams": {
+      "error": 0,
+      "warning": 0
+    }
+  }
+}

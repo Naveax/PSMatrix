@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://psmatrix.dev/schemas/windows-authoritative-matrix.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "kind", "matrix_id", "iterations", "targets"],
+  "properties": {
+    "schema": {"const": 1},
+    "kind": {"const": "psmatrix.windows-authoritative-matrix"},
+    "matrix_id": {"type": "string"},
+    "iterations": {"type": "integer", "minimum": 2, "maximum": 100},
+    "targets": {
+      "type": "array", "minItems": 3, "maxItems": 3,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["runtime_id", "endpoint", "image_manifest", "fixture_root"],
+        "properties": {
+          "runtime_id": {"enum": ["windows-powershell-4.0", "windows-powershell-5.0", "windows-powershell-5.1"]},
+          "endpoint": {"type": "string"}, "image_manifest": {"type": "string"}, "fixture_root": {"type": "string"}
+        }
+      }
+    }
+  }
+}

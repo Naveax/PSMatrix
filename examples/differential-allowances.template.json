@@ -1,0 +1,6 @@
+{
+  "kind": "psmatrix.differential-allowances",
+  "name": "full-matrix-accepted-differences",
+  "rules": [],
+  "schema": 1
+}

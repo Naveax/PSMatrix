@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "expect": {
+    "exit_code": 0,
+    "stderr_empty": true,
+    "files": [
+      {
+        "path": "differential-result.json",
+        "exists": true,
+        "valid_json": true
+      }
+    ],
+    "json": [
+      {
+        "path": "differential-result.json",
+        "property": "status",
+        "equals": "ok"
+      },
+      {
+        "path": "differential-result.json",
+        "property": "total",
+        "equals": 30
+      }
+    ]
+  }
+}

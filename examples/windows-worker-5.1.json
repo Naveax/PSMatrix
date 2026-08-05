@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "worker_id": "windows-powershell-5.1-a",
+  "host": "0.0.0.0",
+  "port": 9443,
+  "tls": {
+    "certificate": "../secrets/worker-tls.pem",
+    "private_key": "../secrets/worker-tls-key.pem",
+    "client_ca": "../secrets/controller-ca.pem"
+  },
+  "signing": {
+    "private_key": "../secrets/worker-ed25519-private.pem",
+    "public_key": "../secrets/worker-ed25519-public.pem"
+  },
+  "controller": {
+    "identity": "controller-main",
+    "public_key": "../secrets/controller-ed25519-public.pem",
+    "certificate_sha256": "REPLACE_WITH_64_HEX_SHA256_OF_CONTROLLER_TLS_CERTIFICATE"
+  },
+  "workspace_root": "../state/windows-powershell-5.1-a",
+  "runtime": {
+    "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    "version": "5.1"
+  },
+  "reset": {
+    "required": true,
+    "before": [
+      "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-File",
+      "C:\\PSMatrix\\Reset-Worker.ps1",
+      "-Phase",
+      "Before"
+    ],
+    "after": [
+      "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-File",
+      "C:\\PSMatrix\\Reset-Worker.ps1",
+      "-Phase",
+      "After"
+    ]
+  },
+  "max_request_bytes": 100663296
+}

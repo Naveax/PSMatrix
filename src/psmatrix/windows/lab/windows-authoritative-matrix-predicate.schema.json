@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://psmatrix.dev/schemas/windows-authoritative-matrix-predicate.schema.json",
+  "type": "object",
+  "required": ["schema", "matrix_id", "required_runtimes", "campaigns", "authoritative"],
+  "properties": {
+    "schema": {"const": 1},
+    "matrix_id": {"type": "string"},
+    "authoritative": {"const": true},
+    "required_runtimes": {
+      "type": "array", "minItems": 3, "maxItems": 3, "uniqueItems": true,
+      "items": {"enum": ["windows-powershell-4.0", "windows-powershell-5.0", "windows-powershell-5.1"]}
+    },
+    "campaigns": {
+      "type": "array", "minItems": 3, "maxItems": 3,
+      "items": {
+        "type": "object",
+        "required": ["runtime_id", "valid", "run_count", "campaign_sha256", "image_manifest_sha256"],
+        "properties": {
+          "valid": {"const": true},
+          "run_count": {"type": "integer", "minimum": 2},
+          "campaign_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "image_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    }
+  }
+}

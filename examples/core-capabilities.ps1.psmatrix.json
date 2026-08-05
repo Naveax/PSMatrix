@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "expect": {
+    "exit_code": 0,
+    "stderr_empty": true,
+    "stdout_contains": ["PSMatrix core capability probe passed"],
+    "files": [
+      {
+        "path": "core-result.json",
+        "exists": true,
+        "valid_json": true
+      }
+    ],
+    "json": [
+      {"path": "core-result.json", "property": "status", "equals": "ok"},
+      {"path": "core-result.json", "property": "count", "equals": 8},
+      {"path": "core-result.json", "property": "sumSquares", "equals": 204},
+      {"path": "core-result.json", "property": "evenCount", "equals": 4},
+      {"path": "core-result.json", "property": "oddCount", "equals": 4},
+      {"path": "core-result.json", "property": "recordScore", "equals": 100},
+      {"path": "core-result.json", "property": "errorCaught", "equals": true}
+    ]
+  }
+}

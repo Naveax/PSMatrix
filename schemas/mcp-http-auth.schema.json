@@ -1,0 +1,62 @@
+{
+  "$id": "https://psmatrix.dev/schemas/mcp-http-auth.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "audience": {
+      "type": "string"
+    },
+    "authorization_servers": {
+      "items": {
+        "pattern": "^https://",
+        "type": "string"
+      },
+      "maxItems": 16,
+      "type": "array"
+    },
+    "cache_seconds": {
+      "maximum": 300,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "introspection_client_id_env": {
+      "type": "string"
+    },
+    "introspection_client_secret_env": {
+      "type": "string"
+    },
+    "introspection_url": {
+      "pattern": "^https://",
+      "type": "string"
+    },
+    "mode": {
+      "enum": [
+        "none-localhost",
+        "mtls",
+        "oauth-introspection",
+        "hybrid"
+      ]
+    },
+    "required_scopes": {
+      "items": {
+        "maxLength": 128,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 64,
+      "type": "array"
+    },
+    "resource_url": {
+      "type": "string"
+    },
+    "schema": {
+      "const": 1
+    }
+  },
+  "required": [
+    "schema",
+    "mode"
+  ],
+  "title": "PSMatrix Streamable HTTP authorization config",
+  "type": "object"
+}

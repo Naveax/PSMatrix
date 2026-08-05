@@ -1,0 +1,45 @@
+{
+  "$id": "https://psmatrix.dev/schemas/http-session.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "bytes": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "createdAt": {
+      "type": "string"
+    },
+    "delivery": {
+      "type": "object"
+    },
+    "expiresAt": {
+      "type": "string"
+    },
+    "files": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "limits": {
+      "type": "object"
+    },
+    "schema": {
+      "const": 1
+    },
+    "sessionId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "sessionId",
+    "createdAt",
+    "expiresAt",
+    "files",
+    "bytes",
+    "limits",
+    "delivery"
+  ],
+  "title": "PSMatrix bounded HTTP project session status",
+  "type": "object"
+}

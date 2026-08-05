@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "psmatrix": {
+      "command": "python3",
+      "args": [
+        "-m",
+        "psmatrix",
+        "--home",
+        "/absolute/path/to/.psmatrix-home",
+        "mcp",
+        "--root",
+        "/absolute/path/to/project"
+      ]
+    }
+  }
+}

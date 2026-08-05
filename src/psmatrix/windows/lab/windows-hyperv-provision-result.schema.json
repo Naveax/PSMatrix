@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://psmatrix.dev/schemas/windows-hyperv-provision-result.schema.json",
+  "type": "object",
+  "required": ["schema", "kind", "status", "host_id", "images"],
+  "properties": {
+    "schema": {"const": 1},
+    "kind": {"const": "psmatrix.windows-hyperv-provision-result"},
+    "status": {"const": "PASS"},
+    "host_id": {"type": "string"},
+    "images": {
+      "type": "array", "minItems": 3, "maxItems": 3,
+      "items": {
+        "type": "object",
+        "required": ["runtime_id", "image_id", "worker_id", "status", "powershell_version", "checkpoint_created", "artifact_hashes_verified"],
+        "properties": {
+          "runtime_id": {"enum": ["windows-powershell-4.0", "windows-powershell-5.0", "windows-powershell-5.1"]},
+          "status": {"const": "PASS"},
+          "checkpoint_created": {"const": true},
+          "artifact_hashes_verified": {"const": true}
+        }
+      }
+    }
+  }
+}

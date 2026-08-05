@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-authoritative-matrix",
+  "matrix_id": "windows-historical-authoritative-01",
+  "iterations": 3,
+  "targets": [
+    {
+      "runtime_id": "windows-powershell-4.0",
+      "endpoint": "windows-endpoint-4.0.json",
+      "image_manifest": "windows-image-4.0.json",
+      "fixture_root": "../fixtures/windows-authoritative"
+    },
+    {
+      "runtime_id": "windows-powershell-5.0",
+      "endpoint": "windows-endpoint-5.0.json",
+      "image_manifest": "windows-image-5.0.json",
+      "fixture_root": "../fixtures/windows-authoritative"
+    },
+    {
+      "runtime_id": "windows-powershell-5.1",
+      "endpoint": "windows-endpoint-5.1.json",
+      "image_manifest": "windows-image-5.1.json",
+      "fixture_root": "../fixtures/windows-authoritative"
+    }
+  ]
+}

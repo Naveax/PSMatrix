@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://psmatrix.dev/schemas/ga-evaluation.schema.json",
+  "title": "PSMatrix Production GA evaluation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "kind", "version", "evaluated_at", "policy_sha256", "status", "gates", "summary"],
+  "properties": {
+    "schema": {"const": 1},
+    "kind": {"const": "psmatrix.production-ga-evaluation"},
+    "version": {"const": "2.0.0"},
+    "evaluated_at": {"type": "string", "format": "date-time"},
+    "policy_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "status": {"enum": ["PASS", "FAIL", "INCOMPLETE"]},
+    "gates": {
+      "type": "array",
+      "minItems": 11,
+      "maxItems": 11,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["gate", "status", "message", "evidence"],
+        "properties": {
+          "gate": {"type": "string"},
+          "status": {"enum": ["PASS", "FAIL", "INCOMPLETE"]},
+          "message": {"type": "string"},
+          "evidence": {"type": "object"}
+        }
+      }
+    },
+    "summary": {"type": "object"}
+  }
+}

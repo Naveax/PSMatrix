@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://psmatrix.dev/schemas/ga-proof-result.schema.json",
+  "title": "PSMatrix normalized external GA proof result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "kind", "proof_type", "status", "observed_at", "assertions", "artifacts"],
+  "properties": {
+    "schema": {"const": 1},
+    "kind": {"const": "psmatrix.ga-proof-result"},
+    "proof_type": {"enum": ["public-oauth", "public-mtls", "external-otlp", "key-rotation", "security-review", "vulnerability-scan"]},
+    "status": {"const": "PASS"},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "assertions": {"type": "object"},
+    "artifacts": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "sha256"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 255},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    }
+  }
+}

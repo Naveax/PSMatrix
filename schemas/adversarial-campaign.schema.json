@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://psmatrix.dev/schemas/adversarial-campaign.schema.json",
+  "title": "PSMatrix adversarial campaign report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "kind", "started_at", "finished_at", "status", "strict", "capabilities", "corpus", "cases", "summary"],
+  "properties": {
+    "schema": {"const": 1},
+    "kind": {"const": "psmatrix.adversarial-campaign"},
+    "started_at": {"type": "string"},
+    "finished_at": {"type": "string"},
+    "status": {"enum": ["PASS", "PASS_WITH_GAPS", "FAIL", "FAIL_INCONCLUSIVE"]},
+    "strict": {"type": "boolean"},
+    "capabilities": {"type": "object"},
+    "corpus": {
+      "type": "object",
+      "required": ["schema", "kind", "case_count", "sha256", "files"],
+      "properties": {
+        "schema": {"const": 1},
+        "kind": {"const": "psmatrix.adversarial-corpus"},
+        "case_count": {"type": "integer", "minimum": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "files": {"type": "array"}
+      }
+    },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["case_id", "category", "status", "expected", "observed", "evidence", "message"],
+        "properties": {
+          "case_id": {"type": "string", "minLength": 1, "maxLength": 128},
+          "category": {"type": "string", "minLength": 1, "maxLength": 64},
+          "status": {"enum": ["PASS", "FAIL", "INCONCLUSIVE"]},
+          "expected": {"type": "string"},
+          "observed": {"type": "string"},
+          "evidence": {"type": "object"},
+          "message": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["PASS", "FAIL", "INCONCLUSIVE", "total"],
+      "properties": {
+        "PASS": {"type": "integer", "minimum": 0},
+        "FAIL": {"type": "integer", "minimum": 0},
+        "INCONCLUSIVE": {"type": "integer", "minimum": 0},
+        "total": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

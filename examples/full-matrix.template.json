@@ -1,0 +1,227 @@
+{
+  "differential": {
+    "allow": [],
+    "allowance_file": "psmatrix.differences.json",
+    "baseline_runtime": "powershell-7.6.4-linux-x64",
+    "mode": "report"
+  },
+  "kind": "psmatrix.full-matrix-spec",
+  "name": "full",
+  "requirements": {
+    "require_complete": true
+  },
+  "schema": 1,
+  "targets": [
+    {
+      "arch": "x64",
+      "backend": "auto",
+      "container_engine": "auto",
+      "id": "linux-6.0.5-x64-glibc",
+      "kind": "local",
+      "libc": "glibc",
+      "required": true,
+      "version": "6.0.5"
+    },
+    {
+      "arch": "x64",
+      "backend": "auto",
+      "container_engine": "auto",
+      "id": "linux-6.1.6-x64-glibc",
+      "kind": "local",
+      "libc": "glibc",
+      "required": true,
+      "version": "6.1.6"
+    },
+    {
+      "arch": "x64",
+      "backend": "auto",
+      "container_engine": "auto",
+      "id": "linux-6.2.7-x64-glibc",
+      "kind": "local",
+      "libc": "glibc",
+      "required": true,
+      "version": "6.2.7"
+    },
+    {
+      "arch": "x64",
+      "backend": "auto",
+      "container_engine": "auto",
+      "id": "linux-7.0.13-x64-glibc",
+      "kind": "local",
+      "libc": "glibc",
+      "required": true,
+      "version": "7.0.13"
+    },
+    {
+      "arch": "x64",
+      "backend": "auto",
+      "container_engine": "auto",
+      "id": "linux-7.1.7-x64-glibc",
+      "kind": "local",
+      "libc": "glibc",
+      "required": true,
+      "version": "7.1.7"
+    },
+    {
+      "arch": "x64",
+      "backend": "auto",
+      "container_engine": "auto",
+      "id": "linux-7.2.24-x64-glibc",
+      "kind": "local",
+      "libc": "glibc",
+      "required": true,
+      "version": "7.2.24"
+    },
+    {
+      "arch": "x64",
+      "backend": "auto",
+      "container_engine": "auto",
+      "id": "linux-7.3.12-x64-glibc",
+      "kind": "local",
+      "libc": "glibc",
+      "required": true,
+      "version": "7.3.12"
+    },
+    {
+      "arch": "x64",
+      "backend": "auto",
+      "container_engine": "auto",
+      "id": "linux-7.4.18-x64-glibc",
+      "kind": "local",
+      "libc": "glibc",
+      "required": true,
+      "version": "7.4.18"
+    },
+    {
+      "arch": "x64",
+      "backend": "auto",
+      "container_engine": "auto",
+      "id": "linux-7.5.7-x64-glibc",
+      "kind": "local",
+      "libc": "glibc",
+      "required": true,
+      "version": "7.5.7"
+    },
+    {
+      "arch": "x64",
+      "backend": "auto",
+      "container_engine": "auto",
+      "id": "linux-7.6.4-x64-glibc",
+      "kind": "local",
+      "libc": "glibc",
+      "required": true,
+      "version": "7.6.4"
+    },
+    {
+      "arch": "arm64",
+      "backend": "auto",
+      "container_engine": "auto",
+      "id": "linux-7.6.4-arm64-glibc",
+      "kind": "local",
+      "libc": "glibc",
+      "required": false,
+      "version": "7.6.4"
+    },
+    {
+      "arch": "x64",
+      "backend": "auto",
+      "container_engine": "auto",
+      "id": "linux-7.6.4-x64-musl",
+      "kind": "local",
+      "libc": "musl",
+      "required": false,
+      "version": "7.6.4"
+    },
+    {
+      "endpoint": "endpoints/powershell-6.0.5-windows-x64.json",
+      "id": "windows-core-6.0.5-x64",
+      "kind": "remote",
+      "required": true,
+      "runtime_id": "powershell-6.0.5-windows-x64"
+    },
+    {
+      "endpoint": "endpoints/powershell-6.1.6-windows-x64.json",
+      "id": "windows-core-6.1.6-x64",
+      "kind": "remote",
+      "required": true,
+      "runtime_id": "powershell-6.1.6-windows-x64"
+    },
+    {
+      "endpoint": "endpoints/powershell-6.2.7-windows-x64.json",
+      "id": "windows-core-6.2.7-x64",
+      "kind": "remote",
+      "required": true,
+      "runtime_id": "powershell-6.2.7-windows-x64"
+    },
+    {
+      "endpoint": "endpoints/powershell-7.0.13-windows-x64.json",
+      "id": "windows-core-7.0.13-x64",
+      "kind": "remote",
+      "required": true,
+      "runtime_id": "powershell-7.0.13-windows-x64"
+    },
+    {
+      "endpoint": "endpoints/powershell-7.1.7-windows-x64.json",
+      "id": "windows-core-7.1.7-x64",
+      "kind": "remote",
+      "required": true,
+      "runtime_id": "powershell-7.1.7-windows-x64"
+    },
+    {
+      "endpoint": "endpoints/powershell-7.2.24-windows-x64.json",
+      "id": "windows-core-7.2.24-x64",
+      "kind": "remote",
+      "required": true,
+      "runtime_id": "powershell-7.2.24-windows-x64"
+    },
+    {
+      "endpoint": "endpoints/powershell-7.3.12-windows-x64.json",
+      "id": "windows-core-7.3.12-x64",
+      "kind": "remote",
+      "required": true,
+      "runtime_id": "powershell-7.3.12-windows-x64"
+    },
+    {
+      "endpoint": "endpoints/powershell-7.4.18-windows-x64.json",
+      "id": "windows-core-7.4.18-x64",
+      "kind": "remote",
+      "required": true,
+      "runtime_id": "powershell-7.4.18-windows-x64"
+    },
+    {
+      "endpoint": "endpoints/powershell-7.5.7-windows-x64.json",
+      "id": "windows-core-7.5.7-x64",
+      "kind": "remote",
+      "required": true,
+      "runtime_id": "powershell-7.5.7-windows-x64"
+    },
+    {
+      "endpoint": "endpoints/powershell-7.6.4-windows-x64.json",
+      "id": "windows-core-7.6.4-x64",
+      "kind": "remote",
+      "required": true,
+      "runtime_id": "powershell-7.6.4-windows-x64"
+    },
+    {
+      "endpoint": "endpoints/windows-powershell-4.0.json",
+      "id": "windows-powershell-4.0-x64",
+      "kind": "remote",
+      "required": true,
+      "runtime_id": "windows-powershell-4.0"
+    },
+    {
+      "endpoint": "endpoints/windows-powershell-5.0.json",
+      "id": "windows-powershell-5.0-x64",
+      "kind": "remote",
+      "required": true,
+      "runtime_id": "windows-powershell-5.0"
+    },
+    {
+      "endpoint": "endpoints/windows-powershell-5.1.json",
+      "id": "windows-powershell-5.1-x64",
+      "kind": "remote",
+      "required": true,
+      "runtime_id": "windows-powershell-5.1"
+    }
+  ]
+}

@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://psmatrix.local/schemas/repair-plan.schema.json",
+  "title": "PSMatrix Repair Plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "kind", "plan_id", "created_at", "report_sha256", "root", "sources", "baseline_targets", "validation_argv_sha256", "validation_argv_redacted", "diagnostic_summary", "constraints"],
+  "properties": {
+    "schema": {"const": 1},
+    "kind": {"const": "psmatrix.repair-plan"},
+    "plan_id": {"type": "string", "pattern": "^rpl_[0-9a-f]{24}$"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "report_sha256": {"$ref": "#/$defs/sha256"},
+    "root": {"type": "string", "minLength": 1},
+    "validation_argv_sha256": {"$ref": "#/$defs/sha256"},
+    "validation_argv_redacted": {"type": "array", "maxItems": 256, "items": {"type": "string", "maxLength": 16384}},
+    "sources": {"type": "array", "maxItems": 1024, "items": {"$ref": "#/$defs/source"}},
+    "baseline_targets": {"type": "array", "maxItems": 32768, "items": {"$ref": "#/$defs/target"}},
+    "diagnostic_summary": {"$ref": "#/$defs/diagnosticSummary"},
+    "constraints": {
+      "type": "object", "additionalProperties": false,
+      "required": ["existing_files_only", "symlinks_allowed", "maximum_files", "maximum_edit_bytes", "required_validation_status", "rollback_on_failure"],
+      "properties": {
+        "existing_files_only": {"const": true},
+        "symlinks_allowed": {"const": false},
+        "maximum_files": {"type": "integer", "minimum": 1, "maximum": 32},
+        "maximum_edit_bytes": {"type": "integer", "minimum": 1, "maximum": 2097152},
+        "required_validation_status": {"const": "PASS"},
+        "rollback_on_failure": {"const": true}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "target": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "runtime_id", "runtime_version", "status"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "runtime_id": {"type": "string"},
+        "runtime_version": {"type": "string"},
+        "status": {"type": "string"}
+      }
+    },
+    "diagnostic": {
+      "type": "object", "additionalProperties": false,
+      "required": ["code", "stage", "severity", "message", "runtime_id", "source", "repairability"],
+      "properties": {
+        "code": {"type": "string", "minLength": 1},
+        "stage": {"type": "string"},
+        "severity": {"type": "string", "enum": ["error", "warning", "information"]},
+        "message": {"type": "string"},
+        "runtime_id": {"type": "string"},
+        "source": {"type": "string"},
+        "line": {"type": ["integer", "null"], "minimum": 1},
+        "column": {"type": ["integer", "null"], "minimum": 1},
+        "repairability": {"type": "string"},
+        "evidence": {"type": "object"}
+      }
+    },
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "size", "diagnostic_codes", "diagnostics"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "size": {"type": "integer", "minimum": 0},
+        "diagnostic_codes": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "diagnostics": {"type": "array", "items": {"$ref": "#/$defs/diagnostic"}}
+      }
+    },
+    "diagnosticSummary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["count", "repairable_count", "by_code", "by_stage", "by_severity"],
+      "properties": {
+        "count": {"type": "integer", "minimum": 0},
+        "repairable_count": {"type": "integer", "minimum": 0},
+        "by_code": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "by_stage": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "by_severity": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}
+      }
+    }
+  }
+}

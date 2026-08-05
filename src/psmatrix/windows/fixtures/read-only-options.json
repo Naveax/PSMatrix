@@ -1,0 +1,14 @@
+{
+  "timeout_seconds": 120,
+  "parameters": {},
+  "arguments": [],
+  "environment": {},
+  "verification": [
+    {"kind": "registry_value", "path": "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", "name": "ProductName", "equals": "REPLACE-EXPECTED-PRODUCT-NAME"},
+    {"kind": "service_status", "name": "EventLog", "equals": "Running"},
+    {"kind": "command_available", "name": "Get-WmiObject"},
+    {"kind": "com_object_available", "prog_id": "Scripting.Dictionary"},
+    {"kind": "wmi_query_count", "namespace": "root\\cimv2", "class": "Win32_OperatingSystem", "minimum": 1},
+    {"kind": "event_log_source_exists", "source": "EventLog"}
+  ]
+}

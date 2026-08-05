@@ -1,0 +1,75 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-lab-media",
+  "hyperv_host": {
+    "host_id": "hyperv-lab-01",
+    "lab_root": "D:\\PSMatrixLab"
+  },
+  "defaults": {
+    "switch_name": "PSMatrix-Lab",
+    "checkpoint_name": "psmatrix-clean"
+  },
+  "images": [
+    {
+      "runtime_id": "windows-powershell-4.0",
+      "image_id": "psmatrix-winps40",
+      "worker_id": "windows-powershell-4.0-a",
+      "computer_name": "PSMX-PS40",
+      "architecture": "x64",
+      "generation": 2,
+      "processors": 2,
+      "memory_mb": 4096,
+      "output_vhdx": "D:\\PSMatrixLab\\Images\\winps40.vhdx",
+      "source_iso": {"path": "D:\\Media\\WindowsServer2012R2.iso", "sha256": "REPLACE_64_HEX"},
+      "edition_index": 4,
+      "worker_package": {"path": "D:\\Media\\psmatrix-1.4.0-windows-workers.zip", "sha256": "REPLACE_64_HEX"},
+      "python_installer": {"path": "D:\\Media\\python-3.11.x-amd64.exe", "sha256": "REPLACE_64_HEX"},
+      "credential_bundle": {"path": "D:\\Secrets\\winps40-credentials.zip", "sha256": "REPLACE_64_HEX"},
+      "signing_bundle": {"path": "D:\\Secrets\\winps40-signing.zip", "sha256": "REPLACE_64_HEX"},
+      "expected_os": {"product_name": "Windows Server 2012 R2 Standard", "version": "6.3.9600", "build": "9600"},
+      "admin_password_env": "PSMATRIX_LAB_PASSWORD_40",
+      "worker_port": 9440
+    },
+    {
+      "runtime_id": "windows-powershell-5.0",
+      "image_id": "psmatrix-winps50",
+      "worker_id": "windows-powershell-5.0-a",
+      "computer_name": "PSMX-PS50",
+      "architecture": "x64",
+      "generation": 2,
+      "processors": 2,
+      "memory_mb": 4096,
+      "output_vhdx": "D:\\PSMatrixLab\\Images\\winps50.vhdx",
+      "source_iso": {"path": "D:\\Media\\WindowsServer2012R2.iso", "sha256": "REPLACE_64_HEX"},
+      "edition_index": 4,
+      "wmf_package": {"path": "D:\\Media\\WMF5.0-exact-offline-package.msu", "sha256": "REPLACE_64_HEX"},
+      "worker_package": {"path": "D:\\Media\\psmatrix-1.4.0-windows-workers.zip", "sha256": "REPLACE_64_HEX"},
+      "python_installer": {"path": "D:\\Media\\python-3.11.x-amd64.exe", "sha256": "REPLACE_64_HEX"},
+      "credential_bundle": {"path": "D:\\Secrets\\winps50-credentials.zip", "sha256": "REPLACE_64_HEX"},
+      "signing_bundle": {"path": "D:\\Secrets\\winps50-signing.zip", "sha256": "REPLACE_64_HEX"},
+      "expected_os": {"product_name": "Windows Server 2012 R2 Standard", "version": "6.3.9600", "build": "9600"},
+      "admin_password_env": "PSMATRIX_LAB_PASSWORD_50",
+      "worker_port": 9450
+    },
+    {
+      "runtime_id": "windows-powershell-5.1",
+      "image_id": "psmatrix-winps51",
+      "worker_id": "windows-powershell-5.1-a",
+      "computer_name": "PSMX-PS51",
+      "architecture": "x64",
+      "generation": 2,
+      "processors": 2,
+      "memory_mb": 4096,
+      "output_vhdx": "D:\\PSMatrixLab\\Images\\winps51.vhdx",
+      "source_iso": {"path": "D:\\Media\\WindowsServer2016.iso", "sha256": "REPLACE_64_HEX"},
+      "edition_index": 2,
+      "worker_package": {"path": "D:\\Media\\psmatrix-1.4.0-windows-workers.zip", "sha256": "REPLACE_64_HEX"},
+      "python_installer": {"path": "D:\\Media\\python-3.11.x-amd64.exe", "sha256": "REPLACE_64_HEX"},
+      "credential_bundle": {"path": "D:\\Secrets\\winps51-credentials.zip", "sha256": "REPLACE_64_HEX"},
+      "signing_bundle": {"path": "D:\\Secrets\\winps51-signing.zip", "sha256": "REPLACE_64_HEX"},
+      "expected_os": {"product_name": "Windows Server 2016 Standard", "version": "10.0.14393", "build": "14393"},
+      "admin_password_env": "PSMATRIX_LAB_PASSWORD_51",
+      "worker_port": 9451
+    }
+  ]
+}

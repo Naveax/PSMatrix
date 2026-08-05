@@ -1,0 +1,20 @@
+{
+  "arguments": [],
+  "parameters": {
+    "Mode": "Validate"
+  },
+  "environment": {
+    "PSMATRIX_TEST_MODE": "1"
+  },
+  "timeout_seconds": 300,
+  "verification": [
+    {
+      "kind": "command_available",
+      "name": "Get-Service"
+    },
+    {
+      "kind": "module_available",
+      "name": "Microsoft.PowerShell.Management"
+    }
+  ]
+}

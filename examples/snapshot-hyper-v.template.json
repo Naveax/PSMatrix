@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "adapter_id": "hyper-v-controller-a",
+  "provider": "hyper-v",
+  "worker_id": "windows-powershell-5.1-a",
+  "vm_id": "PSMatrix-WinPS51",
+  "snapshot_id": "PSMatrix-Clean",
+  "cwd": ".",
+  "restore_command": [
+    "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    "-File", "C:\\PSMatrix\\snapshot\\hyper-v-restore.ps1",
+    "-VMName", "{vm_id}", "-SnapshotName", "{snapshot_id}", "-TimeoutSeconds", "300"
+  ],
+  "measure_command": [
+    "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    "-File", "C:\\PSMatrix\\snapshot\\hyper-v-measure.ps1",
+    "-VMName", "{vm_id}", "-SnapshotName", "{snapshot_id}", "-Phase", "{phase}"
+  ],
+  "expected_after": {
+    "provider": "hyper-v",
+    "vm_name": "{vm_id}",
+    "snapshot_name": "{snapshot_id}",
+    "state": "Running"
+  },
+  "timeout_seconds": 600
+}

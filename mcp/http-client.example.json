@@ -1,0 +1,8 @@
+{
+  "name": "PSMatrix",
+  "transport": "streamable-http",
+  "url": "https://mcp.example/mcp",
+  "authorization": "oauth",
+  "protected_resource_metadata": "https://mcp.example/.well-known/oauth-protected-resource",
+  "required_scope": "psmatrix:mcp"
+}

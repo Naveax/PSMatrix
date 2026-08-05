@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://psmatrix.local/schemas/delivery-gate.schema.json",
+  "title": "PSMatrix Delivery Gate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "kind", "created_at", "tool_version", "report_status", "report_sha256", "transaction_id", "root", "sources", "runtime_ids", "signature"],
+  "properties": {
+    "schema": {"const": 1},
+    "kind": {"const": "psmatrix.delivery-gate"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "tool_version": {"type": ["string", "null"]},
+    "report_status": {"const": "PASS"},
+    "report_sha256": {"$ref": "#/$defs/sha256"},
+    "transaction_id": {"type": ["string", "null"]},
+    "root": {"type": "string", "minLength": 1},
+    "sources": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/source"}},
+    "runtime_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "signature": {
+      "type": "object", "additionalProperties": false,
+      "required": ["algorithm", "value"],
+      "properties": {
+        "algorithm": {"const": "HMAC-SHA256"},
+        "value": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "size"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "size": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

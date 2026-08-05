@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://psmatrix.dev/schemas/operations-snapshot.schema.json",
+  "title": "PSMatrix operations snapshot",
+  "type": "object",
+  "required": ["schema", "kind", "generated_at", "version", "summary", "alerts", "runtimes", "fleet", "queue", "sessions", "validation_jobs", "mirror", "cache", "certificates", "reports"],
+  "properties": {
+    "schema": {"const": 1},
+    "kind": {"const": "psmatrix.operations-snapshot"},
+    "generated_at": {"type": "string"},
+    "version": {"type": "string"},
+    "summary": {"type": "object"},
+    "alerts": {"type": "array", "maxItems": 256},
+    "runtimes": {"type": "object"},
+    "fleet": {"type": "object"},
+    "queue": {"type": "object"},
+    "sessions": {"type": "object"},
+    "validation_jobs": {"type": "object"},
+    "mirror": {"type": "object"},
+    "cache": {"type": "object"},
+    "certificates": {"type": "object"},
+    "reports": {"type": "object"},
+    "host": {"type": "object"},
+    "process_metrics": {"type": "array"}
+  },
+  "additionalProperties": true
+}

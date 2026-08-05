@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://psmatrix.dev/schemas/windows-certification-predicate.schema.json",
+  "title": "PSMatrix authoritative Windows image certification predicate",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema", "certified", "image_id", "worker_id", "runtime_id", "expected_version", "architecture", "fixture_pack_sha256", "worker_result_sha256", "verification_count", "image_identity", "reset", "authoritative"],
+  "properties": {
+    "schema": {"const": 1},
+    "certified": {"const": true},
+    "authoritative": {"const": true},
+    "image_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "worker_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "runtime_id": {"enum": ["windows-powershell-4.0", "windows-powershell-5.0", "windows-powershell-5.1"]},
+    "expected_version": {"enum": ["4.0", "5.0", "5.1"]},
+    "architecture": {"enum": ["x64", "x86", "arm64"]},
+    "fixture_pack_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "worker_health_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "worker_result_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "verification_count": {"type": "integer", "minimum": 1},
+    "image_identity": {"type": "object"},
+    "reset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "before_passed", "after_passed"],
+      "properties": {
+        "required": {"const": true},
+        "before_passed": {"const": true},
+        "after_passed": {"const": true}
+      }
+    }
+  }
+}

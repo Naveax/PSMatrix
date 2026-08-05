@@ -1,0 +1,780 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  core-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Run test modules in isolated processes
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in tests/test_*.py; do
+            module="tests.$(basename "$file" .py)"
+            echo "::group::$module"
+            if [[ "$file" == "tests/test_oci.py" ]]; then
+              for test_name in \
+                test_image_reference_validation \
+                test_install_pins_digest_and_probes_exact_version \
+                test_mutable_local_tag_requires_explicit_trust \
+                test_version_mismatch_is_rejected \
+                test_cli_executes_registered_oci_runtime; do
+                PYTHONPATH=src timeout 180s python -m unittest \
+                  "tests.test_oci.OciRuntimeTests.${test_name}" -v
+              done
+            else
+              PYTHONPATH=src timeout 180s python -m unittest "$module" -v
+            fi
+            echo "::endgroup::"
+          done
+      - run: python -m compileall -q src
+      - run: ./psmatrix doctor
+      - name: Require canonical complete-matrix contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ci-full
+          ./psmatrix full init --output .ci-full/psmatrix.full.json
+          set +e
+          ./psmatrix --home .ci-home full plan \
+            --spec .ci-full/psmatrix.full.json \
+            --output .ci-full/plan.json
+          code=$?
+          set -e
+          test "$code" -eq 1
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          spec = json.loads(Path('.ci-full/psmatrix.full.json').read_text())
+          plan = json.loads(Path('.ci-full/plan.json').read_text())
+          assert len(spec['targets']) == 25
+          assert sum(item['kind'] == 'remote' for item in spec['targets']) == 13
+          assert plan['status'] == 'INCOMPLETE'
+          assert plan['coverage']['required'] == 23
+          assert plan['coverage']['missing_required']
+          PY
+
+  real-powershell:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ["7.4.18", "7.5.7", "7.6.4"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: ./psmatrix --home .ci-home runtime install ${{ matrix.version }}
+      - run: ./psmatrix --home .ci-home runtime verify ${{ matrix.version }}
+      - run: >-
+          ./psmatrix --home .ci-home test
+          examples/hello.ps1 examples/core-capabilities.ps1
+          examples/stream-contract.ps1 examples/math-tools.psm1
+          examples/math-tools.psd1
+          --runtime ${{ matrix.version }}
+          --psscriptanalyzer off
+          --pester off
+          --coverage off
+          --report-json report-${{ matrix.version }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: psmatrix-report-${{ matrix.version }}
+          path: report-${{ matrix.version }}.json
+
+  official-analysis-and-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: ./psmatrix --home .ci-home runtime install 7.6.4
+      - name: Download official PowerShell Gallery packages
+        run: |
+          curl --fail --location --retry 4 \
+            https://www.powershellgallery.com/api/v2/package/PSScriptAnalyzer/1.25.0 \
+            --output PSScriptAnalyzer.1.25.0.nupkg
+          curl --fail --location --retry 4 \
+            https://www.powershellgallery.com/api/v2/package/Pester/6.0.1 \
+            --output Pester.6.0.1.nupkg
+      - name: Import CI-fetched modules
+        run: |
+          ./psmatrix --home .ci-home module install-nupkg \
+            PSScriptAnalyzer.1.25.0.nupkg \
+            --name PSScriptAnalyzer --module-version 1.25.0 --trust-local
+          ./psmatrix --home .ci-home module install-nupkg \
+            Pester.6.0.1.nupkg \
+            --name Pester --module-version 6.0.1 --trust-local
+      - name: Run official analyzer and Pester
+        run: >-
+          ./psmatrix --home .ci-home test examples/math-tools.psm1
+          --runtime 7.6.4
+          --psscriptanalyzer required
+          --analyzer-fail-on error
+          --pester required
+          --coverage required
+          --coverage-fail-under 50
+          --native-exit required
+          --stream-errors strict
+          --report-json official-tools-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: psmatrix-official-tools-report
+          path: official-tools-report.json
+
+  differential-supported:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: ./psmatrix --home .ci-home runtime install 7.4.18
+      - run: ./psmatrix --home .ci-home runtime install 7.6.4
+      - name: Require stable cross-version behavior
+        run: >-
+          ./psmatrix --home .ci-home test examples/differential-stable.ps1
+          --runtime 7.4.18 --runtime 7.6.4
+          --differential strict
+          --psscriptanalyzer off --pester off --coverage off
+          --report-json differential-supported-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: psmatrix-differential-supported-report
+          path: differential-supported-report.json
+
+  real-oci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Resolve real PowerShell version in Microsoft SDK image
+        id: runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="mcr.microsoft.com/dotnet/sdk:9.0"
+          docker pull "$image"
+          version="$(docker run --rm --network none --entrypoint pwsh "$image" \
+            -NoLogo -NoProfile -NonInteractive -Command \
+            '$PSVersionTable.PSVersion.ToString()')"
+          test -n "$version"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Register digest-pinned OCI runtime
+        run: >-
+          ./psmatrix --home .ci-home runtime oci-install
+          "${{ steps.runtime.outputs.version }}"
+          --engine docker
+          --image "${{ steps.runtime.outputs.image }}"
+      - name: Execute real PowerShell through OCI backend
+        run: >-
+          ./psmatrix --home .ci-home test
+          examples/hello.ps1 examples/core-capabilities.ps1
+          --runtime "${{ steps.runtime.outputs.version }}"
+          --backend oci
+          --container-engine docker
+          --network none
+          --psscriptanalyzer off
+          --pester off
+          --coverage off
+          --report-json real-oci-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: psmatrix-real-oci-report
+          path: real-oci-report.json
+
+  real-inputs-and-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: ./psmatrix --home .ci-home runtime install 7.6.4
+      - name: Validate exact dependency lock
+        run: ./psmatrix dependency validate examples/input-contract.lock.json
+      - name: Exercise arguments, parameters, stdin, fixtures, hooks and lock
+        run: >-
+          ./psmatrix --home .ci-home test examples/input-contract.ps1
+          --runtime 7.6.4
+          --dependencies required
+          --network none
+          --psscriptanalyzer off
+          --pester off
+          --coverage off
+          --report-json real-inputs-dependencies-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: psmatrix-real-inputs-dependencies-report
+          path: real-inputs-dependencies-report.json
+
+  incremental-scale-and-evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: ./psmatrix --home .scale-home runtime install 7.6.4
+      - name: First execution and evidence exports
+        run: >-
+          ./psmatrix --home .scale-home test
+          examples/hello.ps1 examples/stream-contract.ps1
+          --runtime 7.6.4
+          --jobs 2
+          --cache refresh
+          --checkpoint scale.checkpoint.json
+          --psscriptanalyzer off --pester off --coverage off --dependencies off
+          --report-json scale-first.json
+          --report-junit scale.xml
+          --report-sarif scale.sarif
+          --report-html scale.html
+          --report-sbom scale.cdx.json
+          --evidence-bundle scale-evidence.zip
+      - name: Require cache reuse
+        run: >-
+          ./psmatrix --home .scale-home test
+          examples/hello.ps1 examples/stream-contract.ps1
+          --runtime 7.6.4
+          --jobs 2
+          --cache auto
+          --psscriptanalyzer off --pester off --coverage off --dependencies off
+          --report-json scale-cache.json
+      - name: Require checkpoint resume
+        run: >-
+          ./psmatrix --home .scale-home test
+          examples/hello.ps1 examples/stream-contract.ps1
+          --runtime 7.6.4
+          --cache off
+          --resume scale.checkpoint.json
+          --psscriptanalyzer off --pester off --coverage off --dependencies off
+          --report-json scale-resume.json
+      - name: Validate outputs and scheduler evidence
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, zipfile
+          from pathlib import Path
+          from xml.etree import ElementTree as ET
+
+          first = json.loads(Path("scale-first.json").read_text())
+          cache = json.loads(Path("scale-cache.json").read_text())
+          resume = json.loads(Path("scale-resume.json").read_text())
+          assert first["status"] == "PASS"
+          assert first["matrix"]["scheduler"]["executed"] == 2
+          assert cache["matrix"]["scheduler"]["cache_hits"] == 2
+          assert cache["matrix"]["scheduler"]["executed"] == 0
+          assert resume["matrix"]["scheduler"]["resumed"] == 2
+          assert resume["matrix"]["scheduler"]["executed"] == 0
+          assert ET.parse("scale.xml").getroot().tag == "testsuite"
+          assert json.loads(Path("scale.sarif").read_text())["version"] == "2.1.0"
+          assert json.loads(Path("scale.cdx.json").read_text())["bomFormat"] == "CycloneDX"
+          assert "PSMatrix Report" in Path("scale.html").read_text()
+          with zipfile.ZipFile("scale-evidence.zip") as archive:
+              names = set(archive.namelist())
+              assert {"matrix-report.json", "provenance.json", "sbom.cdx.json", "manifest.json"} <= names
+          PY
+      - name: Verify deterministic shards are disjoint and complete
+        shell: bash
+        run: |
+          for shard in 0 1; do
+            ./psmatrix --home .scale-home test \
+              examples/hello.ps1 examples/stream-contract.ps1 \
+              --runtime 7.6.4 --cache off \
+              --shard-index "$shard" --shard-count 2 \
+              --psscriptanalyzer off --pester off --coverage off --dependencies off \
+              --report-json "shard-${shard}.json"
+          done
+          python - <<'PY'
+          import json
+          reports = [json.load(open(f"shard-{index}.json")) for index in (0, 1)]
+          identities = []
+          for report in reports:
+              identities.extend((target["source"], target["runtime_id"]) for target in report["targets"])
+          assert len(identities) == 2
+          assert len(set(identities)) == 2
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: psmatrix-scale-and-evidence
+          path: |
+            scale-*.json
+            scale.xml
+            scale.sarif
+            scale.html
+            scale.cdx.json
+            scale-evidence.zip
+            shard-*.json
+
+  repair-and-mcp-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: ./psmatrix --home .repair-home runtime install 7.6.4
+      - name: Create a deterministic broken project
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p repair-project/.psmatrix
+          printf '%s\n' 'function Test-X {' > repair-project/tool.ps1
+          cat > repair-project/tool.ps1.psmatrix.json <<'JSON'
+          {
+            "schema": 1,
+            "expect": {
+              "exit_code": 0,
+              "stderr_empty": true,
+              "stdout_contains": ["1"]
+            }
+          }
+          JSON
+          cat > repair-project/validation.json <<'JSON'
+          [
+            "test", "tool.ps1",
+            "--runtime", "7.6.4",
+            "--network", "none",
+            "--sandbox", "auto",
+            "--psscriptanalyzer", "off",
+            "--pester", "off",
+            "--coverage", "off",
+            "--dependencies", "off",
+            "--cache", "off"
+          ]
+          JSON
+          cat > repair-project/proposal.json <<'JSON'
+          {
+            "files": [
+              {
+                "path": "tool.ps1",
+                "edits": [
+                  {
+                    "old": "function Test-X {\n",
+                    "new": "function Test-X {\n    1\n}\nTest-X\n",
+                    "diagnostic_codes": ["PSMX1101"],
+                    "reason": "Close and invoke the function."
+                  }
+                ]
+              }
+            ]
+          }
+          JSON
+      - name: Require failed baseline and stable diagnostic
+        shell: bash
+        run: |
+          set +e
+          (cd repair-project && ../psmatrix --home ../.repair-home test tool.ps1 \
+            --runtime 7.6.4 --network none --sandbox auto \
+            --psscriptanalyzer off --pester off --coverage off --dependencies off \
+            --cache off --report-json baseline.json --report-junit baseline.xml \
+            --report-sarif baseline.sarif --report-html baseline.html)
+          rc=$?
+          set -e
+          test "$rc" -ne 0
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from xml.etree import ElementTree as ET
+          root = Path("repair-project")
+          report = json.loads((root / "baseline.json").read_text())
+          assert report["status"] == "FAIL"
+          assert [item["code"] for item in report["diagnostics"]] == ["PSMX1101"]
+          sarif = json.loads((root / "baseline.sarif").read_text())
+          assert [item["ruleId"] for item in sarif["runs"][0]["results"]] == ["PSMX1101"]
+          failure = ET.parse(root / "baseline.xml").getroot().find(".//failure")
+          assert "PSMX1101" in failure.attrib["message"]
+          assert "PSMX1101" in (root / "baseline.html").read_text()
+          PY
+      - name: Apply diagnosis-bound patch and verify gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd repair-project
+          ../psmatrix --home ../.repair-home repair plan baseline.json \
+            --root "$PWD" --validation-file validation.json \
+            --output .psmatrix/repair-plan.json
+          ../psmatrix --home ../.repair-home repair propose proposal.json \
+            --root "$PWD" --plan .psmatrix/repair-plan.json \
+            --output .psmatrix/patch-bundle.json
+          ../psmatrix --home ../.repair-home repair apply .psmatrix/patch-bundle.json \
+            --root "$PWD" --validation-file validation.json \
+            --session .psmatrix/repair-session.json \
+            --receipt .psmatrix/delivery-gate.json --max-attempts 3
+          ../psmatrix --home ../.repair-home gate verify .psmatrix/delivery-gate.json \
+            --root "$PWD" > gate-valid.json
+          python - <<'PY'
+          import json
+          assert json.load(open("gate-valid.json"))["valid"] is True
+          assert json.load(open(".psmatrix/repair-session.json"))["status"] == "accepted"
+          PY
+      - name: Require stale receipt rejection
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd repair-project
+          cp tool.ps1 tool.ps1.valid
+          printf '%s\n' '# post-validation mutation' >> tool.ps1
+          set +e
+          ../psmatrix --home ../.repair-home gate verify .psmatrix/delivery-gate.json \
+            --root "$PWD" > gate-stale.json
+          rc=$?
+          set -e
+          test "$rc" -ne 0
+          python - <<'PY'
+          import json
+          assert json.load(open("gate-stale.json"))["valid"] is False
+          PY
+          mv tool.ps1.valid tool.ps1
+      - name: Exercise MCP stdio test and automatic gate
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, subprocess
+          from pathlib import Path
+          root = Path("repair-project").resolve()
+          proc = subprocess.Popen(
+              ["./psmatrix", "--home", ".repair-home", "mcp", "--root", str(root)],
+              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+              text=True, encoding="utf-8", bufsize=1,
+          )
+          def call(payload, response=True):
+              proc.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
+              proc.stdin.flush()
+              return json.loads(proc.stdout.readline()) if response else None
+          init = call({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2026-07-28","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}})
+          assert init["result"]["protocolVersion"] == "2026-07-28"
+          call({"jsonrpc":"2.0","method":"notifications/initialized","params":{}}, False)
+          listing = call({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}})
+          names = [tool["name"] for tool in listing["result"]["tools"]]
+          assert names == sorted(names) and len(names) == 55
+          tested = call({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"psmatrix_test","arguments":{"paths":["tool.ps1"],"runtimes":["7.6.4"],"differential":"off","timeout":60}}})
+          content = tested["result"]["structuredContent"]
+          assert content["status"] == "PASS" and content["receiptPath"]
+          verified = call({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"psmatrix_verify_gate","arguments":{"receiptPath":content["receiptPath"]}}})
+          assert verified["result"]["structuredContent"]["valid"] is True
+          proc.stdin.close()
+          assert proc.wait(timeout=30) == 0
+          assert proc.stderr.read() == ""
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: psmatrix-repair-and-mcp-gate
+          path: |
+            repair-project/baseline.*
+            repair-project/.psmatrix/repair-plan.json
+            repair-project/.psmatrix/patch-bundle.json
+            repair-project/.psmatrix/repair-session.json
+            repair-project/.psmatrix/delivery-gate.json
+            repair-project/gate-*.json
+
+  signed-provenance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: ./psmatrix --home .signed-home runtime install 7.6.4
+      - name: Generate release signing key
+        run: >-
+          ./psmatrix --home .signed-home trust keygen
+          --private-key release-private.pem
+          --public-key release-public.pem
+      - name: Produce signed evidence
+        run: >-
+          ./psmatrix --home .signed-home test examples/hello.ps1
+          --runtime 7.6.4
+          --psscriptanalyzer off --pester off --coverage off --dependencies off
+          --report-json signed-report.json
+          --evidence-bundle signed-evidence.zip
+          --attestation signed-provenance.dsse.json
+          --signing-private-key release-private.pem
+          --signing-public-key release-public.pem
+          --builder-id urn:psmatrix:github-actions
+      - name: Verify DSSE/SLSA artifact binding
+        run: >-
+          ./psmatrix --home .signed-home attest verify
+          signed-provenance.dsse.json
+          --public-key release-public.pem
+          --artifact signed-evidence.zip
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: psmatrix-signed-provenance
+          path: |
+            signed-report.json
+            signed-evidence.zip
+            signed-provenance.dsse.json
+            release-public.pem
+
+  production-release-and-deployment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build wheel without network dependencies
+        run: python -m pip wheel . --no-deps --no-build-isolation -w dist
+      - name: Generate release signing key
+        run: >-
+          ./psmatrix trust keygen
+          --private-key release-private.pem
+          --public-key release-public.pem
+      - name: Build and verify signed Windows worker package
+        shell: bash
+        run: |
+          wheel="$(find dist -maxdepth 1 -name 'psmatrix-2.0.0rc2-*.whl' -print -quit)"
+          test -f "$wheel"
+          ./psmatrix deploy windows-package --source-root . \
+            --output dist/psmatrix-2.0.0rc2-windows-workers.zip \
+            --wheel "$wheel" \
+            --signing-private-key release-private.pem \
+            --signing-public-key release-public.pem
+          ./psmatrix deploy verify dist/psmatrix-2.0.0rc2-windows-workers.zip \
+            --public-key release-public.pem
+      - name: Build and verify signed Windows certification and provisioning kits
+        shell: bash
+        run: |
+          SOURCE_DATE_EPOCH=0 ./psmatrix lab build-kit --source-root . \
+            --output dist/psmatrix-2.0.0rc2-windows-certification-kit.zip \
+            --signing-private-key release-private.pem \
+            --signing-public-key release-public.pem
+          ./psmatrix lab verify-kit dist/psmatrix-2.0.0rc2-windows-certification-kit.zip \
+            --public-key release-public.pem
+          SOURCE_DATE_EPOCH=0 ./psmatrix lab build-provisioning-kit --source-root . \
+            --output dist/psmatrix-2.0.0rc2-windows-provisioning-kit.zip \
+            --signing-private-key release-private.pem \
+            --signing-public-key release-public.pem
+          ./psmatrix lab verify-provisioning-kit dist/psmatrix-2.0.0rc2-windows-provisioning-kit.zip \
+            --public-key release-public.pem
+      - name: Require byte-for-byte reproducible source archives
+        shell: bash
+        run: |
+          SOURCE_DATE_EPOCH=0 ./psmatrix release source --root . --output-dir build-a --name psmatrix-2.0.0rc2
+          SOURCE_DATE_EPOCH=0 ./psmatrix release source --root . --output-dir build-b --name psmatrix-2.0.0rc2
+          ./psmatrix release reproducible build-a/psmatrix-2.0.0rc2-source.zip build-b/psmatrix-2.0.0rc2-source.zip
+          ./psmatrix release reproducible build-a/psmatrix-2.0.0rc2-source.tar.gz build-b/psmatrix-2.0.0rc2-source.tar.gz
+          cp build-a/psmatrix-2.0.0rc2-source.* dist/
+      - name: Sign and verify complete release manifest
+        shell: bash
+        run: |
+          wheel="$(find dist -maxdepth 1 -name 'psmatrix-2.0.0rc2-*.whl' -print -quit)"
+          SOURCE_DATE_EPOCH=0 ./psmatrix release manifest \
+            dist/psmatrix-2.0.0rc2-source.zip \
+            dist/psmatrix-2.0.0rc2-source.tar.gz \
+            "$wheel" \
+            dist/psmatrix-2.0.0rc2-windows-workers.zip \
+            dist/psmatrix-2.0.0rc2-windows-certification-kit.zip \
+            dist/psmatrix-2.0.0rc2-windows-provisioning-kit.zip \
+            dist/psmatrix-2.0.0rc2-web-ai-bootstrap.zip \
+            --output dist/psmatrix-2.0.0rc2-release.json \
+            --signing-private-key release-private.pem \
+            --signing-public-key release-public.pem
+          ./psmatrix release verify dist/psmatrix-2.0.0rc2-release.json \
+            --artifact-dir dist --public-key release-public.pem
+      - name: Validate Streamable HTTP MCP, OAuth/mTLS and web delivery gates
+        run: >-
+          PYTHONPATH=src python -m unittest -v
+          tests.test_http_auth tests.test_http_sessions tests.test_http_mcp
+          tests.test_web_bootstrap tests.test_mcp tests.test_observability tests.test_http_operations tests.test_cli_ops
+      - name: Validate operations snapshot, metrics and support bundle
+        run: |
+          ./psmatrix --home .ci-ops ops snapshot --output dist/psmatrix-2.0.0rc2-ops-snapshot.json
+          ./psmatrix --home .ci-ops ops metrics --output dist/psmatrix-2.0.0rc2-metrics.prom >/dev/null
+          ./psmatrix --home .ci-ops ops support-bundle --output dist/psmatrix-2.0.0rc2-support-bundle.zip
+          python - <<'PY'
+          import zipfile
+          from pathlib import Path
+          raw = b''
+          with zipfile.ZipFile('dist/psmatrix-2.0.0rc2-support-bundle.zip') as z:
+              raw = b''.join(z.read(name) for name in z.namelist())
+          assert b'BEGIN PRIVATE KEY' not in raw
+          assert b'Authorization: Bearer' not in raw
+          PY
+      - name: Build deterministic Web AI bootstrap
+        run: >-
+          SOURCE_DATE_EPOCH=0 ./psmatrix mcp-http build-bootstrap
+          --public-url https://mcp.example/mcp
+          --auth-mode oauth-introspection
+          --output dist/psmatrix-2.0.0rc2-web-ai-bootstrap.zip
+      - name: Require the current bounded MCP surface
+        run: |
+          PYTHONPATH=src python - <<'PY'
+          from psmatrix.mcp_server import tool_definitions
+          tools = tool_definitions()
+          assert len(tools) == 55
+          assert [item["name"] for item in tools] == sorted(item["name"] for item in tools)
+          PY
+      - name: Run and verify signed recovery campaign
+        shell: bash
+        run: |
+          ./psmatrix recovery run \
+            --report-json dist/psmatrix-2.0.0rc2-recovery-report.json \
+            --evidence-bundle dist/psmatrix-2.0.0rc2-recovery-evidence.zip \
+            --attestation dist/psmatrix-2.0.0rc2-recovery.dsse.json \
+            --private-key release-private.pem \
+            --public-key release-public.pem
+          ./psmatrix recovery verify-attestation \
+            dist/psmatrix-2.0.0rc2-recovery.dsse.json \
+            --public-key release-public.pem
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: psmatrix-production-release
+          path: |
+            dist/*
+            release-public.pem
+
+  real-windows-powershell-5-1-harness:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Confirm Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          if ($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1) {
+            throw "Expected Windows PowerShell 5.1, got $($PSVersionTable.PSVersion)"
+          }
+          if ($PSVersionTable.PSEdition -ne 'Desktop') {
+            throw "Expected Desktop edition"
+          }
+      - name: Execute PowerShell 4-compatible worker harness
+        shell: powershell
+        run: |
+          $root = (Resolve-Path '.').Path
+          $work = Join-Path $root 'windows-proof'
+          New-Item -ItemType Directory -Path $work -Force | Out-Null
+          $script = Join-Path $work 'tool.ps1'
+          @'
+          param([string]$Name)
+          Set-Content -LiteralPath output.txt -Value $Name
+          Write-Warning 'windows-worker-warning'
+          '@ | Set-Content -LiteralPath $script -Encoding UTF8
+          $result = Join-Path $work 'result.json'
+          $job = Join-Path $work 'job.json'
+          @{
+            schema = 1
+            worker_id = 'github-windows-5.1'
+            expected_version = '5.1'
+            entrypoint = $script
+            output = $result
+            options = @{
+              parameters = @{ Name = 'verified' }
+              verification = @(
+                @{ kind = 'file_exists'; path = 'output.txt' },
+                @{ kind = 'command_available'; name = 'Get-Service' }
+              )
+            }
+          } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $job -Encoding UTF8
+          Push-Location $work
+          try {
+            & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+              -File (Join-Path $root 'src\psmatrix\windows_worker.ps1') -Job $job
+            if ($LASTEXITCODE -ne 0) { throw "Harness process failed: $LASTEXITCODE" }
+          }
+          finally { Pop-Location }
+          $report = Get-Content -LiteralPath $result -Raw | ConvertFrom-Json
+          if ($report.status -ne 'PASS') { throw ($report | ConvertTo-Json -Depth 12) }
+          if ($report.worker.edition -ne 'Desktop') { throw 'Worker did not report Desktop edition' }
+          if ($report.worker.os -notmatch 'Windows') { throw 'Worker did not report Windows OS' }
+          if (-not $report.targets[0].verification[0].passed) { throw 'File verification failed' }
+          if (-not $report.targets[0].verification[1].passed) { throw 'Command verification failed' }
+          $report | ConvertTo-Json -Depth 16 | Set-Content windows-5.1-harness-report.json -Encoding UTF8
+      - name: Parse deployment scripts and compile the Windows Service host
+        shell: powershell
+        run: |
+          $errors = @()
+          foreach ($file in Get-ChildItem workers\windows\*.ps1) {
+            $tokens = $null
+            $parseErrors = $null
+            [Management.Automation.Language.Parser]::ParseFile($file.FullName,[ref]$tokens,[ref]$parseErrors) | Out-Null
+            if ($parseErrors.Count -gt 0) { $errors += $parseErrors }
+          }
+          if ($errors.Count -gt 0) { throw ($errors | Out-String) }
+          $compiler = Join-Path ([Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory()) 'csc.exe'
+          & $compiler /nologo /target:exe /optimize+ /out:PSMatrixWorkerService.exe /reference:System.ServiceProcess.dll workers\windows\PSMatrixWorkerService.cs
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path PSMatrixWorkerService.exe)) {
+            throw 'Windows Service host compilation failed.'
+          }
+      - name: Collect exact Windows 5.1 image identity
+        shell: powershell
+        run: |
+          & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+            -File src\psmatrix\windows\collect-image-identity.ps1 `
+            -Output windows-5.1-image-identity.json
+          if ($LASTEXITCODE -ne 0) { throw 'Image identity collection failed.' }
+          $identity = Get-Content windows-5.1-image-identity.json -Raw | ConvertFrom-Json
+          if ($identity.is_windows -ne $true -or $identity.edition -ne 'Desktop') { throw 'Identity is not authoritative Windows PowerShell Desktop.' }
+          if (-not ([string]$identity.powershell_version).StartsWith('5.1')) { throw 'Identity runtime is not Windows PowerShell 5.1.' }
+          foreach ($capability in @('registry','services','com','wmi','event-log','scheduled-tasks','ntfs-acl','certificates','process')) {
+            if ($identity.capabilities -notcontains $capability) { throw ('Missing capability: ' + $capability) }
+          }
+      - name: Run authoritative read-only Windows fixture pack
+        shell: powershell
+        run: |
+          $root = (Resolve-Path '.').Path
+          $work = Join-Path $root 'windows-fixture-proof'
+          New-Item -ItemType Directory -Path $work -Force | Out-Null
+          $entrypoint = (Resolve-Path 'fixtures\windows-authoritative\authoritative-capabilities.ps1').Path
+          $productName = [string](Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').ProductName
+          $options = Get-Content fixtures\windows-authoritative\authoritative-options.json -Raw | ConvertFrom-Json
+          $options.verification[0].equals = $productName
+          $job = Join-Path $work 'job.json'
+          $result = Join-Path $work 'result.json'
+          @{
+            schema = 1
+            worker_id = 'github-windows-5.1-fixture'
+            expected_version = '5.1'
+            entrypoint = $entrypoint
+            output = $result
+            options = $options
+          } | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $job -Encoding UTF8
+          Push-Location $work
+          try {
+            & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $root 'src\psmatrix\windows_worker.ps1') -Job $job
+            if ($LASTEXITCODE -ne 0) { throw "Fixture harness process failed: $LASTEXITCODE" }
+          }
+          finally { Pop-Location }
+          $report = Get-Content -LiteralPath $result -Raw | ConvertFrom-Json
+          if ($report.status -ne 'PASS') { throw ($report | ConvertTo-Json -Depth 20) }
+          if ($report.worker.authoritative -ne $true) { throw 'Fixture report is not authoritative.' }
+          $report | ConvertTo-Json -Depth 20 | Set-Content windows-5.1-fixture-report.json -Encoding UTF8
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: psmatrix-windows-powershell-5-1-harness
+          path: |
+            windows-5.1-harness-report.json
+            windows-5.1-fixture-report.json
+            windows-5.1-image-identity.json
+            PSMatrixWorkerService.exe

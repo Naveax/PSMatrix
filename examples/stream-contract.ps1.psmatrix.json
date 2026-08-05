@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "expect": {
+    "exit_code": 0,
+    "native_exit_code": 0,
+    "stdout_contains": ["success-record"],
+    "streams": {
+      "success": {"count": 1},
+      "error": 0,
+      "warning": {"count": 1, "contains": ["warning-record"]},
+      "verbose": {"count": 1, "contains": ["verbose-record"]},
+      "debug": {"count": 1, "contains": ["debug-record"]},
+      "information": {"count": 1, "contains": ["information-record"]}
+    }
+  }
+}

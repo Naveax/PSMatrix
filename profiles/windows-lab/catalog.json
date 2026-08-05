@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-lab-profile-catalog",
+  "profiles": [
+    {
+      "runtime_id": "windows-powershell-4.0",
+      "expected_version": "4.0",
+      "recommended_os": "Windows Server 2012 R2",
+      "wmf_mode": "included",
+      "generation": 2,
+      "minimum_memory_mb": 2048,
+      "minimum_processors": 2
+    },
+    {
+      "runtime_id": "windows-powershell-5.0",
+      "expected_version": "5.0",
+      "recommended_os": "Windows Server 2012 R2 with exact offline WMF 5.0 package",
+      "wmf_mode": "offline-package-required",
+      "generation": 2,
+      "minimum_memory_mb": 2048,
+      "minimum_processors": 2
+    },
+    {
+      "runtime_id": "windows-powershell-5.1",
+      "expected_version": "5.1",
+      "recommended_os": "Windows Server 2016",
+      "wmf_mode": "included",
+      "generation": 2,
+      "minimum_memory_mb": 2048,
+      "minimum_processors": 2
+    }
+  ]
+}

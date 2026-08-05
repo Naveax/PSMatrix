@@ -1,0 +1,63 @@
+{
+  "$id": "https://psmatrix.dev/schemas/differential-allowances.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "expires_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "kind": {
+      "const": "psmatrix.differential-allowances"
+    },
+    "name": {
+      "maxLength": 128,
+      "minLength": 1,
+      "type": "string"
+    },
+    "rules": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "baseline_runtime": {
+            "type": "string"
+          },
+          "candidate_runtime": {
+            "type": "string"
+          },
+          "dimension": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "dimension",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "maxItems": 256,
+      "type": "array"
+    },
+    "schema": {
+      "const": 1
+    }
+  },
+  "required": [
+    "schema",
+    "kind",
+    "name",
+    "rules"
+  ],
+  "title": "PSMatrix accepted differential manifest",
+  "type": "object"
+}

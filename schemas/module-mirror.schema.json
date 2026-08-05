@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://psmatrix.dev/schemas/module-mirror.schema.json",
+  "title": "PSMatrix immutable offline module mirror index",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "kind", "packages", "generation", "digest"],
+  "properties": {
+    "schema": {"const": 1},
+    "kind": {"const": "psmatrix.module-mirror"},
+    "generation": {"type": "integer", "minimum": 0},
+    "updated_at": {"type": "string"},
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "packages": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": {
+        "type": "object",
+        "required": ["name", "version", "sha256", "size", "path", "dependencies"],
+        "properties": {
+          "name": {"type": "string"},
+          "version": {"type": "string"},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "size": {"type": "integer", "minimum": 1},
+          "path": {"type": "string"},
+          "source": {"type": "string"},
+          "added_at": {"type": "string"},
+          "dependencies": {"type": "array"}
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "expect": {
+    "exit_code": 0,
+    "stderr_empty": true,
+    "manifest": {
+      "kind": "ModuleManifest",
+      "valid": true,
+      "name": "math-tools",
+      "version": "1.0.0",
+      "root_module": "math-tools.psm1",
+      "exported_functions": ["Add-Numbers"],
+      "exported_cmdlets": [],
+      "exported_aliases": []
+    },
+    "streams": {"error": 0, "warning": 0}
+  }
+}

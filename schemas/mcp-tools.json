@@ -1,0 +1,2130 @@
+{
+  "schema": 1,
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "description": "List the built-in static-analysis, sandbox, resource, worker-trust and secret-handling cases.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "psmatrix_adversarial_list",
+      "title": "List defensive adversarial cases"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Run the bounded built-in attack corpus against the local sandbox and trust protocol; never treats an unavailable isolation primitive as PASS.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "categories": {
+            "items": {
+              "maxLength": 64,
+              "type": "string"
+            },
+            "maxItems": 16,
+            "type": "array"
+          },
+          "reportPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "runtime": {
+            "default": "7.6.4",
+            "maxLength": 64,
+            "type": "string"
+          },
+          "strict": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "psmatrix_adversarial_run",
+      "title": "Run defensive adversarial campaign"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Apply a patch transaction, rerun the full requested test matrix, rollback on failure, and emit a signed delivery gate on PASS.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "bundlePath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxAttempts": {
+            "default": 3,
+            "maximum": 10,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "receiptPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "sessionPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "validationArgv": {
+            "items": {
+              "maxLength": 16384,
+              "type": "string"
+            },
+            "maxItems": 256,
+            "minItems": 2,
+            "type": "array"
+          }
+        },
+        "required": [
+          "bundlePath",
+          "validationArgv"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_apply_and_validate",
+      "title": "Apply patch and validate"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Issue a short-lived principal-bound artifact capability; delivery artifacts require a current PASS gate.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "purpose": {
+            "enum": [
+              "diagnostic",
+              "delivery"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "purpose"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_artifact_prepare",
+      "title": "Prepare bounded artifact download"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Install an exact hash-verified runtime and/or import an integrity-verified offline module mirror from uploaded project artifacts.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "hashesPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "mirrorArchivePath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "runtime": {
+            "maxLength": 64,
+            "type": "string"
+          },
+          "runtimeArchivePath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "psmatrix_bootstrap",
+      "title": "Bootstrap exact runtime and module mirror"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Check exact runtime and mirrored module availability; missing required combinations remain INCOMPLETE.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "mirrorPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "outputPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "specPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "specPath"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_compat_plan",
+      "title": "Plan module compatibility matrix"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Install only SHA-verified mirrored modules, create exact locks, and run each project/runtime/tool combination through PSMatrix.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "mirrorPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "outputPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "specPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "timeout": {
+            "default": 120,
+            "maximum": 3600,
+            "minimum": 1,
+            "type": "number"
+          }
+        },
+        "required": [
+          "specPath"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_compat_run",
+      "title": "Run module compatibility matrix"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Scan PowerShell project files for Import-Module, #requires, and RequiredModules declarations.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "outputPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "path": {
+            "default": ".",
+            "maxLength": 4096,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "psmatrix_compat_scan",
+      "title": "Scan project module dependencies"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Freeze report/source hashes and create a machine-readable repair plan.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "outputPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "reportPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "validationArgv": {
+            "items": {
+              "maxLength": 16384,
+              "type": "string"
+            },
+            "maxItems": 256,
+            "minItems": 2,
+            "type": "array"
+          }
+        },
+        "required": [
+          "reportPath",
+          "validationArgv"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_create_repair_plan",
+      "title": "Create repair plan"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Verify whether current project source hashes are covered by a valid PASS delivery receipt.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "psmatrix_delivery_status",
+      "title": "Check delivery gate"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Convert a PSMatrix report into stable diagnostic codes and a repair-oriented summary.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "reportPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "reportPath"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_diagnose",
+      "title": "Normalize diagnostics"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Verify the enrolled worker's mTLS identity, signed health statement, exact authoritative runtime, and quarantine state.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "quarantineThreshold": {
+            "default": 3,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "timeout": {
+            "default": 30,
+            "maximum": 300,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "workerId": {
+            "maxLength": 512,
+            "type": "string"
+          }
+        },
+        "required": [
+          "workerId"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_fleet_health",
+      "title": "Probe a managed Windows worker"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Select or address an enrolled authoritative Windows worker, prove snapshot reset before and after the job, and accept only a signed verified report.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "entrypoint": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "include": {
+            "items": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 128,
+            "type": "array"
+          },
+          "labels": {
+            "items": {
+              "maxLength": 320,
+              "minLength": 3,
+              "type": "string"
+            },
+            "maxItems": 32,
+            "type": "array"
+          },
+          "optionsPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "quarantineThreshold": {
+            "default": 3,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "reportPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "runtimeId": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "timeout": {
+            "default": 1200,
+            "maximum": 3600,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "workerId": {
+            "maxLength": 512,
+            "type": "string"
+          }
+        },
+        "required": [
+          "entrypoint"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_fleet_test",
+      "title": "Test on a managed Windows fleet worker"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Write the canonical PowerShell 6.0-7.6 Linux plus authoritative Windows PowerShell 4.0/5.0/5.1 matrix specification.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "outputPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "psmatrix_full_init",
+      "title": "Create complete matrix specification"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Inspect native, OCI and trusted Windows-worker readiness without executing source code.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "outputPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "specPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "specPath"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_full_plan",
+      "title": "Plan complete mixed runtime matrix"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Run one source through all declared Linux native/OCI and authoritative Windows targets, enforce completeness, compare behavior and emit a structured report.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "differential": {
+            "enum": [
+              "off",
+              "report",
+              "strict"
+            ],
+            "type": "string"
+          },
+          "entrypoint": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "include": {
+            "items": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 128,
+            "type": "array"
+          },
+          "jobs": {
+            "default": 0,
+            "maximum": 64,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "localArgs": {
+            "items": {
+              "maxLength": 16384,
+              "type": "string"
+            },
+            "maxItems": 128,
+            "type": "array"
+          },
+          "remoteOptionsPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "reportPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "specPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "timeout": {
+            "default": 1200,
+            "maximum": 7200,
+            "minimum": 30,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "entrypoint",
+          "specPath"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_full_test",
+      "title": "Run complete mixed runtime matrix"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Verify every mandatory signed Production GA evidence gate and return PASS, FAIL, or INCOMPLETE without weakening missing evidence.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "outputPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "policyPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "policyPath"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_ga_evaluate",
+      "title": "Evaluate Production GA evidence"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Write the immutable mandatory 2.0.0 GA gate template; no required gate can be removed.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "outputPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "psmatrix_ga_init",
+      "title": "Initialize Production GA policy"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Run a bounded isolated Ed25519 rotation/revocation drill and emit signed evidence.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "outputPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "privateKeyPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "publicKeyPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "privateKeyPath",
+          "publicKeyPath"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_ga_key_rotation_drill",
+      "title": "Run key rotation and revocation drill"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Verify digest binding for a CI-signed validation summary or complete full-matrix report.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifactPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "attestationPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "publicKeyPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "validation-summary",
+              "full-matrix-report"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "artifactPath",
+          "attestationPath",
+          "publicKeyPath"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_ga_verify_artifact",
+      "title": "Verify CI-signed GA artifact"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Verify that the signed 2.0.0 GA attestation contains all eleven mandatory PASS gates.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "attestationPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "publicKeyPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "attestationPath",
+          "publicKeyPath"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_ga_verify_attestation",
+      "title": "Verify final Production GA attestation"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Verify a role-signed public deployment, OTLP, key rotation, security review, or vulnerability proof.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "attestationPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "publicKeyPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "public-oauth",
+              "public-mtls",
+              "external-otlp",
+              "key-rotation",
+              "security-review",
+              "vulnerability-scan"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "attestationPath",
+          "publicKeyPath"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_ga_verify_proof",
+      "title": "Verify external GA proof"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Run local PowerShell runtimes and one or more trusted remote Windows workers, then combine only verified reports.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "endpointPaths": {
+            "items": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 32,
+            "type": "array"
+          },
+          "entrypoint": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "include": {
+            "items": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 128,
+            "type": "array"
+          },
+          "localArgs": {
+            "items": {
+              "maxLength": 16384,
+              "type": "string"
+            },
+            "maxItems": 128,
+            "type": "array"
+          },
+          "localRuntimes": {
+            "items": {
+              "maxLength": 512,
+              "type": "string"
+            },
+            "maxItems": 32,
+            "type": "array"
+          },
+          "remoteOptionsPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "reportPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "timeout": {
+            "default": 1200,
+            "maximum": 3600,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "entrypoint"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_hybrid_test",
+      "title": "Run a signed Linux and Windows mixed matrix"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Run repeated reset-bound certification campaigns on exact Windows PowerShell 4.0, 5.0 and 5.1 workers and emit one signed matrix attestation.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "matrixOutputPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "outputDir": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "privateKeyPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "publicKeyPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "specPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "timeout": {
+            "default": 1800,
+            "maximum": 3600,
+            "minimum": 30,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "specPath",
+          "outputDir",
+          "matrixOutputPath",
+          "privateKeyPath",
+          "publicKeyPath"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_lab_authoritative_matrix",
+      "title": "Run authoritative Windows matrix"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Build a deterministic Windows PowerShell 4.0-5.1 image certification kit; optionally sign it with Ed25519/DSSE.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "outputPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "privateKeyPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "publicKeyPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "outputPath"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_lab_build_kit",
+      "title": "Build Windows certification kit"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Build a deterministic, optionally DSSE-signed Hyper-V provisioning kit with scripts, profiles and schemas.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "outputPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "planPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "privateKeyPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "publicKeyPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "outputPath"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_lab_build_provisioning_kit",
+      "title": "Build Windows lab provisioning kit"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Run repeated authoritative snapshot-reset certification cycles and emit a signed replay-resistant campaign summary.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "campaignId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "campaignOutputPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "endpointPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "fixtureRoot": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "imageManifestPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "iterations": {
+            "default": 3,
+            "maximum": 100,
+            "minimum": 2,
+            "type": "integer"
+          },
+          "outputDir": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "privateKeyPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "publicKeyPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "timeout": {
+            "default": 1800,
+            "maximum": 3600,
+            "minimum": 30,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "endpointPath",
+          "imageManifestPath",
+          "fixtureRoot",
+          "privateKeyPath",
+          "publicKeyPath",
+          "outputDir",
+          "campaignOutputPath",
+          "campaignId"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_lab_campaign",
+      "title": "Run Windows image certification campaign"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Run the read-only authoritative fixture pack on a trusted exact-version Windows worker with mandatory snapshot reset and emit a controller-signed certification attestation.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "endpointPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "fixtureRoot": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "imageManifestPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "outputPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "privateKeyPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "publicKeyPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "timeout": {
+            "default": 1800,
+            "maximum": 3600,
+            "minimum": 30,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "endpointPath",
+          "imageManifestPath",
+          "fixtureRoot",
+          "privateKeyPath",
+          "publicKeyPath"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_lab_certify",
+      "title": "Certify a Windows PowerShell image"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Validate a SHA-256-bound Windows media manifest and create a secret-free Hyper-V provisioning plan.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "manifestPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "outputPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "manifestPath"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_lab_plan",
+      "title": "Build Hyper-V lab plan"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "description": "List the exact Windows PowerShell 4.0, 5.0 and 5.1 golden-image profiles and WMF media requirements.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "psmatrix_lab_profiles",
+      "title": "List Windows lab profiles"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Submit the immutable Hyper-V plan to a trusted Windows host worker and accept only hash-verified checkpointed 4.0/5.0/5.1 images.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "endpointPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "planPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "reportPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "timeout": {
+            "default": 7200,
+            "maximum": 21600,
+            "minimum": 600,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "endpointPath",
+          "planPath"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_lab_provision",
+      "title": "Provision exact Windows PowerShell lab"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Independently verify a DSSE-signed authoritative Windows image certification against the current manifest and fixture pack.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "attestationPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "fixtureRoot": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "imageManifestPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "publicKeyPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "attestationPath",
+          "publicKeyPath",
+          "imageManifestPath",
+          "fixtureRoot"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_lab_verify",
+      "title": "Verify Windows image certification"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Independently verify the signed exact-runtime 4.0/5.0/5.1 matrix attestation.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "attestationPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "publicKeyPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "attestationPath",
+          "publicKeyPath"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_lab_verify_authoritative_matrix",
+      "title": "Verify authoritative Windows matrix"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Verify every signed run, reject duplicate/replayed evidence, and validate the signed campaign summary.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "attestationDir": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "campaignPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "fixtureRoot": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "imageManifestPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "minimumRuns": {
+            "default": 2,
+            "maximum": 1000,
+            "minimum": 2,
+            "type": "integer"
+          },
+          "publicKeyPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "campaignPath",
+          "publicKeyPath",
+          "imageManifestPath",
+          "fixtureRoot",
+          "attestationDir"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_lab_verify_campaign",
+      "title": "Verify Windows certification campaign"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Verify every declared file, digest and optional DSSE signature in a Hyper-V provisioning kit.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "packagePath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "publicKeyPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "packagePath"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_lab_verify_provisioning_kit",
+      "title": "Verify Windows lab provisioning kit"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Verify the immutable module mirror index and every package SHA-256 before compatibility execution.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "mirrorPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "psmatrix_mirror_verify",
+      "title": "Verify offline module mirror"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Search verified hash-chain audit records without returning credentials or raw source content.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "maxLength": 128,
+            "type": "string"
+          },
+          "limit": {
+            "default": 200,
+            "maximum": 2000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "query": {
+            "maxLength": 256,
+            "type": "string"
+          },
+          "since": {
+            "maxLength": 64,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "psmatrix_ops_audit_search",
+      "title": "Search audit records"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Return the current Prometheus text exposition generated from the operations snapshot.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "psmatrix_ops_metrics",
+      "title": "Read Prometheus metrics"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "description": "List bounded report metadata and hashes; report bodies and source content are not returned.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "default": 200,
+            "maximum": 2000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "status": {
+            "maxLength": 64,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "psmatrix_ops_report_history",
+      "title": "Read report history"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Return a redacted read-only snapshot of runtimes, workers, queue, sessions, certificates, reports, mirror, cache, and alerts.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "psmatrix_ops_snapshot",
+      "title": "Read operations snapshot"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Create a deterministic diagnostic-only ZIP with snapshot, metrics, audit summary, and report metadata; no source or credential bodies are included.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "outputPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "psmatrix_ops_support_bundle",
+      "title": "Build redacted support bundle"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Turn exact old/new text replacements into a hash-bound minimal patch bundle without modifying files.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "files": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "before_sha256": {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                "edits": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "diagnostic_codes": {
+                        "items": {
+                          "maxLength": 512,
+                          "type": "string"
+                        },
+                        "maxItems": 64,
+                        "type": "array"
+                      },
+                      "new": {
+                        "maxLength": 2097152,
+                        "type": "string"
+                      },
+                      "occurrence": {
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "old": {
+                        "maxLength": 2097152,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "reason": {
+                        "maxLength": 4096,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "old",
+                      "new"
+                    ],
+                    "type": "object"
+                  },
+                  "maxItems": 256,
+                  "minItems": 1,
+                  "type": "array"
+                },
+                "path": {
+                  "maxLength": 4096,
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "edits"
+              ],
+              "type": "object"
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "type": "array"
+          },
+          "outputPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "planPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "planPath",
+          "files"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_propose_patch",
+      "title": "Create minimal patch bundle"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "description": "List bounded controller, queue, database, transfer, snapshot, fleet and trust recovery scenarios.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "psmatrix_recovery_list",
+      "title": "List recovery fault cases"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Inject bounded controller/queue/transfer/snapshot faults, prove recovery, and optionally emit deterministic evidence plus an Ed25519/DSSE attestation.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "attestationPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "evidencePath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "privateKeyPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "publicKeyPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "reportPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "psmatrix_recovery_run",
+      "title": "Run fault-tolerance recovery campaign"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Independently verify the Ed25519/DSSE recovery attestation and its report binding.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "attestationPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "publicKeyPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "attestationPath",
+          "publicKeyPath"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_recovery_verify",
+      "title": "Verify signed recovery campaign"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Submit a hash-bound, Ed25519-signed job over mTLS and accept the report only after worker signature, reset cycle, request hash, and TLS identity verification.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "endpointPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "entrypoint": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "include": {
+            "items": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 128,
+            "type": "array"
+          },
+          "optionsPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "reportPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "timeout": {
+            "default": 1200,
+            "maximum": 3600,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "entrypoint",
+          "endpointPath"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_remote_test",
+      "title": "Test on a trusted remote Windows worker"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Find .ps1, .psm1 and .psd1 files inside the configured project root.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "default": ".",
+            "maxLength": 4096,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "psmatrix_scan",
+      "title": "Scan PowerShell files"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Report project file/byte quotas, expiry, and whether a current delivery gate exists.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "psmatrix_session_status",
+      "title": "Inspect bounded project session"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Run the mandatory PSMatrix parser, analyzer, execution and verification gate; issue a delivery receipt automatically on PASS.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "coverageFailUnder": {
+            "maximum": 100,
+            "minimum": 0,
+            "type": "number"
+          },
+          "differential": {
+            "default": "off",
+            "enum": [
+              "off",
+              "report",
+              "strict"
+            ],
+            "type": "string"
+          },
+          "matrix": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "paths": {
+            "items": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 64,
+            "minItems": 1,
+            "type": "array"
+          },
+          "runtimes": {
+            "items": {
+              "maxLength": 512,
+              "type": "string"
+            },
+            "maxItems": 32,
+            "type": "array"
+          },
+          "timeout": {
+            "default": 60,
+            "maximum": 900,
+            "minimum": 1,
+            "type": "number"
+          }
+        },
+        "required": [
+          "paths"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_test",
+      "title": "Test PowerShell sources"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Create or replace one bounded UTF-8 PowerShell/project text file inside the current session root.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 2097152,
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "text"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_upload_text",
+      "title": "Upload bounded project text"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Verify a DSSE Ed25519 signature, in-toto/SLSA statement type, and optional evidence artifact digest.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifactPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "attestationPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "publicKeyPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "attestationPath",
+          "publicKeyPath"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_verify_attestation",
+      "title": "Verify signed PSMatrix provenance"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Verify the signed test receipt and prove that validated source hashes are still current.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "receiptPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "receiptPath"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_verify_gate",
+      "title": "Verify delivery gate"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Verify every artifact size and SHA-256 digest in a release manifest and optionally require its Ed25519 DSSE signature.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifactDir": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "manifestPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "publicKeyPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "manifestPath",
+          "artifactDir"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_verify_release",
+      "title": "Verify a signed PSMatrix release"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Run module compatibility, the declared full runtime matrix, and the standard PSMatrix gate against the same project sources; HTTP delivery remains blocked unless every required stage passes and a hash-bound web receipt is recorded.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "compatibilitySpecPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "differential": {
+            "default": "strict",
+            "enum": [
+              "off",
+              "report",
+              "strict"
+            ],
+            "type": "string"
+          },
+          "fullMatrixSpecPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "include": {
+            "items": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 128,
+            "type": "array"
+          },
+          "jobs": {
+            "default": 0,
+            "maximum": 64,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "localArgs": {
+            "items": {
+              "maxLength": 16384,
+              "type": "string"
+            },
+            "maxItems": 128,
+            "type": "array"
+          },
+          "mirrorPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "paths": {
+            "items": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 64,
+            "minItems": 1,
+            "type": "array"
+          },
+          "remoteOptionsPath": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "runtimes": {
+            "items": {
+              "maxLength": 512,
+              "type": "string"
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "type": "array"
+          },
+          "timeout": {
+            "default": 1200,
+            "maximum": 7200,
+            "minimum": 30,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "paths",
+          "runtimes",
+          "compatibilitySpecPath",
+          "fullMatrixSpecPath"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_web_validate",
+      "title": "Run mandatory web delivery validation"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Poll a bounded asynchronous web-validation job and finalize the hash-bound delivery receipt only after compatibility, full-matrix, and standard gate stages all pass.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "jobId": {
+            "maxLength": 512,
+            "type": "string"
+          }
+        },
+        "required": [
+          "jobId"
+        ],
+        "type": "object"
+      },
+      "name": "psmatrix_web_validation_status",
+      "title": "Poll mandatory web delivery validation"
+    }
+  ]
+}

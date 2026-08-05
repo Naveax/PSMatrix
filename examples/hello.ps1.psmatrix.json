@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "expect": {
+    "exit_code": 0,
+    "stderr_empty": true,
+    "stdout_contains": ["PSMatrix works"],
+    "files": [
+      {
+        "path": "result.json",
+        "exists": true,
+        "valid_json": true
+      }
+    ],
+    "json": [
+      {
+        "path": "result.json",
+        "property": "message",
+        "equals": "PSMatrix works"
+      }
+    ]
+  }
+}

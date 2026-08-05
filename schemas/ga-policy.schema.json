@@ -1,0 +1,119 @@
+{
+  "$id": "https://psmatrix.dev/schemas/ga-policy.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "authorities": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "properties": {
+          "key_id": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "public_key": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "public_key",
+          "key_id"
+        ],
+        "type": "object"
+      },
+      "type": "object"
+    },
+    "evidence": {
+      "type": "object"
+    },
+    "kind": {
+      "const": "psmatrix.ga-policy"
+    },
+    "required_gates": {
+      "items": {
+        "enum": [
+          "validation-summary",
+          "signed-release",
+          "authoritative-windows",
+          "complete-runtime-matrix",
+          "public-oauth",
+          "public-mtls",
+          "external-otlp",
+          "key-rotation",
+          "disaster-recovery",
+          "security-review",
+          "vulnerability-scan"
+        ]
+      },
+      "maxItems": 11,
+      "minItems": 11,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "requirements": {
+      "additionalProperties": false,
+      "properties": {
+        "external_proof_max_age_days": {
+          "maximum": 30,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "full_matrix_targets": {
+          "maximum": 128,
+          "minimum": 25,
+          "type": "integer"
+        },
+        "matrix_max_age_days": {
+          "maximum": 30,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "recovery_max_age_days": {
+          "maximum": 90,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "security_review_max_age_days": {
+          "maximum": 180,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "validation_max_age_days": {
+          "maximum": 30,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "vulnerability_max_age_days": {
+          "maximum": 90,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "windows_max_age_days": {
+          "maximum": 90,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "schema": {
+      "const": 1
+    },
+    "version": {
+      "const": "2.0.0"
+    }
+  },
+  "required": [
+    "schema",
+    "kind",
+    "version",
+    "required_gates",
+    "requirements",
+    "authorities",
+    "evidence"
+  ],
+  "title": "PSMatrix Production GA policy",
+  "type": "object"
+}

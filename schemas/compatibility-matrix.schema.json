@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://psmatrix.dev/schemas/compatibility-matrix.schema.json",
+  "title": "PSMatrix module and project compatibility matrix",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "kind", "name", "sources", "targets"],
+  "properties": {
+    "schema": {"const": 1},
+    "kind": {"const": "psmatrix.compatibility-matrix"},
+    "name": {"type": "string"},
+    "sources": {"type": "array", "minItems": 1, "maxItems": 1024, "items": {"type": "string"}},
+    "targets": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 512,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "runtime"],
+        "properties": {
+          "id": {"type": "string"},
+          "runtime": {"type": "string"},
+          "required": {"type": "boolean"},
+          "pester": {"type": "string"},
+          "psscriptanalyzer": {"type": "string"},
+          "modules": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "version"],
+              "properties": {"name": {"type": "string"}, "version": {"type": "string"}}
+            }
+          }
+        }
+      }
+    }
+  }
+}

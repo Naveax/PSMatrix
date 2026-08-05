@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://psmatrix.dev/schemas/recovery-campaign.schema.json",
+  "title": "PSMatrix recovery campaign",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "kind",
+    "tool_version",
+    "started_at",
+    "finished_at",
+    "status",
+    "summary",
+    "cases",
+    "report_sha256"
+  ],
+  "properties": {
+    "schema": {"const": 1},
+    "kind": {"const": "psmatrix.recovery-campaign"},
+    "tool_version": {"type": "string", "minLength": 1, "maxLength": 64},
+    "started_at": {"type": "string", "format": "date-time"},
+    "finished_at": {"type": "string", "format": "date-time"},
+    "status": {"enum": ["PASS", "FAIL"]},
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "passed", "failed"],
+      "properties": {
+        "total": {"type": "integer", "minimum": 0, "maximum": 256},
+        "passed": {"type": "integer", "minimum": 0, "maximum": 256},
+        "failed": {"type": "integer", "minimum": 0, "maximum": 256}
+      }
+    },
+    "cases": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "required": ["id", "status", "duration_ms"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1, "maxLength": 128},
+          "status": {"enum": ["PASS", "FAIL"]},
+          "duration_ms": {"type": "integer", "minimum": 0},
+          "detail": {"type": "object"},
+          "error_type": {"type": "string", "minLength": 1, "maxLength": 256},
+          "error_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    },
+    "report_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

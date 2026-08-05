@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "psmatrix"
+version = "2.0.0rc2"
+description = "Bash-native multi-runtime PowerShell execution and verification laboratory"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Naveax" }]
+dependencies = []
+
+[project.scripts]
+psmatrix = "psmatrix.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages = ["psmatrix"]
+
+[tool.setuptools.package-data]
+psmatrix = ["*.ps1", "windows/*", "windows/fixtures/*", "windows/fixtures-authoritative/*", "windows/lab/*", "snapshot_tools/*", "adversarial_corpus/*"]
