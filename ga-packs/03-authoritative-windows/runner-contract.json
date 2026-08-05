@@ -1,0 +1,88 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.authoritative-windows-runner-contract",
+  "pack": "03-authoritative-windows",
+  "authority": {
+    "required": true,
+    "github_hosted_is_authoritative": false,
+    "protected_environment": "production-ga-windows-authority",
+    "private_keys_in_repository": false,
+    "private_keys_in_artifacts": false
+  },
+  "campaign": {
+    "minimum_iterations_per_runtime": 3,
+    "clean_snapshot_before_every_iteration": true,
+    "clean_snapshot_after_every_iteration": true,
+    "signed_reset_before": true,
+    "signed_reset_after": true,
+    "release_binding_required": true,
+    "exact_final_commit_required": true,
+    "duplicate_worker_results_rejected": true,
+    "replayed_worker_results_rejected": true
+  },
+  "required_checks": [
+    "exact-runtime-line",
+    "desktop-process-host",
+    "registry-roundtrip",
+    "service-query",
+    "com-activation",
+    "wmi-query",
+    "event-log-query",
+    "scheduled-task-query",
+    "ntfs-acl-roundtrip",
+    "certificate-store-query",
+    "process-query",
+    "windows-environment"
+  ],
+  "runtimes": [
+    {
+      "runtime_id": "windows-powershell-4.0",
+      "expected_major": 4,
+      "expected_minor": 0,
+      "runner_labels": [
+        "self-hosted",
+        "windows",
+        "x64",
+        "psmatrix-authority",
+        "windows-powershell-4.0"
+      ],
+      "wmf_policy": "inbox-or-exact-WMF-4.0-image",
+      "required": true
+    },
+    {
+      "runtime_id": "windows-powershell-5.0",
+      "expected_major": 5,
+      "expected_minor": 0,
+      "runner_labels": [
+        "self-hosted",
+        "windows",
+        "x64",
+        "psmatrix-authority",
+        "windows-powershell-5.0"
+      ],
+      "wmf_policy": "exact-WMF-5.0-image",
+      "required": true
+    },
+    {
+      "runtime_id": "windows-powershell-5.1",
+      "expected_major": 5,
+      "expected_minor": 1,
+      "runner_labels": [
+        "self-hosted",
+        "windows",
+        "x64",
+        "psmatrix-authority",
+        "windows-powershell-5.1"
+      ],
+      "wmf_policy": "inbox-Windows-PowerShell-5.1-image",
+      "required": true
+    }
+  ],
+  "completion": {
+    "required_runtime_count": 3,
+    "required_passed_runtime_count": 3,
+    "failed_runtime_count": 0,
+    "incomplete_runtime_count": 0,
+    "ga_eligible_only_after_protected_signature": true
+  }
+}
