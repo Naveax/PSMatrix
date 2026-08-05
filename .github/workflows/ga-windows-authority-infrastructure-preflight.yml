@@ -1,0 +1,152 @@
+name: production-ga-windows-authority-infrastructure-preflight
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_commit:
+        description: Full 40-character commit SHA whose Windows authority infrastructure will be validated
+        required: true
+        type: string
+      worker_timeout_seconds:
+        description: Per-worker authoritative health timeout, 5-120 seconds
+        required: true
+        default: "30"
+        type: string
+
+concurrency:
+  group: production-ga-windows-authority-infrastructure-preflight
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  authority-infrastructure:
+    name: Protected Hyper-V authority infrastructure
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    environment: production-ga-windows-lab
+    timeout-minutes: 30
+    env:
+      PSMATRIX_WINDOWS_GA_ROOT: ${{ vars.PSMATRIX_WINDOWS_GA_ROOT }}
+      PSMATRIX_RELEASE_PUBLIC_KEY: ${{ secrets.PSMATRIX_RELEASE_PUBLIC_KEY }}
+
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.release_commit }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up controller Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Validate workflow inputs and protected environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $releaseCommit = '${{ inputs.release_commit }}'
+          if ($releaseCommit -notmatch '^[0-9a-fA-F]{40}$') {
+              throw 'release_commit must be a full 40-character Git SHA.'
+          }
+          $timeout = 0
+          if (-not [int]::TryParse('${{ inputs.worker_timeout_seconds }}', [ref]$timeout)) {
+              throw 'worker_timeout_seconds must be an integer.'
+          }
+          if ($timeout -lt 5 -or $timeout -gt 120) {
+              throw "worker_timeout_seconds must be between 5 and 120; received $timeout."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_WINDOWS_GA_ROOT)) {
+              throw 'PSMATRIX_WINDOWS_GA_ROOT is missing from the protected environment.'
+          }
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_RELEASE_PUBLIC_KEY)) {
+              throw 'PSMATRIX_RELEASE_PUBLIC_KEY is missing from the protected environment.'
+          }
+          $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $head -ne $releaseCommit.ToLowerInvariant()) {
+              throw "Checked-out head does not match release_commit: $head"
+          }
+          Write-Host "release_commit=$head"
+          Write-Host "worker_timeout_seconds=$timeout"
+          Write-Host "runner_name=$env:RUNNER_NAME"
+
+      - name: Install exact controller package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install --disable-pip-version-check --no-deps --no-build-isolation .
+          if ($LASTEXITCODE -ne 0) {
+              throw "PSMatrix installation failed: $LASTEXITCODE"
+          }
+
+      - name: Materialize release public key
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $keyRoot = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-infrastructure-key'
+          if (Test-Path -LiteralPath $keyRoot) {
+              Remove-Item -LiteralPath $keyRoot -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $keyRoot | Out-Null
+          $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+          & icacls.exe $keyRoot /inheritance:r /grant:r "${identity}:(OI)(CI)F" | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+              throw 'Failed to restrict the public-key directory ACL.'
+          }
+          $path = Join-Path $keyRoot 'release.public.pem'
+          $utf8 = [System.Text.UTF8Encoding]::new($false)
+          [System.IO.File]::WriteAllText($path, $env:PSMATRIX_RELEASE_PUBLIC_KEY.Trim() + "`n", $utf8)
+          "PSMATRIX_INFRA_RELEASE_PUBLIC_KEY=$path" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Validate protected Windows authority infrastructure
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $outputRoot = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-authority-infrastructure'
+          if (Test-Path -LiteralPath $outputRoot) {
+              Remove-Item -LiteralPath $outputRoot -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $outputRoot | Out-Null
+          $report = Join-Path $outputRoot 'infrastructure-preflight.json'
+          $log = Join-Path $outputRoot 'validator.log'
+
+          & python scripts/ga/validate_windows_authority_infrastructure.py `
+              --source-root $env:GITHUB_WORKSPACE `
+              --ga-root $env:PSMATRIX_WINDOWS_GA_ROOT `
+              --release-commit '${{ inputs.release_commit }}' `
+              --release-public-key $env:PSMATRIX_INFRA_RELEASE_PUBLIC_KEY `
+              --timeout '${{ inputs.worker_timeout_seconds }}' `
+              --output $report 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          [System.IO.File]::WriteAllText(
+              (Join-Path $outputRoot 'validator-exit-code.txt'),
+              ([string]$code + [Environment]::NewLine),
+              [System.Text.UTF8Encoding]::new($false)
+          )
+          if (Test-Path -LiteralPath $report) {
+              Get-Content -LiteralPath $report -Raw
+          }
+          if ($code -ne 0) {
+              throw "Windows authority infrastructure is not ready; validator exit code $code."
+          }
+
+      - name: Remove release public key materialization
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $keyRoot = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-infrastructure-key'
+          if (Test-Path -LiteralPath $keyRoot) {
+              Remove-Item -LiteralPath $keyRoot -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload infrastructure preflight evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: production-ga-windows-authority-infrastructure-preflight
+          path: ${{ runner.temp }}\psmatrix-windows-authority-infrastructure
+          if-no-files-found: error
+          retention-days: 30
