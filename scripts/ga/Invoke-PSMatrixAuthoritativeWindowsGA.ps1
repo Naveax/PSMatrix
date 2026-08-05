@@ -10,7 +10,7 @@ param(
     [Parameter(Mandatory = $true)][string]$TrustHome,
     [Parameter(Mandatory = $true)][string]$ConfigRoot,
     [Parameter(Mandatory = $true)][string]$OutputDir,
-    [ValidateRange(2, 100)][int]$Iterations = 10,
+    [ValidateRange(10, 100)][int]$Iterations = 10,
     [ValidateRange(600, 21600)][int]$ProvisionTimeout = 14400,
     [ValidateRange(60, 3600)][int]$CampaignTimeout = 1800,
     [switch]$Provision
@@ -96,6 +96,11 @@ $binding = Invoke-PSMatrixJson @(
 if ([string]$binding.release_commit -ne $ReleaseCommit) {
     throw 'Release binding did not preserve the exact release commit.'
 }
+$releaseVersion = [string]$binding.release_version
+if ($releaseVersion -ne '2.0.0' -and -not $releaseVersion.StartsWith('2.0.0rc')) {
+    throw "Release binding version is outside the 2.0.0 line: $releaseVersion"
+}
+$gaEligible = ($releaseVersion -eq '2.0.0')
 
 $provisionResult = $null
 if ($Provision) {
@@ -176,20 +181,48 @@ foreach ($campaign in @($matrix.campaigns)) {
     }
 }
 
+foreach ($file in @(Get-ChildItem -LiteralPath $output -File -Recurse -ErrorAction Stop)) {
+    if (Select-String -LiteralPath $file.FullName -Pattern '-----BEGIN (?:ED25519 |EC |RSA )?PRIVATE KEY-----' -Quiet -ErrorAction SilentlyContinue) {
+        throw "Private key material was found in the evidence tree: $($file.FullName)"
+    }
+}
+
+$inventory = @()
+foreach ($file in @(Get-ChildItem -LiteralPath $output -File -Recurse -ErrorAction Stop | Sort-Object FullName)) {
+    $relative = $file.FullName.Substring($output.Length).TrimStart('\', '/') -replace '\\', '/'
+    $inventory += [ordered]@{
+        path = $relative
+        sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        size = [int64]$file.Length
+    }
+}
+$inventoryPath = Join-Path $output 'evidence-inventory.json'
+[ordered]@{
+    schema = 1
+    kind = 'psmatrix.windows-ga-evidence-inventory'
+    release_commit = $ReleaseCommit
+    files = $inventory
+} | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $inventoryPath -Encoding UTF8
+
 $statusPath = Join-Path $output 'windows-ga-operation-status.json'
 [ordered]@{
     schema = 1
     kind = 'psmatrix.windows-ga-operation-status'
-    status = 'PASS'
+    status = $(if ($gaEligible) { 'PASS' } else { 'PASS_PARTIAL' })
     authoritative = $true
+    release_bound = $true
+    ga_eligible = $gaEligible
+    release_version = $releaseVersion
     release_commit = $ReleaseCommit
     release_binding_sha256 = [string]$binding.binding_sha256
     matrix_attestation = [System.IO.Path]::GetFileName($matrixOutput)
     matrix_attestation_sha256 = (Get-FileHash -LiteralPath $matrixOutput -Algorithm SHA256).Hash.ToLowerInvariant()
+    evidence_inventory = [System.IO.Path]::GetFileName($inventoryPath)
+    evidence_inventory_sha256 = (Get-FileHash -LiteralPath $inventoryPath -Algorithm SHA256).Hash.ToLowerInvariant()
     campaign_iterations = $Iterations
     runtimes = $expectedRuntimes
     provisioned_in_this_run = [bool]$Provision
-    output_file_count = @(Get-ChildItem -LiteralPath $output -File -Recurse).Count
+    output_file_count = @(Get-ChildItem -LiteralPath $output -File -Recurse).Count + 1
 } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $statusPath -Encoding UTF8
 
 Get-Content -LiteralPath $statusPath -Raw
