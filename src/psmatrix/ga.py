@@ -499,11 +499,26 @@ def _release_gate(policy: dict[str, Any], base: Path) -> GateResult:
             digest for name, digest in artifact_digests.items()
             if name.endswith(".whl") and _SHA256_RE.fullmatch(digest)
         )
+        windows_worker_digests = sorted(
+            digest for name, digest in artifact_digests.items()
+            if name.endswith("-windows-workers.zip") and _SHA256_RE.fullmatch(digest)
+        )
+        windows_certification_digests = sorted(
+            digest for name, digest in artifact_digests.items()
+            if name.endswith("-windows-certification-kit.zip") and _SHA256_RE.fullmatch(digest)
+        )
+        windows_provisioning_digests = sorted(
+            digest for name, digest in artifact_digests.items()
+            if name.endswith("-windows-provisioning-kit.zip") and _SHA256_RE.fullmatch(digest)
+        )
         if not source_digests or not wheel_digests:
             raise GAGateError("Signed release must bind source ZIP and wheel artifacts")
         return GateResult(gate, "PASS", "Signed 2.0.0 release verified", {
             "manifest": str(manifest), "sha256": sha256_file(manifest), "artifacts": len(result.get("artifacts") or []),
             "source_sha256s": source_digests, "wheel_sha256s": wheel_digests,
+            "windows_worker_sha256s": windows_worker_digests,
+            "windows_certification_kit_sha256s": windows_certification_digests,
+            "windows_provisioning_kit_sha256s": windows_provisioning_digests,
         })
     except FileNotFoundError as exc:
         return GateResult(gate, "INCOMPLETE", f"Evidence file is missing: {exc}", {})
@@ -529,8 +544,18 @@ def _windows_gate(policy: dict[str, Any], base: Path) -> GateResult:
         expected = ["windows-powershell-4.0", "windows-powershell-5.0", "windows-powershell-5.1"]
         if result.get("runtimes") != expected:
             raise GAGateError("Authoritative Windows runtime set is not exact")
+        binding = result.get("release_binding") if isinstance(result.get("release_binding"), dict) else None
+        if result.get("release_bound") is not True or binding is None:
+            raise GAGateError("Authoritative Windows matrix is not bound to the signed release")
         return GateResult(gate, "PASS", "Authoritative Windows matrix verified", {
             "path": str(path), "sha256": sha256_file(path), "runtimes": expected,
+            "release_commit": binding.get("release_commit"),
+            "release_manifest_sha256": binding.get("release_manifest_sha256"),
+            "source_sha256": (binding.get("source") or {}).get("sha256"),
+            "windows_worker_sha256": (binding.get("windows_workers") or {}).get("sha256"),
+            "windows_certification_kit_sha256": (binding.get("windows_certification_kit") or {}).get("sha256"),
+            "windows_provisioning_kit_sha256": (binding.get("windows_provisioning_kit") or {}).get("sha256"),
+            "release_binding_sha256": binding.get("binding_sha256"),
         })
     except FileNotFoundError as exc:
         return GateResult(gate, "INCOMPLETE", f"Evidence file is missing: {exc}", {})
@@ -640,6 +665,24 @@ def _enforce_cross_gate_bindings(results: list[GateResult]) -> list[GateResult]:
     source_digests = set(str(item).lower() for item in release.evidence.get("source_sha256s") or [])
     wheel_digests = set(str(item).lower() for item in release.evidence.get("wheel_sha256s") or [])
     replacements: dict[str, GateResult] = {}
+
+    windows = by_gate.get("authoritative-windows")
+    if windows is not None and windows.status == "PASS":
+        reason = None
+        if windows.evidence.get("release_commit") != expected_commit:
+            reason = "Authoritative Windows proof does not bind the validated release commit"
+        elif windows.evidence.get("release_manifest_sha256") != expected_release:
+            reason = "Authoritative Windows proof does not bind the signed final release manifest"
+        elif windows.evidence.get("source_sha256") not in source_digests:
+            reason = "Authoritative Windows proof does not bind a source ZIP from the signed release"
+        elif windows.evidence.get("windows_worker_sha256") not in set(release.evidence.get("windows_worker_sha256s") or []):
+            reason = "Authoritative Windows proof does not bind the signed Windows worker package"
+        elif windows.evidence.get("windows_certification_kit_sha256") not in set(release.evidence.get("windows_certification_kit_sha256s") or []):
+            reason = "Authoritative Windows proof does not bind the signed certification kit"
+        elif windows.evidence.get("windows_provisioning_kit_sha256") not in set(release.evidence.get("windows_provisioning_kit_sha256s") or []):
+            reason = "Authoritative Windows proof does not bind the signed provisioning kit"
+        if reason:
+            replacements[windows.gate] = GateResult(windows.gate, "FAIL", reason, windows.evidence)
 
     review = by_gate.get("security-review")
     if review is not None and review.status == "PASS":

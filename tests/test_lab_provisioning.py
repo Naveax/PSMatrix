@@ -11,11 +11,13 @@ from psmatrix.lab_provisioning import (
     WindowsLabManifest,
     build_provision_plan,
     build_provisioning_kit,
+    build_windows_release_binding,
     create_authoritative_matrix_attestation,
     lab_profiles,
     verify_authoritative_matrix_attestation,
     verify_provisioning_kit,
 )
+from psmatrix.release import create_release_manifest
 from psmatrix.signing import generate_ed25519_keypair
 from psmatrix.util import sha256_file
 
@@ -25,6 +27,28 @@ class LabProvisioningTests(unittest.TestCase):
         path = root / name
         path.write_bytes((name + "\n").encode())
         return {"path": str(path), "sha256": sha256_file(path), "size": path.stat().st_size}
+
+    def _release_binding(self, root: Path, private: Path, public: Path) -> dict:
+        artifacts = []
+        for name in (
+            "psmatrix-2.0.0-source.zip",
+            "psmatrix-2.0.0-py3-none-any.whl",
+            "psmatrix-2.0.0-windows-workers.zip",
+            "psmatrix-2.0.0-windows-certification-kit.zip",
+            "psmatrix-2.0.0-windows-provisioning-kit.zip",
+        ):
+            path = root / name
+            path.write_bytes((name + "\n").encode())
+            artifacts.append(path)
+        manifest = root / "psmatrix-2.0.0-release.json"
+        create_release_manifest(
+            artifacts, manifest, version="2.0.0",
+            signing_private_key=private, signing_public_key=public,
+        )
+        return build_windows_release_binding(
+            release_manifest=manifest, artifact_dir=root, release_public_key=public,
+            release_commit="1" * 40, output=root / "release-binding.json",
+        )
 
     def _manifest(self, root: Path, *, omit_wmf: bool = False) -> Path:
         common = {
@@ -125,14 +149,56 @@ class LabProvisioningTests(unittest.TestCase):
                 {"runtime_id": runtime, "valid": True, "run_count": 3, "campaign_sha256": "a" * 64, "image_manifest_sha256": "b" * 64}
                 for runtime in ("windows-powershell-4.0", "windows-powershell-5.0", "windows-powershell-5.1")
             ]
-            envelope = create_authoritative_matrix_attestation(matrix_id="matrix-1", campaigns=campaigns, private_key=private, public_key=public)
+            binding = self._release_binding(root, private, public)
+            envelope = create_authoritative_matrix_attestation(
+                matrix_id="matrix-1", campaigns=campaigns, private_key=private, public_key=public,
+                release_binding=binding,
+            )
             path = root / "matrix.json"
             path.write_text(json.dumps(envelope), encoding="utf-8")
             result = verify_authoritative_matrix_attestation(path, public_key=public)
             self.assertTrue(result["valid"])
             self.assertEqual(result["campaign_count"], 3)
+            self.assertTrue(result["release_bound"])
+            self.assertEqual(result["release_binding"]["release_commit"], "1" * 40)
             with self.assertRaises(LabProvisioningError):
                 create_authoritative_matrix_attestation(matrix_id="bad", campaigns=campaigns[:2], private_key=private, public_key=public)
+
+    def test_release_binding_requires_signed_complete_windows_artifact_set(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            private = root / "private.pem"
+            public = root / "public.pem"
+            generate_ed25519_keypair(private, public)
+            binding = self._release_binding(root, private, public)
+            self.assertEqual(binding["release_version"], "2.0.0")
+            self.assertEqual(binding["release_commit"], "1" * 40)
+            self.assertEqual(len(binding["binding_sha256"]), 64)
+            broken = json.loads((root / "release-binding.json").read_text())
+            broken["windows_workers"]["sha256"] = "0" * 64
+            (root / "release-binding-broken.json").write_text(json.dumps(broken), encoding="utf-8")
+            from psmatrix.lab_provisioning import load_windows_release_binding
+            with self.assertRaises(LabProvisioningError):
+                load_windows_release_binding(root / "release-binding-broken.json")
+
+    def test_v1_matrix_remains_verifiable_but_is_not_release_bound(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            private = root / "private.pem"
+            public = root / "public.pem"
+            generate_ed25519_keypair(private, public)
+            campaigns = [
+                {"runtime_id": runtime, "valid": True, "run_count": 2, "campaign_sha256": "a" * 64, "image_manifest_sha256": "b" * 64}
+                for runtime in ("windows-powershell-4.0", "windows-powershell-5.0", "windows-powershell-5.1")
+            ]
+            envelope = create_authoritative_matrix_attestation(
+                matrix_id="legacy", campaigns=campaigns, private_key=private, public_key=public,
+            )
+            path = root / "legacy.json"
+            path.write_text(json.dumps(envelope), encoding="utf-8")
+            result = verify_authoritative_matrix_attestation(path, public_key=public)
+            self.assertTrue(result["valid"])
+            self.assertFalse(result["release_bound"])
 
     def test_matrix_spec_requires_three_unique_exact_runtimes(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -162,23 +162,35 @@ Existing VMs or VHDX files are rejected.
 
 ## Run the authoritative Windows 4.0/5.0/5.1 matrix
 
+First bind the exact release commit and signed Windows artifacts:
+
 ```bash
+./psmatrix lab release-binding \
+  --release-manifest dist/psmatrix-2.0.0-release.json \
+  --artifact-dir dist \
+  --release-public-key secrets/release-public.pem \
+  --release-commit <FULL_40_CHARACTER_COMMIT_SHA> \
+  --output .psmatrix/windows-release-binding.json
+
 ./psmatrix lab authoritative-matrix \
   --spec examples/windows-authoritative-matrix.json \
   --output-dir .psmatrix/windows-authoritative-runs \
   --matrix-output .psmatrix/windows-authoritative-matrix.dsse.json \
-  --private-key secrets/release-private.pem \
-  --public-key secrets/release-public.pem
+  --private-key secrets/windows-lab-private.pem \
+  --public-key secrets/windows-lab-public.pem \
+  --release-binding .psmatrix/windows-release-binding.json
 
 ./psmatrix lab verify-authoritative-matrix \
   .psmatrix/windows-authoritative-matrix.dsse.json \
-  --public-key secrets/release-public.pem
+  --public-key secrets/windows-lab-public.pem
 ```
 
 Each runtime must complete repeated snapshot-reset campaigns with Registry,
 Services, COM, WMI, Event Log, Scheduled Tasks, NTFS ACL, certificate-store and
-process checks. The final matrix signature is withheld unless all three exact
-runtimes pass authoritatively.
+process checks. Production GA accepts only predicate v2 evidence bound to the
+final commit, signed release manifest, source ZIP, worker package, certification
+kit and provisioning kit. Historical v1 evidence remains verifiable but cannot
+open the GA gate.
 
 ## Worker PKI and rotation
 

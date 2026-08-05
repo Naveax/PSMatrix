@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-ga-runner-layout",
+  "root": "C:\\ProgramData\\PSMatrix\\ProductionGA",
+  "required": {
+    "release": [
+      "release\\psmatrix-2.0.0-release.json",
+      "release\\psmatrix-2.0.0-source.zip",
+      "release\\psmatrix-2.0.0-windows-workers.zip",
+      "release\\psmatrix-2.0.0-windows-certification-kit.zip",
+      "release\\psmatrix-2.0.0-windows-provisioning-kit.zip"
+    ],
+    "config": [
+      "config\\hyperv-host-endpoint.json",
+      "config\\windows-lab-media.json",
+      "config\\windows-powershell-4.0-endpoint.json",
+      "config\\windows-powershell-4.0-image.json",
+      "config\\windows-powershell-5.0-endpoint.json",
+      "config\\windows-powershell-5.0-image.json",
+      "config\\windows-powershell-5.1-endpoint.json",
+      "config\\windows-powershell-5.1-image.json"
+    ],
+    "trust": ["trust-home\\trust.json"]
+  },
+  "secrets": "GitHub protected environment only; never place private keys under this root"
+}

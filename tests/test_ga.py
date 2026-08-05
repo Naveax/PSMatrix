@@ -15,7 +15,7 @@ from psmatrix.ga import (
     verify_ga_proof,
     write_ga_template,
 )
-from psmatrix.lab_provisioning import create_authoritative_matrix_attestation
+from psmatrix.lab_provisioning import build_windows_release_binding, create_authoritative_matrix_attestation
 from psmatrix.recovery import list_recovery_cases, sign_recovery_report
 from psmatrix.release import create_release_manifest
 from psmatrix.signing import generate_ed25519_keypair, public_key_id
@@ -103,10 +103,22 @@ class GAGateTests(unittest.TestCase):
         artifact.write_bytes(b"wheel")
         source_artifact = root / "release" / "psmatrix-2.0.0-source.zip"
         source_artifact.write_bytes(b"source")
+        windows_workers = root / "release" / "psmatrix-2.0.0-windows-workers.zip"
+        windows_workers.write_bytes(b"windows-workers")
+        windows_certification = root / "release" / "psmatrix-2.0.0-windows-certification-kit.zip"
+        windows_certification.write_bytes(b"windows-certification")
+        windows_provisioning = root / "release" / "psmatrix-2.0.0-windows-provisioning-kit.zip"
+        windows_provisioning.write_bytes(b"windows-provisioning")
         release_manifest_path = root / "release" / "psmatrix-2.0.0-release.json"
         create_release_manifest(
-            [artifact, source_artifact], release_manifest_path, version="2.0.0",
+            [artifact, source_artifact, windows_workers, windows_certification, windows_provisioning],
+            release_manifest_path, version="2.0.0",
             signing_private_key=roles["release"][0], signing_public_key=roles["release"][1],
+        )
+        windows_binding = build_windows_release_binding(
+            release_manifest=release_manifest_path, artifact_dir=root / "release",
+            release_public_key=roles["release"][1], release_commit="a" * 40,
+            output=root / "evidence" / "windows-release-binding.json",
         )
 
         campaigns = [
@@ -116,6 +128,7 @@ class GAGateTests(unittest.TestCase):
         windows = create_authoritative_matrix_attestation(
             matrix_id="ga-windows", campaigns=campaigns,
             private_key=roles["windows-lab"][0], public_key=roles["windows-lab"][1],
+            release_binding=windows_binding,
         )
         (root / "evidence" / "windows-authoritative.dsse.json").write_text(json.dumps(windows), encoding="utf-8")
 
@@ -360,6 +373,37 @@ class GAGateTests(unittest.TestCase):
             }, *roles["vulnerability-scanner"])
             evaluation = evaluate_ga(policy)
             gate = next(item for item in evaluation.gates if item.gate == "vulnerability-scan")
+            self.assertEqual(gate.status, "FAIL")
+            self.assertIn("validated release commit", gate.message)
+
+    def test_authoritative_windows_must_bind_final_release_and_commit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            policy, roles = self._complete_fixture(root)
+            matrix_path = root / "evidence" / "windows-authoritative.dsse.json"
+            envelope = json.loads(matrix_path.read_text())
+            from psmatrix.signing import verify_dsse_envelope
+            statement = verify_dsse_envelope(envelope, roles["windows-lab"][1])["statement"]
+            binding = statement["predicate"]["release_binding"]
+            binding["release_commit"] = "e" * 40
+            unsigned = dict(binding)
+            unsigned.pop("binding_sha256", None)
+            import hashlib
+            from psmatrix.signing import canonical_json_bytes, create_dsse_envelope
+            binding["binding_sha256"] = hashlib.sha256(canonical_json_bytes(unsigned)).hexdigest()
+            statement["predicate"]["release_binding"] = binding
+            statement["subject"] = [
+                item for item in statement["subject"] if item.get("name") not in {
+                    binding["source"]["name"], binding["windows_workers"]["name"],
+                    binding["windows_certification_kit"]["name"], binding["windows_provisioning_kit"]["name"],
+                }
+            ] + [
+                {"name": binding[key]["name"], "digest": {"sha256": binding[key]["sha256"]}}
+                for key in ("source", "windows_workers", "windows_certification_kit", "windows_provisioning_kit")
+            ]
+            matrix_path.write_text(json.dumps(create_dsse_envelope(statement, roles["windows-lab"][0], roles["windows-lab"][1])), encoding="utf-8")
+            evaluation = evaluate_ga(policy)
+            gate = next(item for item in evaluation.gates if item.gate == "authoritative-windows")
             self.assertEqual(gate.status, "FAIL")
             self.assertIn("validated release commit", gate.message)
 

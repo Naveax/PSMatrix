@@ -68,6 +68,7 @@ from .lab_certification import (
 from .lab_provisioning import (
     build_provision_plan,
     build_provisioning_kit,
+    build_windows_release_binding,
     lab_profiles,
     provision_remote_hyperv_lab,
     run_authoritative_matrix,
@@ -726,12 +727,19 @@ def build_parser() -> argparse.ArgumentParser:
     lab_provision.add_argument("--source-root", type=Path, default=Path.cwd())
     lab_provision.add_argument("--report-json", type=Path)
     lab_provision.add_argument("--timeout", type=int, default=7200)
+    lab_binding = lab_sub.add_parser("release-binding")
+    lab_binding.add_argument("--release-manifest", type=Path, required=True)
+    lab_binding.add_argument("--artifact-dir", type=Path, required=True)
+    lab_binding.add_argument("--release-public-key", type=Path, required=True)
+    lab_binding.add_argument("--release-commit", required=True)
+    lab_binding.add_argument("--output", type=Path, required=True)
     lab_matrix = lab_sub.add_parser("authoritative-matrix")
     lab_matrix.add_argument("--spec", type=Path, required=True)
     lab_matrix.add_argument("--output-dir", type=Path, required=True)
     lab_matrix.add_argument("--matrix-output", type=Path, required=True)
     lab_matrix.add_argument("--private-key", type=Path, required=True)
     lab_matrix.add_argument("--public-key", type=Path, required=True)
+    lab_matrix.add_argument("--release-binding", type=Path, required=True)
     lab_matrix.add_argument("--timeout", type=int, default=1800)
     lab_verify_matrix = lab_sub.add_parser("verify-authoritative-matrix")
     lab_verify_matrix.add_argument("attestation", type=Path)
@@ -1667,11 +1675,19 @@ def main(argv: list[str] | None = None) -> int:
                     atomic_write_json(args.report_json.resolve(), result)
                 print(json.dumps(result, ensure_ascii=False, indent=2))
                 return 0 if result.get("status") == "PASS" else 1
+            if args.lab_command == "release-binding":
+                result = build_windows_release_binding(
+                    release_manifest=args.release_manifest, artifact_dir=args.artifact_dir,
+                    release_public_key=args.release_public_key, release_commit=args.release_commit,
+                    output=args.output,
+                )
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+                return 0
             if args.lab_command == "authoritative-matrix":
                 result = run_authoritative_matrix(
                     args.spec, output_dir=args.output_dir, matrix_output=args.matrix_output,
                     private_key=args.private_key, public_key=args.public_key,
-                    trust_home=manager.home, timeout=args.timeout,
+                    trust_home=manager.home, release_binding_path=args.release_binding, timeout=args.timeout,
                 )
                 print(json.dumps(result, ensure_ascii=False, indent=2))
                 return 0 if result.get("status") == "PASS" else 1

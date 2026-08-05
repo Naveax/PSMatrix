@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://psmatrix.dev/schemas/windows-release-binding.schema.json",
+  "title": "PSMatrix authoritative Windows release binding",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "kind", "release_version", "release_commit", "release_manifest_sha256",
+    "source", "windows_workers", "windows_certification_kit", "windows_provisioning_kit",
+    "release_key_ids", "binding_sha256"
+  ],
+  "properties": {
+    "schema": {"const": 1},
+    "kind": {"const": "psmatrix.windows-release-binding"},
+    "release_version": {"type": "string", "pattern": "^2\\.0\\.0(?:rc[1-9][0-9]*)?$"},
+    "release_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "release_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "binding_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "release_key_ids": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+    },
+    "source": {"$ref": "#/$defs/artifact"},
+    "windows_workers": {"$ref": "#/$defs/artifact"},
+    "windows_certification_kit": {"$ref": "#/$defs/artifact"},
+    "windows_provisioning_kit": {"$ref": "#/$defs/artifact"}
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "sha256", "size"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[^/\\\\]+$"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "size": {"type": "integer", "minimum": 1}
+      }
+    }
+  }
+}

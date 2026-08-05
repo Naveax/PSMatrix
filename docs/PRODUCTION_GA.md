@@ -22,6 +22,12 @@ Final `2.0.0` requires all eleven gates:
 Missing evidence is `INCOMPLETE`. Invalid, stale, local-only, or negative
 evidence is `FAIL`. Neither state can be signed as Production GA.
 
+The authoritative Windows gate additionally requires a release-bound v2 matrix.
+Its full commit SHA, signed release manifest digest, source ZIP, Windows worker
+package, certification kit and provisioning kit must match the final validation
+and signed `2.0.0` release. A valid matrix from another RC or commit is rejected.
+See `docs/PRODUCTION_GA_WINDOWS.md`.
+
 ## Initialize
 
 ```bash

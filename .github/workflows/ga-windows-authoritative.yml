@@ -1,0 +1,116 @@
+name: production-ga-authoritative-windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_commit:
+        description: Full 40-character commit SHA of the release candidate/final release
+        required: true
+        type: string
+      iterations:
+        description: Certification runs per Windows PowerShell runtime
+        required: true
+        default: "10"
+        type: string
+      provision:
+        description: Provision/rebuild all three Hyper-V golden images before certification
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: production-ga-authoritative-windows
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  authoritative-windows:
+    name: Windows PowerShell 4.0 / 5.0 / 5.1
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    environment: production-ga-windows-lab
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    env:
+      PSMATRIX_WINDOWS_GA_ROOT: ${{ vars.PSMATRIX_WINDOWS_GA_ROOT }}
+    steps:
+      - name: Check out exact release revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.release_commit }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up controller Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Verify exact checked-out commit and protected layout
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ('${{ inputs.release_commit }}' -notmatch '^[0-9a-fA-F]{40}$') { throw 'release_commit is not a full SHA.' }
+          $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($head -ne '${{ inputs.release_commit }}'.ToLowerInvariant()) { throw "Checked out $head instead of the requested release commit." }
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_WINDOWS_GA_ROOT)) { throw 'PSMATRIX_WINDOWS_GA_ROOT repository variable is missing.' }
+          if (-not (Test-Path -LiteralPath $env:PSMATRIX_WINDOWS_GA_ROOT -PathType Container)) { throw 'Windows GA root is unavailable on the self-hosted runner.' }
+
+      - name: Materialize controller-only signing keys
+        shell: pwsh
+        env:
+          WINDOWS_LAB_PRIVATE_KEY: ${{ secrets.PSMATRIX_WINDOWS_LAB_PRIVATE_KEY }}
+          WINDOWS_LAB_PUBLIC_KEY: ${{ secrets.PSMATRIX_WINDOWS_LAB_PUBLIC_KEY }}
+          RELEASE_PUBLIC_KEY: ${{ secrets.PSMATRIX_RELEASE_PUBLIC_KEY }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($name in @('WINDOWS_LAB_PRIVATE_KEY','WINDOWS_LAB_PUBLIC_KEY','RELEASE_PUBLIC_KEY')) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name, 'Process'))) { throw "$name is missing." }
+          }
+          $keyRoot = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-ga-keys'
+          if (Test-Path -LiteralPath $keyRoot) { Remove-Item -LiteralPath $keyRoot -Recurse -Force }
+          New-Item -ItemType Directory -Path $keyRoot | Out-Null
+          [System.IO.File]::WriteAllText((Join-Path $keyRoot 'windows-lab.private.pem'), $env:WINDOWS_LAB_PRIVATE_KEY + "`n")
+          [System.IO.File]::WriteAllText((Join-Path $keyRoot 'windows-lab.public.pem'), $env:WINDOWS_LAB_PUBLIC_KEY + "`n")
+          [System.IO.File]::WriteAllText((Join-Path $keyRoot 'release.public.pem'), $env:RELEASE_PUBLIC_KEY + "`n")
+          icacls.exe $keyRoot /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F" | Out-Null
+
+      - name: Run release-bound authoritative Windows campaign
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $keyRoot = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-ga-keys'
+          $output = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-ga-evidence'
+          if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
+          $params = @{
+            SourceRoot = $env:GITHUB_WORKSPACE
+            ReleaseCommit = '${{ inputs.release_commit }}'
+            ReleaseManifest = (Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'release\psmatrix-2.0.0-release.json')
+            ReleaseArtifactDir = (Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'release')
+            ReleasePublicKey = (Join-Path $keyRoot 'release.public.pem')
+            LabPrivateKey = (Join-Path $keyRoot 'windows-lab.private.pem')
+            LabPublicKey = (Join-Path $keyRoot 'windows-lab.public.pem')
+            TrustHome = (Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'trust-home')
+            ConfigRoot = (Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'config')
+            OutputDir = $output
+            Iterations = [int]'${{ inputs.iterations }}'
+          }
+          if ('${{ inputs.provision }}' -eq 'true') { $params.Provision = $true }
+          & "$env:GITHUB_WORKSPACE\scripts\ga\Invoke-PSMatrixAuthoritativeWindowsGA.ps1" @params
+
+      - name: Remove controller private key
+        if: always()
+        shell: pwsh
+        run: |
+          $keyRoot = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-ga-keys'
+          if (Test-Path -LiteralPath $keyRoot) { Remove-Item -LiteralPath $keyRoot -Recurse -Force }
+
+      - name: Upload authoritative Windows evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: production-ga-authoritative-windows
+          path: ${{ runner.temp }}\psmatrix-windows-ga-evidence
+          if-no-files-found: error
+          retention-days: 30

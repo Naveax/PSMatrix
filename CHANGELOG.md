@@ -19,6 +19,15 @@
 - Keep vulnerability signing in the protected `production-ga-vulnerability` environment, separate from untrusted scanner jobs.
 - Bind the release commit, reproducible wheel digest, scanner versions, scanner exit codes, installed package inventory, and raw result digests into the signed proof.
 
+### Authoritative Windows GA operation
+
+- Add a protected, manual-only self-hosted Hyper-V workflow for exact Windows PowerShell 4.0, 5.0 and 5.1 campaigns.
+- Add signed release binding for the final commit, release manifest, source ZIP, Windows worker package, certification kit and provisioning kit.
+- Introduce authoritative Windows matrix predicate v2 with release artifacts as DSSE subjects.
+- Preserve historical v1 verification while rejecting unbound v1 evidence from the Production GA gate.
+- Cross-bind authoritative Windows evidence to the final validation commit and signed release artifact inventory.
+- Add a controller PowerShell orchestrator, protected-runner layout template and operator documentation.
+
 ### Evidence boundary
 
 - External Bandit, pip-audit, CodeQL, authoritative Windows, public deployment, and independent-review evidence remain required for final GA. RC2 does not convert local preflight results into GA PASS.

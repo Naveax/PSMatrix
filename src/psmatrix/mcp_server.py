@@ -55,6 +55,7 @@ from .ga import (
 from .lab_provisioning import (
     build_provision_plan,
     build_provisioning_kit,
+    build_windows_release_binding,
     lab_profiles,
     provision_remote_hyperv_lab,
     run_authoritative_matrix,
@@ -438,8 +439,9 @@ def tool_definitions() -> list[dict[str, Any]]:
             "inputSchema": _object_schema({
                 "specPath": path_string, "outputDir": path_string, "matrixOutputPath": path_string,
                 "privateKeyPath": path_string, "publicKeyPath": path_string,
+                "releaseBindingPath": path_string,
                 "timeout": {"type": "integer", "minimum": 30, "maximum": 3600, "default": 1800},
-            }, required=["specPath", "outputDir", "matrixOutputPath", "privateKeyPath", "publicKeyPath"]),
+            }, required=["specPath", "outputDir", "matrixOutputPath", "privateKeyPath", "publicKeyPath", "releaseBindingPath"]),
             "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False},
         },
         {
@@ -1502,6 +1504,7 @@ class MCPServer:
             private_key=self._project_path(str(args.get("privateKeyPath") or "")),
             public_key=self._project_path(str(args.get("publicKeyPath") or "")),
             trust_home=self.home,
+            release_binding_path=self._project_path(str(args.get("releaseBindingPath") or "")),
             timeout=int(args.get("timeout") or 1800),
         )
 

@@ -13,6 +13,7 @@ from typing import Any
 from .errors import PSMatrixError
 from .lab_certification import run_certification_campaign, verify_campaign_attestation
 from .remote_worker import RemoteEndpoint, probe_remote_endpoint, submit_remote_job
+from .release import verify_release_manifest
 from .signing import canonical_json_bytes, create_dsse_envelope, verify_dsse_envelope
 from .util import atomic_write_bytes, atomic_write_json, read_json, sha256_file, utc_now_iso
 
@@ -71,6 +72,111 @@ def _sha256(value: Any, label: str) -> str:
         raise LabProvisioningError(f"{label} must be a SHA-256 digest")
     return text
 
+
+
+
+def _commit_sha(value: Any, label: str) -> str:
+    text = str(value or "").lower()
+    if len(text) != 40 or any(ch not in "0123456789abcdef" for ch in text):
+        raise LabProvisioningError(f"{label} must be a full 40-character Git commit SHA")
+    return text
+
+
+def _release_item(value: Any, label: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise LabProvisioningError(f"{label} must be an object")
+    name = str(value.get("name") or "")
+    if not name or Path(name).name != name or "/" in name or "\\" in name:
+        raise LabProvisioningError(f"{label}.name is unsafe")
+    size = int(value.get("size") or 0)
+    if size <= 0:
+        raise LabProvisioningError(f"{label}.size must be positive")
+    return {"name": name, "sha256": _sha256(value.get("sha256"), f"{label}.sha256"), "size": size}
+
+
+def _single_release_artifact(artifacts: list[dict[str, Any]], suffix: str, label: str) -> dict[str, Any]:
+    matches = [item for item in artifacts if isinstance(item, dict) and str(item.get("name") or "").endswith(suffix)]
+    if len(matches) != 1:
+        raise LabProvisioningError(f"Signed release must contain exactly one {label}")
+    return _release_item(matches[0], label)
+
+
+def build_windows_release_binding(
+    *,
+    release_manifest: Path,
+    artifact_dir: Path,
+    release_public_key: Path,
+    release_commit: str,
+    output: Path | None = None,
+) -> dict[str, Any]:
+    manifest_path = release_manifest.resolve()
+    artifact_root = artifact_dir.resolve()
+    verified = verify_release_manifest(manifest_path, artifact_root, signing_public_key=release_public_key.resolve())
+    version = str(verified.get("version") or "")
+    if not (version == "2.0.0" or version.startswith("2.0.0rc")):
+        raise LabProvisioningError("Windows authoritative evidence must bind a 2.0.0 release candidate or final release")
+    root = read_json(manifest_path)
+    manifest = root.get("manifest") if isinstance(root, dict) and isinstance(root.get("manifest"), dict) else {}
+    artifacts = manifest.get("artifacts") if isinstance(manifest.get("artifacts"), list) else []
+    source = _single_release_artifact(artifacts, "-source.zip", "source ZIP")
+    workers = _single_release_artifact(artifacts, "-windows-workers.zip", "Windows worker package")
+    certification = _single_release_artifact(artifacts, "-windows-certification-kit.zip", "Windows certification kit")
+    provisioning = _single_release_artifact(artifacts, "-windows-provisioning-kit.zip", "Windows provisioning kit")
+    binding = {
+        "schema": 1,
+        "kind": "psmatrix.windows-release-binding",
+        "release_version": version,
+        "release_commit": _commit_sha(release_commit, "release_commit"),
+        "release_manifest_sha256": sha256_file(manifest_path),
+        "source": source,
+        "windows_workers": workers,
+        "windows_certification_kit": certification,
+        "windows_provisioning_kit": provisioning,
+        "release_key_ids": list((verified.get("signature") or {}).get("key_ids") or []),
+    }
+    binding["binding_sha256"] = hashlib.sha256(canonical_json_bytes(binding)).hexdigest()
+    if output is not None:
+        atomic_write_json(output.resolve(), binding)
+    return binding
+
+
+def load_windows_release_binding(path: Path) -> dict[str, Any]:
+    value = read_json(path.resolve())
+    if not isinstance(value, dict) or value.get("schema") != 1 or value.get("kind") != "psmatrix.windows-release-binding":
+        raise LabProvisioningError("Unsupported Windows release binding")
+    normalized = {
+        "schema": 1,
+        "kind": "psmatrix.windows-release-binding",
+        "release_version": str(value.get("release_version") or ""),
+        "release_commit": _commit_sha(value.get("release_commit"), "release_commit"),
+        "release_manifest_sha256": _sha256(value.get("release_manifest_sha256"), "release_manifest_sha256"),
+        "source": _release_item(value.get("source"), "source"),
+        "windows_workers": _release_item(value.get("windows_workers"), "windows_workers"),
+        "windows_certification_kit": _release_item(value.get("windows_certification_kit"), "windows_certification_kit"),
+        "windows_provisioning_kit": _release_item(value.get("windows_provisioning_kit"), "windows_provisioning_kit"),
+        "release_key_ids": [str(item) for item in value.get("release_key_ids", [])],
+    }
+    expected = hashlib.sha256(canonical_json_bytes(normalized)).hexdigest()
+    if value.get("binding_sha256") != expected:
+        raise LabProvisioningError("Windows release binding digest is invalid")
+    normalized["binding_sha256"] = expected
+    if not (normalized["release_version"] == "2.0.0" or normalized["release_version"].startswith("2.0.0rc")):
+        raise LabProvisioningError("Windows release binding version is not a 2.0.0 release")
+    expected_suffixes = {
+        "source": "-source.zip",
+        "windows_workers": "-windows-workers.zip",
+        "windows_certification_kit": "-windows-certification-kit.zip",
+        "windows_provisioning_kit": "-windows-provisioning-kit.zip",
+    }
+    for key, suffix in expected_suffixes.items():
+        if not normalized[key]["name"].endswith(suffix):
+            raise LabProvisioningError(f"Windows release binding {key} artifact name is invalid")
+    if not normalized["release_key_ids"] or any(
+        len(item) != 71 or not item.startswith("sha256:") or any(ch not in "0123456789abcdef" for ch in item[7:])
+        for item in normalized["release_key_ids"]
+    ):
+        raise LabProvisioningError("Windows release binding lacks valid release key identity")
+    return normalized
 
 def _host_path(value: Any, label: str) -> str:
     text = str(value or "")
@@ -288,6 +394,7 @@ def _package_files(source_root: Path) -> dict[str, Path]:
         "scripts/Collect-AuthoritativeWindowsEvidence.ps1": (root / "src/psmatrix/windows/lab/Collect-AuthoritativeWindowsEvidence.ps1", package_lab / "Collect-AuthoritativeWindowsEvidence.ps1"),
         "schemas/windows-lab-media.schema.json": (root / "schemas/windows-lab-media.schema.json", package_lab / "windows-lab-media.schema.json"),
         "schemas/windows-authoritative-matrix.schema.json": (root / "schemas/windows-authoritative-matrix.schema.json", package_lab / "windows-authoritative-matrix.schema.json"),
+        "schemas/windows-release-binding.schema.json": (root / "schemas/windows-release-binding.schema.json", package_lab / "windows-release-binding.schema.json"),
         "schemas/windows-hyperv-provision-plan.schema.json": (root / "schemas/windows-hyperv-provision-plan.schema.json", package_lab / "windows-hyperv-provision-plan.schema.json"),
         "schemas/windows-hyperv-provision-result.schema.json": (root / "schemas/windows-hyperv-provision-result.schema.json", package_lab / "windows-hyperv-provision-result.schema.json"),
         "schemas/windows-authoritative-matrix-predicate.schema.json": (root / "schemas/windows-authoritative-matrix-predicate.schema.json", package_lab / "windows-authoritative-matrix-predicate.schema.json"),
@@ -494,6 +601,7 @@ def create_authoritative_matrix_attestation(
     campaigns: list[dict[str, Any]],
     private_key: Path,
     public_key: Path,
+    release_binding: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     runtimes = {str(item.get("runtime_id")) for item in campaigns}
     if runtimes != set(_RUNTIME_IDS) or len(campaigns) != 3:
@@ -501,18 +609,36 @@ def create_authoritative_matrix_attestation(
     for item in campaigns:
         if item.get("valid") is not True or int(item.get("run_count") or 0) < 2:
             raise LabProvisioningError("Every authoritative matrix campaign must be valid and repeated")
+    normalized_binding = None
+    if release_binding is not None:
+        with tempfile.TemporaryDirectory() as temp:
+            binding_path = Path(temp) / "release-binding.json"
+            atomic_write_json(binding_path, release_binding)
+            normalized_binding = load_windows_release_binding(binding_path)
+    sorted_campaigns = sorted(campaigns, key=lambda item: str(item["runtime_id"]))
+    predicate = {
+        "schema": 2 if normalized_binding is not None else 1,
+        "matrix_id": matrix_id,
+        "created_at": utc_now_iso(),
+        "required_runtimes": list(_RUNTIME_IDS),
+        "campaigns": sorted_campaigns,
+        "authoritative": True,
+    }
+    if normalized_binding is not None:
+        predicate["release_binding"] = normalized_binding
     statement = {
         "_type": "https://in-toto.io/Statement/v1",
-        "subject": [{"name": matrix_id, "digest": {"sha256": hashlib.sha256(canonical_json_bytes(campaigns)).hexdigest()}}],
-        "predicateType": "https://psmatrix.dev/attestation/windows-authoritative-matrix/v1",
-        "predicate": {
-            "schema": 1,
-            "matrix_id": matrix_id,
-            "created_at": utc_now_iso(),
-            "required_runtimes": list(_RUNTIME_IDS),
-            "campaigns": sorted(campaigns, key=lambda item: str(item["runtime_id"])),
-            "authoritative": True,
-        },
+        "subject": [
+            {"name": matrix_id, "digest": {"sha256": hashlib.sha256(canonical_json_bytes(sorted_campaigns)).hexdigest()}},
+            *([] if normalized_binding is None else [
+                {"name": normalized_binding["source"]["name"], "digest": {"sha256": normalized_binding["source"]["sha256"]}},
+                {"name": normalized_binding["windows_workers"]["name"], "digest": {"sha256": normalized_binding["windows_workers"]["sha256"]}},
+                {"name": normalized_binding["windows_certification_kit"]["name"], "digest": {"sha256": normalized_binding["windows_certification_kit"]["sha256"]}},
+                {"name": normalized_binding["windows_provisioning_kit"]["name"], "digest": {"sha256": normalized_binding["windows_provisioning_kit"]["sha256"]}},
+            ]),
+        ],
+        "predicateType": "https://psmatrix.dev/attestation/windows-authoritative-matrix/v2" if normalized_binding is not None else "https://psmatrix.dev/attestation/windows-authoritative-matrix/v1",
+        "predicate": predicate,
     }
     return create_dsse_envelope(statement, private_key, public_key)
 
@@ -525,6 +651,7 @@ def run_authoritative_matrix(
     private_key: Path,
     public_key: Path,
     trust_home: Path,
+    release_binding_path: Path | None = None,
     timeout: int = 1800,
 ) -> dict[str, Any]:
     spec = AuthoritativeMatrixSpec.load(spec_path)
@@ -565,23 +692,37 @@ def run_authoritative_matrix(
             "campaign_path": str(campaign_path),
             "image_manifest_sha256": sha256_file(target.image_manifest),
         })
+    release_binding = load_windows_release_binding(release_binding_path) if release_binding_path is not None else None
     envelope = create_authoritative_matrix_attestation(
         matrix_id=spec.matrix_id,
         campaigns=campaigns,
         private_key=private_key,
         public_key=public_key,
+        release_binding=release_binding,
     )
     atomic_write_json(matrix_output.resolve(), envelope)
-    return {"status": "PASS", "matrix_id": spec.matrix_id, "campaigns": campaigns, "output": str(matrix_output.resolve())}
+    return {
+        "status": "PASS", "matrix_id": spec.matrix_id, "campaigns": campaigns,
+        "output": str(matrix_output.resolve()),
+        "release_bound": release_binding is not None,
+        "release_binding_sha256": None if release_binding is None else release_binding["binding_sha256"],
+    }
 
 
 def verify_authoritative_matrix_attestation(attestation: Path, *, public_key: Path) -> dict[str, Any]:
     envelope = read_json(attestation.resolve())
     verified = verify_dsse_envelope(envelope, public_key.resolve())
     statement = verified["statement"]
-    if statement.get("predicateType") != "https://psmatrix.dev/attestation/windows-authoritative-matrix/v1":
+    predicate_type = statement.get("predicateType")
+    if predicate_type not in {
+        "https://psmatrix.dev/attestation/windows-authoritative-matrix/v1",
+        "https://psmatrix.dev/attestation/windows-authoritative-matrix/v2",
+    }:
         raise LabProvisioningError("Authoritative matrix predicate type is invalid")
     predicate = statement.get("predicate") if isinstance(statement.get("predicate"), dict) else {}
+    expected_schema = 2 if predicate_type.endswith("/v2") else 1
+    if predicate.get("schema") != expected_schema:
+        raise LabProvisioningError("Authoritative matrix predicate schema/version mismatch")
     campaigns = predicate.get("campaigns") if isinstance(predicate.get("campaigns"), list) else []
     runtimes = {str(item.get("runtime_id")) for item in campaigns if isinstance(item, dict)}
     if predicate.get("authoritative") is not True or runtimes != set(_RUNTIME_IDS) or len(campaigns) != 3:
@@ -591,10 +732,32 @@ def verify_authoritative_matrix_attestation(attestation: Path, *, public_key: Pa
             raise LabProvisioningError("Authoritative matrix contains an invalid campaign")
         _sha256(campaign.get("campaign_sha256"), "campaign_sha256")
         _sha256(campaign.get("image_manifest_sha256"), "image_manifest_sha256")
+    subjects = statement.get("subject") if isinstance(statement.get("subject"), list) else []
+    subject_names = [str(item.get("name") or "") for item in subjects if isinstance(item, dict)]
+    if len(subject_names) != len(subjects) or len(subject_names) != len(set(subject_names)):
+        raise LabProvisioningError("Authoritative matrix subject inventory is malformed or duplicated")
+    subject_map = {str(item.get("name")): str((item.get("digest") or {}).get("sha256")) for item in subjects if isinstance(item, dict)}
+    matrix_id = str(predicate.get("matrix_id") or "")
+    expected_campaign_digest = hashlib.sha256(canonical_json_bytes(campaigns)).hexdigest()
+    if subject_map.get(matrix_id) != expected_campaign_digest:
+        raise LabProvisioningError("Authoritative matrix subject does not bind the campaign inventory")
+    release_binding = None
+    if predicate_type.endswith("/v2"):
+        raw_binding = predicate.get("release_binding")
+        with tempfile.TemporaryDirectory() as temp:
+            binding_path = Path(temp) / "release-binding.json"
+            atomic_write_json(binding_path, raw_binding)
+            release_binding = load_windows_release_binding(binding_path)
+        for key in ("source", "windows_workers", "windows_certification_kit", "windows_provisioning_kit"):
+            artifact = release_binding[key]
+            if subject_map.get(artifact["name"]) != artifact["sha256"]:
+                raise LabProvisioningError("Authoritative matrix subject does not bind every release artifact")
     return {
         "valid": True,
         "matrix_id": predicate.get("matrix_id"),
         "runtimes": sorted(runtimes),
         "campaign_count": len(campaigns),
         "key_ids": verified["key_ids"],
+        "release_bound": release_binding is not None,
+        "release_binding": release_binding,
     }
