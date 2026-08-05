@@ -66,14 +66,45 @@ function Get-Sha256Hex {
     return ([System.BitConverter]::ToString($bytes)).Replace('-', '').ToLowerInvariant()
 }
 
+function Get-OptionalPropertyValue {
+    param(
+        [object]$InputObject,
+        [string]$Name,
+        [string]$DefaultValue = ''
+    )
+
+    if ($null -eq $InputObject) {
+        return $DefaultValue
+    }
+    $property = $InputObject.PSObject.Properties[$Name]
+    if ($null -eq $property -or $null -eq $property.Value) {
+        return $DefaultValue
+    }
+    return [string]$property.Value
+}
+
+function Get-CurrentProcessPath {
+    try {
+        return [string][System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+    }
+    catch {
+        return ''
+    }
+}
+
 $detectedVersion = $PSVersionTable.PSVersion
 $expectedVersion = '{0}.{1}' -f $ExpectedMajor, $ExpectedMinor
 $scriptPath = $MyInvocation.MyCommand.Path
 $process = Get-Process -Id $PID
+$processPath = Get-CurrentProcessPath
 $osCurrentVersion = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
 $psEdition = $null
 if ($PSVersionTable.ContainsKey('PSEdition')) {
     $psEdition = [string]$PSVersionTable.PSEdition
+}
+$clrVersion = ''
+if ($PSVersionTable.ContainsKey('CLRVersion') -and $null -ne $PSVersionTable.CLRVersion) {
+    $clrVersion = $PSVersionTable.CLRVersion.ToString()
 }
 
 Invoke-AuthorityCheck -Name 'exact-runtime-line' -Body {
@@ -150,7 +181,7 @@ Invoke-AuthorityCheck -Name 'event-log-query' -Body {
 }
 
 Invoke-AuthorityCheck -Name 'scheduled-task-query' -Body {
-    $command = Get-Command -Name 'Get-ScheduledTask' -ErrorAction Stop
+    [void](Get-Command -Name 'Get-ScheduledTask' -ErrorAction Stop)
     $task = Get-ScheduledTask | Select-Object -First 1
     if (-not $task) {
         throw 'No scheduled task was visible'
@@ -220,17 +251,17 @@ $payload = [ordered]@{
     expected_runtime_line = $expectedVersion
     detected_runtime_version = $detectedVersion.ToString()
     psedition = $psEdition
-    clr_version = $PSVersionTable.CLRVersion.ToString()
+    clr_version = $clrVersion
     ps_home = $PSHOME
-    process_path = $process.Path
+    process_path = $processPath
     machine = $env:COMPUTERNAME
-    os_caption = [string]$osCurrentVersion.ProductName
-    os_release_id = [string]$osCurrentVersion.DisplayVersion
-    os_build = [string]$osCurrentVersion.CurrentBuildNumber
+    os_caption = Get-OptionalPropertyValue -InputObject $osCurrentVersion -Name 'ProductName'
+    os_release_id = Get-OptionalPropertyValue -InputObject $osCurrentVersion -Name 'DisplayVersion'
+    os_build = Get-OptionalPropertyValue -InputObject $osCurrentVersion -Name 'CurrentBuildNumber'
     probe_sha256 = Get-Sha256Hex -Path $scriptPath
     reset_before = 'UNAVAILABLE_ON_GITHUB_HOSTED_RUNNER'
     reset_after = 'UNAVAILABLE_ON_GITHUB_HOSTED_RUNNER'
-    required_snapshot_reset = true
+    required_snapshot_reset = $true
     passed_count = $passed.Count
     failed_count = $failed.Count
     checks = $checks
