@@ -34,24 +34,44 @@
         "unallowed_differences": 0,
         "status": "PASS_PARTIAL"
       },
+      "latest_revalidation": {
+        "workflow_run": 31041184390,
+        "release_commit": "e6e5ce80f691a112d6c009373c2bbeb16f0f16c3",
+        "job": "Hosted Linux x64 Core lanes",
+        "status": "PASS",
+        "note": "This run revalidated Pack 02; it was not the Pack 03 hosted Windows workflow."
+      },
       "remaining_target_count": 15,
       "remaining": "Complete ARM64 glibc, x64 musl, Windows PowerShell Core 6.0.5-7.6.4, and Windows PowerShell Desktop 4.0/5.0/5.1 on authoritative workers."
     },
     {
       "id": "03-authoritative-windows",
-      "state": "HOSTED_WINDOWS_5_1_PREFLIGHT_PENDING",
+      "state": "AUTHORITATIVE_WORKFLOW_READY_HOSTED_WINDOWS_5_1_PENDING",
       "ga_eligible": false,
-      "preflight": {
+      "hosted_preflight": {
         "workflow": "production-ga-windows-authority-preflight",
         "workflow_path": ".github/workflows/ga-windows-authority-preflight.yml",
         "probe_path": "ga-packs/03-authoritative-windows/windows-authority-probe.ps1",
         "expected_runtime": "Windows PowerShell 5.1 Desktop",
         "authority_level": "github-hosted-windows-preflight",
         "authoritative": false,
-        "required_snapshot_reset_available": false
+        "required_snapshot_reset_available": false,
+        "status": "PENDING"
+      },
+      "authoritative_workflow": {
+        "workflow": "production-ga-authoritative-windows",
+        "workflow_path": ".github/workflows/ga-windows-authoritative.yml",
+        "operator_script": "scripts/ga/Invoke-PSMatrixAuthoritativeWindowsGA.ps1",
+        "protected_environment": "production-ga-windows-lab",
+        "controller_labels": ["self-hosted", "Windows", "X64", "psmatrix-hyperv"],
+        "minimum_iterations_per_runtime": 10,
+        "exact_runtime_count": 3,
+        "release_binding_required": true,
+        "final_release_version_required_for_ga_eligible": "2.0.0",
+        "status": "READY_FOR_INFRASTRUCTURE"
       },
       "runner_contract": "ga-packs/03-authoritative-windows/runner-contract.json",
-      "remaining": "Run the hosted Windows PowerShell 5.1 preflight, then establish protected self-hosted Hyper-V workers for exact Windows PowerShell 4.0, 5.0 and 5.1 repeated reset-bound campaigns."
+      "remaining": "Run the hosted Windows PowerShell 5.1 preflight, then provide the protected Hyper-V controller, exact Windows/WMF images, three worker endpoints/image manifests, release artifacts and protected authority credentials for the 10-iteration reset-bound campaign."
     },
     {"id": "04-public-auth", "state": "PACK_REQUIRED", "ga_eligible": false},
     {"id": "05-external-otlp", "state": "PACK_REQUIRED", "ga_eligible": false},
