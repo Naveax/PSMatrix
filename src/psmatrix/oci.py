@@ -482,7 +482,7 @@ class OciRuntimeManager:
                     '--security-opt', 'no-new-privileges', '--pids-limit', pids,
                     '--memory', memory, '--cpus', cpus,
                     '--user', f'{{uid}}:{{gid}}',
-                    '--mount', f'type=bind,src={{host_root}},dst=/workspace,rw',
+                    '--mount', f'type=bind,src={{host_root}},dst=/workspace',
                     '--workdir', '/workspace',
                     '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size=64m',
                 ]
