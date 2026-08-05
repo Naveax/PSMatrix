@@ -3,6 +3,8 @@ import os
 import subprocess
 import sys
 import tempfile
+import zipfile
+from datetime import UTC, datetime
 import unittest
 from pathlib import Path
 
@@ -37,6 +39,62 @@ class CLIGATests(unittest.TestCase):
             created = self._run(root, "ga", "key-rotation-drill", "--private-key", str(private), "--public-key", str(public), "--output", "rotation.json")
             self.assertEqual(created.returncode, 0, created.stderr)
             verified = self._run(root, "ga", "proof-verify", "--type", "key-rotation", "--attestation", "rotation.json", "--public-key", str(public))
+            self.assertEqual(verified.returncode, 0, verified.stderr)
+            self.assertTrue(json.loads(verified.stdout)["valid"])
+
+    def test_independent_review_packet_finalize_and_verify(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repo = root / "repo"
+            repo.mkdir()
+            (repo / "SECURITY.md").write_text("# Security\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Reviewer Test"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "reviewer@example.test"], check=True)
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "fixture"], check=True)
+            source = root / "source.zip"
+            source.write_bytes(b"source")
+            release = root / "release.json"
+            release.write_text('{"schema":1}', encoding="utf-8")
+            packet = self._run(
+                root, "ga", "review-packet", "--root", str(repo),
+                "--source-archive", str(source), "--release-manifest", str(release),
+                "--output", "review-packet.zip",
+            )
+            self.assertEqual(packet.returncode, 0, packet.stderr)
+            with zipfile.ZipFile(root / "review-packet.zip") as archive:
+                template = json.loads(archive.read("psmatrix-independent-security-review/review-report.template.json"))
+            template["status"] = "PASS"
+            template["observed_at"] = datetime.now(UTC).isoformat()
+            template["review_hours"] = 12
+            template["reviewer"] = {
+                "name": "External Reviewer", "organization": "Security Lab",
+                "role": "Principal Reviewer", "contact": "reviewer@example.test",
+                "conflict_of_interest": False, "key_controlled_by_reviewer": True,
+            }
+            for section in template["sections"].values():
+                section["status"] = "REVIEWED"
+                section["summary"] = "Reviewed"
+            template["findings"] = []
+            template["summary"] = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+            template["reviewer_declaration"] = "Independent review completed."
+            report = root / "review.json"
+            report.write_text(json.dumps(template), encoding="utf-8")
+            private = root / "private.pem"
+            public = root / "public.pem"
+            generate_ed25519_keypair(private, public)
+            finalized = self._run(
+                root, "ga", "review-finalize", "--report", str(report),
+                "--source-archive", str(source), "--release-manifest", str(release),
+                "--private-key", str(private), "--public-key", str(public),
+                "--result-output", "review-result.json", "--attestation-output", "review.dsse.json",
+            )
+            self.assertEqual(finalized.returncode, 0, finalized.stderr)
+            verified = self._run(
+                root, "ga", "proof-verify", "--type", "security-review",
+                "--attestation", "review.dsse.json", "--public-key", str(public),
+            )
             self.assertEqual(verified.returncode, 0, verified.stderr)
             self.assertTrue(json.loads(verified.stdout)["valid"])
 

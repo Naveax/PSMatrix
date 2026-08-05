@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import re
 import tempfile
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
@@ -52,6 +53,11 @@ _REQUIRED_REVIEW_SECTIONS = {
     "architecture", "authentication", "authorization", "sandbox", "supply-chain",
     "recovery", "operations", "privacy", "release-process",
 }
+_REQUIRED_REVIEW_METHODS = {
+    "architecture-review", "threat-model-review", "manual-code-review", "test-evidence-review",
+}
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 @dataclass(frozen=True)
@@ -323,13 +329,61 @@ def _proof_gate(policy: dict[str, Any], base: Path, gate: str, proof_type: str, 
                 raise GAGateError("Key rotation proof did not advance trust generation")
         elif proof_type == "security-review":
             counts = assertions.get("findings") if isinstance(assertions.get("findings"), dict) else {}
-            if int(counts.get("critical") or 0) or int(counts.get("high") or 0):
+            normalized_counts: dict[str, int] = {}
+            for severity in ("critical", "high", "medium", "low", "info"):
+                raw = counts.get(severity, 0)
+                if isinstance(raw, bool):
+                    raise GAGateError("Security review finding counts are invalid")
+                try:
+                    number = int(raw)
+                except (TypeError, ValueError) as exc:
+                    raise GAGateError("Security review finding counts are invalid") from exc
+                if number < 0:
+                    raise GAGateError("Security review finding counts are invalid")
+                normalized_counts[severity] = number
+            if normalized_counts["critical"] or normalized_counts["high"]:
                 raise GAGateError("Security review contains critical or high findings")
+
             sections = set(str(item) for item in assertions.get("sections") or [])
             if not _REQUIRED_REVIEW_SECTIONS.issubset(sections):
                 raise GAGateError("Security review scope is incomplete")
+            methodologies = set(str(item) for item in assertions.get("methodologies") or [])
+            if not _REQUIRED_REVIEW_METHODS.issubset(methodologies):
+                raise GAGateError("Security review methodology is incomplete")
             if assertions.get("independent_review") is not True:
                 raise GAGateError("Security review is not independently attested")
+
+            reviewer = assertions.get("reviewer") if isinstance(assertions.get("reviewer"), dict) else {}
+            for field in ("name", "organization", "role", "contact"):
+                value = str(reviewer.get(field) or "").strip()
+                if not value or len(value) > 256:
+                    raise GAGateError(f"Security reviewer identity field is invalid: {field}")
+            if reviewer.get("conflict_of_interest") is not False:
+                raise GAGateError("Security reviewer conflict-of-interest declaration is invalid")
+            if reviewer.get("key_controlled_by_reviewer") is not True:
+                raise GAGateError("Security reviewer does not attest control of the signing key")
+
+            reviewed_commit = str(assertions.get("reviewed_commit") or "").lower()
+            release_digest = str(assertions.get("reviewed_release_sha256") or "").lower()
+            report_digest = str(assertions.get("review_report_sha256") or "").lower()
+            if _COMMIT_RE.fullmatch(reviewed_commit) is None:
+                raise GAGateError("Security review commit binding is invalid")
+            if _SHA256_RE.fullmatch(release_digest) is None:
+                raise GAGateError("Security review release digest binding is invalid")
+            if _SHA256_RE.fullmatch(report_digest) is None:
+                raise GAGateError("Security review report digest binding is invalid")
+            artifacts = result.get("artifacts") if isinstance(result.get("artifacts"), list) else []
+            if not any(str(item.get("sha256") or "").lower() == report_digest for item in artifacts if isinstance(item, dict)):
+                raise GAGateError("Security review report digest is not bound as a proof subject")
+            review_hours = assertions.get("review_hours")
+            if isinstance(review_hours, bool):
+                raise GAGateError("Security review duration is invalid")
+            try:
+                hours = float(review_hours)
+            except (TypeError, ValueError) as exc:
+                raise GAGateError("Security review duration is invalid") from exc
+            if not 0 < hours <= 1000:
+                raise GAGateError("Security review duration is invalid")
         elif proof_type == "vulnerability-scan":
             counts = assertions.get("findings") if isinstance(assertions.get("findings"), dict) else {}
             if int(counts.get("critical") or 0) or int(counts.get("high") or 0):

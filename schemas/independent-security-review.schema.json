@@ -1,0 +1,557 @@
+{
+  "$id": "https://psmatrix.dev/schemas/independent-security-review.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "findings": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "affected_components": {
+            "items": {
+              "maxLength": 512,
+              "type": "string"
+            },
+            "maxItems": 256,
+            "type": "array"
+          },
+          "disposition": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "evidence": {
+            "items": {
+              "maxLength": 2048,
+              "type": "string"
+            },
+            "maxItems": 256,
+            "type": "array"
+          },
+          "id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "critical",
+              "high",
+              "medium",
+              "low",
+              "info"
+            ]
+          },
+          "title": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "severity",
+          "title",
+          "disposition"
+        ],
+        "type": "object"
+      },
+      "maxItems": 4096,
+      "type": "array"
+    },
+    "kind": {
+      "const": "psmatrix.independent-security-review"
+    },
+    "limitations": {
+      "items": {
+        "maxLength": 4096,
+        "type": "string"
+      },
+      "maxItems": 256,
+      "type": "array"
+    },
+    "methodologies": {
+      "items": {
+        "enum": [
+          "architecture-review",
+          "threat-model-review",
+          "manual-code-review",
+          "test-evidence-review"
+        ]
+      },
+      "minItems": 4,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "observed_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "review_hours": {
+      "exclusiveMinimum": 0,
+      "maximum": 1000,
+      "type": "number"
+    },
+    "reviewed_commit": {
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "reviewed_release_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "reviewed_source_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "reviewer": {
+      "additionalProperties": false,
+      "properties": {
+        "conflict_of_interest": {
+          "const": false
+        },
+        "contact": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "key_controlled_by_reviewer": {
+          "const": true
+        },
+        "name": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "organization": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "role": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "organization",
+        "role",
+        "contact",
+        "conflict_of_interest",
+        "key_controlled_by_reviewer"
+      ],
+      "type": "object"
+    },
+    "reviewer_declaration": {
+      "maxLength": 10000,
+      "minLength": 1,
+      "type": "string"
+    },
+    "schema": {
+      "const": 1
+    },
+    "sections": {
+      "additionalProperties": false,
+      "properties": {
+        "architecture": {
+          "additionalProperties": false,
+          "properties": {
+            "evidence": {
+              "items": {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              "maxItems": 1024,
+              "type": "array"
+            },
+            "findings": {
+              "items": {
+                "maxLength": 128,
+                "type": "string"
+              },
+              "maxItems": 4096,
+              "type": "array"
+            },
+            "status": {
+              "const": "REVIEWED"
+            },
+            "summary": {
+              "maxLength": 20000,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "summary",
+            "evidence",
+            "findings"
+          ],
+          "type": "object"
+        },
+        "authentication": {
+          "additionalProperties": false,
+          "properties": {
+            "evidence": {
+              "items": {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              "maxItems": 1024,
+              "type": "array"
+            },
+            "findings": {
+              "items": {
+                "maxLength": 128,
+                "type": "string"
+              },
+              "maxItems": 4096,
+              "type": "array"
+            },
+            "status": {
+              "const": "REVIEWED"
+            },
+            "summary": {
+              "maxLength": 20000,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "summary",
+            "evidence",
+            "findings"
+          ],
+          "type": "object"
+        },
+        "authorization": {
+          "additionalProperties": false,
+          "properties": {
+            "evidence": {
+              "items": {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              "maxItems": 1024,
+              "type": "array"
+            },
+            "findings": {
+              "items": {
+                "maxLength": 128,
+                "type": "string"
+              },
+              "maxItems": 4096,
+              "type": "array"
+            },
+            "status": {
+              "const": "REVIEWED"
+            },
+            "summary": {
+              "maxLength": 20000,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "summary",
+            "evidence",
+            "findings"
+          ],
+          "type": "object"
+        },
+        "operations": {
+          "additionalProperties": false,
+          "properties": {
+            "evidence": {
+              "items": {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              "maxItems": 1024,
+              "type": "array"
+            },
+            "findings": {
+              "items": {
+                "maxLength": 128,
+                "type": "string"
+              },
+              "maxItems": 4096,
+              "type": "array"
+            },
+            "status": {
+              "const": "REVIEWED"
+            },
+            "summary": {
+              "maxLength": 20000,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "summary",
+            "evidence",
+            "findings"
+          ],
+          "type": "object"
+        },
+        "privacy": {
+          "additionalProperties": false,
+          "properties": {
+            "evidence": {
+              "items": {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              "maxItems": 1024,
+              "type": "array"
+            },
+            "findings": {
+              "items": {
+                "maxLength": 128,
+                "type": "string"
+              },
+              "maxItems": 4096,
+              "type": "array"
+            },
+            "status": {
+              "const": "REVIEWED"
+            },
+            "summary": {
+              "maxLength": 20000,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "summary",
+            "evidence",
+            "findings"
+          ],
+          "type": "object"
+        },
+        "recovery": {
+          "additionalProperties": false,
+          "properties": {
+            "evidence": {
+              "items": {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              "maxItems": 1024,
+              "type": "array"
+            },
+            "findings": {
+              "items": {
+                "maxLength": 128,
+                "type": "string"
+              },
+              "maxItems": 4096,
+              "type": "array"
+            },
+            "status": {
+              "const": "REVIEWED"
+            },
+            "summary": {
+              "maxLength": 20000,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "summary",
+            "evidence",
+            "findings"
+          ],
+          "type": "object"
+        },
+        "release-process": {
+          "additionalProperties": false,
+          "properties": {
+            "evidence": {
+              "items": {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              "maxItems": 1024,
+              "type": "array"
+            },
+            "findings": {
+              "items": {
+                "maxLength": 128,
+                "type": "string"
+              },
+              "maxItems": 4096,
+              "type": "array"
+            },
+            "status": {
+              "const": "REVIEWED"
+            },
+            "summary": {
+              "maxLength": 20000,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "summary",
+            "evidence",
+            "findings"
+          ],
+          "type": "object"
+        },
+        "sandbox": {
+          "additionalProperties": false,
+          "properties": {
+            "evidence": {
+              "items": {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              "maxItems": 1024,
+              "type": "array"
+            },
+            "findings": {
+              "items": {
+                "maxLength": 128,
+                "type": "string"
+              },
+              "maxItems": 4096,
+              "type": "array"
+            },
+            "status": {
+              "const": "REVIEWED"
+            },
+            "summary": {
+              "maxLength": 20000,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "summary",
+            "evidence",
+            "findings"
+          ],
+          "type": "object"
+        },
+        "supply-chain": {
+          "additionalProperties": false,
+          "properties": {
+            "evidence": {
+              "items": {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              "maxItems": 1024,
+              "type": "array"
+            },
+            "findings": {
+              "items": {
+                "maxLength": 128,
+                "type": "string"
+              },
+              "maxItems": 4096,
+              "type": "array"
+            },
+            "status": {
+              "const": "REVIEWED"
+            },
+            "summary": {
+              "maxLength": 20000,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "summary",
+            "evidence",
+            "findings"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "architecture",
+        "authentication",
+        "authorization",
+        "sandbox",
+        "supply-chain",
+        "recovery",
+        "operations",
+        "privacy",
+        "release-process"
+      ],
+      "type": "object"
+    },
+    "status": {
+      "const": "PASS"
+    },
+    "summary": {
+      "additionalProperties": false,
+      "properties": {
+        "critical": {
+          "maximum": 4096,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "high": {
+          "maximum": 4096,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "info": {
+          "maximum": 4096,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "low": {
+          "maximum": 4096,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "medium": {
+          "maximum": 4096,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "critical",
+        "high",
+        "medium",
+        "low",
+        "info"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema",
+    "kind",
+    "status",
+    "observed_at",
+    "reviewed_commit",
+    "reviewed_release_sha256",
+    "reviewed_source_sha256",
+    "review_hours",
+    "reviewer",
+    "methodologies",
+    "sections",
+    "findings",
+    "summary",
+    "limitations",
+    "reviewer_declaration"
+  ],
+  "title": "PSMatrix independent Production GA security review",
+  "type": "object"
+}

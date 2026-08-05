@@ -87,6 +87,7 @@ from .recovery import (
     write_recovery_evidence,
 )
 from .transfer import TransferStore
+from .security_review import build_security_review_packet, finalize_security_review
 from .ga import (
     create_ga_artifact_attestation,
     create_ga_attestation,
@@ -938,6 +939,19 @@ def build_parser() -> argparse.ArgumentParser:
     ga_proof_verify.add_argument("--type", required=True, choices=["public-oauth", "public-mtls", "external-otlp", "key-rotation", "security-review", "vulnerability-scan"])
     ga_proof_verify.add_argument("--attestation", type=Path, required=True)
     ga_proof_verify.add_argument("--public-key", type=Path, required=True)
+    ga_review_packet = ga_sub.add_parser("review-packet", help="Build a deterministic independent security-review dossier")
+    ga_review_packet.add_argument("--root", type=Path, default=Path.cwd())
+    ga_review_packet.add_argument("--source-archive", type=Path, required=True)
+    ga_review_packet.add_argument("--release-manifest", type=Path, required=True)
+    ga_review_packet.add_argument("--output", type=Path, required=True)
+    ga_review_finalize = ga_sub.add_parser("review-finalize", help="Validate and sign a completed independent security review")
+    ga_review_finalize.add_argument("--report", type=Path, required=True)
+    ga_review_finalize.add_argument("--source-archive", type=Path, required=True)
+    ga_review_finalize.add_argument("--release-manifest", type=Path, required=True)
+    ga_review_finalize.add_argument("--private-key", type=Path, required=True)
+    ga_review_finalize.add_argument("--public-key", type=Path, required=True)
+    ga_review_finalize.add_argument("--result-output", type=Path, required=True)
+    ga_review_finalize.add_argument("--attestation-output", type=Path, required=True)
     ga_artifact_sign = ga_sub.add_parser("artifact-sign", help="Sign a CI validation or full-matrix artifact digest")
     ga_artifact_sign.add_argument("--type", required=True, choices=["validation-summary", "full-matrix-report"])
     ga_artifact_sign.add_argument("--artifact", type=Path, required=True)
@@ -1910,6 +1924,27 @@ def main(argv: list[str] | None = None) -> int:
                 envelope = json.loads(args.attestation.resolve().read_text(encoding="utf-8"))
                 result = verify_ga_proof(envelope, public_key=args.public_key, expected_type=args.type)
                 print(json.dumps(result, ensure_ascii=False, indent=2))
+                return 0
+            if args.ga_command == "review-packet":
+                result = build_security_review_packet(
+                    root=args.root,
+                    source_archive=args.source_archive,
+                    release_manifest=args.release_manifest,
+                    output=args.output,
+                )
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+                return 0
+            if args.ga_command == "review-finalize":
+                result = finalize_security_review(
+                    report_path=args.report,
+                    source_archive=args.source_archive,
+                    release_manifest=args.release_manifest,
+                    private_key=args.private_key,
+                    public_key=args.public_key,
+                    result_output=args.result_output,
+                    attestation_output=args.attestation_output,
+                )
+                print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
                 return 0
             if args.ga_command == "artifact-sign":
                 envelope = create_ga_artifact_attestation(

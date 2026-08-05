@@ -23,6 +23,9 @@
 
 - External Bandit, pip-audit, CodeQL, authoritative Windows, public deployment, and independent-review evidence remain required for final GA. RC2 does not convert local preflight results into GA PASS.
 - The workflow is prepared and locally validated, but the vulnerability gate remains `INCOMPLETE` until it runs in an accessible GitHub repository and its protected signing environment emits a verified DSSE proof.
+- Added a deterministic independent security-review dossier and reviewer-controlled DSSE finalization flow.
+- Hardened the GA security-review gate with reviewer identity, conflict, methodology, exact commit/release and report-subject binding requirements.
+
 
 ## 2.0.0rc1 — 2026-08-04
 

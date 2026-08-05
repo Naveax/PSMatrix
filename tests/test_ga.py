@@ -28,7 +28,7 @@ class GAGateTests(unittest.TestCase):
         generate_ed25519_keypair(private, public)
         return private, public
 
-    def _proof(self, path: Path, proof_type: str, assertions: dict, private: Path, public: Path, *, observed_at=None):
+    def _proof(self, path: Path, proof_type: str, assertions: dict, private: Path, public: Path, *, observed_at=None, artifacts=None):
         value = {
             "schema": 1,
             "kind": "psmatrix.ga-proof-result",
@@ -36,9 +36,35 @@ class GAGateTests(unittest.TestCase):
             "status": "PASS",
             "observed_at": observed_at or datetime.now(UTC).isoformat(),
             "assertions": assertions,
-            "artifacts": [],
+            "artifacts": list(artifacts or []),
         }
         path.write_text(json.dumps(create_ga_proof(value, private_key=private, public_key=public)), encoding="utf-8")
+
+
+    def _security_review_assertions(self, *, report_sha256: str = "d" * 64):
+        return {
+            "independent_review": True,
+            "sections": [
+                "architecture", "authentication", "authorization", "sandbox", "supply-chain",
+                "recovery", "operations", "privacy", "release-process",
+            ],
+            "methodologies": [
+                "architecture-review", "threat-model-review", "manual-code-review", "test-evidence-review",
+            ],
+            "findings": {"critical": 0, "high": 0, "medium": 0, "low": 2, "info": 1},
+            "reviewer": {
+                "name": "Independent Reviewer",
+                "organization": "External Security Lab",
+                "role": "Principal Security Reviewer",
+                "contact": "reviewer@example.test",
+                "conflict_of_interest": False,
+                "key_controlled_by_reviewer": True,
+            },
+            "reviewed_commit": "a" * 40,
+            "reviewed_release_sha256": "b" * 64,
+            "review_report_sha256": report_sha256,
+            "review_hours": 24,
+        }
 
     def _complete_fixture(self, root: Path):
         (root / "keys").mkdir()
@@ -128,11 +154,13 @@ class GAGateTests(unittest.TestCase):
         recovery = sign_recovery_report(recovery_report, roles["recovery"][0], roles["recovery"][1])
         (root / "evidence" / "recovery.dsse.json").write_text(json.dumps(recovery), encoding="utf-8")
 
-        self._proof(root / "evidence" / "security-review.dsse.json", "security-review", {
-            "independent_review": True,
-            "sections": ["architecture", "authentication", "authorization", "sandbox", "supply-chain", "recovery", "operations", "privacy", "release-process"],
-            "findings": {"critical": 0, "high": 0, "medium": 0, "low": 2},
-        }, *roles["security-review"])
+        report_digest = "d" * 64
+        self._proof(
+            root / "evidence" / "security-review.dsse.json", "security-review",
+            self._security_review_assertions(report_sha256=report_digest),
+            *roles["security-review"],
+            artifacts=[{"name": "security-review-report.json", "sha256": report_digest}],
+        )
         self._proof(root / "evidence" / "vulnerability-scan.dsse.json", "vulnerability-scan", {
             "scanners": ["dependency", "static-code"], "source_scanned": True, "dependencies_scanned": True,
             "findings": {"critical": 0, "high": 0, "medium": 0, "low": 0},
@@ -225,6 +253,64 @@ class GAGateTests(unittest.TestCase):
             path.write_text(json.dumps(value), encoding="utf-8")
             with self.assertRaises(GAGateError):
                 evaluate_ga(path)
+
+    def test_security_review_boolean_only_proof_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            policy, roles = self._complete_fixture(root)
+            self._proof(root / "evidence" / "security-review.dsse.json", "security-review", {
+                "independent_review": True,
+                "sections": list(self._security_review_assertions()["sections"]),
+                "findings": {"critical": 0, "high": 0},
+            }, *roles["security-review"])
+            evaluation = evaluate_ga(policy)
+            gate = next(item for item in evaluation.gates if item.gate == "security-review")
+            self.assertEqual(gate.status, "FAIL")
+            self.assertIn("methodology", gate.message)
+
+    def test_security_review_conflict_of_interest_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            policy, roles = self._complete_fixture(root)
+            assertions = self._security_review_assertions()
+            assertions["reviewer"]["conflict_of_interest"] = True
+            self._proof(
+                root / "evidence" / "security-review.dsse.json", "security-review", assertions,
+                *roles["security-review"], artifacts=[{"name": "review.json", "sha256": "d" * 64}],
+            )
+            evaluation = evaluate_ga(policy)
+            gate = next(item for item in evaluation.gates if item.gate == "security-review")
+            self.assertEqual(gate.status, "FAIL")
+            self.assertIn("conflict-of-interest", gate.message)
+
+    def test_security_review_report_must_be_bound_as_subject(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            policy, roles = self._complete_fixture(root)
+            assertions = self._security_review_assertions()
+            self._proof(
+                root / "evidence" / "security-review.dsse.json", "security-review", assertions,
+                *roles["security-review"], artifacts=[{"name": "wrong.json", "sha256": "e" * 64}],
+            )
+            evaluation = evaluate_ga(policy)
+            gate = next(item for item in evaluation.gates if item.gate == "security-review")
+            self.assertEqual(gate.status, "FAIL")
+            self.assertIn("not bound", gate.message)
+
+    def test_security_review_commit_binding_must_be_exact(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            policy, roles = self._complete_fixture(root)
+            assertions = self._security_review_assertions()
+            assertions["reviewed_commit"] = "main"
+            self._proof(
+                root / "evidence" / "security-review.dsse.json", "security-review", assertions,
+                *roles["security-review"], artifacts=[{"name": "review.json", "sha256": "d" * 64}],
+            )
+            evaluation = evaluate_ga(policy)
+            gate = next(item for item in evaluation.gates if item.gate == "security-review")
+            self.assertEqual(gate.status, "FAIL")
+            self.assertIn("commit binding", gate.message)
 
     def test_key_rotation_drill_is_signed_and_valid(self):
         with tempfile.TemporaryDirectory() as temp:

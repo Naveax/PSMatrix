@@ -128,3 +128,56 @@ The final distribution manifest should be a second layer that includes the
 signed core release and the Production GA attestation. This avoids circularly
 requiring the GA attestation to already exist inside the core release that the
 GA gate evaluates.
+
+## Independent security review
+
+The security-review gate cannot be satisfied by a boolean assertion or by a key
+controlled by the release owner. Build a deterministic reviewer dossier:
+
+```bash
+./psmatrix ga review-packet \
+  --root . \
+  --source-archive psmatrix-2.0.0-source.zip \
+  --release-manifest psmatrix-2.0.0-release.json \
+  --output psmatrix-2.0.0-independent-review.zip
+```
+
+The reviewer must independently control the Ed25519 private key, review all nine
+mandatory sections, use the four required methodologies, bind the exact commit,
+source archive, release manifest and completed report digest, and disclose any
+conflict of interest. A report with any critical or high finding cannot be
+finalized as PASS.
+
+After completing `review-report.template.json`, the reviewer runs:
+
+```bash
+./psmatrix ga review-finalize \
+  --report security-review-report.json \
+  --source-archive psmatrix-2.0.0-source.zip \
+  --release-manifest psmatrix-2.0.0-release.json \
+  --private-key reviewer.private.pem \
+  --public-key reviewer.public.pem \
+  --result-output security-review-result.json \
+  --attestation-output security-review.dsse.json
+
+./psmatrix ga proof-verify \
+  --type security-review \
+  --attestation security-review.dsse.json \
+  --public-key reviewer.public.pem
+```
+
+Required review sections:
+
+- architecture;
+- authentication;
+- authorization;
+- sandbox;
+- supply chain;
+- recovery;
+- operations;
+- privacy;
+- release process.
+
+Required methodologies are architecture review, threat-model review, manual code
+review and test-evidence review. The schema is
+`schemas/independent-security-review.schema.json`.
