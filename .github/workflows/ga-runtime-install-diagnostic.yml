@@ -1,0 +1,160 @@
+name: production-ga-runtime-install-diagnostic
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: production-ga-runtime-install-diagnostic
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose-linux-x64:
+    name: Diagnose Linux x64 runtime installation
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Record controller state
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/runtime-install-diagnostic"
+          {
+            printf 'release_commit=%s\n' "$GITHUB_SHA"
+            python --version
+            docker version
+            docker info --format '{{json .}}'
+          } 2>&1 | tee "$RUNNER_TEMP/runtime-install-diagnostic/controller.log"
+          chmod +x ./psmatrix
+          ./psmatrix --version
+          ./psmatrix --home "$RUNNER_TEMP/psmatrix-home" doctor \
+            > "$RUNNER_TEMP/runtime-install-diagnostic/doctor.json"
+          cat "$RUNNER_TEMP/runtime-install-diagnostic/doctor.json"
+
+      - name: Install matrix and preserve every failure
+        id: install
+        shell: bash
+        run: |
+          set -uo pipefail
+          out="$RUNNER_TEMP/runtime-install-diagnostic"
+          set +e
+          ./psmatrix --home "$RUNNER_TEMP/psmatrix-home" runtime install-matrix core-all \
+            --arch x64 \
+            --libc glibc \
+            --backend auto \
+            --engine docker \
+            > "$out/runtime-install.json" \
+            2> "$out/runtime-install.stderr.log"
+          code=$?
+          set -e
+          printf 'exit_code=%s\n' "$code" | tee "$out/runtime-install.exit.txt"
+          printf 'exit_code=%s\n' "$code" >> "$GITHUB_OUTPUT"
+
+          echo '===== STDERR ====='
+          cat "$out/runtime-install.stderr.log" || true
+          echo '===== RESULT JSON ====='
+          cat "$out/runtime-install.json" || true
+
+          python - "$out/runtime-install.json" "$out/runtime-install-diagnostic.json" "$GITHUB_STEP_SUMMARY" "$code" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          source = Path(sys.argv[1])
+          output = Path(sys.argv[2])
+          summary_path = Path(sys.argv[3])
+          exit_code = int(sys.argv[4])
+
+          diagnostic = {
+              'schema': 1,
+              'kind': 'psmatrix.runtime-install-diagnostic',
+              'exit_code': exit_code,
+              'json_valid': False,
+              'expected_runtime_count': 10,
+              'results': [],
+          }
+          parse_error = None
+          try:
+              value = json.loads(source.read_text(encoding='utf-8'))
+              rows = value.get('results', [])
+              if not isinstance(rows, list):
+                  raise TypeError('results is not an array')
+              diagnostic['json_valid'] = True
+              diagnostic['matrix'] = value.get('matrix')
+              diagnostic['results'] = rows
+          except Exception as exc:
+              parse_error = f'{type(exc).__name__}: {exc}'
+              diagnostic['parse_error'] = parse_error
+              rows = []
+
+          installed = [row for row in rows if row.get('status') == 'INSTALLED']
+          failed = [row for row in rows if row.get('status') != 'INSTALLED']
+          diagnostic['installed_count'] = len(installed)
+          diagnostic['failed_count'] = len(failed)
+          diagnostic['complete_result_set'] = len(rows) == 10
+          diagnostic['status'] = (
+              'PASS' if exit_code == 0 and len(rows) == 10 and not failed
+              else 'FAIL'
+          )
+          output.write_text(json.dumps(diagnostic, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+
+          lines = [
+              '# PSMatrix runtime installation diagnostic',
+              '',
+              f'- Command exit code: `{exit_code}`',
+              f'- JSON parse: `{"PASS" if parse_error is None else "FAIL"}`',
+              f'- Results: `{len(rows)}/10`',
+              f'- Installed: `{len(installed)}`',
+              f'- Failed: `{len(failed)}`',
+              '',
+              '| Runtime | Status | Backend | Error |',
+              '|---|---|---|---|',
+          ]
+          for row in rows:
+              error = str(row.get('error') or '').replace('|', '\\|').replace('\n', ' ')
+              lines.append(
+                  f"| `{row.get('runtime_id', '')}` | `{row.get('status', '')}` | "
+                  f"`{row.get('backend', '')}` | {error} |"
+              )
+          if parse_error:
+              lines.extend(['', f'Parser error: `{parse_error}`'])
+          summary_path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+
+          print(json.dumps({
+              'status': diagnostic['status'],
+              'installed_count': len(installed),
+              'failed_count': len(failed),
+              'failed': [
+                  {
+                      'runtime_id': row.get('runtime_id'),
+                      'backend': row.get('backend'),
+                      'error': row.get('error'),
+                  }
+                  for row in failed
+              ],
+          }, indent=2, sort_keys=True))
+
+          if diagnostic['status'] != 'PASS':
+              raise SystemExit(1)
+          PY
+
+      - name: Upload runtime installation diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: production-ga-runtime-install-diagnostic
+          path: ${{ runner.temp }}/runtime-install-diagnostic
+          if-no-files-found: error
+          retention-days: 30
