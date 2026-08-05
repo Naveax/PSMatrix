@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "release_candidate": "2.0.0rc2",
+  "production_ga": "BLOCKED",
+  "packs": [
+    {"id": "01-vulnerability", "state": "IN_PROGRESS", "ga_eligible": false},
+    {"id": "02-runtime-matrix", "state": "READY_FOR_INFRASTRUCTURE", "ga_eligible": false},
+    {"id": "03-authoritative-windows", "state": "READY_FOR_INFRASTRUCTURE", "ga_eligible": false},
+    {"id": "04-public-auth", "state": "PACK_REQUIRED", "ga_eligible": false},
+    {"id": "05-external-otlp", "state": "PACK_REQUIRED", "ga_eligible": false},
+    {"id": "06-independent-review", "state": "READY_FOR_REVIEWER", "ga_eligible": false},
+    {"id": "07-final-ga", "state": "BLOCKED", "ga_eligible": false}
+  ]
+}
