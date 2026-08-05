@@ -3,8 +3,25 @@
   "release_candidate": "2.0.0rc2",
   "production_ga": "BLOCKED",
   "packs": [
-    {"id": "01-vulnerability", "state": "IN_PROGRESS", "ga_eligible": false},
-    {"id": "02-runtime-matrix", "state": "READY_FOR_INFRASTRUCTURE", "ga_eligible": false},
+    {
+      "id": "01-vulnerability",
+      "state": "PREFLIGHT_PASS_SIGNING_PENDING",
+      "ga_eligible": false,
+      "preflight": {
+        "bandit": "PASS",
+        "pip_audit": "PASS",
+        "codeql_security_extended": "PASS",
+        "normalization": "PASS",
+        "critical": 0,
+        "high": 0
+      },
+      "remaining": "Run the final release-bound workflow with sign_proof=true after the vulnerability authority keys and exact final release commit are configured."
+    },
+    {
+      "id": "02-runtime-matrix",
+      "state": "IN_PROGRESS",
+      "ga_eligible": false
+    },
     {"id": "03-authoritative-windows", "state": "READY_FOR_INFRASTRUCTURE", "ga_eligible": false},
     {"id": "04-public-auth", "state": "PACK_REQUIRED", "ga_eligible": false},
     {"id": "05-external-otlp", "state": "PACK_REQUIRED", "ga_eligible": false},
