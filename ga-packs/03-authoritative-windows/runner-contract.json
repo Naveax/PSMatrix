@@ -5,12 +5,27 @@
   "authority": {
     "required": true,
     "github_hosted_is_authoritative": false,
-    "protected_environment": "production-ga-windows-authority",
+    "protected_environment": "production-ga-windows-lab",
     "private_keys_in_repository": false,
     "private_keys_in_artifacts": false
   },
+  "controller": {
+    "required": true,
+    "runner_labels": [
+      "self-hosted",
+      "Windows",
+      "X64",
+      "psmatrix-hyperv"
+    ],
+    "required_environment_variable": "PSMATRIX_WINDOWS_GA_ROOT",
+    "required_protected_secrets": [
+      "PSMATRIX_WINDOWS_LAB_PRIVATE_KEY",
+      "PSMATRIX_WINDOWS_LAB_PUBLIC_KEY",
+      "PSMATRIX_RELEASE_PUBLIC_KEY"
+    ]
+  },
   "campaign": {
-    "minimum_iterations_per_runtime": 3,
+    "minimum_iterations_per_runtime": 10,
     "clean_snapshot_before_every_iteration": true,
     "clean_snapshot_after_every_iteration": true,
     "signed_reset_before": true,
@@ -83,6 +98,7 @@
     "required_passed_runtime_count": 3,
     "failed_runtime_count": 0,
     "incomplete_runtime_count": 0,
-    "ga_eligible_only_after_protected_signature": true
+    "ga_eligible_only_after_protected_signature": true,
+    "ga_eligible_release_version": "2.0.0"
   }
 }
