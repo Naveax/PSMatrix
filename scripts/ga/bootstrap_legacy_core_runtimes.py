@@ -18,22 +18,27 @@ from urllib.parse import urlparse
 LEGACY_RUNTIMES: dict[str, dict[str, str]] = {
     "6.0.5": {
         "ubuntu": "16.04",
+        "codename": "xenial",
         "asset": "powershell_6.0.5-1.ubuntu.16.04_amd64.deb",
     },
     "6.1.6": {
         "ubuntu": "18.04",
+        "codename": "bionic",
         "asset": "powershell_6.1.6-1.ubuntu.18.04_amd64.deb",
     },
     "6.2.7": {
         "ubuntu": "18.04",
+        "codename": "bionic",
         "asset": "powershell_6.2.7-1.ubuntu.18.04_amd64.deb",
     },
     "7.0.13": {
         "ubuntu": "20.04",
+        "codename": "focal",
         "asset": "powershell_7.0.13-1.ubuntu.20.04_amd64.deb",
     },
     "7.1.7": {
         "ubuntu": "20.04",
+        "codename": "focal",
         "asset": "powershell_7.1.7-1.ubuntu.20.04_amd64.deb",
     },
 }
@@ -156,18 +161,29 @@ def _run(command: list[str], *, cwd: Path | None = None) -> str:
     return completed.stdout.strip()
 
 
-def _dockerfile(version: str, ubuntu: str) -> str:
+def _dockerfile(version: str, ubuntu: str, codename: str) -> str:
+    archive = "http://old-releases.ubuntu.com/ubuntu"
+    components = "main restricted universe multiverse"
+    source_lines = [
+        f"deb {archive}/ {codename} {components}",
+        f"deb {archive}/ {codename}-updates {components}",
+        f"deb {archive}/ {codename}-security {components}",
+    ]
+    # A single grouped printf avoids sed parsing and preserves exact archive paths.
+    source_args = " \\\n        ".join(f"'{line}'" for line in source_lines)
     return f"""FROM ubuntu:{ubuntu}
 ARG DEBIAN_FRONTEND=noninteractive
 ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8
 COPY powershell.deb /tmp/powershell.deb
 RUN set -eux; \\
-    sed -ri 's|https?://(archive|security).ubuntu.com/ubuntu/?|http://old-releases.ubuntu.com/ubuntu/|g' /etc/apt/sources.list; \\
-    apt-get update; \\
+    printf '%s\\n' \\
+        {source_args} \\
+        > /etc/apt/sources.list; \\
+    apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Retries=3 update; \\
     apt-get install -y --no-install-recommends ca-certificates locales; \\
     (dpkg -i /tmp/powershell.deb || apt-get install -f -y); \\
     dpkg -s powershell; \\
-    pwsh -NoLogo -NoProfile -Command '$actual=$PSVersionTable.PSVersion.ToString(); if ($actual -ne \"{version}\") {{ throw \"version mismatch: $actual\" }}'; \\
+    pwsh -NoLogo -NoProfile -Command '$actual=$PSVersionTable.PSVersion.ToString(); if ($actual -ne "{version}") {{ throw "version mismatch: $actual" }}'; \\
     rm -f /tmp/powershell.deb; \\
     rm -rf /var/lib/apt/lists/*
 CMD ["pwsh"]
@@ -182,7 +198,10 @@ def _bootstrap_one(*, psmatrix: Path, home: Path, engine: str, root: Path, versi
     context.mkdir(parents=True, exist_ok=False)
     package = context / "powershell.deb"
     _download_verified(asset_url, package, asset_sha256)
-    (context / "Dockerfile").write_text(_dockerfile(version, definition["ubuntu"]), encoding="utf-8")
+    (context / "Dockerfile").write_text(
+        _dockerfile(version, definition["ubuntu"], definition["codename"]),
+        encoding="utf-8",
+    )
 
     image = f"psmatrix/legacy-powershell:{version}"
     _run([engine, "build", "--pull", "--tag", image, "."], cwd=context)
@@ -233,6 +252,7 @@ def _bootstrap_one(*, psmatrix: Path, home: Path, engine: str, root: Path, versi
         "status": "INSTALLED",
         "backend": "oci-local-verified-release",
         "ubuntu": definition["ubuntu"],
+        "codename": definition["codename"],
         "asset": asset_name,
         "asset_url": asset_url,
         "asset_sha256": asset_sha256,
