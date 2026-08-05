@@ -196,7 +196,11 @@ def _dockerfile(version: str, ubuntu: str, codename: str) -> str:
     fallback_args = " \\\n        ".join(f"'{line}'" for line in _source_lines(fallback, codename))
     return f"""FROM ubuntu:{ubuntu}
 ARG DEBIAN_FRONTEND=noninteractive
-ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8
+ENV DEBIAN_FRONTEND=noninteractive \\
+    LANG=C.UTF-8 \\
+    LC_ALL=C.UTF-8 \\
+    HOME=/tmp/psmatrix-home \\
+    DOTNET_CLI_HOME=/tmp/psmatrix-home
 COPY powershell.deb /tmp/powershell.deb
 RUN set -eux; \\
     printf '%s\\n' \\
@@ -211,9 +215,11 @@ RUN set -eux; \\
     apt-get install -y --no-install-recommends ca-certificates locales; \\
     (dpkg -i /tmp/powershell.deb || apt-get install -f -y); \\
     dpkg -s powershell; \\
+    mkdir -p /tmp/psmatrix-home; \\
     pwsh -NoLogo -NoProfile -Command '$actual=$PSVersionTable.PSVersion.ToString(); if ($actual -ne "{version}") {{ throw "version mismatch: $actual" }}'; \\
     rm -f /tmp/powershell.deb; \\
     rm -rf /var/lib/apt/lists/*
+VOLUME ["/tmp"]
 CMD ["pwsh"]
 """
 
