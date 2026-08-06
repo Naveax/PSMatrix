@@ -219,6 +219,7 @@ class GAGateTests(unittest.TestCase):
             "revoked_client_rejected": True,
             "tls_passthrough_verified": True,
         }, *roles["deployment"], artifacts=live_artifact)
+        otlp_artifact = [{"name": "external-otlp-live-report.json", "sha256": "f" * 64}]
         self._proof(root / "evidence" / "external-otlp.dsse.json", "external-otlp", {
             "endpoint": "https://otel.example.com/v1/metrics",
             "resolved_addresses": ["93.184.216.34"],
@@ -228,7 +229,25 @@ class GAGateTests(unittest.TestCase):
             "collector_external": True,
             "request_path": "/v1/metrics",
             "status_code": 200,
-        }, *roles["operations"])
+            "post_restart_status_code": 200,
+            "authenticated_tls": True,
+            "unauthenticated_request_rejected": True,
+            "collector_receipt_verified": True,
+            "restart_recovery_verified": True,
+            "collector_instance_changed": True,
+            "recovery_seconds": 9.0,
+            "successful_exports": 2,
+            "credential_leak_absent": True,
+            "private_key_leak_absent": True,
+            "source_body_leak_absent": True,
+            "absolute_path_leak_absent": True,
+            "release_commit_bound": True,
+            "release_commit": "a" * 40,
+            "expected_version": "2.0.0",
+            "release_manifest_sha256": release_digest,
+            "release_wheel_sha256": wheel_digest,
+            "server_certificate_sha256": "3" * 64,
+        }, *roles["operations"], artifacts=otlp_artifact)
 
         rotation = run_key_rotation_drill(signing_private_key=roles["release"][0], signing_public_key=roles["release"][1])
         (root / "evidence" / "key-rotation.dsse.json").write_text(json.dumps(rotation), encoding="utf-8")
