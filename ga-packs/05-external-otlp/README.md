@@ -8,7 +8,7 @@ Prove that a separately operated OpenTelemetry Collector receives PSMatrix metri
 
 Workflow: `production-ga-pack05-source-preflight`
 
-The secret-free source preflight validates:
+The source/evaluator preflight is secret-free and validates:
 
 - the existing PSMatrix OTLP/HTTP JSON exporter and redacted metric payload;
 - the external probe, release binder and semantic enforcer Python syntax;
