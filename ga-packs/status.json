@@ -91,6 +91,20 @@
       "id": "04-public-auth",
       "state": "DEPLOYMENT_KIT_PREFLIGHT_READY_EXTERNAL_PROOF_DEPLOYMENT_PENDING",
       "ga_eligible": false,
+      "source_preflight": {
+        "workflow": "production-ga-pack04-source-preflight",
+        "workflow_path": ".github/workflows/ga-pack04-source-preflight.yml",
+        "runner": "ubuntu-latest",
+        "python": "3.13",
+        "tests": [
+          "tests.test_ga",
+          "tests.test_public_auth_ga_contract",
+          "tests.test_public_auth_deployment_kit"
+        ],
+        "compiles_pack04_scripts": true,
+        "ga_eligible": false,
+        "status": "PENDING_CI"
+      },
       "deployment_preflight": {
         "workflow": "production-ga-public-auth-deployment-preflight",
         "workflow_path": ".github/workflows/ga-public-auth-deployment-preflight.yml",
@@ -134,7 +148,7 @@
         "status": "READY_FOR_DEPLOYMENT"
       },
       "authority_contract": "ga-packs/04-public-auth/authority-contract.json",
-      "remaining": "Run the reproducible deployment preflight after the exact signed release-manifest and wheel digests are available. Deploy the generated separate OAuth and direct-mTLS services. Configure five distinct OAuth tokens, four mTLS certificate states and the external authority key. Run production-ga-public-auth-external with the same exact commit, version, manifest digest and wheel digest. Final GA accepts only final 2.0.0 proofs cross-bound to the signed release and the same live report."
+      "remaining": "First obtain a green production-ga-pack04-source-preflight run. Then run the reproducible deployment preflight after the exact signed release-manifest and wheel digests are available. Deploy the generated separate OAuth and direct-mTLS services. Configure five distinct OAuth tokens, four mTLS certificate states and the external authority key. Run production-ga-public-auth-external with the same exact commit, version, manifest digest and wheel digest. Final GA accepts only final 2.0.0 proofs cross-bound to the signed release and the same live report."
     },
     {"id": "05-external-otlp", "state": "PACK_REQUIRED", "ga_eligible": false},
     {"id": "06-independent-review", "state": "READY_FOR_REVIEWER", "ga_eligible": false},
