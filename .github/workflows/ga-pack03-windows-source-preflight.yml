@@ -11,8 +11,10 @@ on:
       - ".github/workflows/ga-windows-authoritative.yml"
       - "ga-packs/03-authoritative-windows/**"
       - "scripts/ga/validate_windows_authority_infrastructure.py"
+      - "scripts/ga/Initialize-PSMatrixWindowsAuthorityLab.ps1"
       - "scripts/ga/Invoke-PSMatrixAuthoritativeWindowsGA.ps1"
       - "tests/test_windows_authority_ga_contract.py"
+      - "tests/test_windows_authority_controller_bootstrap.py"
 
 concurrency:
   group: production-ga-pack03-windows-source-preflight-${{ github.ref }}
@@ -65,6 +67,7 @@ jobs:
             [[ -z "$(git status --porcelain)" ]] || { echo 'source checkout is not clean' >&2; exit 1; }
             echo "release_commit=$head"
             echo "python=$(python --version 2>&1)"
+            echo "pwsh=$(pwsh --version 2>&1)"
           } 2>&1 | tee "$PSMATRIX_PACK03_SOURCE_EVIDENCE/source-controller.log"
           echo "PYTHONPATH=$GITHUB_WORKSPACE/src" >> "$GITHUB_ENV"
 
@@ -75,15 +78,36 @@ jobs:
           {
             python -m py_compile \
               scripts/ga/validate_windows_authority_infrastructure.py \
-              tests/test_windows_authority_ga_contract.py
+              tests/test_windows_authority_ga_contract.py \
+              tests/test_windows_authority_controller_bootstrap.py
             echo "py_compile=PASS"
           } 2>&1 | tee "$PSMATRIX_PACK03_SOURCE_EVIDENCE/py-compile.log"
+
+      - name: Parse Windows controller bootstrap script
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Join-Path $env:GITHUB_WORKSPACE 'scripts/ga/Initialize-PSMatrixWindowsAuthorityLab.ps1'),
+              [ref]$tokens,
+              [ref]$errors
+          )
+          if ($errors.Count -ne 0) {
+              $errors | ForEach-Object { Write-Error $_.Message }
+              throw "Windows controller bootstrap parser reported $($errors.Count) error(s)."
+          }
+          "powershell_parse=PASS" | Out-File -FilePath (Join-Path $env:PSMATRIX_PACK03_SOURCE_EVIDENCE 'powershell-parse.log') -Encoding utf8
+          Write-Host 'powershell_parse=PASS'
 
       - name: Run Pack 03 authority contract tests
         shell: bash
         run: |
           set -euo pipefail
-          python -m unittest -v tests.test_windows_authority_ga_contract \
+          python -m unittest -v \
+            tests.test_windows_authority_ga_contract \
+            tests.test_windows_authority_controller_bootstrap \
             2>&1 | tee "$PSMATRIX_PACK03_SOURCE_EVIDENCE/test-windows-authority.log"
 
       - name: Enforce Pack 03 source preflight
@@ -101,6 +125,7 @@ jobs:
               'controller-context.txt',
               'source-controller.log',
               'py-compile.log',
+              'powershell-parse.log',
               'test-windows-authority.log',
           )
           files = []
@@ -121,6 +146,8 @@ jobs:
               'release_commit': sys.argv[2],
               'hosted_workflow_contract': 'PASS',
               'exact_hosted_check_count': 12,
+              'controller_bootstrap_contract': 'PASS',
+              'controller_bootstrap_powershell_parse': 'PASS',
               'infrastructure_workflow_contract': 'PASS',
               'authoritative_workflow_contract': 'PASS',
               'real_windows_executed': False,
