@@ -7,7 +7,13 @@
     "protected_environment": "production-ga-external-otlp",
     "external_runner": "github-hosted",
     "private_key_in_repository": false,
-    "private_key_in_artifacts": false
+    "private_key_in_artifacts": false,
+    "authentication_value_in_artifacts": false,
+    "required_protected_secrets": [
+      "PSMATRIX_EXTERNAL_OTLP_AUTH_VALUE",
+      "PSMATRIX_EXTERNAL_OTLP_OPERATIONS_PRIVATE_KEY",
+      "PSMATRIX_EXTERNAL_OTLP_OPERATIONS_PUBLIC_KEY"
+    ]
   },
   "network": {
     "scheme": "https",
@@ -16,9 +22,11 @@
     "globally_routable_addresses_required": true,
     "platform_trusted_tls_required": true,
     "userinfo_forbidden": true,
+    "query_forbidden": true,
     "fragment_forbidden": true,
     "authentication_required": true,
-    "unauthenticated_statuses": [401, 403]
+    "unauthenticated_statuses": [401, 403],
+    "health_receipt_restart_urls_distinct": true
   },
   "release_binding": {
     "exact_full_commit_required": true,
@@ -39,7 +47,8 @@
     "authenticated_status_min": 200,
     "authenticated_status_max": 299,
     "collector_receipt_required": true,
-    "receipt_must_bind_payload_sha256": true
+    "receipt_must_bind_payload_sha256": true,
+    "minimum_successful_exports": 2
   },
   "recovery": {
     "collector_restart_required": true,
@@ -57,6 +66,7 @@
     "raw_source_body_forbidden": true,
     "absolute_paths_forbidden": true,
     "query_credentials_forbidden": true,
+    "exact_auth_value_scan_required": true,
     "evidence_secret_scan_required": true
   },
   "source_preflight": {
@@ -67,18 +77,33 @@
     "secret_free": true,
     "ga_eligible": false
   },
+  "final_evaluator_preflight": {
+    "workflow": "production-ga-pack05-final-evaluator-preflight",
+    "workflow_path": ".github/workflows/ga-pack05-final-evaluator-preflight.yml",
+    "hardening_module": "src/psmatrix/ga_external_otlp.py",
+    "complete_ga_regression_required": true,
+    "exact_release_cross_binding_tests_required": true,
+    "status": "PENDING_CI",
+    "ga_eligible": false
+  },
   "external_workflow": {
     "workflow": "production-ga-external-otlp",
     "workflow_path": ".github/workflows/ga-external-otlp.yml",
     "probe": "scripts/ga/probe_external_otlp.py",
     "binder": "scripts/ga/bind_external_otlp_release.py",
     "enforcer": "scripts/ga/enforce_external_otlp_report.py",
-    "status": "PLANNED_AFTER_SOURCE_PREFLIGHT"
+    "operations_proof_type": "external-otlp",
+    "key_cleanup_before_inventory": true,
+    "artifact_on_failure": true,
+    "status": "READY_FOR_PROTECTED_INPUTS"
   },
   "completion": {
     "signed_proofs_required": 1,
     "required_proof_type": "external-otlp",
     "source_preflight_can_complete_pack": false,
+    "final_evaluator_preflight_can_complete_pack": false,
+    "external_live_proof_required": true,
+    "final_release_required_for_ga_compatibility": "2.0.0",
     "ga_eligible": false
   }
 }
