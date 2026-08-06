@@ -11,6 +11,29 @@
     "private_keys_in_artifacts": false,
     "bearer_tokens_in_artifacts": false
   },
+  "deployment_preflight": {
+    "workflow": "production-ga-public-auth-deployment-preflight",
+    "workflow_path": ".github/workflows/ga-public-auth-deployment-preflight.yml",
+    "builder": "scripts/ga/public_auth_deployment_kit.py",
+    "protected_environment": "production-ga-public-auth",
+    "runner": "ubuntu-latest",
+    "exact_full_commit_required": true,
+    "exact_version_required": true,
+    "signed_release_manifest_sha256_required": true,
+    "exact_wheel_sha256_required": true,
+    "double_build_reproducibility_required": true,
+    "signed_deployment_attestation_required": true,
+    "credential_free_archive_required": true,
+    "private_key_removed_before_verification": true,
+    "oauth_internal_port": 8765,
+    "mtls_direct_tls_port": 8766,
+    "oauth_internal_tls_proxy_port": 9443,
+    "sni_stream_routing_required": true,
+    "distinct_endpoint_hostnames_required": true,
+    "same_public_port_required": true,
+    "ga_eligible": false,
+    "note": "Deployment readiness cannot replace the external live OAuth and mTLS proofs."
+  },
   "release_binding": {
     "exact_full_commit_required": true,
     "exact_deployed_version_required": true,
@@ -77,9 +100,14 @@
     "PSMATRIX_PUBLIC_AUTH_UNTRUSTED_CLIENT_CERT",
     "PSMATRIX_PUBLIC_AUTH_UNTRUSTED_CLIENT_KEY",
     "PSMATRIX_PUBLIC_AUTH_AUTHORITY_PRIVATE_KEY",
-    "PSMATRIX_PUBLIC_AUTH_AUTHORITY_PUBLIC_KEY"
+    "PSMATRIX_PUBLIC_AUTH_AUTHORITY_PUBLIC_KEY",
+    "PSMATRIX_PUBLIC_AUTH_DEPLOYMENT_PRIVATE_KEY",
+    "PSMATRIX_PUBLIC_AUTH_DEPLOYMENT_PUBLIC_KEY"
   ],
   "evidence": {
+    "deployment_kit": "psmatrix-public-auth-deployment-kit.zip",
+    "deployment_verification": "verification-first.json",
+    "deployment_reproducibility": "reproducibility.json",
     "live_report": "public-auth-live-report.json",
     "enforcement": "public-auth-enforcement.json",
     "oauth_signed_proof": "public-oauth.dsse.json",
@@ -88,6 +116,7 @@
     "retention_days": 30
   },
   "completion": {
+    "deployment_preflight_required_status": "PASS_PARTIAL",
     "oauth_required_status": "PASS",
     "mtls_required_status": "PASS",
     "signed_proofs_required": 2,
