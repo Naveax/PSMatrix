@@ -118,6 +118,12 @@ class WindowsAuthorityGAContractTests(unittest.TestCase):
         self.assertIn("New-Item -Path $registryProductRoot -Force", text)
         self.assertIn("New-Item -Path $registryProbeRoot -Force", text)
         self.assertIn("Remove-Item -LiteralPath $registryPath", text)
+        self.assertIn("$detectedPSEdition = $null", text)
+        self.assertIn("psedition = $detectedPSEdition", text)
+        self.assertIsNone(
+            re.search(r"(?im)^\s*\$psedition\s*=", text),
+            "PowerShell variable names are case-insensitive; assigning $psEdition collides with read-only $PSEdition",
+        )
         self.assertIn("authority_level = 'github-hosted-windows-preflight'", text)
         self.assertIn("authoritative = $false", text)
         self.assertIn("ga_eligible = $false", text)
