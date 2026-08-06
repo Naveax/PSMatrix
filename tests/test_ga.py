@@ -41,6 +41,8 @@ class GAGateTests(unittest.TestCase):
             "assertions": assertions,
             "artifacts": list(artifacts or []),
         }
+        if "release_commit" in assertions:
+            value["release_commit"] = assertions["release_commit"]
         path.write_text(json.dumps(create_ga_proof(value, private_key=private, public_key=public)), encoding="utf-8")
 
 
@@ -176,22 +178,56 @@ class GAGateTests(unittest.TestCase):
             output=root / "evidence" / "full-matrix-report.dsse.json",
         )
 
-        public = {
-            "endpoint": "https://mcp.example.com/mcp",
+        release_digest = __import__("psmatrix.util", fromlist=["sha256_file"]).sha256_file(release_manifest_path)
+        source_digest = __import__("psmatrix.util", fromlist=["sha256_file"]).sha256_file(source_artifact)
+        wheel_digest = __import__("psmatrix.util", fromlist=["sha256_file"]).sha256_file(artifact)
+        live_report_digest = "e" * 64
+        public_release = {
             "resolved_addresses": ["93.184.216.34"],
-            "external_probe": True, "public_dns": True, "public_tls": True,
+            "external_probe": True,
+            "public_dns": True,
+            "public_tls": True,
+            "release_commit_bound": True,
+            "release_commit": "a" * 40,
+            "expected_version": "2.0.0",
+            "release_manifest_sha256": release_digest,
+            "release_wheel_sha256": wheel_digest,
         }
+        live_artifact = [{"name": "public-auth-live-report.json", "sha256": live_report_digest}]
         self._proof(root / "evidence" / "public-oauth.dsse.json", "public-oauth", {
-            **public, "oauth_external": True, "audience_verified": True,
-            "scope_verified": True, "token_expiry_verified": True,
-        }, *roles["deployment"])
+            **public_release,
+            "endpoint": "https://oauth.example.com/mcp",
+            "server_certificate_sha256": "1" * 64,
+            "oauth_external": True,
+            "discovery_verified": True,
+            "audience_verified": True,
+            "scope_verified": True,
+            "token_expiry_verified": True,
+            "missing_token_rejected": True,
+            "wrong_audience_rejected": True,
+            "missing_scope_rejected": True,
+            "replay_protection_verified": True,
+            "rate_limiting_verified": True,
+        }, *roles["deployment"], artifacts=live_artifact)
         self._proof(root / "evidence" / "public-mtls.dsse.json", "public-mtls", {
-            **public, "client_certificate_required": True, "untrusted_client_rejected": True,
+            **public_release,
+            "endpoint": "https://mtls.example.com/mcp",
+            "server_certificate_sha256": "2" * 64,
+            "client_certificate_required": True,
+            "untrusted_client_rejected": True,
             "certificate_rotation_ready": True,
-        }, *roles["deployment"])
+            "revoked_client_rejected": True,
+            "tls_passthrough_verified": True,
+        }, *roles["deployment"], artifacts=live_artifact)
         self._proof(root / "evidence" / "external-otlp.dsse.json", "external-otlp", {
-            **{**public, "endpoint": "https://otel.example.com/v1/metrics"},
-            "collector_external": True, "request_path": "/v1/metrics", "status_code": 200,
+            "endpoint": "https://otel.example.com/v1/metrics",
+            "resolved_addresses": ["93.184.216.34"],
+            "external_probe": True,
+            "public_dns": True,
+            "public_tls": True,
+            "collector_external": True,
+            "request_path": "/v1/metrics",
+            "status_code": 200,
         }, *roles["operations"])
 
         rotation = run_key_rotation_drill(signing_private_key=roles["release"][0], signing_public_key=roles["release"][1])
@@ -207,9 +243,6 @@ class GAGateTests(unittest.TestCase):
         (root / "evidence" / "recovery.dsse.json").write_text(json.dumps(recovery), encoding="utf-8")
 
         report_digest = "d" * 64
-        release_digest = __import__("psmatrix.util", fromlist=["sha256_file"]).sha256_file(release_manifest_path)
-        source_digest = __import__("psmatrix.util", fromlist=["sha256_file"]).sha256_file(source_artifact)
-        wheel_digest = __import__("psmatrix.util", fromlist=["sha256_file"]).sha256_file(artifact)
         self._proof(
             root / "evidence" / "security-review.dsse.json", "security-review",
             self._security_review_assertions(
@@ -406,6 +439,68 @@ class GAGateTests(unittest.TestCase):
             gate = next(item for item in evaluation.gates if item.gate == "vulnerability-scan")
             self.assertEqual(gate.status, "FAIL")
             self.assertIn("validated release commit", gate.message)
+
+    def test_public_auth_proof_must_bind_final_wheel_and_commit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            policy, roles = self._complete_fixture(root)
+            release_path = root / "release" / "psmatrix-2.0.0-release.json"
+            release_digest = __import__("psmatrix.util", fromlist=["sha256_file"]).sha256_file(release_path)
+            assertions = {
+                "endpoint": "https://oauth.example.com/mcp",
+                "resolved_addresses": ["93.184.216.34"],
+                "external_probe": True,
+                "public_dns": True,
+                "public_tls": True,
+                "oauth_external": True,
+                "discovery_verified": True,
+                "audience_verified": True,
+                "scope_verified": True,
+                "token_expiry_verified": True,
+                "missing_token_rejected": True,
+                "wrong_audience_rejected": True,
+                "missing_scope_rejected": True,
+                "replay_protection_verified": True,
+                "rate_limiting_verified": True,
+                "release_commit_bound": True,
+                "release_commit": "e" * 40,
+                "expected_version": "2.0.0",
+                "release_manifest_sha256": release_digest,
+                "release_wheel_sha256": "f" * 64,
+                "server_certificate_sha256": "1" * 64,
+            }
+            self._proof(
+                root / "evidence" / "public-oauth.dsse.json",
+                "public-oauth",
+                assertions,
+                *roles["deployment"],
+                artifacts=[{"name": "public-auth-live-report.json", "sha256": "e" * 64}],
+            )
+            evaluation = evaluate_ga(policy)
+            gate = next(item for item in evaluation.gates if item.gate == "public-oauth")
+            self.assertEqual(gate.status, "FAIL")
+            self.assertIn("validated release commit", gate.message)
+
+    def test_public_auth_proofs_must_bind_same_live_report(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            policy, roles = self._complete_fixture(root)
+            envelope_path = root / "evidence" / "public-mtls.dsse.json"
+            envelope = json.loads(envelope_path.read_text(encoding="utf-8"))
+            from psmatrix.signing import verify_dsse_envelope, create_dsse_envelope
+            statement = verify_dsse_envelope(envelope, roles["deployment"][1])["statement"]
+            statement["predicate"]["artifacts"][0]["sha256"] = "f" * 64
+            statement["subject"][0]["digest"]["sha256"] = "f" * 64
+            envelope_path.write_text(
+                json.dumps(create_dsse_envelope(statement, roles["deployment"][0], roles["deployment"][1])),
+                encoding="utf-8",
+            )
+            evaluation = evaluate_ga(policy)
+            oauth = next(item for item in evaluation.gates if item.gate == "public-oauth")
+            mtls = next(item for item in evaluation.gates if item.gate == "public-mtls")
+            self.assertEqual(oauth.status, "FAIL")
+            self.assertEqual(mtls.status, "FAIL")
+            self.assertIn("same live report", oauth.message)
 
     def test_full_matrix_must_bind_final_release_and_commit(self):
         with tempfile.TemporaryDirectory() as temp:
