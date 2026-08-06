@@ -30,6 +30,9 @@ jobs:
     name: Pack 04 source, deployment and GA evaluator
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      PYTHONPATH: ${{ github.workspace }}/src
+      PSMATRIX_PACK04_EVIDENCE: ${{ runner.temp }}/psmatrix-pack04-source-preflight
 
     steps:
       - name: Check out exact revision
@@ -43,33 +46,76 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Initialize fail-closed evidence directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$PSMATRIX_PACK04_EVIDENCE"
+          install -d -m 0700 "$PSMATRIX_PACK04_EVIDENCE"
+          {
+            echo "workflow=production-ga-pack04-source-preflight"
+            echo "runner_environment=${RUNNER_ENVIRONMENT:-unknown}"
+            echo "python=$(python --version 2>&1)"
+          } > "$PSMATRIX_PACK04_EVIDENCE/controller-context.txt"
+
       - name: Verify source controller
         shell: bash
         run: |
           set -euo pipefail
-          head="$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')"
-          [[ "$head" =~ ^[0-9a-f]{40}$ ]] || { echo 'checked-out head is invalid' >&2; exit 1; }
-          [[ -z "$(git status --porcelain)" ]] || { echo 'source checkout is not clean' >&2; exit 1; }
-          echo "release_commit=$head"
-          echo "python=$(python --version 2>&1)"
+          {
+            head="$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')"
+            [[ "$head" =~ ^[0-9a-f]{40}$ ]] || { echo 'checked-out head is invalid' >&2; exit 1; }
+            [[ -z "$(git status --porcelain)" ]] || { echo 'source checkout is not clean' >&2; exit 1; }
+            echo "release_commit=$head"
+            echo "python=$(python --version 2>&1)"
+          } 2>&1 | tee "$PSMATRIX_PACK04_EVIDENCE/source-controller.log"
 
-      - name: Install exact source package
+      - name: Verify exact source package metadata
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --disable-pip-version-check --no-deps --no-build-isolation .
-          installed="$(python -c 'import psmatrix; print(psmatrix.__version__)')"
-          expected="$(python -c 'import pathlib, re; text=pathlib.Path("pyproject.toml").read_text(); print(re.search(r"^version = \"([^\"]+)\"$", text, re.M).group(1))')"
-          [[ "$installed" == "$expected" ]] || { echo "installed version mismatch: $installed != $expected" >&2; exit 1; }
-          echo "installed_version=$installed"
+          python - "$GITHUB_WORKSPACE" <<'PY' \
+            2>&1 | tee "$PSMATRIX_PACK04_EVIDENCE/source-package.log"
+          import json
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          expected_root = (root / "src" / "psmatrix").resolve()
+          with (root / "pyproject.toml").open("rb") as handle:
+              project = tomllib.load(handle)["project"]
+
+          import psmatrix
+
+          source_file = Path(psmatrix.__file__).resolve()
+          try:
+              source_file.relative_to(expected_root)
+          except ValueError as exc:
+              raise SystemExit(f"psmatrix imported outside exact source tree: {source_file}") from exc
+
+          expected_version = str(project["version"])
+          actual_version = str(psmatrix.__version__)
+          if actual_version != expected_version:
+              raise SystemExit(
+                  f"source version mismatch: {actual_version} != {expected_version}"
+              )
+
+          result = {
+              "schema": 1,
+              "kind": "psmatrix.pack04-source-package-verification",
+              "status": "PASS",
+              "version": actual_version,
+              "source": source_file.relative_to(root).as_posix(),
+              "backend_install_required": False,
+          }
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
 
       - name: Compile Pack 04 Python sources
         shell: bash
         run: |
           set -euo pipefail
-          evidence="$RUNNER_TEMP/psmatrix-pack04-source-preflight"
-          rm -rf "$evidence"
-          install -d -m 0700 "$evidence"
           python -m py_compile \
             scripts/ga/probe_public_auth.py \
             scripts/ga/bind_public_auth_release.py \
@@ -79,38 +125,34 @@ jobs:
             tests/test_ga.py \
             tests/test_public_auth_ga_contract.py \
             tests/test_public_auth_deployment_kit.py \
-            2>&1 | tee "$evidence/py-compile.log"
+            2>&1 | tee "$PSMATRIX_PACK04_EVIDENCE/py-compile.log"
 
       - name: Run final GA evaluator tests
         shell: bash
         run: |
           set -euo pipefail
-          evidence="$RUNNER_TEMP/psmatrix-pack04-source-preflight"
           python -m unittest -v tests.test_ga \
-            2>&1 | tee "$evidence/test-ga.log"
+            2>&1 | tee "$PSMATRIX_PACK04_EVIDENCE/test-ga.log"
 
       - name: Run Pack 04 authority contract tests
         shell: bash
         run: |
           set -euo pipefail
-          evidence="$RUNNER_TEMP/psmatrix-pack04-source-preflight"
           python -m unittest -v tests.test_public_auth_ga_contract \
-            2>&1 | tee "$evidence/test-public-auth-ga-contract.log"
+            2>&1 | tee "$PSMATRIX_PACK04_EVIDENCE/test-public-auth-ga-contract.log"
 
       - name: Run deployment kit functional tests
         shell: bash
         run: |
           set -euo pipefail
-          evidence="$RUNNER_TEMP/psmatrix-pack04-source-preflight"
           python -m unittest -v tests.test_public_auth_deployment_kit \
-            2>&1 | tee "$evidence/test-public-auth-deployment-kit.log"
+            2>&1 | tee "$PSMATRIX_PACK04_EVIDENCE/test-public-auth-deployment-kit.log"
 
       - name: Enforce Pack 04 source preflight result
         shell: bash
         run: |
           set -euo pipefail
-          evidence="$RUNNER_TEMP/psmatrix-pack04-source-preflight"
-          python - "$evidence" "$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')" <<'PY'
+          python - "$PSMATRIX_PACK04_EVIDENCE" "$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')" <<'PY'
           import hashlib
           import json
           import sys
@@ -119,6 +161,9 @@ jobs:
           root = Path(sys.argv[1]).resolve()
           commit = sys.argv[2]
           required = (
+              "controller-context.txt",
+              "source-controller.log",
+              "source-package.log",
               "py-compile.log",
               "test-ga.log",
               "test-public-auth-ga-contract.log",
@@ -141,6 +186,8 @@ jobs:
               "status": "PASS",
               "release_commit": commit,
               "python": "3.13",
+              "source_import": "exact-checkout",
+              "backend_install_required": False,
               "compiled": True,
               "ga_evaluator_tests": "PASS",
               "authority_contract_tests": "PASS",
@@ -153,6 +200,32 @@ jobs:
               encoding="utf-8",
           )
           print(json.dumps(value, indent=2, sort_keys=True))
+          PY
+
+      - name: Record fail-closed preflight state
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          install -d -m 0700 "$PSMATRIX_PACK04_EVIDENCE"
+          python - "$PSMATRIX_PACK04_EVIDENCE" "${GITHUB_SHA,,}" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          value = {
+              "schema": 1,
+              "kind": "psmatrix.pack04-source-preflight-status",
+              "status": "FAIL",
+              "release_commit": sys.argv[2],
+              "ga_eligible": False,
+              "note": "Inspect the retained step logs for the first failing command.",
+          }
+          (root / "preflight-failure.json").write_text(
+              json.dumps(value, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
           PY
 
       - name: Upload Pack 04 source preflight evidence
