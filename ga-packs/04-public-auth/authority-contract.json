@@ -1,0 +1,97 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.public-auth-authority-contract",
+  "pack": "04-public-auth",
+  "authority": {
+    "protected_environment": "production-ga-public-auth",
+    "external_runner": "github-hosted",
+    "workflow": "production-ga-public-auth-external",
+    "workflow_path": ".github/workflows/ga-public-auth-external.yml",
+    "private_keys_in_repository": false,
+    "private_keys_in_artifacts": false,
+    "bearer_tokens_in_artifacts": false
+  },
+  "release_binding": {
+    "exact_full_commit_required": true,
+    "exact_deployed_version_required": true,
+    "live_report_digest_signed": true,
+    "oauth_proof_type": "public-oauth",
+    "mtls_proof_type": "public-mtls"
+  },
+  "network": {
+    "oauth_and_mtls_endpoints_must_differ": true,
+    "https_required": true,
+    "public_dns_required": true,
+    "all_resolved_addresses_global": true,
+    "platform_trusted_server_tls_required": true,
+    "minimum_tls_version": "TLSv1.2"
+  },
+  "oauth": {
+    "required_checks": [
+      "protected-resource-discovery",
+      "exact-resource-url",
+      "authorization-server-metadata",
+      "required-scope-metadata",
+      "missing-token-rejected-401",
+      "valid-token-accepted",
+      "wrong-audience-rejected-401",
+      "expired-token-rejected-401",
+      "missing-scope-rejected-401",
+      "exact-request-replay-idempotent",
+      "different-content-request-id-rejected-400",
+      "bounded-rate-limit-429"
+    ],
+    "five_distinct_tokens_required": true,
+    "bearer_method": "header"
+  },
+  "mtls": {
+    "direct_endpoint_required": true,
+    "psmatrix_tls_termination_required": true,
+    "required_checks": [
+      "missing-client-certificate-rejected",
+      "untrusted-client-certificate-rejected",
+      "valid-client-certificate-accepted",
+      "rotated-client-certificate-accepted",
+      "revoked-client-certificate-rejected",
+      "psmatrix-server-identity-observed"
+    ],
+    "accepted_negative_classes": [
+      "tls-handshake-rejected",
+      "HTTP_401",
+      "HTTP_403"
+    ],
+    "four_distinct_client_certificates_required": true
+  },
+  "protected_secrets": [
+    "PSMATRIX_PUBLIC_AUTH_VALID_TOKEN",
+    "PSMATRIX_PUBLIC_AUTH_WRONG_AUDIENCE_TOKEN",
+    "PSMATRIX_PUBLIC_AUTH_EXPIRED_TOKEN",
+    "PSMATRIX_PUBLIC_AUTH_MISSING_SCOPE_TOKEN",
+    "PSMATRIX_PUBLIC_AUTH_RATE_TOKEN",
+    "PSMATRIX_PUBLIC_AUTH_VALID_CLIENT_CERT",
+    "PSMATRIX_PUBLIC_AUTH_VALID_CLIENT_KEY",
+    "PSMATRIX_PUBLIC_AUTH_ROTATED_CLIENT_CERT",
+    "PSMATRIX_PUBLIC_AUTH_ROTATED_CLIENT_KEY",
+    "PSMATRIX_PUBLIC_AUTH_REVOKED_CLIENT_CERT",
+    "PSMATRIX_PUBLIC_AUTH_REVOKED_CLIENT_KEY",
+    "PSMATRIX_PUBLIC_AUTH_UNTRUSTED_CLIENT_CERT",
+    "PSMATRIX_PUBLIC_AUTH_UNTRUSTED_CLIENT_KEY",
+    "PSMATRIX_PUBLIC_AUTH_AUTHORITY_PRIVATE_KEY",
+    "PSMATRIX_PUBLIC_AUTH_AUTHORITY_PUBLIC_KEY"
+  ],
+  "evidence": {
+    "live_report": "public-auth-live-report.json",
+    "enforcement": "public-auth-enforcement.json",
+    "oauth_signed_proof": "public-oauth.dsse.json",
+    "mtls_signed_proof": "public-mtls.dsse.json",
+    "inventory": "evidence-inventory.json",
+    "retention_days": 30
+  },
+  "completion": {
+    "oauth_required_status": "PASS",
+    "mtls_required_status": "PASS",
+    "signed_proofs_required": 2,
+    "ga_eligible": false,
+    "note": "Pack proof completion supplies two mandatory GA evidence gates but does not by itself open Production GA."
+  }
+}
