@@ -74,8 +74,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python - "$GITHUB_WORKSPACE" <<'PY' \
-            2>&1 | tee "$PSMATRIX_PACK04_EVIDENCE/source-package.log"
+          python - "$GITHUB_WORKSPACE" 2>&1 <<'PY' | tee "$PSMATRIX_PACK04_EVIDENCE/source-package.log"
           import json
           import sys
           import tomllib
@@ -116,16 +115,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m py_compile \
-            scripts/ga/probe_public_auth.py \
-            scripts/ga/bind_public_auth_release.py \
-            scripts/ga/enforce_public_auth_report.py \
-            scripts/ga/public_auth_deployment_kit.py \
-            src/psmatrix/ga.py \
-            tests/test_ga.py \
-            tests/test_public_auth_ga_contract.py \
-            tests/test_public_auth_deployment_kit.py \
-            2>&1 | tee "$PSMATRIX_PACK04_EVIDENCE/py-compile.log"
+          {
+            python -m py_compile \
+              scripts/ga/probe_public_auth.py \
+              scripts/ga/bind_public_auth_release.py \
+              scripts/ga/enforce_public_auth_report.py \
+              scripts/ga/public_auth_deployment_kit.py \
+              src/psmatrix/ga.py \
+              tests/test_ga.py \
+              tests/test_public_auth_ga_contract.py \
+              tests/test_public_auth_deployment_kit.py
+            echo "py_compile=PASS"
+          } 2>&1 | tee "$PSMATRIX_PACK04_EVIDENCE/py-compile.log"
 
       - name: Run final GA evaluator tests
         shell: bash
