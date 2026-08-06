@@ -87,7 +87,30 @@
       "runner_contract": "ga-packs/03-authoritative-windows/runner-contract.json",
       "remaining": "Run the hosted Windows PowerShell 5.1 preflight. Then run the protected infrastructure preflight after the Hyper-V controller, exact Windows/WMF images, three worker endpoints/image manifests, signed release inventory and protected public release key are present. Only after that passes should the 10-iteration authoritative campaign run."
     },
-    {"id": "04-public-auth", "state": "PACK_REQUIRED", "ga_eligible": false},
+    {
+      "id": "04-public-auth",
+      "state": "EXTERNAL_PROOF_WORKFLOW_READY_DEPLOYMENT_PENDING",
+      "ga_eligible": false,
+      "external_workflow": {
+        "workflow": "production-ga-public-auth-external",
+        "workflow_path": ".github/workflows/ga-public-auth-external.yml",
+        "probe": "scripts/ga/probe_public_auth.py",
+        "enforcer": "scripts/ga/enforce_public_auth_report.py",
+        "protected_environment": "production-ga-public-auth",
+        "runner": "ubuntu-latest",
+        "external_runner_required": true,
+        "exact_release_commit_required": true,
+        "oauth_and_mtls_endpoints_separate": true,
+        "public_dns_required": true,
+        "platform_trusted_tls_required": true,
+        "oauth_signed_proof_type": "public-oauth",
+        "mtls_signed_proof_type": "public-mtls",
+        "private_credentials_in_artifacts": false,
+        "status": "READY_FOR_DEPLOYMENT"
+      },
+      "authority_contract": "ga-packs/04-public-auth/authority-contract.json",
+      "remaining": "Deploy separate public OAuth and direct mTLS MCP endpoints for the exact release commit; configure the protected five-token OAuth controls, four distinct mTLS certificate states and external authority key; then run production-ga-public-auth-external and verify both signed DSSE proofs."
+    },
     {"id": "05-external-otlp", "state": "PACK_REQUIRED", "ga_eligible": false},
     {"id": "06-independent-review", "state": "READY_FOR_REVIEWER", "ga_eligible": false},
     {"id": "07-final-ga", "state": "BLOCKED", "ga_eligible": false}
