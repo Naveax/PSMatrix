@@ -1,0 +1,226 @@
+name: production-ga-pack05-final-evaluator-preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/ga-pack05-final-evaluator-preflight.yml"
+      - "src/psmatrix/__init__.py"
+      - "src/psmatrix/ga.py"
+      - "src/psmatrix/ga_external_otlp.py"
+      - "tests/test_ga.py"
+      - "tests/test_external_otlp_ga_contract.py"
+      - "tests/test_external_otlp_final_ga.py"
+
+concurrency:
+  group: production-ga-pack05-final-evaluator-preflight-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  final-evaluator:
+    name: Pack 05 final GA release cross-binding
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Initialize fail-closed evidence directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/psmatrix-pack05-final-evaluator"
+          rm -rf "$evidence"
+          install -d -m 0700 "$evidence"
+          {
+            echo "PYTHONPATH=$GITHUB_WORKSPACE/src"
+            echo "PSMATRIX_PACK05_FINAL_EVIDENCE=$evidence"
+          } >> "$GITHUB_ENV"
+          {
+            echo "workflow=production-ga-pack05-final-evaluator-preflight"
+            echo "runner_environment=${RUNNER_ENVIRONMENT:-unknown}"
+            echo "python=$(python --version 2>&1)"
+          } > "$evidence/controller-context.txt"
+
+      - name: Verify exact source and hardening installation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$GITHUB_WORKSPACE" <<'PY' \
+            2>&1 | tee "$PSMATRIX_PACK05_FINAL_EVIDENCE/source-hardening.log"
+          import json
+          import subprocess
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          head = subprocess.check_output(
+              ["git", "rev-parse", "HEAD"],
+              cwd=root,
+              text=True,
+          ).strip().lower()
+          if len(head) != 40 or any(ch not in "0123456789abcdef" for ch in head):
+              raise SystemExit("checked-out head is invalid")
+          if subprocess.check_output(
+              ["git", "status", "--porcelain"],
+              cwd=root,
+              text=True,
+          ).strip():
+              raise SystemExit("source checkout is not clean")
+          with (root / "pyproject.toml").open("rb") as handle:
+              expected_version = str(tomllib.load(handle)["project"]["version"])
+
+          import psmatrix
+          from psmatrix import ga
+
+          source = Path(psmatrix.__file__).resolve()
+          source.relative_to((root / "src" / "psmatrix").resolve())
+          if psmatrix.__version__ != expected_version:
+              raise SystemExit("source version mismatch")
+          if getattr(ga, "_external_otlp_hardened", False) is not True:
+              raise SystemExit("external OTLP hardening was not installed")
+          print(json.dumps({
+              "status": "PASS",
+              "release_commit": head,
+              "version": expected_version,
+              "hardening_installed": True,
+              "source": source.relative_to(root).as_posix(),
+          }, indent=2, sort_keys=True))
+          PY
+
+      - name: Compile final evaluator sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            python -m py_compile \
+              src/psmatrix/__init__.py \
+              src/psmatrix/ga.py \
+              src/psmatrix/ga_external_otlp.py \
+              tests/test_ga.py \
+              tests/test_external_otlp_ga_contract.py \
+              tests/test_external_otlp_final_ga.py
+            echo "py_compile=PASS"
+          } 2>&1 | tee "$PSMATRIX_PACK05_FINAL_EVIDENCE/py-compile.log"
+
+      - name: Run complete GA evaluator regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_ga \
+            2>&1 | tee "$PSMATRIX_PACK05_FINAL_EVIDENCE/test-ga.log"
+
+      - name: Run Pack 05 authority contract regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_external_otlp_ga_contract \
+            2>&1 | tee "$PSMATRIX_PACK05_FINAL_EVIDENCE/test-external-otlp-contract.log"
+
+      - name: Run final release cross-binding tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_external_otlp_final_ga \
+            2>&1 | tee "$PSMATRIX_PACK05_FINAL_EVIDENCE/test-external-otlp-final-ga.log"
+
+      - name: Enforce final evaluator preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$PSMATRIX_PACK05_FINAL_EVIDENCE" "$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          commit = sys.argv[2]
+          required = (
+              "controller-context.txt",
+              "source-hardening.log",
+              "py-compile.log",
+              "test-ga.log",
+              "test-external-otlp-contract.log",
+              "test-external-otlp-final-ga.log",
+          )
+          files = []
+          for name in required:
+              path = root / name
+              if not path.is_file() or path.stat().st_size <= 0:
+                  raise SystemExit(f"required final-evaluator evidence is missing: {name}")
+              data = path.read_bytes()
+              files.append({
+                  "name": name,
+                  "sha256": hashlib.sha256(data).hexdigest(),
+                  "size": len(data),
+              })
+          value = {
+              "schema": 1,
+              "kind": "psmatrix.pack05-final-evaluator-preflight-status",
+              "status": "PASS",
+              "release_commit": commit,
+              "python": "3.13",
+              "existing_ga_regression": "PASS",
+              "external_otlp_contract_regression": "PASS",
+              "external_otlp_final_release_cross_binding": "PASS",
+              "final_release_version_required": "2.0.0",
+              "external_collector_proven": False,
+              "ga_eligible": False,
+              "files": files,
+          }
+          (root / "preflight-status.json").write_text(
+              json.dumps(value, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(value, indent=2, sort_keys=True))
+          PY
+
+      - name: Record fail-closed evaluator state
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          evidence="${PSMATRIX_PACK05_FINAL_EVIDENCE:-$RUNNER_TEMP/psmatrix-pack05-final-evaluator}"
+          install -d -m 0700 "$evidence"
+          python - "$evidence" "${GITHUB_SHA,,}" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          (root / "preflight-failure.json").write_text(
+              json.dumps({
+                  "schema": 1,
+                  "kind": "psmatrix.pack05-final-evaluator-preflight-status",
+                  "status": "FAIL",
+                  "release_commit": sys.argv[2],
+                  "external_collector_proven": False,
+                  "ga_eligible": False,
+              }, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload final evaluator preflight evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: production-ga-pack05-final-evaluator-preflight
+          path: ${{ runner.temp }}/psmatrix-pack05-final-evaluator
+          if-no-files-found: error
+          retention-days: 30
