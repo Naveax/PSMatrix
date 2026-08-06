@@ -1,17 +1,36 @@
 import ast
 import importlib.util
 import json
+import re
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 VALIDATOR = ROOT / "scripts" / "ga" / "validate_windows_authority_infrastructure.py"
+HOSTED_WORKFLOW = ROOT / ".github" / "workflows" / "ga-windows-authority-preflight.yml"
+HOSTED_PROBE = ROOT / "ga-packs" / "03-authoritative-windows" / "windows-authority-probe.ps1"
 INFRA_WORKFLOW = ROOT / ".github" / "workflows" / "ga-windows-authority-infrastructure-preflight.yml"
 AUTHORITY_WORKFLOW = ROOT / ".github" / "workflows" / "ga-windows-authoritative.yml"
 OPERATOR = ROOT / "scripts" / "ga" / "Invoke-PSMatrixAuthoritativeWindowsGA.ps1"
 CONTRACT = ROOT / "ga-packs" / "03-authoritative-windows" / "runner-contract.json"
 STATUS = ROOT / "ga-packs" / "status.json"
+
+
+HOSTED_CHECKS = (
+    "exact-runtime-line",
+    "desktop-process-host",
+    "registry-roundtrip",
+    "service-query",
+    "com-activation",
+    "wmi-query",
+    "event-log-query",
+    "scheduled-task-query",
+    "ntfs-acl-roundtrip",
+    "certificate-store-query",
+    "process-query",
+    "windows-environment",
+)
 
 
 class WindowsAuthorityGAContractTests(unittest.TestCase):
@@ -55,6 +74,56 @@ class WindowsAuthorityGAContractTests(unittest.TestCase):
         for value in rejected:
             with self.subTest(value=value):
                 self.assertIsNone(module.RELEASE_MANIFEST_RE.fullmatch(value))
+
+    def test_hosted_windows_workflow_is_exact_fail_closed_and_partial_only(self) -> None:
+        text = HOSTED_WORKFLOW.read_text(encoding="utf-8")
+        required = (
+            "name: production-ga-windows-authority-preflight",
+            "release_commit:",
+            "required: true",
+            "runs-on: windows-2022",
+            "ref: ${{ inputs.release_commit }}",
+            "Initialize fail-closed evidence directory",
+            "Verify exact revision and Windows PowerShell host",
+            "PSMATRIX_WINDOWS_PREFLIGHT_COMMIT",
+            "authority_level': 'github-hosted-windows-preflight'",
+            "'authoritative': False",
+            "'ga_eligible': False",
+            "'status': 'PASS_PARTIAL'",
+            "value.get('probe_sha256') == script_sha256",
+            "Record fail-closed hosted Windows state",
+            "if: failure()",
+            "if: always()",
+            "if-no-files-found: error",
+        )
+        for value in required:
+            with self.subTest(value=value):
+                self.assertIn(value, text)
+        self.assertLess(
+            text.index("Initialize fail-closed evidence directory"),
+            text.index("Check out exact revision"),
+        )
+        self.assertNotIn("continue-on-error: true", text)
+        for check in HOSTED_CHECKS:
+            with self.subTest(check=check):
+                self.assertIn(f"'{check}'", text)
+
+    def test_hosted_probe_has_exact_windows_check_set_and_safe_registry_setup(self) -> None:
+        text = HOSTED_PROBE.read_text(encoding="utf-8")
+        names = tuple(re.findall(r"Invoke-AuthorityCheck -Name '([^']+)'", text))
+        self.assertEqual(names, HOSTED_CHECKS)
+        self.assertEqual(len(names), len(set(names)))
+        self.assertIn("$registryProductRoot = 'HKCU:\\Software\\PSMatrix'", text)
+        self.assertIn("$registryProbeRoot = Join-Path $registryProductRoot 'AuthorityProbe'", text)
+        self.assertIn("New-Item -Path $registryProductRoot -Force", text)
+        self.assertIn("New-Item -Path $registryProbeRoot -Force", text)
+        self.assertIn("Remove-Item -LiteralPath $registryPath", text)
+        self.assertIn("authority_level = 'github-hosted-windows-preflight'", text)
+        self.assertIn("authoritative = $false", text)
+        self.assertIn("ga_eligible = $false", text)
+        self.assertIn("reset_before = 'UNAVAILABLE_ON_GITHUB_HOSTED_RUNNER'", text)
+        self.assertIn("reset_after = 'UNAVAILABLE_ON_GITHUB_HOSTED_RUNNER'", text)
+        self.assertNotIn("Invoke-Expression", text)
 
     def test_infrastructure_workflow_is_protected_and_fail_closed(self) -> None:
         text = INFRA_WORKFLOW.read_text(encoding="utf-8")
