@@ -1,0 +1,186 @@
+name: production-ga-pack06-source-preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/ga-pack06-source-preflight.yml"
+      - "ga-packs/06-independent-review/**"
+      - "scripts/ga/independent_review_dossier.py"
+      - "scripts/ga/independent_review_submission.py"
+      - "src/psmatrix/ga.py"
+      - "tests/test_ga.py"
+      - "tests/test_independent_review_ga_contract.py"
+
+concurrency:
+  group: production-ga-pack06-source-preflight-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  independent-review-source:
+    name: Pack 06 dossier, reviewer proof and GA evaluator
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Initialize fail-closed evidence directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/psmatrix-pack06-source-preflight"
+          rm -rf "$evidence"
+          install -d -m 0700 "$evidence"
+          {
+            echo "PYTHONPATH=$GITHUB_WORKSPACE/src"
+            echo "PSMATRIX_PACK06_EVIDENCE=$evidence"
+          } >> "$GITHUB_ENV"
+          {
+            echo "workflow=production-ga-pack06-source-preflight"
+            echo "runner_environment=${RUNNER_ENVIRONMENT:-unknown}"
+            echo "python=$(python --version 2>&1)"
+          } > "$evidence/controller-context.txt"
+
+      - name: Verify exact source controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            head="$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')"
+            [[ "$head" =~ ^[0-9a-f]{40}$ ]] || { echo 'checked-out head is invalid' >&2; exit 1; }
+            [[ -z "$(git status --porcelain)" ]] || { echo 'source checkout is not clean' >&2; exit 1; }
+            python - <<'PY'
+          from pathlib import Path
+          import psmatrix
+
+          root = Path.cwd().resolve()
+          Path(psmatrix.__file__).resolve().relative_to((root / "src" / "psmatrix").resolve())
+          print("source_import=exact-checkout")
+          PY
+            echo "release_commit=$head"
+          } 2>&1 | tee "$PSMATRIX_PACK06_EVIDENCE/source-controller.log"
+
+      - name: Compile independent review sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            python -m py_compile \
+              scripts/ga/independent_review_dossier.py \
+              scripts/ga/independent_review_submission.py \
+              tests/test_independent_review_ga_contract.py
+            echo "py_compile=PASS"
+          } 2>&1 | tee "$PSMATRIX_PACK06_EVIDENCE/py-compile.log"
+
+      - name: Run independent review contract tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_independent_review_ga_contract \
+            2>&1 | tee "$PSMATRIX_PACK06_EVIDENCE/test-independent-review.log"
+
+      - name: Run complete GA evaluator regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_ga \
+            2>&1 | tee "$PSMATRIX_PACK06_EVIDENCE/test-ga.log"
+
+      - name: Enforce Pack 06 source preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$PSMATRIX_PACK06_EVIDENCE" "$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          commit = sys.argv[2]
+          required = (
+              "controller-context.txt",
+              "source-controller.log",
+              "py-compile.log",
+              "test-independent-review.log",
+              "test-ga.log",
+          )
+          files = []
+          for name in required:
+              path = root / name
+              if not path.is_file() or path.stat().st_size <= 0:
+                  raise SystemExit(f"required Pack 06 evidence is missing: {name}")
+              data = path.read_bytes()
+              files.append({
+                  "name": name,
+                  "sha256": hashlib.sha256(data).hexdigest(),
+                  "size": len(data),
+              })
+          value = {
+              "schema": 1,
+              "kind": "psmatrix.pack06-source-preflight-status",
+              "status": "PASS",
+              "release_commit": commit,
+              "python": "3.13",
+              "deterministic_dossier": "PASS",
+              "reviewer_controlled_dsse": "PASS",
+              "release_cross_binding": "PASS",
+              "external_reviewer_completed": False,
+              "ga_eligible": False,
+              "files": files,
+          }
+          (root / "preflight-status.json").write_text(
+              json.dumps(value, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(value, indent=2, sort_keys=True))
+          PY
+
+      - name: Record fail-closed Pack 06 state
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          evidence="${PSMATRIX_PACK06_EVIDENCE:-$RUNNER_TEMP/psmatrix-pack06-source-preflight}"
+          install -d -m 0700 "$evidence"
+          python - "$evidence" "${GITHUB_SHA,,}" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          (root / "preflight-failure.json").write_text(
+              json.dumps({
+                  "schema": 1,
+                  "kind": "psmatrix.pack06-source-preflight-status",
+                  "status": "FAIL",
+                  "release_commit": sys.argv[2],
+                  "external_reviewer_completed": False,
+                  "ga_eligible": False,
+              }, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload Pack 06 source evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: production-ga-pack06-source-preflight
+          path: ${{ runner.temp }}/psmatrix-pack06-source-preflight
+          if-no-files-found: error
+          retention-days: 30
