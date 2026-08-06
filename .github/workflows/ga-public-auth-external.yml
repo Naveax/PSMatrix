@@ -1,0 +1,267 @@
+name: production-ga-public-auth-external
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_commit:
+        description: Exact full 40-character deployed release commit
+        required: true
+        type: string
+      expected_version:
+        description: Exact deployed PSMatrix version, such as 2.0.0rc2 or 2.0.0
+        required: true
+        type: string
+      oauth_url:
+        description: Public OAuth-protected MCP endpoint URL
+        required: true
+        type: string
+      mtls_url:
+        description: Separate direct public mTLS MCP endpoint URL
+        required: true
+        type: string
+      expected_authorization_server:
+        description: Expected HTTPS OAuth authorization-server issuer/resource metadata URL
+        required: true
+        type: string
+      required_scope:
+        description: Exact required OAuth scope
+        required: true
+        default: psmatrix:mcp
+        type: string
+      protocol_version:
+        description: MCP protocol version used by the external probe
+        required: true
+        default: "2025-06-18"
+        type: string
+      rate_limit_attempts:
+        description: Bounded requests used to prove rate limiting, 32-512
+        required: true
+        default: "160"
+        type: string
+
+concurrency:
+  group: production-ga-public-auth-external
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  external-public-auth:
+    name: External public OAuth and direct mTLS
+    runs-on: ubuntu-latest
+    environment: production-ga-public-auth
+    timeout-minutes: 30
+    env:
+      PSMATRIX_PUBLIC_AUTH_VALID_TOKEN: ${{ secrets.PSMATRIX_PUBLIC_AUTH_VALID_TOKEN }}
+      PSMATRIX_PUBLIC_AUTH_WRONG_AUDIENCE_TOKEN: ${{ secrets.PSMATRIX_PUBLIC_AUTH_WRONG_AUDIENCE_TOKEN }}
+      PSMATRIX_PUBLIC_AUTH_EXPIRED_TOKEN: ${{ secrets.PSMATRIX_PUBLIC_AUTH_EXPIRED_TOKEN }}
+      PSMATRIX_PUBLIC_AUTH_MISSING_SCOPE_TOKEN: ${{ secrets.PSMATRIX_PUBLIC_AUTH_MISSING_SCOPE_TOKEN }}
+      PSMATRIX_PUBLIC_AUTH_RATE_TOKEN: ${{ secrets.PSMATRIX_PUBLIC_AUTH_RATE_TOKEN }}
+
+    steps:
+      - name: Check out exact release revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.release_commit }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Validate external authority context and inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_commit='${{ inputs.release_commit }}'
+          [[ "$release_commit" =~ ^[0-9a-fA-F]{40}$ ]] || { echo 'release_commit must be a full Git SHA' >&2; exit 1; }
+          head="$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')"
+          [[ "$head" == "${release_commit,,}" ]] || { echo "checked out $head instead of $release_commit" >&2; exit 1; }
+          [[ "${RUNNER_ENVIRONMENT:-}" == 'github-hosted' ]] || { echo 'public authority proof must run from a GitHub-hosted external runner' >&2; exit 1; }
+          [[ '${{ inputs.oauth_url }}' == https://* ]] || { echo 'oauth_url must use HTTPS' >&2; exit 1; }
+          [[ '${{ inputs.mtls_url }}' == https://* ]] || { echo 'mtls_url must use HTTPS' >&2; exit 1; }
+          [[ '${{ inputs.oauth_url }}' != '${{ inputs.mtls_url }}' ]] || { echo 'OAuth and mTLS endpoints must be separate' >&2; exit 1; }
+          [[ '${{ inputs.expected_authorization_server }}' == https://* ]] || { echo 'authorization server must use HTTPS' >&2; exit 1; }
+          attempts='${{ inputs.rate_limit_attempts }}'
+          [[ "$attempts" =~ ^[0-9]+$ ]] || { echo 'rate_limit_attempts must be an integer' >&2; exit 1; }
+          (( attempts >= 32 && attempts <= 512 )) || { echo 'rate_limit_attempts must be 32-512' >&2; exit 1; }
+          for name in \
+            PSMATRIX_PUBLIC_AUTH_VALID_TOKEN \
+            PSMATRIX_PUBLIC_AUTH_WRONG_AUDIENCE_TOKEN \
+            PSMATRIX_PUBLIC_AUTH_EXPIRED_TOKEN \
+            PSMATRIX_PUBLIC_AUTH_MISSING_SCOPE_TOKEN \
+            PSMATRIX_PUBLIC_AUTH_RATE_TOKEN
+          do
+            [[ -n "${!name:-}" ]] || { echo "protected secret $name is missing" >&2; exit 1; }
+          done
+          echo "release_commit=$head"
+          echo "expected_version=${{ inputs.expected_version }}"
+          echo "runner_environment=$RUNNER_ENVIRONMENT"
+
+      - name: Materialize protected proof credentials
+        shell: bash
+        env:
+          VALID_CLIENT_CERT: ${{ secrets.PSMATRIX_PUBLIC_AUTH_VALID_CLIENT_CERT }}
+          VALID_CLIENT_KEY: ${{ secrets.PSMATRIX_PUBLIC_AUTH_VALID_CLIENT_KEY }}
+          ROTATED_CLIENT_CERT: ${{ secrets.PSMATRIX_PUBLIC_AUTH_ROTATED_CLIENT_CERT }}
+          ROTATED_CLIENT_KEY: ${{ secrets.PSMATRIX_PUBLIC_AUTH_ROTATED_CLIENT_KEY }}
+          REVOKED_CLIENT_CERT: ${{ secrets.PSMATRIX_PUBLIC_AUTH_REVOKED_CLIENT_CERT }}
+          REVOKED_CLIENT_KEY: ${{ secrets.PSMATRIX_PUBLIC_AUTH_REVOKED_CLIENT_KEY }}
+          UNTRUSTED_CLIENT_CERT: ${{ secrets.PSMATRIX_PUBLIC_AUTH_UNTRUSTED_CLIENT_CERT }}
+          UNTRUSTED_CLIENT_KEY: ${{ secrets.PSMATRIX_PUBLIC_AUTH_UNTRUSTED_CLIENT_KEY }}
+          AUTHORITY_PRIVATE_KEY: ${{ secrets.PSMATRIX_PUBLIC_AUTH_AUTHORITY_PRIVATE_KEY }}
+          AUTHORITY_PUBLIC_KEY: ${{ secrets.PSMATRIX_PUBLIC_AUTH_AUTHORITY_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          secret_root="$RUNNER_TEMP/psmatrix-public-auth-secrets"
+          rm -rf "$secret_root"
+          install -d -m 0700 "$secret_root"
+          declare -A values=(
+            [valid-client.pem]="$VALID_CLIENT_CERT"
+            [valid-client-key.pem]="$VALID_CLIENT_KEY"
+            [rotated-client.pem]="$ROTATED_CLIENT_CERT"
+            [rotated-client-key.pem]="$ROTATED_CLIENT_KEY"
+            [revoked-client.pem]="$REVOKED_CLIENT_CERT"
+            [revoked-client-key.pem]="$REVOKED_CLIENT_KEY"
+            [untrusted-client.pem]="$UNTRUSTED_CLIENT_CERT"
+            [untrusted-client-key.pem]="$UNTRUSTED_CLIENT_KEY"
+            [authority-private.pem]="$AUTHORITY_PRIVATE_KEY"
+            [authority-public.pem]="$AUTHORITY_PUBLIC_KEY"
+          )
+          for file in "${!values[@]}"; do
+            [[ -n "${values[$file]}" ]] || { echo "protected credential $file is missing" >&2; exit 1; }
+            printf '%s\n' "${values[$file]}" > "$secret_root/$file"
+            chmod 0600 "$secret_root/$file"
+          done
+          echo "PSMATRIX_PUBLIC_AUTH_SECRET_ROOT=$secret_root" >> "$GITHUB_ENV"
+
+      - name: Execute external public authentication probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/psmatrix-public-auth-evidence"
+          rm -rf "$output"
+          install -d -m 0700 "$output"
+          python scripts/ga/probe_public_auth.py \
+            --oauth-url '${{ inputs.oauth_url }}' \
+            --mtls-url '${{ inputs.mtls_url }}' \
+            --release-commit '${{ inputs.release_commit }}' \
+            --expected-version '${{ inputs.expected_version }}' \
+            --expected-authorization-server '${{ inputs.expected_authorization_server }}' \
+            --required-scope '${{ inputs.required_scope }}' \
+            --protocol-version '${{ inputs.protocol_version }}' \
+            --valid-client-cert "$PSMATRIX_PUBLIC_AUTH_SECRET_ROOT/valid-client.pem" \
+            --valid-client-key "$PSMATRIX_PUBLIC_AUTH_SECRET_ROOT/valid-client-key.pem" \
+            --rotated-client-cert "$PSMATRIX_PUBLIC_AUTH_SECRET_ROOT/rotated-client.pem" \
+            --rotated-client-key "$PSMATRIX_PUBLIC_AUTH_SECRET_ROOT/rotated-client-key.pem" \
+            --revoked-client-cert "$PSMATRIX_PUBLIC_AUTH_SECRET_ROOT/revoked-client.pem" \
+            --revoked-client-key "$PSMATRIX_PUBLIC_AUTH_SECRET_ROOT/revoked-client-key.pem" \
+            --untrusted-client-cert "$PSMATRIX_PUBLIC_AUTH_SECRET_ROOT/untrusted-client.pem" \
+            --untrusted-client-key "$PSMATRIX_PUBLIC_AUTH_SECRET_ROOT/untrusted-client-key.pem" \
+            --rate-limit-attempts '${{ inputs.rate_limit_attempts }}' \
+            --output-dir "$output"
+
+      - name: Sign and verify external authority proofs
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/psmatrix-public-auth-evidence"
+          export PYTHONPATH="$GITHUB_WORKSPACE/src"
+          python -m psmatrix ga proof-create \
+            --input "$output/public-oauth-proof-input.json" \
+            --type public-oauth \
+            --private-key "$PSMATRIX_PUBLIC_AUTH_SECRET_ROOT/authority-private.pem" \
+            --public-key "$PSMATRIX_PUBLIC_AUTH_SECRET_ROOT/authority-public.pem" \
+            --output "$output/public-oauth.dsse.json"
+          python -m psmatrix ga proof-create \
+            --input "$output/public-mtls-proof-input.json" \
+            --type public-mtls \
+            --private-key "$PSMATRIX_PUBLIC_AUTH_SECRET_ROOT/authority-private.pem" \
+            --public-key "$PSMATRIX_PUBLIC_AUTH_SECRET_ROOT/authority-public.pem" \
+            --output "$output/public-mtls.dsse.json"
+          python -m psmatrix ga proof-verify \
+            "$output/public-oauth.dsse.json" \
+            --type public-oauth \
+            --public-key "$PSMATRIX_PUBLIC_AUTH_SECRET_ROOT/authority-public.pem" \
+            > "$output/public-oauth-verification.json"
+          python -m psmatrix ga proof-verify \
+            "$output/public-mtls.dsse.json" \
+            --type public-mtls \
+            --public-key "$PSMATRIX_PUBLIC_AUTH_SECRET_ROOT/authority-public.pem" \
+            > "$output/public-mtls-verification.json"
+
+      - name: Enforce evidence inventory and secret absence
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/psmatrix-public-auth-evidence"
+          python - "$output" '${{ inputs.release_commit }}' <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          commit = sys.argv[2].lower()
+          status = json.loads((root / "preflight-status.json").read_text(encoding="utf-8"))
+          if status.get("status") != "PASS" or status.get("oauth") != "PASS" or status.get("mtls") != "PASS":
+              raise SystemExit("public authentication preflight did not pass")
+          if status.get("release_commit") != commit:
+              raise SystemExit("public authentication proof is not bound to the requested commit")
+
+          inventory = []
+          forbidden = (
+              b"BEGIN PRIVATE KEY",
+              b"BEGIN RSA PRIVATE KEY",
+              b"BEGIN EC PRIVATE KEY",
+              b"Authorization: Bearer",
+          )
+          for path in sorted(root.rglob("*")):
+              if not path.is_file():
+                  continue
+              data = path.read_bytes()
+              if any(marker in data for marker in forbidden):
+                  raise SystemExit(f"secret material found in evidence: {path.name}")
+              inventory.append({
+                  "name": path.name,
+                  "path": path.relative_to(root).as_posix(),
+                  "sha256": hashlib.sha256(data).hexdigest(),
+                  "size": len(data),
+              })
+          payload = {
+              "schema": 1,
+              "kind": "psmatrix.public-auth-evidence-inventory",
+              "release_commit": commit,
+              "status": "PASS",
+              "ga_eligible": False,
+              "files": inventory,
+          }
+          (root / "evidence-inventory.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+
+      - name: Remove protected proof credentials
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          secret_root="$RUNNER_TEMP/psmatrix-public-auth-secrets"
+          if [[ -d "$secret_root" ]]; then
+            find "$secret_root" -type f -exec shred -u -z -n 1 {} + 2>/dev/null || true
+            rm -rf "$secret_root"
+          fi
+
+      - name: Upload external public authentication evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: production-ga-public-auth-external
+          path: ${{ runner.temp }}/psmatrix-public-auth-evidence
+          if-no-files-found: error
+          retention-days: 30
