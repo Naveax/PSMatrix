@@ -92,6 +92,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          sign_log="$RUNNER_TEMP/psmatrix-final-ga-signing.log"
+          rm -f "$sign_log"
           python scripts/ga/final_ga_closure.py sign \
             --policy "$PSMATRIX_FINAL_GA_POLICY" \
             --source-root "$GITHUB_WORKSPACE" \
@@ -99,7 +101,8 @@ jobs:
             --private-key "$PSMATRIX_FINAL_GA_KEYS/final-ga.private.pem" \
             --public-key "$PSMATRIX_FINAL_GA_KEYS/final-ga.public.pem" \
             --output-dir "$PSMATRIX_FINAL_GA_OUTPUT" \
-            2>&1 | tee "$PSMATRIX_FINAL_GA_OUTPUT/final-signing.log"
+            2>&1 | tee "$sign_log"
+          mv "$sign_log" "$PSMATRIX_FINAL_GA_OUTPUT/final-signing.log"
 
       - name: Remove final signer private key
         if: always()
