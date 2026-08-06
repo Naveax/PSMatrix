@@ -1,0 +1,291 @@
+name: production-ga-public-auth-deployment-preflight
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_commit:
+        description: Exact full 40-character release commit represented by the deployment kit
+        required: true
+        type: string
+      version:
+        description: Exact release version, 2.0.0rcN or 2.0.0
+        required: true
+        type: string
+      release_manifest_sha256:
+        description: SHA-256 of the signed release manifest
+        required: true
+        type: string
+      wheel_sha256:
+        description: SHA-256 of the exact PSMatrix wheel
+        required: true
+        type: string
+      oauth_url:
+        description: Public OAuth MCP endpoint URL ending in /mcp
+        required: true
+        type: string
+      mtls_url:
+        description: Separate public direct-mTLS MCP endpoint URL ending in /mcp
+        required: true
+        type: string
+      authorization_server:
+        description: HTTPS OAuth authorization-server URL
+        required: true
+        type: string
+      introspection_url:
+        description: HTTPS OAuth token-introspection URL
+        required: true
+        type: string
+      required_scope:
+        description: Exact required OAuth scope
+        required: true
+        default: psmatrix:mcp
+        type: string
+      rate_per_minute:
+        description: Per-principal minute limit
+        required: true
+        default: "120"
+        type: string
+      burst:
+        description: Per-principal one-second burst limit
+        required: true
+        default: "30"
+        type: string
+
+concurrency:
+  group: production-ga-public-auth-deployment-preflight
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deployment-preflight:
+    name: Reproducible signed OAuth and mTLS deployment kit
+    runs-on: ubuntu-latest
+    environment: production-ga-public-auth
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out exact release revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.release_commit }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Validate exact inputs and deterministic epoch
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit='${{ inputs.release_commit }}'
+          version='${{ inputs.version }}'
+          release_digest='${{ inputs.release_manifest_sha256 }}'
+          wheel_digest='${{ inputs.wheel_sha256 }}'
+          [[ "$commit" =~ ^[0-9a-fA-F]{40}$ ]] || { echo 'release_commit must be a full Git SHA' >&2; exit 1; }
+          [[ "$version" =~ ^2\.0\.0(rc[0-9]+)?$ ]] || { echo 'version must be 2.0.0 or 2.0.0rcN' >&2; exit 1; }
+          [[ "$release_digest" =~ ^[0-9a-fA-F]{64}$ ]] || { echo 'release_manifest_sha256 is invalid' >&2; exit 1; }
+          [[ "$wheel_digest" =~ ^[0-9a-fA-F]{64}$ ]] || { echo 'wheel_sha256 is invalid' >&2; exit 1; }
+          head="$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')"
+          [[ "$head" == "${commit,,}" ]] || { echo "checked out $head instead of $commit" >&2; exit 1; }
+          epoch="$(git show -s --format=%ct HEAD)"
+          [[ "$epoch" =~ ^[0-9]+$ ]] || { echo 'commit timestamp is invalid' >&2; exit 1; }
+          rate='${{ inputs.rate_per_minute }}'
+          burst='${{ inputs.burst }}'
+          [[ "$rate" =~ ^[0-9]+$ && "$burst" =~ ^[0-9]+$ ]] || { echo 'rate limits must be integers' >&2; exit 1; }
+          (( rate >= 1 && rate <= 100000 )) || { echo 'rate_per_minute is outside 1-100000' >&2; exit 1; }
+          (( burst >= 1 && burst <= rate && burst <= 10000 )) || { echo 'burst is outside the supported range' >&2; exit 1; }
+          {
+            echo "SOURCE_DATE_EPOCH=$epoch"
+            echo "PSMATRIX_DEPLOYMENT_RELEASE_COMMIT=${commit,,}"
+            echo "PSMATRIX_DEPLOYMENT_RELEASE_MANIFEST_SHA256=${release_digest,,}"
+            echo "PSMATRIX_DEPLOYMENT_WHEEL_SHA256=${wheel_digest,,}"
+          } >> "$GITHUB_ENV"
+          echo "release_commit=$head"
+          echo "source_date_epoch=$epoch"
+
+      - name: Materialize deployment authority key
+        shell: bash
+        env:
+          DEPLOYMENT_PRIVATE_KEY: ${{ secrets.PSMATRIX_PUBLIC_AUTH_DEPLOYMENT_PRIVATE_KEY }}
+          DEPLOYMENT_PUBLIC_KEY: ${{ secrets.PSMATRIX_PUBLIC_AUTH_DEPLOYMENT_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$DEPLOYMENT_PRIVATE_KEY" ]] || { echo 'deployment private key is missing' >&2; exit 1; }
+          [[ -n "$DEPLOYMENT_PUBLIC_KEY" ]] || { echo 'deployment public key is missing' >&2; exit 1; }
+          key_root="$RUNNER_TEMP/psmatrix-public-auth-deployment-key"
+          rm -rf "$key_root"
+          install -d -m 0700 "$key_root"
+          printf '%s\n' "$DEPLOYMENT_PRIVATE_KEY" > "$key_root/private.pem"
+          printf '%s\n' "$DEPLOYMENT_PUBLIC_KEY" > "$key_root/public.pem"
+          chmod 0600 "$key_root/private.pem"
+          chmod 0644 "$key_root/public.pem"
+          echo "PSMATRIX_DEPLOYMENT_KEY_ROOT=$key_root" >> "$GITHUB_ENV"
+
+      - name: Build deployment kit twice
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$GITHUB_WORKSPACE/src"
+          evidence="$RUNNER_TEMP/psmatrix-public-auth-deployment-evidence"
+          rm -rf "$evidence"
+          install -d -m 0700 "$evidence"
+
+          common=(
+            --release-commit "$PSMATRIX_DEPLOYMENT_RELEASE_COMMIT"
+            --version '${{ inputs.version }}'
+            --release-manifest-sha256 "$PSMATRIX_DEPLOYMENT_RELEASE_MANIFEST_SHA256"
+            --wheel-sha256 "$PSMATRIX_DEPLOYMENT_WHEEL_SHA256"
+            --oauth-url '${{ inputs.oauth_url }}'
+            --mtls-url '${{ inputs.mtls_url }}'
+            --authorization-server '${{ inputs.authorization_server }}'
+            --introspection-url '${{ inputs.introspection_url }}'
+            --required-scope '${{ inputs.required_scope }}'
+            --rate-per-minute '${{ inputs.rate_per_minute }}'
+            --burst '${{ inputs.burst }}'
+            --private-key "$PSMATRIX_DEPLOYMENT_KEY_ROOT/private.pem"
+            --public-key "$PSMATRIX_DEPLOYMENT_KEY_ROOT/public.pem"
+          )
+          python scripts/ga/public_auth_deployment_kit.py build \
+            --output "$evidence/deployment-kit-first.zip" \
+            "${common[@]}" > "$evidence/build-first.json"
+          python scripts/ga/public_auth_deployment_kit.py build \
+            --output "$evidence/deployment-kit-second.zip" \
+            "${common[@]}" > "$evidence/build-second.json"
+
+          first="$(sha256sum "$evidence/deployment-kit-first.zip" | awk '{print $1}')"
+          second="$(sha256sum "$evidence/deployment-kit-second.zip" | awk '{print $1}')"
+          [[ "$first" == "$second" ]] || { echo "deployment kit is not reproducible: $first != $second" >&2; exit 1; }
+          cp "$evidence/deployment-kit-first.zip" "$evidence/psmatrix-public-auth-deployment-kit.zip"
+          python - "$evidence/reproducibility.json" "$first" <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+          value = {
+              "schema": 1,
+              "kind": "psmatrix.public-auth-deployment-reproducibility",
+              "status": "PASS",
+              "source_date_epoch": int(os.environ["SOURCE_DATE_EPOCH"]),
+              "first_sha256": sys.argv[2],
+              "second_sha256": sys.argv[2],
+              "identical": True,
+              "ga_eligible": False,
+          }
+          Path(sys.argv[1]).write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps(value, indent=2, sort_keys=True))
+          PY
+
+      - name: Remove deployment private key before verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          private="$PSMATRIX_DEPLOYMENT_KEY_ROOT/private.pem"
+          [[ -f "$private" ]] || { echo 'deployment private key was not materialized' >&2; exit 1; }
+          shred -u -z -n 1 "$private" 2>/dev/null || rm -f "$private"
+          [[ ! -e "$private" ]] || { echo 'deployment private key cleanup failed' >&2; exit 1; }
+
+      - name: Verify both deployment kits and exact release binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$GITHUB_WORKSPACE/src"
+          evidence="$RUNNER_TEMP/psmatrix-public-auth-deployment-evidence"
+          for name in first second; do
+            python scripts/ga/public_auth_deployment_kit.py verify \
+              "$evidence/deployment-kit-$name.zip" \
+              --public-key "$PSMATRIX_DEPLOYMENT_KEY_ROOT/public.pem" \
+              --expected-release-commit "$PSMATRIX_DEPLOYMENT_RELEASE_COMMIT" \
+              --expected-version '${{ inputs.version }}' \
+              --expected-release-manifest-sha256 "$PSMATRIX_DEPLOYMENT_RELEASE_MANIFEST_SHA256" \
+              --expected-wheel-sha256 "$PSMATRIX_DEPLOYMENT_WHEEL_SHA256" \
+              --output "$evidence/verification-$name.json"
+          done
+
+      - name: Enforce credential-free evidence and write status
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/psmatrix-public-auth-deployment-evidence"
+          python - "$evidence" "$PSMATRIX_DEPLOYMENT_RELEASE_COMMIT" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          commit = sys.argv[2]
+          forbidden = (
+              b"BEGIN PRIVATE KEY",
+              b"BEGIN RSA PRIVATE KEY",
+              b"BEGIN EC PRIVATE KEY",
+              b"BEGIN OPENSSH PRIVATE KEY",
+              b"Authorization: Bearer",
+          )
+          files = []
+          for path in sorted(root.rglob("*")):
+              if not path.is_file():
+                  continue
+              data = path.read_bytes()
+              if any(marker in data for marker in forbidden):
+                  raise SystemExit(f"secret material found in deployment evidence: {path.name}")
+              files.append({
+                  "path": path.relative_to(root).as_posix(),
+                  "sha256": hashlib.sha256(data).hexdigest(),
+                  "size": len(data),
+              })
+          first = json.loads((root / "verification-first.json").read_text(encoding="utf-8"))
+          second = json.loads((root / "verification-second.json").read_text(encoding="utf-8"))
+          reproducibility = json.loads((root / "reproducibility.json").read_text(encoding="utf-8"))
+          if first.get("status") != "PASS" or second.get("status") != "PASS":
+              raise SystemExit("deployment kit verification did not pass")
+          if first.get("kit_sha256") != second.get("kit_sha256"):
+              raise SystemExit("verified deployment kit digests differ")
+          if reproducibility.get("identical") is not True:
+              raise SystemExit("deployment kit reproducibility did not pass")
+          if first.get("release_commit") != commit:
+              raise SystemExit("deployment kit release commit mismatch")
+          status = {
+              "schema": 1,
+              "kind": "psmatrix.public-auth-deployment-preflight-status",
+              "status": "PASS_PARTIAL",
+              "release_commit": commit,
+              "version": first.get("version"),
+              "kit_sha256": first.get("kit_sha256"),
+              "reproducible": True,
+              "signed": True,
+              "credential_free": True,
+              "external_live_proof_required": True,
+              "ga_eligible": False,
+              "files": files,
+          }
+          (root / "preflight-status.json").write_text(
+              json.dumps(status, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(status, indent=2, sort_keys=True))
+          PY
+
+      - name: Remove deployment authority key material
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          key_root="$RUNNER_TEMP/psmatrix-public-auth-deployment-key"
+          if [[ -d "$key_root" ]]; then
+            find "$key_root" -type f -exec shred -u -z -n 1 {} + 2>/dev/null || true
+            rm -rf "$key_root"
+          fi
+
+      - name: Upload public authentication deployment evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: production-ga-public-auth-deployment-preflight
+          path: ${{ runner.temp }}/psmatrix-public-auth-deployment-evidence
+          if-no-files-found: error
+          retention-days: 30
