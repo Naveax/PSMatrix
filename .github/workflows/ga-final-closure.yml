@@ -1,0 +1,243 @@
+name: production-ga-final-closure
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_commit:
+        description: Exact final PSMatrix 2.0.0 commit (40 lowercase hex characters)
+        required: true
+        type: string
+
+concurrency:
+  group: production-ga-final-closure
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  final-closure:
+    name: Final 11 of 11 Production GA closure
+    runs-on: [self-hosted, Linux, X64, psmatrix-release]
+    environment: production-ga-final-release
+    timeout-minutes: 120
+    env:
+      PSMATRIX_FINAL_GA_ROOT: ${{ vars.PSMATRIX_FINAL_GA_ROOT }}
+
+    steps:
+      - name: Check out exact final revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.release_commit }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Validate final release controller and evidence root
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected='${{ inputs.release_commit }}'
+          [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || { echo 'release_commit must be 40 lowercase hex characters' >&2; exit 1; }
+          actual="$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')"
+          [[ "$actual" == "$expected" ]] || { echo 'checked-out commit does not match release_commit' >&2; exit 1; }
+          [[ -z "$(git status --porcelain)" ]] || { echo 'final source checkout is not clean' >&2; exit 1; }
+          [[ -n "${PSMATRIX_FINAL_GA_ROOT:-}" ]] || { echo 'PSMATRIX_FINAL_GA_ROOT environment variable is missing' >&2; exit 1; }
+          root="$(realpath "$PSMATRIX_FINAL_GA_ROOT")"
+          [[ -d "$root" ]] || { echo 'final GA evidence root is missing' >&2; exit 1; }
+          [[ -f "$root/ga-policy.json" ]] || { echo 'final GA policy is missing' >&2; exit 1; }
+          output="$RUNNER_TEMP/psmatrix-final-ga-closure"
+          keys="$RUNNER_TEMP/psmatrix-final-ga-keys"
+          rm -rf "$output" "$keys"
+          install -d -m 0700 "$output" "$keys"
+          {
+            echo "PYTHONPATH=$GITHUB_WORKSPACE/src"
+            echo "PSMATRIX_FINAL_GA_POLICY=$root/ga-policy.json"
+            echo "PSMATRIX_FINAL_GA_OUTPUT=$output"
+            echo "PSMATRIX_FINAL_GA_KEYS=$keys"
+            echo "PSMATRIX_FINAL_GA_COMMIT=$actual"
+          } >> "$GITHUB_ENV"
+          python - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          with Path('pyproject.toml').open('rb') as handle:
+              version = str(tomllib.load(handle)['project']['version'])
+          if version != '2.0.0':
+              raise SystemExit('protected final closure requires pyproject version 2.0.0')
+          package = Path('src/psmatrix/__init__.py').read_text(encoding='utf-8')
+          if '__version__ = "2.0.0"' not in package:
+              raise SystemExit('protected final closure requires package version 2.0.0')
+          print('final_source_version=2.0.0')
+          PY
+
+      - name: Materialize protected final signer keys
+        shell: bash
+        env:
+          FINAL_GA_PRIVATE_KEY: ${{ secrets.PSMATRIX_FINAL_GA_PRIVATE_KEY }}
+          FINAL_GA_PUBLIC_KEY: ${{ secrets.PSMATRIX_FINAL_GA_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$FINAL_GA_PRIVATE_KEY" ]] || { echo 'final GA private key secret is missing' >&2; exit 1; }
+          [[ -n "$FINAL_GA_PUBLIC_KEY" ]] || { echo 'final GA public key secret is missing' >&2; exit 1; }
+          printf '%s\n' "$FINAL_GA_PRIVATE_KEY" > "$PSMATRIX_FINAL_GA_KEYS/final-ga.private.pem"
+          printf '%s\n' "$FINAL_GA_PUBLIC_KEY" > "$PSMATRIX_FINAL_GA_KEYS/final-ga.public.pem"
+          chmod 0600 "$PSMATRIX_FINAL_GA_KEYS/final-ga.private.pem" "$PSMATRIX_FINAL_GA_KEYS/final-ga.public.pem"
+
+      - name: Re-evaluate and sign final GA closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/ga/final_ga_closure.py sign \
+            --policy "$PSMATRIX_FINAL_GA_POLICY" \
+            --source-root "$GITHUB_WORKSPACE" \
+            --expected-commit "$PSMATRIX_FINAL_GA_COMMIT" \
+            --private-key "$PSMATRIX_FINAL_GA_KEYS/final-ga.private.pem" \
+            --public-key "$PSMATRIX_FINAL_GA_KEYS/final-ga.public.pem" \
+            --output-dir "$PSMATRIX_FINAL_GA_OUTPUT" \
+            2>&1 | tee "$PSMATRIX_FINAL_GA_OUTPUT/final-signing.log"
+
+      - name: Remove final signer private key
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          if [[ -n "${PSMATRIX_FINAL_GA_KEYS:-}" ]]; then
+            shred -u "$PSMATRIX_FINAL_GA_KEYS/final-ga.private.pem" 2>/dev/null || rm -f "$PSMATRIX_FINAL_GA_KEYS/final-ga.private.pem"
+          fi
+
+      - name: Independently verify final GA closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ ! -e "$PSMATRIX_FINAL_GA_KEYS/final-ga.private.pem" ]] || { echo 'final private key still exists before verification' >&2; exit 1; }
+          python scripts/ga/final_ga_closure.py verify \
+            --policy "$PSMATRIX_FINAL_GA_POLICY" \
+            --source-root "$GITHUB_WORKSPACE" \
+            --expected-commit "$PSMATRIX_FINAL_GA_COMMIT" \
+            --evaluation "$PSMATRIX_FINAL_GA_OUTPUT/production-ga-evaluation.json" \
+            --ga-attestation "$PSMATRIX_FINAL_GA_OUTPUT/psmatrix-2.0.0-production-ga.dsse.json" \
+            --closure-attestation "$PSMATRIX_FINAL_GA_OUTPUT/psmatrix-2.0.0-final-closure.dsse.json" \
+            --public-key "$PSMATRIX_FINAL_GA_KEYS/final-ga.public.pem" \
+            --output "$PSMATRIX_FINAL_GA_OUTPUT/final-closure-verification.json" \
+            2>&1 | tee "$PSMATRIX_FINAL_GA_OUTPUT/final-verification.log"
+
+      - name: Enforce private-key-free closure evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ ! -e "$PSMATRIX_FINAL_GA_KEYS/final-ga.private.pem" ]] || { echo 'private key file remains present' >&2; exit 1; }
+          python - "$PSMATRIX_FINAL_GA_OUTPUT" <<'PY'
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          markers = (
+              b'-----BEGIN PRIVATE KEY-----',
+              b'-----BEGIN RSA PRIVATE KEY-----',
+              b'-----BEGIN EC PRIVATE KEY-----',
+              b'-----BEGIN OPENSSH PRIVATE KEY-----',
+          )
+          for path in root.rglob('*'):
+              if path.is_file() and any(marker in path.read_bytes() for marker in markers):
+                  raise SystemExit(f'private-key material found in closure artifact: {path.name}')
+          print('private_key_material_absent=PASS')
+          PY
+
+      - name: Build final evidence inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$PSMATRIX_FINAL_GA_OUTPUT" "$PSMATRIX_FINAL_GA_COMMIT" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          required = (
+              'production-ga-evaluation.json',
+              'psmatrix-2.0.0-production-ga.dsse.json',
+              'psmatrix-2.0.0-final-closure.dsse.json',
+              'final-closure-status.json',
+              'final-closure-verification.json',
+              'final-signing.log',
+              'final-verification.log',
+          )
+          files = []
+          for name in required:
+              path = root / name
+              if not path.is_file() or path.stat().st_size <= 0:
+                  raise SystemExit(f'required final closure artifact is missing: {name}')
+              data = path.read_bytes()
+              files.append({'name': name, 'sha256': hashlib.sha256(data).hexdigest(), 'size': len(data)})
+          status = json.loads((root / 'final-closure-status.json').read_text(encoding='utf-8'))
+          verification = json.loads((root / 'final-closure-verification.json').read_text(encoding='utf-8'))
+          if status.get('status') != 'PASS' or status.get('ga_eligible') is not True:
+              raise SystemExit('final closure status is not GA eligible')
+          if verification.get('valid') is not True or verification.get('ga_eligible') is not True:
+              raise SystemExit('final closure verification is not valid')
+          inventory = {
+              'schema': 1,
+              'kind': 'psmatrix.final-ga-evidence-inventory',
+              'status': 'PASS',
+              'version': '2.0.0',
+              'release_commit': sys.argv[2],
+              'gate_summary': {'PASS': 11, 'FAIL': 0, 'INCOMPLETE': 0, 'total': 11},
+              'private_key_material_absent': True,
+              'ga_eligible': True,
+              'files': files,
+          }
+          (root / 'final-evidence-inventory.json').write_text(
+              json.dumps(inventory, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
+          print(json.dumps(inventory, indent=2, sort_keys=True))
+          PY
+
+      - name: Record fail-closed final state
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          output="${PSMATRIX_FINAL_GA_OUTPUT:-$RUNNER_TEMP/psmatrix-final-ga-closure}"
+          install -d -m 0700 "$output"
+          python - "$output" "${PSMATRIX_FINAL_GA_COMMIT:-${GITHUB_SHA,,}}" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          (root / 'final-closure-failure.json').write_text(
+              json.dumps({
+                  'schema': 1,
+                  'kind': 'psmatrix.final-ga-closure-status',
+                  'status': 'FAIL',
+                  'release_commit': sys.argv[2],
+                  'ga_eligible': False,
+              }, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
+          PY
+
+      - name: Remove remaining final signer key files
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          if [[ -n "${PSMATRIX_FINAL_GA_KEYS:-}" ]]; then
+            shred -u "$PSMATRIX_FINAL_GA_KEYS/final-ga.private.pem" 2>/dev/null || rm -f "$PSMATRIX_FINAL_GA_KEYS/final-ga.private.pem"
+            rm -f "$PSMATRIX_FINAL_GA_KEYS/final-ga.public.pem"
+            rmdir "$PSMATRIX_FINAL_GA_KEYS" 2>/dev/null || true
+          fi
+
+      - name: Upload final closure evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: production-ga-final-closure
+          path: ${{ runner.temp }}/psmatrix-final-ga-closure
+          if-no-files-found: error
+          retention-days: 90
