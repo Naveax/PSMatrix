@@ -1,0 +1,84 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.external-otlp-authority-contract",
+  "pack": "05-external-otlp",
+  "authority": {
+    "role": "operations",
+    "protected_environment": "production-ga-external-otlp",
+    "external_runner": "github-hosted",
+    "private_key_in_repository": false,
+    "private_key_in_artifacts": false
+  },
+  "network": {
+    "scheme": "https",
+    "request_path": "/v1/metrics",
+    "public_dns_required": true,
+    "globally_routable_addresses_required": true,
+    "platform_trusted_tls_required": true,
+    "userinfo_forbidden": true,
+    "fragment_forbidden": true,
+    "authentication_required": true,
+    "unauthenticated_statuses": [401, 403]
+  },
+  "release_binding": {
+    "exact_full_commit_required": true,
+    "deployed_version_required": true,
+    "signed_release_manifest_sha256_required": true,
+    "exact_release_wheel_sha256_required": true,
+    "server_certificate_sha256_required": true,
+    "single_live_report_subject_required": true,
+    "live_report_name": "external-otlp-live-report.json",
+    "final_evaluator_cross_binding_required": true,
+    "final_evaluator_version": "2.0.0"
+  },
+  "ingestion": {
+    "content_type": "application/json",
+    "otlp_signal": "metrics",
+    "resource_service_name": "psmatrix",
+    "required_metric": "psmatrix_info",
+    "authenticated_status_min": 200,
+    "authenticated_status_max": 299,
+    "collector_receipt_required": true,
+    "receipt_must_bind_payload_sha256": true
+  },
+  "recovery": {
+    "collector_restart_required": true,
+    "pre_restart_instance_id_required": true,
+    "post_restart_instance_id_required": true,
+    "instance_id_must_change": true,
+    "post_restart_ingestion_required": true,
+    "maximum_recovery_seconds": 300,
+    "minimum_successful_exports": 2
+  },
+  "privacy": {
+    "credential_values_forbidden": true,
+    "authorization_headers_forbidden": true,
+    "private_key_material_forbidden": true,
+    "raw_source_body_forbidden": true,
+    "absolute_paths_forbidden": true,
+    "query_credentials_forbidden": true,
+    "evidence_secret_scan_required": true
+  },
+  "source_preflight": {
+    "workflow": "production-ga-pack05-source-preflight",
+    "workflow_path": ".github/workflows/ga-pack05-source-preflight.yml",
+    "runner": "ubuntu-latest",
+    "python": "3.13",
+    "secret_free": true,
+    "ga_eligible": false
+  },
+  "external_workflow": {
+    "workflow": "production-ga-external-otlp",
+    "workflow_path": ".github/workflows/ga-external-otlp.yml",
+    "probe": "scripts/ga/probe_external_otlp.py",
+    "binder": "scripts/ga/bind_external_otlp_release.py",
+    "enforcer": "scripts/ga/enforce_external_otlp_report.py",
+    "status": "PLANNED_AFTER_SOURCE_PREFLIGHT"
+  },
+  "completion": {
+    "signed_proofs_required": 1,
+    "required_proof_type": "external-otlp",
+    "source_preflight_can_complete_pack": false,
+    "ga_eligible": false
+  }
+}
