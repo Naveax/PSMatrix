@@ -8,7 +8,15 @@ on:
         required: true
         type: string
       expected_version:
-        description: Exact deployed PSMatrix version, such as 2.0.0rc2 or 2.0.0
+        description: Exact deployed PSMatrix version, 2.0.0rcN or 2.0.0
+        required: true
+        type: string
+      release_manifest_sha256:
+        description: SHA-256 of the exact signed release manifest
+        required: true
+        type: string
+      wheel_sha256:
+        description: SHA-256 of the exact deployed PSMatrix wheel
         required: true
         type: string
       oauth_url:
@@ -66,12 +74,18 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Validate external authority context and inputs
+      - name: Validate external authority context and release inputs
         shell: bash
         run: |
           set -euo pipefail
           release_commit='${{ inputs.release_commit }}'
+          version='${{ inputs.expected_version }}'
+          release_digest='${{ inputs.release_manifest_sha256 }}'
+          wheel_digest='${{ inputs.wheel_sha256 }}'
           [[ "$release_commit" =~ ^[0-9a-fA-F]{40}$ ]] || { echo 'release_commit must be a full Git SHA' >&2; exit 1; }
+          [[ "$version" =~ ^2\.0\.0(rc[0-9]+)?$ ]] || { echo 'expected_version must be 2.0.0 or 2.0.0rcN' >&2; exit 1; }
+          [[ "$release_digest" =~ ^[0-9a-fA-F]{64}$ ]] || { echo 'release_manifest_sha256 is invalid' >&2; exit 1; }
+          [[ "$wheel_digest" =~ ^[0-9a-fA-F]{64}$ ]] || { echo 'wheel_sha256 is invalid' >&2; exit 1; }
           head="$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')"
           [[ "$head" == "${release_commit,,}" ]] || { echo "checked out $head instead of $release_commit" >&2; exit 1; }
           [[ "${RUNNER_ENVIRONMENT:-}" == 'github-hosted' ]] || { echo 'public authority proof must run from a GitHub-hosted external runner' >&2; exit 1; }
@@ -82,8 +96,14 @@ jobs:
           attempts='${{ inputs.rate_limit_attempts }}'
           [[ "$attempts" =~ ^[0-9]+$ ]] || { echo 'rate_limit_attempts must be an integer' >&2; exit 1; }
           (( attempts >= 32 && attempts <= 512 )) || { echo 'rate_limit_attempts must be 32-512' >&2; exit 1; }
+          {
+            echo "PSMATRIX_PUBLIC_AUTH_RELEASE_COMMIT=${release_commit,,}"
+            echo "PSMATRIX_PUBLIC_AUTH_VERSION=$version"
+            echo "PSMATRIX_PUBLIC_AUTH_RELEASE_MANIFEST_SHA256=${release_digest,,}"
+            echo "PSMATRIX_PUBLIC_AUTH_WHEEL_SHA256=${wheel_digest,,}"
+          } >> "$GITHUB_ENV"
           echo "release_commit=$head"
-          echo "expected_version=${{ inputs.expected_version }}"
+          echo "expected_version=$version"
           echo "runner_environment=$RUNNER_ENVIRONMENT"
 
       - name: Materialize protected proof credentials
@@ -152,8 +172,8 @@ jobs:
           python scripts/ga/probe_public_auth.py \
             --oauth-url '${{ inputs.oauth_url }}' \
             --mtls-url '${{ inputs.mtls_url }}' \
-            --release-commit '${{ inputs.release_commit }}' \
-            --expected-version '${{ inputs.expected_version }}' \
+            --release-commit "$PSMATRIX_PUBLIC_AUTH_RELEASE_COMMIT" \
+            --expected-version "$PSMATRIX_PUBLIC_AUTH_VERSION" \
             --expected-authorization-server '${{ inputs.expected_authorization_server }}' \
             --required-scope '${{ inputs.required_scope }}' \
             --protocol-version '${{ inputs.protocol_version }}' \
@@ -177,7 +197,22 @@ jobs:
           printf '%s\n' "$code" > "$output/probe-exit-code.txt"
           (( code == 0 )) || { echo "external public-auth probe failed with exit code $code" >&2; exit "$code"; }
 
-      - name: Enforce exact rejection and proof semantics
+      - name: Bind live proof to exact signed release artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/psmatrix-public-auth-evidence"
+          python scripts/ga/bind_public_auth_release.py \
+            --report "$output/public-auth-live-report.json" \
+            --oauth-proof "$output/public-oauth-proof-input.json" \
+            --mtls-proof "$output/public-mtls-proof-input.json" \
+            --release-commit "$PSMATRIX_PUBLIC_AUTH_RELEASE_COMMIT" \
+            --expected-version "$PSMATRIX_PUBLIC_AUTH_VERSION" \
+            --release-manifest-sha256 "$PSMATRIX_PUBLIC_AUTH_RELEASE_MANIFEST_SHA256" \
+            --release-wheel-sha256 "$PSMATRIX_PUBLIC_AUTH_WHEEL_SHA256" \
+            --output "$output/public-auth-release-binding.json"
+
+      - name: Enforce exact rejection and release-binding semantics
         shell: bash
         run: |
           set -euo pipefail
@@ -186,7 +221,10 @@ jobs:
             --report "$output/public-auth-live-report.json" \
             --oauth-proof "$output/public-oauth-proof-input.json" \
             --mtls-proof "$output/public-mtls-proof-input.json" \
-            --release-commit '${{ inputs.release_commit }}' \
+            --release-commit "$PSMATRIX_PUBLIC_AUTH_RELEASE_COMMIT" \
+            --expected-version "$PSMATRIX_PUBLIC_AUTH_VERSION" \
+            --release-manifest-sha256 "$PSMATRIX_PUBLIC_AUTH_RELEASE_MANIFEST_SHA256" \
+            --release-wheel-sha256 "$PSMATRIX_PUBLIC_AUTH_WHEEL_SHA256" \
             > "$output/public-auth-enforcement.json"
           cat "$output/public-auth-enforcement.json"
 
@@ -224,19 +262,35 @@ jobs:
         run: |
           set -euo pipefail
           output="$RUNNER_TEMP/psmatrix-public-auth-evidence"
-          python - "$output" '${{ inputs.release_commit }}' <<'PY'
+          python - "$output" "$PSMATRIX_PUBLIC_AUTH_RELEASE_COMMIT" "$PSMATRIX_PUBLIC_AUTH_VERSION" "$PSMATRIX_PUBLIC_AUTH_RELEASE_MANIFEST_SHA256" "$PSMATRIX_PUBLIC_AUTH_WHEEL_SHA256" <<'PY'
           import hashlib
           import json
           import sys
           from pathlib import Path
 
           root = Path(sys.argv[1]).resolve()
-          commit = sys.argv[2].lower()
+          commit, version, manifest_digest, wheel_digest = sys.argv[2:]
           status = json.loads((root / "preflight-status.json").read_text(encoding="utf-8"))
+          binding = json.loads((root / "public-auth-release-binding.json").read_text(encoding="utf-8"))
+          enforcement = json.loads((root / "public-auth-enforcement.json").read_text(encoding="utf-8"))
           if status.get("status") != "PASS" or status.get("oauth") != "PASS" or status.get("mtls") != "PASS":
               raise SystemExit("public authentication preflight did not pass")
           if status.get("release_commit") != commit:
-              raise SystemExit("public authentication proof is not bound to the requested commit")
+              raise SystemExit("public authentication preflight commit mismatch")
+          expected = {
+              "release_commit": commit,
+              "expected_version": version,
+              "release_manifest_sha256": manifest_digest,
+              "release_wheel_sha256": wheel_digest,
+          }
+          for label, value in (("binding", binding), ("enforcement", enforcement)):
+              if value.get("status") != "PASS":
+                  raise SystemExit(f"public authentication {label} did not pass")
+              for key, expected_value in expected.items():
+                  if value.get(key) != expected_value:
+                      raise SystemExit(f"public authentication {label} mismatch for {key}")
+          if binding.get("live_report_sha256") != enforcement.get("live_report_sha256"):
+              raise SystemExit("release binding and enforcer disagree on live-report digest")
 
           inventory = []
           forbidden = (
@@ -262,8 +316,12 @@ jobs:
               "schema": 1,
               "kind": "psmatrix.public-auth-evidence-inventory",
               "release_commit": commit,
+              "expected_version": version,
+              "release_manifest_sha256": manifest_digest,
+              "release_wheel_sha256": wheel_digest,
+              "live_report_sha256": binding.get("live_report_sha256"),
               "status": "PASS",
-              "ga_eligible": False,
+              "ga_eligible": version == "2.0.0",
               "files": inventory,
           }
           (root / "evidence-inventory.json").write_text(
