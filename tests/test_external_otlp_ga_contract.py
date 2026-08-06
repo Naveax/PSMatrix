@@ -275,7 +275,11 @@ class ExternalOTLPGAContractTests(unittest.TestCase):
         self.assertEqual(contract["recovery"]["maximum_recovery_seconds"], 300)
         self.assertTrue(contract["privacy"]["raw_source_body_forbidden"])
         self.assertFalse(contract["completion"]["ga_eligible"])
-        self.assertIn("source/evaluator preflight", README.read_text(encoding="utf-8"))
+        readme = README.read_text(encoding="utf-8")
+        self.assertIn("## Source preflight", readme)
+        self.assertIn("## Final evaluator preflight", readme)
+        self.assertIn("production-ga-pack05-source-preflight", readme)
+        self.assertIn("production-ga-pack05-final-evaluator-preflight", readme)
 
 
 if __name__ == "__main__":
