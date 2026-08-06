@@ -13,10 +13,12 @@ on:
       - "scripts/ga/validate_windows_authority_infrastructure.py"
       - "scripts/ga/Initialize-PSMatrixWindowsAuthorityLab.ps1"
       - "scripts/ga/Get-PSMatrixWindowsAuthorityInputPlan.ps1"
+      - "scripts/ga/Get-PSMatrixWindowsAuthorityMediaInventory.ps1"
       - "scripts/ga/Invoke-PSMatrixAuthoritativeWindowsGA.ps1"
       - "tests/test_windows_authority_ga_contract.py"
       - "tests/test_windows_authority_controller_bootstrap.py"
       - "tests/test_windows_authority_input_provisioning.py"
+      - "tests/test_windows_authority_media_inventory.py"
 
 concurrency:
   group: production-ga-pack03-windows-source-preflight-${{ github.ref }}
@@ -82,7 +84,8 @@ jobs:
               scripts/ga/validate_windows_authority_infrastructure.py \
               tests/test_windows_authority_ga_contract.py \
               tests/test_windows_authority_controller_bootstrap.py \
-              tests/test_windows_authority_input_provisioning.py
+              tests/test_windows_authority_input_provisioning.py \
+              tests/test_windows_authority_media_inventory.py
             echo "py_compile=PASS"
           } 2>&1 | tee "$PSMATRIX_PACK03_SOURCE_EVIDENCE/py-compile.log"
 
@@ -92,7 +95,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $scripts = @(
               'scripts/ga/Initialize-PSMatrixWindowsAuthorityLab.ps1',
-              'scripts/ga/Get-PSMatrixWindowsAuthorityInputPlan.ps1'
+              'scripts/ga/Get-PSMatrixWindowsAuthorityInputPlan.ps1',
+              'scripts/ga/Get-PSMatrixWindowsAuthorityMediaInventory.ps1'
           )
           foreach ($relative in $scripts) {
               $tokens = $null
@@ -118,6 +122,7 @@ jobs:
             tests.test_windows_authority_ga_contract \
             tests.test_windows_authority_controller_bootstrap \
             tests.test_windows_authority_input_provisioning \
+            tests.test_windows_authority_media_inventory \
             2>&1 | tee "$PSMATRIX_PACK03_SOURCE_EVIDENCE/test-windows-authority.log"
 
       - name: Enforce Pack 03 source preflight
@@ -160,6 +165,8 @@ jobs:
               'controller_bootstrap_powershell_parse': 'PASS',
               'input_provisioning_contract': 'PASS',
               'input_provisioning_powershell_parse': 'PASS',
+              'media_inventory_contract': 'PASS',
+              'media_inventory_powershell_parse': 'PASS',
               'infrastructure_workflow_contract': 'PASS',
               'authoritative_workflow_contract': 'PASS',
               'real_windows_executed': False,
