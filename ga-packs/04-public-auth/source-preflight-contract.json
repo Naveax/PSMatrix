@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.pack04-source-preflight-contract",
+  "pack": "04-public-auth",
+  "workflow": "production-ga-pack04-source-preflight",
+  "workflow_path": ".github/workflows/ga-pack04-source-preflight.yml",
+  "runner": "ubuntu-latest",
+  "python": "3.13",
+  "secret_free": true,
+  "required_compilation_targets": [
+    "scripts/ga/probe_public_auth.py",
+    "scripts/ga/bind_public_auth_release.py",
+    "scripts/ga/enforce_public_auth_report.py",
+    "scripts/ga/public_auth_deployment_kit.py",
+    "src/psmatrix/ga.py",
+    "tests/test_ga.py",
+    "tests/test_public_auth_ga_contract.py",
+    "tests/test_public_auth_deployment_kit.py"
+  ],
+  "required_test_modules": [
+    "tests.test_ga",
+    "tests.test_public_auth_ga_contract",
+    "tests.test_public_auth_deployment_kit"
+  ],
+  "required_assertions": [
+    "public-oauth-final-release-cross-binding",
+    "public-mtls-final-release-cross-binding",
+    "oauth-mtls-same-live-report",
+    "oauth-mtls-separate-endpoints",
+    "exact-negative-control-statuses",
+    "tampered-live-report-rejected",
+    "reproducible-deployment-kit",
+    "tampered-deployment-kit-rejected",
+    "credential-free-deployment-kit",
+    "private-key-removed-before-verification"
+  ],
+  "result": {
+    "required_status": "PASS",
+    "ga_eligible": false,
+    "note": "Source preflight validates Pack 04 code and evaluator contracts; it cannot replace live public deployment evidence."
+  }
+}
