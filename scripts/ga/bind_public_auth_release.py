@@ -176,7 +176,8 @@ def main() -> int:
         "release_wheel_sha256": wheel_digest,
         "live_report_sha256": live_digest,
         "proof_types": ["public-oauth", "public-mtls"],
-        "ga_eligible": version == "2.0.0",
+        "final_ga_compatible": version == "2.0.0",
+        "ga_eligible": False,
     }
     if args.output is not None:
         atomic_json(args.output.resolve(), result)
