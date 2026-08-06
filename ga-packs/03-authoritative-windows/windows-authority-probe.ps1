@@ -124,9 +124,15 @@ Invoke-AuthorityCheck -Name 'desktop-process-host' -Body {
     return $PSHOME
 }
 
-$registryPath = 'HKCU:\Software\PSMatrix\AuthorityProbe\{0}' -f ([Guid]::NewGuid().ToString('N'))
+$registryProductRoot = 'HKCU:\Software\PSMatrix'
+$registryProbeRoot = Join-Path $registryProductRoot 'AuthorityProbe'
+$registryPath = Join-Path $registryProbeRoot ([Guid]::NewGuid().ToString('N'))
+$registryProductRootExisted = Test-Path -LiteralPath $registryProductRoot
+$registryProbeRootExisted = Test-Path -LiteralPath $registryProbeRoot
 Invoke-AuthorityCheck -Name 'registry-roundtrip' -Body {
     try {
+        New-Item -Path $registryProductRoot -Force | Out-Null
+        New-Item -Path $registryProbeRoot -Force | Out-Null
         New-Item -Path $registryPath -Force | Out-Null
         New-ItemProperty -Path $registryPath -Name 'ProbeValue' -Value 'psmatrix' -PropertyType String -Force | Out-Null
         $value = (Get-ItemProperty -Path $registryPath -Name 'ProbeValue').ProbeValue
@@ -136,7 +142,13 @@ Invoke-AuthorityCheck -Name 'registry-roundtrip' -Body {
         return $registryPath
     }
     finally {
-        Remove-Item -Path $registryPath -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $registryPath -Recurse -Force -ErrorAction SilentlyContinue
+        if (-not $registryProbeRootExisted) {
+            Remove-Item -LiteralPath $registryProbeRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        if (-not $registryProductRootExisted) {
+            Remove-Item -LiteralPath $registryProductRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
