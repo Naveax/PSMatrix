@@ -89,11 +89,12 @@
     },
     {
       "id": "04-public-auth",
-      "state": "DEPLOYMENT_KIT_PREFLIGHT_READY_EXTERNAL_PROOF_DEPLOYMENT_PENDING",
+      "state": "SOURCE_PREFLIGHT_RUN4_REMEDIATED_FRESH_CI_PENDING",
       "ga_eligible": false,
       "source_preflight": {
         "workflow": "production-ga-pack04-source-preflight",
         "workflow_path": ".github/workflows/ga-pack04-source-preflight.yml",
+        "contract": "ga-packs/04-public-auth/source-preflight-contract.json",
         "runner": "ubuntu-latest",
         "python": "3.13",
         "tests": [
@@ -102,8 +103,19 @@
           "tests.test_public_auth_deployment_kit"
         ],
         "compiles_pack04_scripts": true,
+        "source_import": "exact-checkout",
+        "backend_install_required": false,
+        "failure_evidence_initialized_early": true,
+        "last_observed_run_number": 4,
+        "last_observed_status": "FAIL",
+        "last_observed_failure_class": "EARLY_STEP_FAILURE_WITH_MISSING_EVIDENCE_DIRECTORY",
+        "remediation_commits": [
+          "7989c7af3ac640e612a81606a23cfc481d03f126",
+          "0697be5ffdcf4ae8683218ba1a9e205f099481aa",
+          "f287108ebf6ced5b2198e7b83e127a2f7416e640"
+        ],
         "ga_eligible": false,
-        "status": "PENDING_CI"
+        "status": "FRESH_CI_REQUIRED"
       },
       "deployment_preflight": {
         "workflow": "production-ga-public-auth-deployment-preflight",
@@ -148,7 +160,7 @@
         "status": "READY_FOR_DEPLOYMENT"
       },
       "authority_contract": "ga-packs/04-public-auth/authority-contract.json",
-      "remaining": "First obtain a green production-ga-pack04-source-preflight run. Then run the reproducible deployment preflight after the exact signed release-manifest and wheel digests are available. Deploy the generated separate OAuth and direct-mTLS services. Configure five distinct OAuth tokens, four mTLS certificate states and the external authority key. Run production-ga-public-auth-external with the same exact commit, version, manifest digest and wheel digest. Final GA accepts only final 2.0.0 proofs cross-bound to the signed release and the same live report."
+      "remaining": "Obtain a fresh green production-ga-pack04-source-preflight run on the remediation head. Then run the reproducible deployment preflight after the exact signed release-manifest and wheel digests are available. Deploy the generated separate OAuth and direct-mTLS services. Configure five distinct OAuth tokens, four mTLS certificate states and the external authority key. Run production-ga-public-auth-external with the same exact commit, version, manifest digest and wheel digest."
     },
     {"id": "05-external-otlp", "state": "PACK_REQUIRED", "ga_eligible": false},
     {"id": "06-independent-review", "state": "READY_FOR_REVIEWER", "ga_eligible": false},
