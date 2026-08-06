@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-authority-media-inventory-contract",
+  "pack": "03-authoritative-windows",
+  "mode": "read-only-local-discovery",
+  "search": {
+    "default_roots": [
+      "%USERPROFILE%\\Downloads",
+      "%USERPROFILE%\\Desktop",
+      "C:\\PSMatrix-Windows-GA\\media",
+      "C:\\ISO",
+      "C:\\Installers"
+    ],
+    "candidate_extensions": [".iso", ".msu", ".cab", ".exe", ".zip", ".json", ".pem"],
+    "maximum_files_per_root": 10000
+  },
+  "required_media_roles": [
+    "windows-server-2012-r2-iso",
+    "windows-server-2016-iso",
+    "wmf-5.0-offline-package",
+    "offline-python-x64-installer",
+    "windows-workers-package",
+    "controller-credential-bundle",
+    "worker-signing-bundle"
+  ],
+  "release_roles": [
+    "source-archive",
+    "windows-workers-package",
+    "windows-certification-kit",
+    "windows-provisioning-kit",
+    "signed-release-manifest"
+  ],
+  "safety": {
+    "downloads_files": false,
+    "creates_virtual_machines": false,
+    "creates_checkpoints": false,
+    "writes_validator_input_files": false,
+    "opens_bundle_contents": false,
+    "hashes_candidates": true,
+    "iso_mount_is_read_only": true,
+    "iso_dismount_is_mandatory": true,
+    "classification_is_authoritative": false,
+    "ga_eligible": false
+  },
+  "completion": {
+    "media_inventory_is_provisioning_evidence": false,
+    "media_inventory_is_authoritative_evidence": false,
+    "media_inventory_is_ga_eligible": false
+  }
+}
