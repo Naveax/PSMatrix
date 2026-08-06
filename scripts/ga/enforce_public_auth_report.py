@@ -2,10 +2,16 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 from pathlib import Path
 from typing import Any
+
+
+COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+VERSION_RE = re.compile(r"^2\.0\.0(?:rc[0-9]+)?$")
 
 
 class EnforcementError(RuntimeError):
@@ -18,30 +24,74 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--oauth-proof", type=Path, required=True)
     parser.add_argument("--mtls-proof", type=Path, required=True)
     parser.add_argument("--release-commit", required=True)
+    parser.add_argument("--expected-version", required=True)
+    parser.add_argument("--release-manifest-sha256", required=True)
+    parser.add_argument("--release-wheel-sha256", required=True)
     return parser.parse_args()
 
 
 def load_object(path: Path, label: str) -> dict[str, Any]:
-    value = json.loads(path.resolve().read_text(encoding="utf-8"))
+    resolved = path.resolve()
+    if not resolved.is_file() or resolved.is_symlink():
+        raise EnforcementError(f"{label} is missing or unsafe")
+    value = json.loads(resolved.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise EnforcementError(f"{label} root must be an object")
     return value
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.resolve().open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def exact_commit(value: str) -> str:
+    text = str(value).lower()
+    if COMMIT_RE.fullmatch(text) is None:
+        raise EnforcementError("release_commit must be a full Git SHA")
+    return text
+
+
+def exact_digest(value: str, label: str) -> str:
+    text = str(value).lower()
+    if SHA256_RE.fullmatch(text) is None:
+        raise EnforcementError(f"{label} must be a SHA-256 digest")
+    return text
+
+
+def exact_version(value: str) -> str:
+    text = str(value)
+    if VERSION_RE.fullmatch(text) is None:
+        raise EnforcementError("expected_version must be 2.0.0 or 2.0.0rcN")
+    return text
+
+
 def main() -> int:
     args = parse_args()
-    commit = args.release_commit.lower()
-    if not re.fullmatch(r"[0-9a-f]{40}", commit):
-        raise EnforcementError("release_commit must be a full Git SHA")
+    commit = exact_commit(args.release_commit)
+    version = exact_version(args.expected_version)
+    manifest_digest = exact_digest(args.release_manifest_sha256, "release_manifest_sha256")
+    wheel_digest = exact_digest(args.release_wheel_sha256, "release_wheel_sha256")
+    report_path = args.report.resolve()
 
-    report = load_object(args.report, "live report")
+    report = load_object(report_path, "live report")
     oauth = load_object(args.oauth_proof, "OAuth proof")
     mtls = load_object(args.mtls_proof, "mTLS proof")
+    live_report_digest = sha256_file(report_path)
 
     if report.get("schema") != 1 or report.get("kind") != "psmatrix.public-auth-live-report":
         raise EnforcementError("live report schema is invalid")
-    if report.get("release_commit") != commit:
+    if str(report.get("release_commit") or "").lower() != commit:
         raise EnforcementError("live report is not bound to the requested release commit")
+    if str(report.get("expected_version") or "") != version:
+        raise EnforcementError("live report expected version mismatch")
+    if str(report.get("release_manifest_sha256") or "").lower() != manifest_digest:
+        raise EnforcementError("live report signed release-manifest binding mismatch")
+    if str(report.get("release_wheel_sha256") or "").lower() != wheel_digest:
+        raise EnforcementError("live report exact wheel binding mismatch")
     if report.get("external_probe") is not True:
         raise EnforcementError("public authentication proof was not produced from an external hosted runner")
     if (report.get("oauth") or {}).get("status") != "PASS" or (report.get("mtls") or {}).get("status") != "PASS":
@@ -130,13 +180,29 @@ def main() -> int:
             raise EnforcementError(f"{proof_type} proof input schema is invalid")
         if proof.get("proof_type") != proof_type or proof.get("status") != "PASS":
             raise EnforcementError(f"{proof_type} proof input is not PASS")
-        if proof.get("release_commit") != commit:
+        if str(proof.get("release_commit") or "").lower() != commit:
             raise EnforcementError(f"{proof_type} proof is not bound to the requested release commit")
+        artifacts = proof.get("artifacts")
+        if not isinstance(artifacts, list) or len(artifacts) != 1 or not isinstance(artifacts[0], dict):
+            raise EnforcementError(f"{proof_type} must bind exactly one live report")
+        if artifacts[0].get("name") != "public-auth-live-report.json":
+            raise EnforcementError(f"{proof_type} live-report subject name is invalid")
+        if str(artifacts[0].get("sha256") or "").lower() != live_report_digest:
+            raise EnforcementError(f"{proof_type} live-report digest does not match the actual report")
         assertions = proof.get("assertions")
         if not isinstance(assertions, dict) or assertions.get("release_commit_bound") is not True:
             raise EnforcementError(f"{proof_type} release binding assertion is missing")
-        if assertions.get("release_commit") != commit:
+        if str(assertions.get("release_commit") or "").lower() != commit:
             raise EnforcementError(f"{proof_type} assertion release commit mismatch")
+        if str(assertions.get("expected_version") or "") != version:
+            raise EnforcementError(f"{proof_type} assertion version mismatch")
+        if str(assertions.get("release_manifest_sha256") or "").lower() != manifest_digest:
+            raise EnforcementError(f"{proof_type} assertion release-manifest digest mismatch")
+        if str(assertions.get("release_wheel_sha256") or "").lower() != wheel_digest:
+            raise EnforcementError(f"{proof_type} assertion wheel digest mismatch")
+        server_certificate = str(assertions.get("server_certificate_sha256") or "").lower()
+        if SHA256_RE.fullmatch(server_certificate) is None:
+            raise EnforcementError(f"{proof_type} server certificate digest is invalid")
 
     oauth_assertions = oauth["assertions"]
     for key in (
@@ -171,14 +237,22 @@ def main() -> int:
         if mtls_assertions.get(key) is not True:
             raise EnforcementError(f"mTLS proof assertion failed: {key}")
 
+    if oauth_assertions.get("endpoint") == mtls_assertions.get("endpoint"):
+        raise EnforcementError("OAuth and mTLS proofs must use separate endpoints")
+
     result = {
         "schema": 1,
         "kind": "psmatrix.public-auth-enforcement-result",
         "status": "PASS",
         "release_commit": commit,
+        "expected_version": version,
+        "release_manifest_sha256": manifest_digest,
+        "release_wheel_sha256": wheel_digest,
+        "live_report_sha256": live_report_digest,
         "oauth_checks": sum(key[0] == "oauth" for key in checks),
         "mtls_checks": sum(key[0] == "mtls" for key in checks),
         "negative_controls_exact": True,
+        "release_bound": True,
         "safe_to_sign": True,
     }
     print(json.dumps(result, indent=2, sort_keys=True))
