@@ -1,0 +1,172 @@
+name: production-ga-pack03-windows-source-preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/ga-pack03-windows-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-preflight.yml"
+      - ".github/workflows/ga-windows-authority-infrastructure-preflight.yml"
+      - ".github/workflows/ga-windows-authoritative.yml"
+      - "ga-packs/03-authoritative-windows/**"
+      - "scripts/ga/validate_windows_authority_infrastructure.py"
+      - "scripts/ga/Invoke-PSMatrixAuthoritativeWindowsGA.ps1"
+      - "tests/test_windows_authority_ga_contract.py"
+
+concurrency:
+  group: production-ga-pack03-windows-source-preflight-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  windows-authority-source:
+    name: Pack 03 hosted and authoritative Windows contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Initialize fail-closed evidence directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/psmatrix-pack03-windows-source-preflight"
+          rm -rf "$evidence"
+          install -d -m 0700 "$evidence"
+          {
+            echo "PSMATRIX_PACK03_SOURCE_EVIDENCE=$evidence"
+          } >> "$GITHUB_ENV"
+          {
+            echo "workflow=production-ga-pack03-windows-source-preflight"
+            echo "runner_environment=${RUNNER_ENVIRONMENT:-unknown}"
+          } > "$evidence/controller-context.txt"
+
+      - name: Check out exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Verify exact source controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            head="$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')"
+            [[ "$head" =~ ^[0-9a-f]{40}$ ]] || { echo 'checked-out head is invalid' >&2; exit 1; }
+            [[ "$head" == "${GITHUB_SHA,,}" ]] || { echo 'checked-out head does not match GITHUB_SHA' >&2; exit 1; }
+            [[ -z "$(git status --porcelain)" ]] || { echo 'source checkout is not clean' >&2; exit 1; }
+            echo "release_commit=$head"
+            echo "python=$(python --version 2>&1)"
+          } 2>&1 | tee "$PSMATRIX_PACK03_SOURCE_EVIDENCE/source-controller.log"
+          echo "PYTHONPATH=$GITHUB_WORKSPACE/src" >> "$GITHUB_ENV"
+
+      - name: Compile Pack 03 source contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            python -m py_compile \
+              scripts/ga/validate_windows_authority_infrastructure.py \
+              tests/test_windows_authority_ga_contract.py
+            echo "py_compile=PASS"
+          } 2>&1 | tee "$PSMATRIX_PACK03_SOURCE_EVIDENCE/py-compile.log"
+
+      - name: Run Pack 03 authority contract tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_windows_authority_ga_contract \
+            2>&1 | tee "$PSMATRIX_PACK03_SOURCE_EVIDENCE/test-windows-authority.log"
+
+      - name: Enforce Pack 03 source preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$PSMATRIX_PACK03_SOURCE_EVIDENCE" "$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          required = (
+              'controller-context.txt',
+              'source-controller.log',
+              'py-compile.log',
+              'test-windows-authority.log',
+          )
+          files = []
+          for name in required:
+              path = root / name
+              if not path.is_file() or path.stat().st_size <= 0:
+                  raise SystemExit(f'required Pack 03 source evidence is missing: {name}')
+              data = path.read_bytes()
+              files.append({
+                  'name': name,
+                  'sha256': hashlib.sha256(data).hexdigest(),
+                  'size': len(data),
+              })
+          status = {
+              'schema': 1,
+              'kind': 'psmatrix.pack03-windows-source-preflight-status',
+              'status': 'PASS',
+              'release_commit': sys.argv[2],
+              'hosted_workflow_contract': 'PASS',
+              'exact_hosted_check_count': 12,
+              'infrastructure_workflow_contract': 'PASS',
+              'authoritative_workflow_contract': 'PASS',
+              'real_windows_executed': False,
+              'hosted_windows_5_1': 'PENDING',
+              'authoritative': False,
+              'ga_eligible': False,
+              'files': files,
+          }
+          (root / 'preflight-status.json').write_text(
+              json.dumps(status, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
+          print(json.dumps(status, indent=2, sort_keys=True))
+          PY
+
+      - name: Record fail-closed Pack 03 source state
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          evidence="${PSMATRIX_PACK03_SOURCE_EVIDENCE:-$RUNNER_TEMP/psmatrix-pack03-windows-source-preflight}"
+          install -d -m 0700 "$evidence"
+          python - "$evidence" "${GITHUB_SHA,,}" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          (root / 'preflight-failure.json').write_text(
+              json.dumps({
+                  'schema': 1,
+                  'kind': 'psmatrix.pack03-windows-source-preflight-status',
+                  'status': 'FAIL',
+                  'release_commit': sys.argv[2],
+                  'real_windows_executed': False,
+                  'hosted_windows_5_1': 'PENDING',
+                  'authoritative': False,
+                  'ga_eligible': False,
+              }, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
+          PY
+
+      - name: Upload Pack 03 source evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: production-ga-pack03-windows-source-preflight
+          path: ${{ runner.temp }}/psmatrix-pack03-windows-source-preflight
+          if-no-files-found: error
+          retention-days: 30
