@@ -6,7 +6,53 @@ Validate the deployed PSMatrix HTTP/MCP service from an external network against
 
 Local protocol tests, loopback endpoints, private DNS, self-signed server TLS and reverse-proxy client-certificate headers do not satisfy this pack.
 
-## Authority workflow
+## Reproducible deployment preflight
+
+Workflow:
+
+```text
+production-ga-public-auth-deployment-preflight
+```
+
+Workflow path:
+
+```text
+.github/workflows/ga-public-auth-deployment-preflight.yml
+```
+
+The deployment preflight checks out the exact release commit and builds the same signed deployment ZIP twice using the Git commit timestamp as `SOURCE_DATE_EPOCH`. The two ZIP files must be byte-for-byte identical and independently verify against the protected deployment-authority public key.
+
+Required release bindings:
+
+```text
+Full 40-character release commit
+Exact 2.0.0rcN or 2.0.0 version
+SHA-256 of the signed release manifest
+SHA-256 of the exact wheel
+```
+
+The credential-free deployment kit contains:
+
+- exact OAuth-introspection and mTLS auth configurations;
+- separate hardened systemd services on loopback ports 8765 and 8766;
+- an internal OAuth TLS endpoint on 127.0.0.1:9443;
+- an nginx stream/SNI router for the two public hostnames;
+- direct byte-level mTLS passthrough to PSMatrix on port 8766;
+- an installation script that verifies the wheel digest and installed PSMatrix version;
+- a deterministic deployment manifest and DSSE deployment attestation.
+
+The OAuth and mTLS URLs must use distinct hostnames on the same public port. The SNI router sends OAuth traffic to the internal nginx HTTPS listener and mTLS traffic directly to the PSMatrix TLS socket. The kit never contains OAuth credentials, TLS private keys or client certificates.
+
+Protected deployment authority secrets:
+
+```text
+PSMATRIX_PUBLIC_AUTH_DEPLOYMENT_PRIVATE_KEY
+PSMATRIX_PUBLIC_AUTH_DEPLOYMENT_PUBLIC_KEY
+```
+
+The private key is removed before the independent verification stage. A green deployment preflight produces `PASS_PARTIAL`, `ga_eligible=false`; it proves reproducible deployment readiness, not live public behavior.
+
+## External authority workflow
 
 Workflow:
 
@@ -88,7 +134,7 @@ The external probe verifies:
 
 All four client certificates must be distinct. Certificate fingerprints may appear in evidence; client private keys may not.
 
-## Protected secrets
+## Protected external-proof secrets
 
 OAuth controls:
 
@@ -120,9 +166,9 @@ PSMATRIX_PUBLIC_AUTH_AUTHORITY_PRIVATE_KEY
 PSMATRIX_PUBLIC_AUTH_AUTHORITY_PUBLIC_KEY
 ```
 
-Credentials are materialized only below `RUNNER_TEMP`, mode-restricted, removed on every workflow path and excluded from the uploaded evidence tree.
+Credentials are materialized only below `RUNNER_TEMP`, mode-restricted, removed on every workflow path and excluded from the uploaded evidence tree. OAuth tokens are scoped only to the live probe step.
 
-## Workflow inputs
+## External workflow inputs
 
 ```text
 release_commit                 Exact deployed 40-character commit
@@ -137,7 +183,19 @@ rate_limit_attempts            32–512; default 160
 
 ## Evidence
 
-A successful run uploads:
+A successful deployment-preflight run uploads:
+
+```text
+psmatrix-public-auth-deployment-kit.zip
+build-first.json
+build-second.json
+verification-first.json
+verification-second.json
+reproducibility.json
+preflight-status.json
+```
+
+A successful external live-proof run uploads:
 
 ```text
 public-auth-live-report.json
@@ -152,10 +210,10 @@ evidence-inventory.json
 preflight-status.json
 ```
 
-The two signed proofs satisfy the `public-oauth` and `public-mtls` evidence types only after the live probe and exact semantic enforcer both pass. Pack 04 completion does not by itself make Production GA eligible.
+The two signed live proofs satisfy the `public-oauth` and `public-mtls` evidence types only after the external probe and exact semantic enforcer both pass. Deployment readiness and Pack 04 completion do not by themselves make Production GA eligible.
 
 The immutable authority requirements are stored in `authority-contract.json`.
 
 ## State
 
-`EXTERNAL_PROOF_WORKFLOW_READY_DEPLOYMENT_PENDING` — the external probe, semantic enforcer, protected signing workflow and authority contract are prepared. Public OAuth/mTLS deployments, protected test tokens, four client-certificate states and the external proof authority key remain deployment prerequisites.
+`DEPLOYMENT_KIT_PREFLIGHT_READY_EXTERNAL_PROOF_DEPLOYMENT_PENDING` — the reproducible signed deployment-kit workflow, external live probe, semantic enforcer, protected signing workflow and authority contract are prepared. The workflows are not yet runtime-validated. Public OAuth/mTLS deployment, release digests, protected authority keys, five token controls and four client-certificate states remain prerequisites.
