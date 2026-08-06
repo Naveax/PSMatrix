@@ -1,0 +1,208 @@
+name: production-ga-pack05-source-preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/ga-pack05-source-preflight.yml"
+      - ".github/workflows/ga-external-otlp.yml"
+      - "ga-packs/05-external-otlp/**"
+      - "scripts/ga/probe_external_otlp.py"
+      - "scripts/ga/bind_external_otlp_release.py"
+      - "scripts/ga/enforce_external_otlp_report.py"
+      - "src/psmatrix/observability.py"
+      - "src/psmatrix/ga.py"
+      - "tests/test_observability.py"
+      - "tests/test_external_otlp_ga_contract.py"
+
+concurrency:
+  group: production-ga-pack05-source-preflight-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  source-preflight:
+    name: Pack 05 exporter, authority tools and privacy contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Initialize fail-closed evidence directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/psmatrix-pack05-source-preflight"
+          rm -rf "$evidence"
+          install -d -m 0700 "$evidence"
+          {
+            echo "PYTHONPATH=$GITHUB_WORKSPACE/src"
+            echo "PSMATRIX_PACK05_EVIDENCE=$evidence"
+          } >> "$GITHUB_ENV"
+          {
+            echo "workflow=production-ga-pack05-source-preflight"
+            echo "runner_environment=${RUNNER_ENVIRONMENT:-unknown}"
+            echo "python=$(python --version 2>&1)"
+          } > "$evidence/controller-context.txt"
+
+      - name: Verify exact source controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            head="$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')"
+            [[ "$head" =~ ^[0-9a-f]{40}$ ]] || { echo 'checked-out head is invalid' >&2; exit 1; }
+            [[ -z "$(git status --porcelain)" ]] || { echo 'source checkout is not clean' >&2; exit 1; }
+            python - "$GITHUB_WORKSPACE" <<'PY'
+          import json
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          with (root / "pyproject.toml").open("rb") as handle:
+              expected = str(tomllib.load(handle)["project"]["version"])
+          import psmatrix
+          source = Path(psmatrix.__file__).resolve()
+          source.relative_to((root / "src" / "psmatrix").resolve())
+          if psmatrix.__version__ != expected:
+              raise SystemExit(f"source version mismatch: {psmatrix.__version__} != {expected}")
+          print(json.dumps({
+              "status": "PASS",
+              "release_commit": __import__("subprocess").check_output(
+                  ["git", "rev-parse", "HEAD"], text=True
+              ).strip().lower(),
+              "version": expected,
+              "source": source.relative_to(root).as_posix(),
+          }, sort_keys=True))
+          PY
+          } 2>&1 | tee "$PSMATRIX_PACK05_EVIDENCE/source-controller.log"
+
+      - name: Compile Pack 05 Python sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            python -m py_compile \
+              scripts/ga/probe_external_otlp.py \
+              scripts/ga/bind_external_otlp_release.py \
+              scripts/ga/enforce_external_otlp_report.py \
+              src/psmatrix/observability.py \
+              src/psmatrix/ga.py \
+              tests/test_observability.py \
+              tests/test_external_otlp_ga_contract.py
+            echo "py_compile=PASS"
+          } 2>&1 | tee "$PSMATRIX_PACK05_EVIDENCE/py-compile.log"
+
+      - name: Run observability exporter tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_observability \
+            2>&1 | tee "$PSMATRIX_PACK05_EVIDENCE/test-observability.log"
+
+      - name: Run Pack 05 authority contract tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_external_otlp_ga_contract \
+            2>&1 | tee "$PSMATRIX_PACK05_EVIDENCE/test-external-otlp-ga-contract.log"
+
+      - name: Enforce Pack 05 source preflight result
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$PSMATRIX_PACK05_EVIDENCE" "$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          commit = sys.argv[2]
+          required = (
+              "controller-context.txt",
+              "source-controller.log",
+              "py-compile.log",
+              "test-observability.log",
+              "test-external-otlp-ga-contract.log",
+          )
+          files = []
+          for name in required:
+              path = root / name
+              if not path.is_file() or path.stat().st_size <= 0:
+                  raise SystemExit(f"required Pack 05 evidence is missing: {name}")
+              data = path.read_bytes()
+              files.append({
+                  "name": name,
+                  "sha256": hashlib.sha256(data).hexdigest(),
+                  "size": len(data),
+              })
+          value = {
+              "schema": 1,
+              "kind": "psmatrix.pack05-source-preflight-status",
+              "status": "PASS",
+              "release_commit": commit,
+              "python": "3.13",
+              "exporter_tests": "PASS",
+              "authority_contract_tests": "PASS",
+              "privacy_contract": "PASS",
+              "restart_contract": "PASS",
+              "external_collector_proven": False,
+              "ga_eligible": False,
+              "files": files,
+          }
+          (root / "preflight-status.json").write_text(
+              json.dumps(value, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(value, indent=2, sort_keys=True))
+          PY
+
+      - name: Record fail-closed preflight state
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          evidence="${PSMATRIX_PACK05_EVIDENCE:-$RUNNER_TEMP/psmatrix-pack05-source-preflight}"
+          install -d -m 0700 "$evidence"
+          python - "$evidence" "${GITHUB_SHA,,}" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          (root / "preflight-failure.json").write_text(
+              json.dumps({
+                  "schema": 1,
+                  "kind": "psmatrix.pack05-source-preflight-status",
+                  "status": "FAIL",
+                  "release_commit": sys.argv[2],
+                  "external_collector_proven": False,
+                  "ga_eligible": False,
+              }, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload Pack 05 source preflight evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: production-ga-pack05-source-preflight
+          path: ${{ runner.temp }}/psmatrix-pack05-source-preflight
+          if-no-files-found: error
+          retention-days: 30
