@@ -1,4 +1,7 @@
 import json
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -43,6 +46,9 @@ class WindowsAuthorityMediaInventoryTests(unittest.TestCase):
             "controller-credential-bundle",
             "worker-signing-bundle",
             "classification_is_authoritative = $false",
+            "$resolvedRoots.ToArray()",
+            "$candidates.ToArray()",
+            "$scanWarnings.ToArray()",
             "creates_virtual_machines = $false",
             "creates_checkpoints = $false",
             "writes_validator_inputs = $false",
@@ -63,10 +69,73 @@ class WindowsAuthorityMediaInventoryTests(unittest.TestCase):
             "New-VHD",
             "Enable-WindowsOptionalFeature",
             "Invoke-Expression",
+            "search_roots = @($resolvedRoots)",
+            "candidates = @($candidates)",
+            "warnings = @($scanWarnings)",
         )
         for value in forbidden:
             with self.subTest(value=value):
                 self.assertNotIn(value, text)
+
+    @unittest.skipUnless(shutil.which("pwsh"), "pwsh is required for runtime smoke")
+    def test_script_executes_runtime_smoke(self) -> None:
+        pwsh = shutil.which("pwsh")
+        self.assertIsNotNone(pwsh)
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-media-inventory-") as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            ga = root / "ga"
+            search = root / "search"
+            output = ga / "windows-authority-media-inventory.json"
+
+            source.mkdir()
+            ga.mkdir()
+            search.mkdir()
+            (search / "python-3.13.7-amd64.exe").write_bytes(
+                b"psmatrix-media-inventory-runtime-smoke\n"
+            )
+
+            result = subprocess.run(
+                [
+                    str(pwsh),
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-File",
+                    str(SCRIPT),
+                    "-SourceRoot",
+                    str(source),
+                    "-GaRoot",
+                    str(ga),
+                    "-SearchRoot",
+                    str(search),
+                    "-OutputPath",
+                    str(output),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(
+                result.returncode,
+                0,
+                msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+            )
+            self.assertTrue(output.is_file())
+
+            report = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(report["status"], "PASS_PARTIAL")
+            self.assertEqual(report["candidate_count"], 1)
+            self.assertEqual(len(report["candidates"]), 1)
+            self.assertIn(
+                "offline-python-x64-installer",
+                report["candidates"][0]["roles"],
+            )
+            self.assertFalse(report["authoritative"])
+            self.assertFalse(report["ga_eligible"])
+            self.assertFalse(report["ready_for_media_manifest"])
 
     def test_source_preflight_tracks_media_inventory(self) -> None:
         text = SOURCE_WORKFLOW.read_text(encoding="utf-8")
