@@ -30,9 +30,6 @@ jobs:
     name: Pack 04 source, deployment and GA evaluator
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    env:
-      PYTHONPATH: ${{ github.workspace }}/src
-      PSMATRIX_PACK04_EVIDENCE: ${{ runner.temp }}/psmatrix-pack04-source-preflight
 
     steps:
       - name: Check out exact revision
@@ -50,13 +47,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf "$PSMATRIX_PACK04_EVIDENCE"
-          install -d -m 0700 "$PSMATRIX_PACK04_EVIDENCE"
+          evidence="$RUNNER_TEMP/psmatrix-pack04-source-preflight"
+          rm -rf "$evidence"
+          install -d -m 0700 "$evidence"
+          {
+            echo "PYTHONPATH=$GITHUB_WORKSPACE/src"
+            echo "PSMATRIX_PACK04_EVIDENCE=$evidence"
+          } >> "$GITHUB_ENV"
           {
             echo "workflow=production-ga-pack04-source-preflight"
             echo "runner_environment=${RUNNER_ENVIRONMENT:-unknown}"
             echo "python=$(python --version 2>&1)"
-          } > "$PSMATRIX_PACK04_EVIDENCE/controller-context.txt"
+          } > "$evidence/controller-context.txt"
 
       - name: Verify source controller
         shell: bash
@@ -73,8 +75,10 @@ jobs:
       - name: Verify exact source package metadata
         shell: bash
         run: |
-          set -euo pipefail
-          python - "$GITHUB_WORKSPACE" 2>&1 <<'PY' | tee "$PSMATRIX_PACK04_EVIDENCE/source-package.log"
+          set -uo pipefail
+          log="$PSMATRIX_PACK04_EVIDENCE/source-package.log"
+          set +e
+          python - "$GITHUB_WORKSPACE" >"$log" 2>&1 <<'PY'
           import json
           import sys
           import tomllib
@@ -110,6 +114,10 @@ jobs:
           }
           print(json.dumps(result, indent=2, sort_keys=True))
           PY
+          status=$?
+          set -e
+          cat "$log"
+          exit "$status"
 
       - name: Compile Pack 04 Python sources
         shell: bash
@@ -208,8 +216,9 @@ jobs:
         shell: bash
         run: |
           set +e
-          install -d -m 0700 "$PSMATRIX_PACK04_EVIDENCE"
-          python - "$PSMATRIX_PACK04_EVIDENCE" "${GITHUB_SHA,,}" <<'PY'
+          evidence="${PSMATRIX_PACK04_EVIDENCE:-$RUNNER_TEMP/psmatrix-pack04-source-preflight}"
+          install -d -m 0700 "$evidence"
+          python - "$evidence" "${GITHUB_SHA,,}" <<'PY'
           import json
           import sys
           from pathlib import Path
