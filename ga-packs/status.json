@@ -89,7 +89,7 @@
     },
     {
       "id": "04-public-auth",
-      "state": "SOURCE_PREFLIGHT_RUN4_REMEDIATED_FRESH_CI_PENDING",
+      "state": "DEPLOYMENT_KIT_PREFLIGHT_READY_EXTERNAL_PROOF_DEPLOYMENT_PENDING",
       "ga_eligible": false,
       "source_preflight": {
         "workflow": "production-ga-pack04-source-preflight",
