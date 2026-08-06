@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.independent-review-authority-contract",
+  "pack": "06-independent-review",
+  "authority": {
+    "role": "security-review",
+    "reviewer_must_be_external": true,
+    "reviewer_controls_signing_key": true,
+    "conflict_of_interest_must_be_false": true,
+    "private_key_in_repository": false,
+    "private_key_in_dossier": false,
+    "private_key_in_artifacts": false
+  },
+  "release_binding": {
+    "full_40_character_commit_required": true,
+    "signed_release_manifest_required": true,
+    "exact_release_manifest_sha256_required": true,
+    "exact_source_zip_sha256_required": true,
+    "exact_wheel_sha256_recorded": true,
+    "final_ga_version": "2.0.0",
+    "rc_review_can_complete_pack": false
+  },
+  "required_sections": [
+    "architecture",
+    "authentication",
+    "authorization",
+    "sandbox",
+    "supply-chain",
+    "recovery",
+    "operations",
+    "privacy",
+    "release-process"
+  ],
+  "required_methodologies": [
+    "architecture-review",
+    "threat-model-review",
+    "manual-code-review",
+    "test-evidence-review"
+  ],
+  "findings": {
+    "critical_allowed": 0,
+    "high_allowed": 0,
+    "finding_list_required": true,
+    "declared_counts_must_match_list": true
+  },
+  "dossier": {
+    "builder": "scripts/ga/independent_review_dossier.py",
+    "deterministic_zip_required": true,
+    "signed_release_verification_required": true,
+    "source_zip_included": true,
+    "wheel_bytes_included": false,
+    "wheel_digest_included": true,
+    "private_keys_included": false
+  },
+  "submission": {
+    "processor": "scripts/ga/independent_review_submission.py",
+    "proof_type": "security-review",
+    "report_subject_name": "independent-security-review-report.json",
+    "reviewer_identity_fields": ["name", "organization", "role", "contact"],
+    "review_hours_min_exclusive": 0,
+    "review_hours_max_inclusive": 1000,
+    "dsse_verification_required": true,
+    "final_evaluator_cross_binding_required": true
+  },
+  "completion": {
+    "external_reviewer_required": true,
+    "signed_pass_review_required": true,
+    "source_preflight_can_complete_pack": false,
+    "pack_alone_sets_product_ga": false,
+    "ga_eligible": false
+  }
+}
