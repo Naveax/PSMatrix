@@ -2,6 +2,11 @@ name: production-ga-windows-authority-preflight
 
 on:
   workflow_dispatch:
+    inputs:
+      release_commit:
+        description: Exact PSMatrix commit to preflight (40 lowercase hexadecimal characters)
+        required: true
+        type: string
 
 concurrency:
   group: production-ga-windows-authority-preflight
@@ -17,9 +22,44 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      - name: Initialize fail-closed evidence directory
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected = '${{ inputs.release_commit }}'
+          if ($expected -cnotmatch '^[0-9a-f]{40}$') {
+              throw 'release_commit must contain exactly 40 lowercase hexadecimal characters'
+          }
+          $out = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-authority-preflight'
+          if (Test-Path -LiteralPath $out) {
+              Remove-Item -LiteralPath $out -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          "PSMATRIX_WINDOWS_PREFLIGHT_EVIDENCE=$out" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
+          "PSMATRIX_WINDOWS_PREFLIGHT_COMMIT=$expected" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
+          $context = [ordered]@{
+              schema = 1
+              kind = 'psmatrix.windows-authority-hosted-controller-context'
+              expected_commit = $expected
+              runner_os = $env:RUNNER_OS
+              runner_arch = $env:RUNNER_ARCH
+              runner_environment = $env:RUNNER_ENVIRONMENT
+              github_workflow = $env:GITHUB_WORKFLOW
+              github_run_id = $env:GITHUB_RUN_ID
+              github_run_attempt = $env:GITHUB_RUN_ATTEMPT
+          }
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText(
+              (Join-Path $out 'controller-context.json'),
+              (($context | ConvertTo-Json -Depth 5) + [Environment]::NewLine),
+              $utf8
+          )
+
       - name: Check out exact revision
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
+          ref: ${{ inputs.release_commit }}
+          fetch-depth: 1
           persist-credentials: false
 
       - name: Set up Python
@@ -27,50 +67,115 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Verify exact Windows PowerShell host
+      - name: Verify exact revision and Windows PowerShell host
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          Write-Host "release_commit=$env:GITHUB_SHA"
-          Write-Host "powershell_version=$($PSVersionTable.PSVersion.ToString())"
-          Write-Host "psedition=$($PSVersionTable.PSEdition)"
-          Write-Host "pshome=$PSHOME"
+          $actual = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($actual -ne $env:PSMATRIX_WINDOWS_PREFLIGHT_COMMIT) {
+              throw "Checked-out commit $actual does not match expected commit $env:PSMATRIX_WINDOWS_PREFLIGHT_COMMIT"
+          }
+          if (-not [string]::IsNullOrWhiteSpace((git status --porcelain))) {
+              throw 'Windows authority preflight checkout is not clean'
+          }
+          if ($env:GITHUB_SHA.ToLowerInvariant() -ne $actual) {
+              throw "GITHUB_SHA $env:GITHUB_SHA does not match checked-out commit $actual"
+          }
           if ($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1) {
               throw "Expected Windows PowerShell 5.1; detected $($PSVersionTable.PSVersion.ToString())"
           }
           if ($PSVersionTable.PSEdition -ne 'Desktop') {
               throw "Expected PSEdition Desktop; detected $($PSVersionTable.PSEdition)"
           }
-          if (-not (Test-Path -LiteralPath (Join-Path $PSHOME 'powershell.exe') -PathType Leaf)) {
+          $powershellExe = Join-Path $PSHOME 'powershell.exe'
+          if (-not (Test-Path -LiteralPath $powershellExe -PathType Leaf)) {
               throw "powershell.exe was not found under $PSHOME"
           }
+          $identity = [ordered]@{
+              schema = 1
+              kind = 'psmatrix.windows-authority-hosted-identity'
+              release_commit = $actual
+              powershell_version = $PSVersionTable.PSVersion.ToString()
+              psedition = [string]$PSVersionTable.PSEdition
+              pshome = $PSHOME
+              powershell_executable = $powershellExe
+              process_path = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+              os = $env:OS
+              system_root = $env:SystemRoot
+              machine = $env:COMPUTERNAME
+          }
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText(
+              (Join-Path $env:PSMATRIX_WINDOWS_PREFLIGHT_EVIDENCE 'host-identity.json'),
+              (($identity | ConvertTo-Json -Depth 5) + [Environment]::NewLine),
+              $utf8
+          )
+          Write-Host "release_commit=$actual"
+          Write-Host "powershell_version=$($PSVersionTable.PSVersion.ToString())"
+          Write-Host "psedition=$($PSVersionTable.PSEdition)"
+          Write-Host "pshome=$PSHOME"
           python --version
 
       - name: Execute Windows authority probe
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $out = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-authority-preflight'
-          New-Item -ItemType Directory -Path $out -Force | Out-Null
           & .\ga-packs\03-authoritative-windows\windows-authority-probe.ps1 `
               -ExpectedMajor 5 `
               -ExpectedMinor 1 `
-              -OutputPath (Join-Path $out 'windows-powershell-5.1-probe.json')
-          Get-Content -LiteralPath (Join-Path $out 'windows-powershell-5.1-probe.json') -Raw
+              -OutputPath (Join-Path $env:PSMATRIX_WINDOWS_PREFLIGHT_EVIDENCE 'windows-powershell-5.1-probe.json')
+          Get-Content -LiteralPath (Join-Path $env:PSMATRIX_WINDOWS_PREFLIGHT_EVIDENCE 'windows-powershell-5.1-probe.json') -Raw
 
       - name: Enforce hosted Windows preflight
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $out = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-authority-preflight'
           python -c @'
+          import hashlib
           import json
           import os
+          from datetime import datetime, timezone
           from pathlib import Path
 
-          root = Path(os.environ['RUNNER_TEMP']) / 'psmatrix-windows-authority-preflight'
+          root = Path(os.environ['PSMATRIX_WINDOWS_PREFLIGHT_EVIDENCE']).resolve()
+          repo = Path(os.environ['GITHUB_WORKSPACE']).resolve()
+          expected_commit = os.environ['PSMATRIX_WINDOWS_PREFLIGHT_COMMIT']
           probe_path = root / 'windows-powershell-5.1-probe.json'
+          host_path = root / 'host-identity.json'
+          context_path = root / 'controller-context.json'
+          script_path = repo / 'ga-packs' / '03-authoritative-windows' / 'windows-authority-probe.ps1'
+
           value = json.loads(probe_path.read_text(encoding='utf-8'))
+          host = json.loads(host_path.read_text(encoding='utf-8'))
+          context = json.loads(context_path.read_text(encoding='utf-8'))
+
+          expected_checks = [
+              'exact-runtime-line',
+              'desktop-process-host',
+              'registry-roundtrip',
+              'service-query',
+              'com-activation',
+              'wmi-query',
+              'event-log-query',
+              'scheduled-task-query',
+              'ntfs-acl-roundtrip',
+              'certificate-store-query',
+              'process-query',
+              'windows-environment',
+          ]
+          checks = value.get('checks', [])
+          check_names = [row.get('name') for row in checks]
+          script_sha256 = hashlib.sha256(script_path.read_bytes()).hexdigest()
+          probe_sha256 = hashlib.sha256(probe_path.read_bytes()).hexdigest()
+          host_sha256 = hashlib.sha256(host_path.read_bytes()).hexdigest()
+          context_sha256 = hashlib.sha256(context_path.read_bytes()).hexdigest()
+
+          assert context.get('expected_commit') == expected_commit, context
+          assert host.get('release_commit') == expected_commit, host
+          assert host.get('psedition') == 'Desktop', host
+          assert str(host.get('powershell_version', '')).startswith('5.1.'), host
+          assert str(host.get('powershell_executable', '')).lower().endswith('powershell.exe'), host
+          assert host.get('os') == 'Windows_NT', host
 
           assert value.get('kind') == 'psmatrix.windows-authority-probe', value
           assert value.get('status') == 'PASS', value
@@ -84,22 +189,34 @@ jobs:
           assert value.get('reset_before') == 'UNAVAILABLE_ON_GITHUB_HOSTED_RUNNER', value
           assert value.get('reset_after') == 'UNAVAILABLE_ON_GITHUB_HOSTED_RUNNER', value
           assert value.get('failed_count') == 0, value
-          assert value.get('passed_count', 0) >= 11, value
-          checks = value.get('checks', [])
-          assert len(checks) >= 11, value
+          assert value.get('passed_count') == len(expected_checks), value
+          assert len(checks) == len(expected_checks), value
+          assert len(set(check_names)) == len(expected_checks), value
+          assert check_names == expected_checks, value
           assert all(row.get('status') == 'PASS' for row in checks), value
+          assert value.get('probe_sha256') == script_sha256, value
+          observed = datetime.fromisoformat(str(value['observed_at_utc']).replace('Z', '+00:00'))
+          assert observed.tzinfo is not None, value
+          assert observed <= datetime.now(timezone.utc), value
 
           status = {
               'schema': 1,
               'kind': 'psmatrix.windows-authority-hosted-preflight',
               'pack': '03-authoritative-windows',
               'status': 'PASS_PARTIAL',
-              'release_commit': os.environ['GITHUB_SHA'],
+              'release_commit': expected_commit,
+              'authority_level': 'github-hosted-windows-preflight',
+              'authoritative': False,
               'ga_eligible': False,
               'hosted_windows_5_1': 'PASS',
               'detected_runtime_version': value['detected_runtime_version'],
               'windows_checks_passed': value['passed_count'],
               'windows_checks_failed': value['failed_count'],
+              'check_names': expected_checks,
+              'probe_script_sha256': script_sha256,
+              'probe_result_sha256': probe_sha256,
+              'host_identity_sha256': host_sha256,
+              'controller_context_sha256': context_sha256,
               'reset_before': value['reset_before'],
               'reset_after': value['reset_after'],
               'remaining': [
@@ -116,6 +233,33 @@ jobs:
           )
           print(json.dumps(status, indent=2, sort_keys=True))
           '@
+
+      - name: Record fail-closed hosted Windows state
+        if: failure()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $out = $env:PSMATRIX_WINDOWS_PREFLIGHT_EVIDENCE
+          if ([string]::IsNullOrWhiteSpace($out)) {
+              $out = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-authority-preflight'
+          }
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          $failure = [ordered]@{
+              schema = 1
+              kind = 'psmatrix.windows-authority-hosted-preflight'
+              status = 'FAIL'
+              release_commit = $env:PSMATRIX_WINDOWS_PREFLIGHT_COMMIT
+              github_sha = $env:GITHUB_SHA
+              authority_level = 'github-hosted-windows-preflight'
+              authoritative = $false
+              ga_eligible = $false
+          }
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText(
+              (Join-Path $out 'preflight-failure.json'),
+              (($failure | ConvertTo-Json -Depth 5) + [Environment]::NewLine),
+              $utf8
+          )
 
       - name: Upload Windows authority preflight evidence
         if: always()
