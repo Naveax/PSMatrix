@@ -7,6 +7,19 @@
   "runner": "ubuntu-latest",
   "python": "3.13",
   "secret_free": true,
+  "source_execution": {
+    "import_mode": "exact-checkout",
+    "pythonpath": "src",
+    "build_backend_install_required": false,
+    "pyproject_version_must_match_package_version": true,
+    "package_import_must_resolve_below_src": true
+  },
+  "failure_evidence": {
+    "initialized_before_source_validation": true,
+    "retained_on_failure": true,
+    "fail_closed_status_written": true,
+    "artifact_upload_cannot_mask_first_failure": true
+  },
   "required_compilation_targets": [
     "scripts/ga/probe_public_auth.py",
     "scripts/ga/bind_public_auth_release.py",
