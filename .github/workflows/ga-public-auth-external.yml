@@ -145,6 +145,7 @@ jobs:
           output="$RUNNER_TEMP/psmatrix-public-auth-evidence"
           rm -rf "$output"
           install -d -m 0700 "$output"
+          set +e
           python scripts/ga/probe_public_auth.py \
             --oauth-url '${{ inputs.oauth_url }}' \
             --mtls-url '${{ inputs.mtls_url }}' \
@@ -162,7 +163,26 @@ jobs:
             --untrusted-client-cert "$PSMATRIX_PUBLIC_AUTH_SECRET_ROOT/untrusted-client.pem" \
             --untrusted-client-key "$PSMATRIX_PUBLIC_AUTH_SECRET_ROOT/untrusted-client-key.pem" \
             --rate-limit-attempts '${{ inputs.rate_limit_attempts }}' \
-            --output-dir "$output"
+            --output-dir "$output" \
+            > >(tee "$output/probe.stdout.log") \
+            2> >(tee "$output/probe.stderr.log" >&2)
+          code=$?
+          set -e
+          printf '%s\n' "$code" > "$output/probe-exit-code.txt"
+          (( code == 0 )) || { echo "external public-auth probe failed with exit code $code" >&2; exit "$code"; }
+
+      - name: Enforce exact rejection and proof semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/psmatrix-public-auth-evidence"
+          python scripts/ga/enforce_public_auth_report.py \
+            --report "$output/public-auth-live-report.json" \
+            --oauth-proof "$output/public-oauth-proof-input.json" \
+            --mtls-proof "$output/public-mtls-proof-input.json" \
+            --release-commit '${{ inputs.release_commit }}' \
+            > "$output/public-auth-enforcement.json"
+          cat "$output/public-auth-enforcement.json"
 
       - name: Sign and verify external authority proofs
         shell: bash
@@ -183,12 +203,12 @@ jobs:
             --public-key "$PSMATRIX_PUBLIC_AUTH_SECRET_ROOT/authority-public.pem" \
             --output "$output/public-mtls.dsse.json"
           python -m psmatrix ga proof-verify \
-            "$output/public-oauth.dsse.json" \
+            --attestation "$output/public-oauth.dsse.json" \
             --type public-oauth \
             --public-key "$PSMATRIX_PUBLIC_AUTH_SECRET_ROOT/authority-public.pem" \
             > "$output/public-oauth-verification.json"
           python -m psmatrix ga proof-verify \
-            "$output/public-mtls.dsse.json" \
+            --attestation "$output/public-mtls.dsse.json" \
             --type public-mtls \
             --public-key "$PSMATRIX_PUBLIC_AUTH_SECRET_ROOT/authority-public.pem" \
             > "$output/public-mtls-verification.json"
@@ -217,6 +237,7 @@ jobs:
               b"BEGIN PRIVATE KEY",
               b"BEGIN RSA PRIVATE KEY",
               b"BEGIN EC PRIVATE KEY",
+              b"BEGIN OPENSSH PRIVATE KEY",
               b"Authorization: Bearer",
           )
           for path in sorted(root.rglob("*")):
