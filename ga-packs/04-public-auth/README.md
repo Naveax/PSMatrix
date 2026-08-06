@@ -4,7 +4,7 @@
 
 Validate the deployed PSMatrix HTTP/MCP service from an external network against public DNS, platform-trusted TLS, OAuth token introspection and a separate direct mTLS endpoint.
 
-Local protocol tests, loopback endpoints, private DNS, self-signed server TLS and reverse-proxy client-certificate headers do not satisfy this pack.
+Loopback/private endpoints, self-signed server TLS, simulated token results and reverse-proxy client-certificate headers do not satisfy this pack.
 
 ## Reproducible deployment preflight
 
@@ -14,15 +14,15 @@ Workflow:
 production-ga-public-auth-deployment-preflight
 ```
 
-Workflow path:
+Path:
 
 ```text
 .github/workflows/ga-public-auth-deployment-preflight.yml
 ```
 
-The deployment preflight checks out the exact release commit and builds the same signed deployment ZIP twice using the Git commit timestamp as `SOURCE_DATE_EPOCH`. The two ZIP files must be byte-for-byte identical and independently verify against the protected deployment-authority public key.
+The workflow checks out the exact release commit and builds the same signed deployment ZIP twice using the commit timestamp as `SOURCE_DATE_EPOCH`. Both ZIP files must be byte-for-byte identical and independently verify after the deployment private key has been removed.
 
-Required release bindings:
+Required bindings:
 
 ```text
 Full 40-character release commit
@@ -31,17 +31,9 @@ SHA-256 of the signed release manifest
 SHA-256 of the exact wheel
 ```
 
-The credential-free deployment kit contains:
+The credential-free kit contains exact OAuth-introspection and mTLS auth configurations, hardened systemd services, an internal OAuth TLS listener, an nginx stream/SNI router, direct byte-level mTLS passthrough to PSMatrix, a wheel digest/version-checking installer, a deterministic manifest and a DSSE deployment attestation.
 
-- exact OAuth-introspection and mTLS auth configurations;
-- separate hardened systemd services on loopback ports 8765 and 8766;
-- an internal OAuth TLS endpoint on 127.0.0.1:9443;
-- an nginx stream/SNI router for the two public hostnames;
-- direct byte-level mTLS passthrough to PSMatrix on port 8766;
-- an installation script that verifies the wheel digest and installed PSMatrix version;
-- a deterministic deployment manifest and DSSE deployment attestation.
-
-The OAuth and mTLS URLs must use distinct hostnames on the same public port. The SNI router sends OAuth traffic to the internal nginx HTTPS listener and mTLS traffic directly to the PSMatrix TLS socket. The kit never contains OAuth credentials, TLS private keys or client certificates.
+OAuth and mTLS use distinct hostnames on the same public port. OAuth traffic is routed to the internal HTTPS proxy; mTLS bytes are routed unchanged to the PSMatrix TLS socket. The archive contains no OAuth credentials, TLS private keys or client certificates.
 
 Protected deployment authority secrets:
 
@@ -50,7 +42,7 @@ PSMATRIX_PUBLIC_AUTH_DEPLOYMENT_PRIVATE_KEY
 PSMATRIX_PUBLIC_AUTH_DEPLOYMENT_PUBLIC_KEY
 ```
 
-The private key is removed before the independent verification stage. A green deployment preflight produces `PASS_PARTIAL`, `ga_eligible=false`; it proves reproducible deployment readiness, not live public behavior.
+A green deployment preflight is `PASS_PARTIAL`, `ga_eligible=false`. It proves reproducible deployment readiness, not live public behavior.
 
 ## External authority workflow
 
@@ -60,19 +52,48 @@ Workflow:
 production-ga-public-auth-external
 ```
 
-Workflow path:
+Path:
 
 ```text
 .github/workflows/ga-public-auth-external.yml
 ```
 
-The job runs from `ubuntu-latest` under the protected GitHub Environment:
+Runner and protected environment:
 
 ```text
+ubuntu-latest
 production-ga-public-auth
 ```
 
-The workflow checks out the exact deployed full 40-character release commit. The external live report records the release commit, exact deployed version, endpoint URLs, public DNS addresses and live server-certificate fingerprints. A protected external-authority Ed25519 key signs separate `public-oauth` and `public-mtls` DSSE proofs that bind the live-report digest.
+The external workflow requires:
+
+```text
+release_commit                 Exact deployed 40-character commit
+expected_version               Exact deployed 2.0.0rcN or 2.0.0 version
+release_manifest_sha256        SHA-256 of the exact signed release manifest
+wheel_sha256                   SHA-256 of the exact deployed wheel
+oauth_url                      Public OAuth MCP URL
+mtls_url                       Separate direct public mTLS MCP URL
+expected_authorization_server  Expected HTTPS authorization server
+required_scope                 Default: psmatrix:mcp
+protocol_version               Default: 2025-06-18
+rate_limit_attempts            32–512; default 160
+```
+
+The probe first produces a live report and unsigned proof inputs. `bind_public_auth_release.py` then validates the exact commit/version and atomically adds the signed release-manifest and wheel digests to the live report. Its final SHA-256 becomes the sole subject of both proof inputs. `enforce_public_auth_report.py` recomputes that digest from disk and verifies all release bindings and negative-control semantics before either proof is signed.
+
+The final Production GA evaluator accepts public-auth proofs only when all of the following match the final signed release:
+
+- validated exact commit;
+- final deployed version `2.0.0`;
+- signed release-manifest SHA-256;
+- wheel SHA-256 present in the signed release inventory;
+- exactly one `public-auth-live-report.json` subject;
+- the same live-report SHA-256 in OAuth and mTLS proofs;
+- separate OAuth and mTLS endpoint URLs;
+- valid live server-certificate SHA-256 values.
+
+An RC workflow run may provide preflight evidence, but a `2.0.0rcN` public proof cannot satisfy the final Production GA gate.
 
 ## Public OAuth endpoint
 
@@ -82,61 +103,24 @@ The OAuth endpoint must be a public HTTPS MCP URL, for example:
 https://mcp.example.com/mcp
 ```
 
-The deployed auth configuration must use `oauth-introspection` or a compatible `hybrid` mode with:
+The deployed auth configuration must use `oauth-introspection` or a compatible `hybrid` mode with an exact public `resource_url`, HTTPS introspection, exact audience, required scope and bounded rate limits.
 
-- `resource_url` exactly equal to the public MCP URL;
-- an HTTPS introspection endpoint;
-- an exact audience value;
-- at least the required `psmatrix:mcp` scope;
-- public protected-resource discovery metadata;
-- bounded rate limits that trigger within the configured external probe request limit.
+The external authority proves:
 
-The authority probe verifies:
+1. globally routable public DNS;
+2. platform-trusted server TLS;
+3. exact `/healthz` version and Streamable HTTP transport;
+4. exact protected-resource discovery metadata;
+5. missing token → HTTP 401;
+6. valid token → MCP session;
+7. wrong audience → HTTP 401;
+8. expired token → HTTP 401;
+9. missing scope → HTTP 401;
+10. exact duplicate request → cached idempotent response;
+11. same request ID with different content → HTTP 400;
+12. bounded rate-limit activation → HTTP 429.
 
-1. public DNS resolves only to globally routable addresses;
-2. the server TLS chain and hostname validate through the runner's platform trust store;
-3. `/healthz` reports the exact expected PSMatrix version and Streamable HTTP transport;
-4. protected-resource discovery reports the exact resource URL, authorization server and required scope;
-5. a missing token returns HTTP 401;
-6. a valid token initializes an MCP session;
-7. wrong-audience, expired and missing-scope tokens each return HTTP 401;
-8. an exact duplicate JSON-RPC request returns the cached response;
-9. the same request ID with different content returns HTTP 400;
-10. a separate valid principal is rate-limited with HTTP 429 within a bounded request count.
-
-Five distinct protected OAuth tokens are required. Their values are never written to logs, proof inputs or artifacts.
-
-## Direct public mTLS endpoint
-
-The mTLS endpoint must be a different public HTTPS MCP URL, for example:
-
-```text
-https://mcp-mtls.example.com/mcp
-```
-
-PSMatrix must terminate TLS directly with `--tls-cert`, `--tls-key` and `--client-ca`, or receive true byte-level TLS passthrough. A proxy that terminates mTLS and forwards only client-certificate headers is not sufficient because `HTTPAuthenticator` requires the real peer certificate from the TLS socket.
-
-The client-CA trust set must:
-
-- trust the current valid client certificate;
-- trust the rotated replacement certificate;
-- reject the revoked certificate;
-- reject a certificate issued by an unrelated CA.
-
-The external probe verifies:
-
-1. public DNS and platform-trusted server TLS;
-2. exact deployed version through `/healthz` using a trusted client certificate;
-3. missing and untrusted client certificates are rejected by TLS or HTTP 401/403;
-4. current and rotated client certificates both initialize real MCP sessions;
-5. the revoked client certificate is rejected;
-6. the direct response exposes the `PSMatrixHTTP` server identity, proving TLS reaches PSMatrix rather than a header-based proxy adaptation.
-
-All four client certificates must be distinct. Certificate fingerprints may appear in evidence; client private keys may not.
-
-## Protected external-proof secrets
-
-OAuth controls:
+Five distinct protected token values are required and are scoped only to the live probe step:
 
 ```text
 PSMATRIX_PUBLIC_AUTH_VALID_TOKEN
@@ -146,7 +130,28 @@ PSMATRIX_PUBLIC_AUTH_MISSING_SCOPE_TOKEN
 PSMATRIX_PUBLIC_AUTH_RATE_TOKEN
 ```
 
-mTLS controls:
+Token values are never written to proof inputs, logs or artifacts.
+
+## Direct public mTLS endpoint
+
+The mTLS endpoint must be a separate public HTTPS MCP URL, for example:
+
+```text
+https://mcp-mtls.example.com/mcp
+```
+
+PSMatrix must terminate TLS directly with `--tls-cert`, `--tls-key` and `--client-ca`, or receive real byte-level TLS passthrough. A proxy that forwards certificate headers is not authoritative.
+
+The external authority proves:
+
+1. public DNS and platform-trusted server TLS;
+2. exact deployed version through `/healthz` with a trusted client certificate;
+3. missing and untrusted certificates are rejected by TLS or HTTP 401/403;
+4. current and rotated certificates both initialize MCP sessions;
+5. the revoked certificate is rejected;
+6. the response exposes `PSMatrixHTTP`, proving direct PSMatrix TLS termination/passthrough.
+
+Four distinct certificate states are required:
 
 ```text
 PSMATRIX_PUBLIC_AUTH_VALID_CLIENT_CERT
@@ -159,31 +164,18 @@ PSMATRIX_PUBLIC_AUTH_UNTRUSTED_CLIENT_CERT
 PSMATRIX_PUBLIC_AUTH_UNTRUSTED_CLIENT_KEY
 ```
 
-External proof authority:
+Protected external proof authority:
 
 ```text
 PSMATRIX_PUBLIC_AUTH_AUTHORITY_PRIVATE_KEY
 PSMATRIX_PUBLIC_AUTH_AUTHORITY_PUBLIC_KEY
 ```
 
-Credentials are materialized only below `RUNNER_TEMP`, mode-restricted, removed on every workflow path and excluded from the uploaded evidence tree. OAuth tokens are scoped only to the live probe step.
-
-## External workflow inputs
-
-```text
-release_commit                 Exact deployed 40-character commit
-expected_version               Exact deployed PSMatrix version
-oauth_url                      Public OAuth MCP URL
-mtls_url                       Separate direct public mTLS MCP URL
-expected_authorization_server  Expected HTTPS authorization server
-required_scope                 Default: psmatrix:mcp
-protocol_version               Default: 2025-06-18
-rate_limit_attempts            32–512; default 160
-```
+Credentials are materialized only under `RUNNER_TEMP`, permission-restricted, removed on every workflow path and excluded from evidence.
 
 ## Evidence
 
-A successful deployment-preflight run uploads:
+Deployment preflight:
 
 ```text
 psmatrix-public-auth-deployment-kit.zip
@@ -195,10 +187,11 @@ reproducibility.json
 preflight-status.json
 ```
 
-A successful external live-proof run uploads:
+External live proof:
 
 ```text
 public-auth-live-report.json
+public-auth-release-binding.json
 public-auth-enforcement.json
 public-oauth-proof-input.json
 public-mtls-proof-input.json
@@ -210,10 +203,8 @@ evidence-inventory.json
 preflight-status.json
 ```
 
-The two signed live proofs satisfy the `public-oauth` and `public-mtls` evidence types only after the external probe and exact semantic enforcer both pass. Deployment readiness and Pack 04 completion do not by themselves make Production GA eligible.
-
-The immutable authority requirements are stored in `authority-contract.json`.
+The immutable requirements are stored in `authority-contract.json`.
 
 ## State
 
-`DEPLOYMENT_KIT_PREFLIGHT_READY_EXTERNAL_PROOF_DEPLOYMENT_PENDING` — the reproducible signed deployment-kit workflow, external live probe, semantic enforcer, protected signing workflow and authority contract are prepared. The workflows are not yet runtime-validated. Public OAuth/mTLS deployment, release digests, protected authority keys, five token controls and four client-certificate states remain prerequisites.
+`DEPLOYMENT_KIT_PREFLIGHT_READY_EXTERNAL_PROOF_DEPLOYMENT_PENDING` — deployment and external-proof workflows, release binder, semantic enforcer, signed-proof evaluator cross-binding, contracts and regression tests are prepared. They are not yet runtime-validated. Public deployment, exact release inputs, protected keys, token controls and certificate states remain prerequisites.
