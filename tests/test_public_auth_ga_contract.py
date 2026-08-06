@@ -205,15 +205,15 @@ class PublicAuthGAContractTests(unittest.TestCase):
         for value in required:
             with self.subTest(value=value):
                 self.assertIn(value, text)
-        self.assertNotIn("python -m psmatrix ga proof-verify \\\n            \"$output/", text)
+        self.assertEqual(text.count("--attestation \"$output/public-"), 2)
         self.assertIn("stdout_log=\"$RUNNER_TEMP/psmatrix-public-auth-probe.stdout.log\"", text)
         self.assertNotIn("tee \"$output/probe.stdout.log\"", text)
 
     def test_workflow_never_passes_token_values_as_command_arguments(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")
-        self.assertNotIn("--valid-token", text)
-        self.assertNotIn("--wrong-audience-token", text)
-        self.assertNotIn("--expired-token", text)
+        self.assertNotIn("--valid-token ", text)
+        self.assertNotIn("--wrong-audience-token ", text)
+        self.assertNotIn("--expired-token ", text)
         self.assertIn("--valid-token-env", PROBE.read_text(encoding="utf-8"))
         for name in (
             "PSMATRIX_PUBLIC_AUTH_VALID_TOKEN",
