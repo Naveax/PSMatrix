@@ -52,12 +52,6 @@ jobs:
     runs-on: ubuntu-latest
     environment: production-ga-public-auth
     timeout-minutes: 30
-    env:
-      PSMATRIX_PUBLIC_AUTH_VALID_TOKEN: ${{ secrets.PSMATRIX_PUBLIC_AUTH_VALID_TOKEN }}
-      PSMATRIX_PUBLIC_AUTH_WRONG_AUDIENCE_TOKEN: ${{ secrets.PSMATRIX_PUBLIC_AUTH_WRONG_AUDIENCE_TOKEN }}
-      PSMATRIX_PUBLIC_AUTH_EXPIRED_TOKEN: ${{ secrets.PSMATRIX_PUBLIC_AUTH_EXPIRED_TOKEN }}
-      PSMATRIX_PUBLIC_AUTH_MISSING_SCOPE_TOKEN: ${{ secrets.PSMATRIX_PUBLIC_AUTH_MISSING_SCOPE_TOKEN }}
-      PSMATRIX_PUBLIC_AUTH_RATE_TOKEN: ${{ secrets.PSMATRIX_PUBLIC_AUTH_RATE_TOKEN }}
 
     steps:
       - name: Check out exact release revision
@@ -88,15 +82,6 @@ jobs:
           attempts='${{ inputs.rate_limit_attempts }}'
           [[ "$attempts" =~ ^[0-9]+$ ]] || { echo 'rate_limit_attempts must be an integer' >&2; exit 1; }
           (( attempts >= 32 && attempts <= 512 )) || { echo 'rate_limit_attempts must be 32-512' >&2; exit 1; }
-          for name in \
-            PSMATRIX_PUBLIC_AUTH_VALID_TOKEN \
-            PSMATRIX_PUBLIC_AUTH_WRONG_AUDIENCE_TOKEN \
-            PSMATRIX_PUBLIC_AUTH_EXPIRED_TOKEN \
-            PSMATRIX_PUBLIC_AUTH_MISSING_SCOPE_TOKEN \
-            PSMATRIX_PUBLIC_AUTH_RATE_TOKEN
-          do
-            [[ -n "${!name:-}" ]] || { echo "protected secret $name is missing" >&2; exit 1; }
-          done
           echo "release_commit=$head"
           echo "expected_version=${{ inputs.expected_version }}"
           echo "runner_environment=$RUNNER_ENVIRONMENT"
@@ -140,8 +125,23 @@ jobs:
 
       - name: Execute external public authentication probe
         shell: bash
+        env:
+          PSMATRIX_PUBLIC_AUTH_VALID_TOKEN: ${{ secrets.PSMATRIX_PUBLIC_AUTH_VALID_TOKEN }}
+          PSMATRIX_PUBLIC_AUTH_WRONG_AUDIENCE_TOKEN: ${{ secrets.PSMATRIX_PUBLIC_AUTH_WRONG_AUDIENCE_TOKEN }}
+          PSMATRIX_PUBLIC_AUTH_EXPIRED_TOKEN: ${{ secrets.PSMATRIX_PUBLIC_AUTH_EXPIRED_TOKEN }}
+          PSMATRIX_PUBLIC_AUTH_MISSING_SCOPE_TOKEN: ${{ secrets.PSMATRIX_PUBLIC_AUTH_MISSING_SCOPE_TOKEN }}
+          PSMATRIX_PUBLIC_AUTH_RATE_TOKEN: ${{ secrets.PSMATRIX_PUBLIC_AUTH_RATE_TOKEN }}
         run: |
           set -euo pipefail
+          for name in \
+            PSMATRIX_PUBLIC_AUTH_VALID_TOKEN \
+            PSMATRIX_PUBLIC_AUTH_WRONG_AUDIENCE_TOKEN \
+            PSMATRIX_PUBLIC_AUTH_EXPIRED_TOKEN \
+            PSMATRIX_PUBLIC_AUTH_MISSING_SCOPE_TOKEN \
+            PSMATRIX_PUBLIC_AUTH_RATE_TOKEN
+          do
+            [[ -n "${!name:-}" ]] || { echo "protected secret $name is missing" >&2; exit 1; }
+          done
           output="$RUNNER_TEMP/psmatrix-public-auth-evidence"
           stdout_log="$RUNNER_TEMP/psmatrix-public-auth-probe.stdout.log"
           stderr_log="$RUNNER_TEMP/psmatrix-public-auth-probe.stderr.log"
