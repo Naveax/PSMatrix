@@ -92,8 +92,8 @@ class WindowsAuthorityControllerBootstrapTests(unittest.TestCase):
     def test_source_preflight_tracks_bootstrap_contract(self) -> None:
         text = SOURCE_WORKFLOW.read_text(encoding="utf-8")
         required = (
+            "ga-packs/03-authoritative-windows/**",
             "scripts/ga/Initialize-PSMatrixWindowsAuthorityLab.ps1",
-            "controller-bootstrap-contract.json",
             "tests/test_windows_authority_controller_bootstrap.py",
             "Parse Windows controller bootstrap script",
             "tests.test_windows_authority_controller_bootstrap",
