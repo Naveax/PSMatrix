@@ -1,0 +1,181 @@
+name: production-ga-pack05-external-workflow-preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/ga-pack05-external-workflow-preflight.yml"
+      - ".github/workflows/ga-external-otlp.yml"
+      - "ga-packs/05-external-otlp/authority-contract.json"
+      - "ga-packs/05-external-otlp/README.md"
+      - "scripts/ga/probe_external_otlp.py"
+      - "scripts/ga/bind_external_otlp_release.py"
+      - "scripts/ga/enforce_external_otlp_report.py"
+      - "tests/test_external_otlp_ga_contract.py"
+      - "tests/test_external_otlp_workflow_contract.py"
+
+concurrency:
+  group: production-ga-pack05-external-workflow-preflight-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  workflow-contract:
+    name: Pack 05 protected workflow and operations authority contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Initialize fail-closed evidence directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/psmatrix-pack05-external-workflow-preflight"
+          rm -rf "$evidence"
+          install -d -m 0700 "$evidence"
+          {
+            echo "PYTHONPATH=$GITHUB_WORKSPACE/src"
+            echo "PSMATRIX_PACK05_WORKFLOW_EVIDENCE=$evidence"
+          } >> "$GITHUB_ENV"
+          {
+            echo "workflow=production-ga-pack05-external-workflow-preflight"
+            echo "runner_environment=${RUNNER_ENVIRONMENT:-unknown}"
+          } > "$evidence/controller-context.txt"
+
+      - name: Check out exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Verify exact source controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            head="$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')"
+            [[ "$head" =~ ^[0-9a-f]{40}$ ]] || { echo 'checked-out head is invalid' >&2; exit 1; }
+            [[ -z "$(git status --porcelain)" ]] || { echo 'source checkout is not clean' >&2; exit 1; }
+            echo "release_commit=$head"
+            echo "python=$(python --version 2>&1)"
+          } 2>&1 | tee "$PSMATRIX_PACK05_WORKFLOW_EVIDENCE/source-controller.log"
+
+      - name: Compile external workflow authority sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            python -m py_compile \
+              scripts/ga/probe_external_otlp.py \
+              scripts/ga/bind_external_otlp_release.py \
+              scripts/ga/enforce_external_otlp_report.py \
+              tests/test_external_otlp_ga_contract.py \
+              tests/test_external_otlp_workflow_contract.py
+            echo "py_compile=PASS"
+          } 2>&1 | tee "$PSMATRIX_PACK05_WORKFLOW_EVIDENCE/py-compile.log"
+
+      - name: Run Pack 05 semantic authority tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_external_otlp_ga_contract \
+            2>&1 | tee "$PSMATRIX_PACK05_WORKFLOW_EVIDENCE/test-semantic-contract.log"
+
+      - name: Run protected workflow contract tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_external_otlp_workflow_contract \
+            2>&1 | tee "$PSMATRIX_PACK05_WORKFLOW_EVIDENCE/test-workflow-contract.log"
+
+      - name: Enforce external workflow preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$PSMATRIX_PACK05_WORKFLOW_EVIDENCE" "$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          commit = sys.argv[2]
+          required = (
+              "controller-context.txt",
+              "source-controller.log",
+              "py-compile.log",
+              "test-semantic-contract.log",
+              "test-workflow-contract.log",
+          )
+          files = []
+          for name in required:
+              path = root / name
+              if not path.is_file() or path.stat().st_size <= 0:
+                  raise SystemExit(f"required workflow evidence is missing: {name}")
+              data = path.read_bytes()
+              files.append({
+                  "name": name,
+                  "sha256": hashlib.sha256(data).hexdigest(),
+                  "size": len(data),
+              })
+          value = {
+              "schema": 1,
+              "kind": "psmatrix.pack05-external-workflow-preflight-status",
+              "status": "PASS",
+              "release_commit": commit,
+              "python": "3.13",
+              "semantic_contract": "PASS",
+              "protected_workflow_contract": "PASS",
+              "external_collector_proven": False,
+              "ga_eligible": False,
+              "files": files,
+          }
+          (root / "preflight-status.json").write_text(
+              json.dumps(value, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(value, indent=2, sort_keys=True))
+          PY
+
+      - name: Record fail-closed workflow state
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          evidence="${PSMATRIX_PACK05_WORKFLOW_EVIDENCE:-$RUNNER_TEMP/psmatrix-pack05-external-workflow-preflight}"
+          install -d -m 0700 "$evidence"
+          python - "$evidence" "${GITHUB_SHA,,}" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          (root / "preflight-failure.json").write_text(
+              json.dumps({
+                  "schema": 1,
+                  "kind": "psmatrix.pack05-external-workflow-preflight-status",
+                  "status": "FAIL",
+                  "release_commit": sys.argv[2],
+                  "external_collector_proven": False,
+                  "ga_eligible": False,
+              }, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload external workflow preflight evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: production-ga-pack05-external-workflow-preflight
+          path: ${{ runner.temp }}/psmatrix-pack05-external-workflow-preflight
+          if-no-files-found: error
+          retention-days: 30
