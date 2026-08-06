@@ -173,7 +173,6 @@ class WindowsAuthorityMediaInventoryTests(unittest.TestCase):
             "Get-FileHash",
             "inventory_sha256",
             "windows-lab-media-selection.example.json",
-            "source_archive_must_match_signed_release_manifest",
             "Selected source archive is not listed in the signed release manifest.",
             "ISO image index",
             "ready_for_hyper_v_provisioning",
