@@ -8,20 +8,44 @@ Produce exact Windows PowerShell 4.0, 5.0 and 5.1 evidence on trusted Hyper-V VM
 
 Workflow: `production-ga-windows-authority-preflight`
 
-The hosted workflow executes the PowerShell 4-compatible `windows-authority-probe.ps1` with real Windows PowerShell 5.1 Desktop and verifies:
+Required workflow input:
 
-- exact runtime identity;
-- Registry write/read/cleanup;
-- Windows Service query;
-- COM activation;
-- WMI query;
-- Event Log query;
-- Scheduled Task query;
-- NTFS ACL roundtrip;
-- certificate-store query;
-- process and Windows environment identity.
+```text
+release_commit  Exact 40-character lowercase commit SHA
+```
 
-A green hosted result is `PASS_PARTIAL`, never authoritative completion. GitHub-hosted runners cannot provide protected Hyper-V reset authority, Windows PowerShell 4.0 or Windows PowerShell 5.0.
+The workflow creates its fail-closed evidence directory before checkout, checks out the supplied exact commit, requires a clean working tree and verifies that the running host is real Windows PowerShell 5.1 with `PSEdition=Desktop` and `powershell.exe` under `PSHOME`.
+
+It then executes the PowerShell 4-compatible `windows-authority-probe.ps1` and requires this exact ordered 12-check set:
+
+```text
+exact-runtime-line
+desktop-process-host
+registry-roundtrip
+service-query
+com-activation
+wmi-query
+event-log-query
+scheduled-task-query
+ntfs-acl-roundtrip
+certificate-store-query
+process-query
+windows-environment
+```
+
+The probe performs explicit Registry parent-key creation, unique leaf-key write/read validation and cleanup. Enforcement recomputes the checked-out probe script SHA-256 and requires it to match the digest recorded inside the probe result. It also binds the result to the exact commit, host-identity document and controller-context document.
+
+Any failure path produces `preflight-failure.json` before the artifact upload step. An early host, checkout, Python or probe failure therefore cannot be hidden by a secondary “no artifact files” error.
+
+A green hosted result is `PASS_PARTIAL`, never authoritative completion. GitHub-hosted runners cannot provide protected Hyper-V reset authority, Windows PowerShell 4.0 or Windows PowerShell 5.0. The output always records:
+
+```text
+authority_level = github-hosted-windows-preflight
+authoritative = false
+ga_eligible = false
+reset_before = UNAVAILABLE_ON_GITHUB_HOSTED_RUNNER
+reset_after = UNAVAILABLE_ON_GITHUB_HOSTED_RUNNER
+```
 
 ## Protected infrastructure preflight
 
@@ -140,4 +164,4 @@ Provisioning remains disabled unless explicitly requested. Existing VM/image sta
 
 ## Current state
 
-`INFRASTRUCTURE_PREFLIGHT_READY_HOSTED_WINDOWS_5_1_PENDING` — the hosted 5.1 and protected infrastructure workflows are ready. The protected authoritative campaign remains blocked until the trusted Hyper-V controller, exact Windows media/WMF images, worker endpoints, image manifests, signed release inventory and protected authority credentials are present.
+`INFRASTRUCTURE_PREFLIGHT_READY_HOSTED_WINDOWS_5_1_PENDING` — the hosted 5.1 workflow is hardened and ready for an exact-commit run. The protected authoritative campaign remains blocked until the trusted Hyper-V controller, exact Windows media/WMF images, worker endpoints, image manifests, signed release inventory and protected authority credentials are present.
