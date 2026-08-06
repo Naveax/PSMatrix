@@ -112,11 +112,19 @@
         "workflow": "production-ga-public-auth-external",
         "workflow_path": ".github/workflows/ga-public-auth-external.yml",
         "probe": "scripts/ga/probe_public_auth.py",
+        "release_binder": "scripts/ga/bind_public_auth_release.py",
         "enforcer": "scripts/ga/enforce_public_auth_report.py",
         "protected_environment": "production-ga-public-auth",
         "runner": "ubuntu-latest",
         "external_runner_required": true,
         "exact_release_commit_required": true,
+        "exact_deployed_version_required": true,
+        "release_manifest_sha256_required": true,
+        "wheel_sha256_required": true,
+        "server_certificate_sha256_required": true,
+        "same_live_report_required": true,
+        "final_evaluator_cross_binding": true,
+        "final_evaluator_version": "2.0.0",
         "oauth_and_mtls_endpoints_separate": true,
         "public_dns_required": true,
         "platform_trusted_tls_required": true,
@@ -126,7 +134,7 @@
         "status": "READY_FOR_DEPLOYMENT"
       },
       "authority_contract": "ga-packs/04-public-auth/authority-contract.json",
-      "remaining": "Run the reproducible deployment preflight after the exact signed release-manifest and wheel digests are available. Deploy the generated separate OAuth and direct-mTLS services, configure five distinct OAuth tokens, four mTLS certificate states and the external authority key, then run production-ga-public-auth-external and verify both signed DSSE proofs."
+      "remaining": "Run the reproducible deployment preflight after the exact signed release-manifest and wheel digests are available. Deploy the generated separate OAuth and direct-mTLS services. Configure five distinct OAuth tokens, four mTLS certificate states and the external authority key. Run production-ga-public-auth-external with the same exact commit, version, manifest digest and wheel digest. Final GA accepts only final 2.0.0 proofs cross-bound to the signed release and the same live report."
     },
     {"id": "05-external-otlp", "state": "PACK_REQUIRED", "ga_eligible": false},
     {"id": "06-independent-review", "state": "READY_FOR_REVIEWER", "ga_eligible": false},
