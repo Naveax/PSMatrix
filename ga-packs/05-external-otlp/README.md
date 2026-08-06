@@ -4,46 +4,105 @@
 
 Prove that a separately operated OpenTelemetry Collector receives PSMatrix metrics through a public authenticated TLS endpoint, survives a real collector restart, and emits operations-authority evidence bound to the exact release.
 
-## Source/evaluator preflight
+## Source preflight
 
 Workflow: `production-ga-pack05-source-preflight`
 
-The source/evaluator preflight is secret-free and validates:
+The secret-free source preflight validates:
 
-- the existing PSMatrix OTLP/HTTP JSON exporter and redacted metric payload;
-- the external probe, release binder and semantic enforcer Python syntax;
+- the PSMatrix OTLP/HTTP JSON exporter and redacted metric payload;
+- external probe, release binder and semantic enforcer syntax;
 - exact `/v1/metrics` routing;
-- unauthenticated `401/403` rejection semantics;
-- authenticated pre-restart and post-restart `2xx` ingestion;
-- collector receipt binding to each payload SHA-256;
+- unauthenticated `401/403` rejection;
+- authenticated pre-restart and post-restart ingestion contracts;
+- collector receipt binding to payload SHA-256;
 - bounded restart recovery with a changed collector instance identity;
 - credential, private-key, source-body and absolute-path absence;
-- exact commit, signed release-manifest, wheel and server-certificate bindings;
 - tampered live-report rejection.
 
 A green source preflight does not prove an external collector exists and cannot complete Pack 05.
 
-## External authority workflow
+## Final evaluator preflight
 
-Planned workflow: `production-ga-external-otlp`
+Workflow: `production-ga-pack05-final-evaluator-preflight`
 
-The protected environment is:
+The evaluator preflight runs the complete GA regression suite plus Pack 05-specific tests. It verifies that a signed external-OTLP proof is accepted only when it contains:
+
+- an exact final `2.0.0` deployed version;
+- the validated full release commit;
+- the signed release-manifest SHA-256;
+- a wheel SHA-256 contained in that signed release;
+- the public server-certificate SHA-256;
+- exactly one `external-otlp-live-report.json` subject;
+- authenticated pre/post-restart `2xx` results;
+- at least two successful exports;
+- collector receipt, restart and privacy assertions;
+- recovery within 300 seconds.
+
+RC proofs may be operationally valid but cannot satisfy the final Production GA evaluator.
+
+## Protected external authority workflow
+
+Workflow: `production-ga-external-otlp`
+
+Protected environment:
 
 ```text
 production-ga-external-otlp
 ```
 
-The external workflow will run on a GitHub-hosted runner and require:
+Required protected secrets:
 
-- public HTTPS OTLP endpoint with exact path `/v1/metrics`;
-- separate public health, ingestion-receipt and restart-control endpoints;
-- protected authentication value supplied only through an environment secret;
-- protected operations-authority Ed25519 key pair;
-- exact release commit, deployed version, signed release-manifest SHA-256 and wheel SHA-256;
-- collector-side receipts for both pre-restart and post-restart payload digests;
-- a real restart where `collector_instance_id` changes and recovery completes within 300 seconds.
+```text
+PSMATRIX_EXTERNAL_OTLP_AUTH_VALUE
+PSMATRIX_EXTERNAL_OTLP_OPERATIONS_PRIVATE_KEY
+PSMATRIX_EXTERNAL_OTLP_OPERATIONS_PUBLIC_KEY
+```
 
-The restart-control endpoint is an external operator interface. PSMatrix does not silently restart or provision the collector.
+Workflow inputs:
+
+```text
+release_commit             Full 40-character deployed commit
+expected_version            2.0.0rcN or 2.0.0
+release_manifest_sha256     Exact signed release-manifest digest
+wheel_sha256                Exact deployed wheel digest
+endpoint                    Public HTTPS /v1/metrics endpoint
+health_url                  Authenticated collector health endpoint
+receipt_url                 Authenticated ingestion-receipt endpoint
+restart_url                 Protected restart-control endpoint
+auth_header_name            Default: Authorization
+recovery_timeout            30-300 seconds; default 300
+poll_interval               1-30 seconds; default 5
+```
+
+The workflow runs from a GitHub-hosted external runner and performs this sequence:
+
+1. validate exact checkout, release digests, URL structure and bounded timing inputs;
+2. prove the collector rejects an unauthenticated OTLP request with `401` or `403`;
+3. obtain the pre-restart collector instance identity;
+4. send an authenticated OTLP metrics payload and verify a collector receipt bound to its SHA-256;
+5. invoke the protected restart-control endpoint;
+6. wait for a different collector instance identity within 300 seconds;
+7. send a second authenticated payload and verify its receipt;
+8. bind the sanitized live report to the exact release commit, manifest and wheel;
+9. enforce restart, privacy, certificate and live-report digest semantics;
+10. sign the proof with the independent operations-authority key and verify the DSSE envelope;
+11. remove authority key files before evidence inventory and artifact upload.
+
+The authentication value is provided only to the probe and exact-secret scan steps. It is never passed as a command-line argument. The operations private key is written only under `RUNNER_TEMP`, removed on every path and excluded from artifacts.
+
+The restart-control endpoint is an external operator interface. PSMatrix does not silently provision or restart the collector.
+
+## External collector contract
+
+The deployment must provide four distinct credential-free public HTTPS URLs:
+
+- `/v1/metrics` ingestion;
+- health response containing `status: PASS` and a bounded `collector_instance_id`;
+- receipt response with `kind: psmatrix.external-otlp-receipt`, the submitted payload SHA-256, collector instance identity and `psmatrix_info` in `metric_names`;
+- restart control accepting the expected current collector instance identity.
+
+All endpoints must resolve only to globally routable addresses and use a platform-trusted TLS chain.
 
 ## Privacy boundary
 
@@ -59,11 +118,11 @@ The signed proof binds only the sanitized `external-otlp-live-report.json` diges
 
 ## Result classes
 
-- Secret-free source/evaluator preflight green: `PASS_PARTIAL`, `ga_eligible=false`.
+- Source or evaluator preflight green: `PASS_PARTIAL`, `ga_eligible=false`.
 - Complete external RC proof: `PASS_PARTIAL`, `ga_eligible=false`.
-- Complete external final `2.0.0` proof cross-bound to the signed release: eligible for the final GA evaluator, but Pack 05 alone never sets product-level GA eligibility.
-- Missing authentication rejection, collector receipt, restart evidence, privacy assertion or release binding: failure/incomplete; never PASS.
+- Complete external final `2.0.0` proof cross-bound to the signed release: compatible with the final GA evaluator, but Pack 05 alone never sets product-level GA eligibility.
+- Missing authentication rejection, collector receipt, restart evidence, privacy assertion or exact release binding: failure/incomplete; never PASS.
 
-## State
+## Current state
 
-`SOURCE_PREFLIGHT_READY_EXTERNAL_DEPLOYMENT_PENDING` — the source/evaluator preflight and fail-closed external proof tools are prepared. The live collector deployment, protected credentials, restart/receipt interfaces, soak evidence and signed operations-authority result remain external prerequisites.
+`FINAL_EVALUATOR_PREFLIGHT_PENDING_EXTERNAL_WORKFLOW_READY` — the source preflight is green, the final evaluator hardening and protected live workflow are implemented, and fresh evaluator CI is required. The live collector deployment, protected secrets, receipt/restart interfaces and signed external operation remain external prerequisites.
