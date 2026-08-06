@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.final-ga-closure-contract",
+  "pack": "07-final-ga",
+  "version": "2.0.0",
+  "entry_conditions": {
+    "required_gate_count": 11,
+    "required_pass_count": 11,
+    "allowed_fail_count": 0,
+    "allowed_incomplete_count": 0,
+    "packs_01_through_06_required": true,
+    "exact_full_commit_required": true,
+    "release_candidate_forbidden": true
+  },
+  "release_inventory": {
+    "signed_release_manifest_required": true,
+    "source_zip_required": true,
+    "source_tar_gz_required": true,
+    "wheel_required": true,
+    "cyclonedx_1_5_sbom_required": true,
+    "sbom_suffix": "-sbom.cdx.json",
+    "sha256sums_required": true,
+    "sha256sums_suffix": "-SHA256SUMS",
+    "sha256sums_must_bind_every_other_release_artifact": true
+  },
+  "validation": {
+    "clean_install_exit_code": 0,
+    "offline_install_exit_code": 0,
+    "source_zip_reproducible": true,
+    "source_tar_gz_reproducible": true,
+    "wheel_reproducible": true,
+    "core_release_signature_valid": true,
+    "distribution_signature_valid": true
+  },
+  "signing": {
+    "protected_environment": "production-ga-final-release",
+    "controller_labels": ["self-hosted", "Linux", "X64", "psmatrix-release"],
+    "final_signer_must_be_distinct_from_evidence_authorities": true,
+    "private_key_in_repository": false,
+    "private_key_in_artifacts": false,
+    "private_key_removed_before_verification": true,
+    "ga_attestation_required": true,
+    "final_closure_attestation_required": true
+  },
+  "outputs": {
+    "evaluation": "production-ga-evaluation.json",
+    "ga_attestation": "psmatrix-2.0.0-production-ga.dsse.json",
+    "closure_attestation": "psmatrix-2.0.0-final-closure.dsse.json",
+    "status": "final-closure-status.json",
+    "verification": "final-closure-verification.json"
+  },
+  "source_preflight": {
+    "workflow": "production-ga-pack07-source-preflight",
+    "workflow_path": ".github/workflows/ga-pack07-source-preflight.yml",
+    "secret_free": true,
+    "can_sign_final_release": false,
+    "ga_eligible": false
+  },
+  "protected_workflow": {
+    "workflow": "production-ga-final-closure",
+    "workflow_path": ".github/workflows/ga-final-closure.yml",
+    "operator": "scripts/ga/final_ga_closure.py",
+    "status": "BLOCKED_UNTIL_ALL_EXTERNAL_EVIDENCE_IS_FINAL"
+  },
+  "completion": {
+    "source_preflight_can_complete_pack": false,
+    "only_verified_final_closure_can_set_ga_eligible": true,
+    "ga_eligible": false
+  }
+}
