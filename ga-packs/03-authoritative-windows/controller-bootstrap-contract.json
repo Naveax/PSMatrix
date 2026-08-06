@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-authority-controller-bootstrap-contract",
+  "pack": "03-authoritative-windows",
+  "authority": {
+    "bootstrap_is_authoritative_evidence": false,
+    "bootstrap_is_ga_eligible": false,
+    "github_hosted_is_authoritative": false
+  },
+  "controller": {
+    "required_os": "Windows",
+    "required_architecture": "X64",
+    "administrator_required": true,
+    "hardware_virtualization_required": true,
+    "hyper_v_required": true,
+    "vmms_required": true,
+    "required_hyper_v_commands": [
+      "Get-VM",
+      "Get-VMHost",
+      "Get-VMSnapshot",
+      "Restore-VMSnapshot",
+      "Checkpoint-VM"
+    ],
+    "required_runner_labels": [
+      "self-hosted",
+      "Windows",
+      "X64",
+      "psmatrix-hyperv"
+    ],
+    "protected_environment": "production-ga-windows-lab"
+  },
+  "layout": {
+    "required_directories": [
+      "release",
+      "config",
+      "trust-home"
+    ],
+    "template_suffix": ".example.json",
+    "templates_are_evidence": false,
+    "templates_must_not_use_validator_filenames": true
+  },
+  "required_runtime_ids": [
+    "windows-powershell-4.0",
+    "windows-powershell-5.0",
+    "windows-powershell-5.1"
+  ],
+  "completion": {
+    "controller_bootstrap_status": "PASS_PARTIAL",
+    "infrastructure_preflight_required": true,
+    "authoritative_campaign_required": true,
+    "ga_eligible": false
+  }
+}
