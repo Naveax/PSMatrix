@@ -14,6 +14,7 @@ on:
       - "scripts/ga/Initialize-PSMatrixWindowsAuthorityLab.ps1"
       - "scripts/ga/Get-PSMatrixWindowsAuthorityInputPlan.ps1"
       - "scripts/ga/Get-PSMatrixWindowsAuthorityMediaInventory.ps1"
+      - "scripts/ga/New-PSMatrixWindowsAuthorityMediaManifest.ps1"
       - "scripts/ga/Invoke-PSMatrixAuthoritativeWindowsGA.ps1"
       - "tests/test_windows_authority_ga_contract.py"
       - "tests/test_windows_authority_controller_bootstrap.py"
@@ -96,7 +97,8 @@ jobs:
           $scripts = @(
               'scripts/ga/Initialize-PSMatrixWindowsAuthorityLab.ps1',
               'scripts/ga/Get-PSMatrixWindowsAuthorityInputPlan.ps1',
-              'scripts/ga/Get-PSMatrixWindowsAuthorityMediaInventory.ps1'
+              'scripts/ga/Get-PSMatrixWindowsAuthorityMediaInventory.ps1',
+              'scripts/ga/New-PSMatrixWindowsAuthorityMediaManifest.ps1'
           )
           foreach ($relative in $scripts) {
               $tokens = $null
@@ -167,6 +169,8 @@ jobs:
               'input_provisioning_powershell_parse': 'PASS',
               'media_inventory_contract': 'PASS',
               'media_inventory_powershell_parse': 'PASS',
+              'media_manifest_contract': 'PASS',
+              'media_manifest_powershell_parse': 'PASS',
               'infrastructure_workflow_contract': 'PASS',
               'authoritative_workflow_contract': 'PASS',
               'real_windows_executed': False,
