@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-authority-media-manifest-contract",
+  "pack": "03-authoritative-windows",
+  "mode": "reviewed-selection-materialization",
+  "inventory_kind": "psmatrix.windows-authority-media-inventory",
+  "selection_kind": "psmatrix.windows-authority-media-selection",
+  "manifest_kind": "psmatrix.windows-authority-lab-media",
+  "required_roles": [
+    "windows-server-2012-r2-iso",
+    "windows-server-2016-iso",
+    "wmf-5.0-offline-package",
+    "offline-python-x64-installer",
+    "windows-workers-package",
+    "controller-credential-bundle",
+    "worker-signing-bundle"
+  ],
+  "required_release_roles": [
+    "source-archive",
+    "windows-workers-package",
+    "windows-certification-kit",
+    "windows-provisioning-kit",
+    "signed-release-manifest"
+  ],
+  "iso_roles": [
+    "windows-server-2012-r2-iso",
+    "windows-server-2016-iso"
+  ],
+  "selection": {
+    "inventory_sha256_must_match": true,
+    "path_must_exist": true,
+    "path_must_match_inventory_candidate": true,
+    "role_must_match_inventory_classification": true,
+    "size_must_match": true,
+    "sha256_must_match": true,
+    "exactly_one_selection_per_role": true,
+    "iso_image_index_must_exist_in_inventory": true,
+    "iso_metadata_must_match_inventory": true,
+    "source_archive_must_match_signed_release_manifest": true,
+    "operator_review_is_required": true,
+    "placeholder_values_are_forbidden": true
+  },
+  "safety": {
+    "downloads_files": false,
+    "opens_secret_bundles": false,
+    "creates_virtual_machines": false,
+    "creates_checkpoints": false,
+    "writes_validator_input_files": false,
+    "writes_final_manifest_only_when_complete": true,
+    "atomic_final_manifest_write": true,
+    "authoritative": false,
+    "ga_eligible": false
+  },
+  "completion": {
+    "manifest_is_provisioning_input": true,
+    "manifest_is_authoritative_evidence": false,
+    "manifest_is_ga_eligible": false
+  }
+}
