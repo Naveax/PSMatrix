@@ -1,0 +1,203 @@
+name: production-ga-pack07-source-preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/ga-pack07-source-preflight.yml"
+      - ".github/workflows/ga-final-closure.yml"
+      - "ga-packs/07-final-ga/**"
+      - "scripts/ga/final_ga_closure.py"
+      - "src/psmatrix/ga.py"
+      - "src/psmatrix/signing.py"
+      - "tests/test_ga.py"
+      - "tests/test_final_ga_closure_contract.py"
+
+concurrency:
+  group: production-ga-pack07-source-preflight-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  final-closure-source:
+    name: Pack 07 final closure operator and protected workflow
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Initialize fail-closed evidence directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/psmatrix-pack07-source-preflight"
+          rm -rf "$evidence"
+          install -d -m 0700 "$evidence"
+          {
+            echo "PYTHONPATH=$GITHUB_WORKSPACE/src"
+            echo "PSMATRIX_PACK07_EVIDENCE=$evidence"
+          } >> "$GITHUB_ENV"
+          {
+            echo "workflow=production-ga-pack07-source-preflight"
+            echo "runner_environment=${RUNNER_ENVIRONMENT:-unknown}"
+            echo "python=$(python --version 2>&1)"
+          } > "$evidence/controller-context.txt"
+
+      - name: Verify exact source controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            head="$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')"
+            [[ "$head" =~ ^[0-9a-f]{40}$ ]] || { echo 'checked-out head is invalid' >&2; exit 1; }
+            [[ -z "$(git status --porcelain)" ]] || { echo 'source checkout is not clean' >&2; exit 1; }
+            python - <<'PY'
+          import json
+          import tomllib
+          from pathlib import Path
+          import psmatrix
+
+          root = Path.cwd().resolve()
+          source = Path(psmatrix.__file__).resolve()
+          source.relative_to((root / 'src' / 'psmatrix').resolve())
+          with Path('pyproject.toml').open('rb') as handle:
+              project_version = str(tomllib.load(handle)['project']['version'])
+          if psmatrix.__version__ != project_version:
+              raise SystemExit('source package version mismatch')
+          print(json.dumps({
+              'status': 'PASS',
+              'source_import': 'exact-checkout',
+              'version': project_version,
+          }, indent=2, sort_keys=True))
+          PY
+            echo "release_commit=$head"
+          } 2>&1 | tee "$PSMATRIX_PACK07_EVIDENCE/source-controller.log"
+
+      - name: Compile final closure sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            python -m py_compile \
+              scripts/ga/final_ga_closure.py \
+              tests/test_final_ga_closure_contract.py
+            echo "py_compile=PASS"
+          } 2>&1 | tee "$PSMATRIX_PACK07_EVIDENCE/py-compile.log"
+
+      - name: Run final closure contract tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_final_ga_closure_contract \
+            2>&1 | tee "$PSMATRIX_PACK07_EVIDENCE/test-final-closure.log"
+
+      - name: Run complete GA evaluator regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_ga \
+            2>&1 | tee "$PSMATRIX_PACK07_EVIDENCE/test-ga.log"
+
+      - name: Enforce Pack 07 source preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$PSMATRIX_PACK07_EVIDENCE" "$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')" <<'PY'
+          import hashlib
+          import json
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          commit = sys.argv[2]
+          required = (
+              'controller-context.txt',
+              'source-controller.log',
+              'py-compile.log',
+              'test-final-closure.log',
+              'test-ga.log',
+          )
+          files = []
+          for name in required:
+              path = root / name
+              if not path.is_file() or path.stat().st_size <= 0:
+                  raise SystemExit(f'required Pack 07 evidence is missing: {name}')
+              data = path.read_bytes()
+              files.append({
+                  'name': name,
+                  'sha256': hashlib.sha256(data).hexdigest(),
+                  'size': len(data),
+              })
+          with Path('pyproject.toml').open('rb') as handle:
+              version = str(tomllib.load(handle)['project']['version'])
+          value = {
+              'schema': 1,
+              'kind': 'psmatrix.pack07-source-preflight-status',
+              'status': 'PASS',
+              'release_commit': commit,
+              'source_version': version,
+              'required_gate_count': 11,
+              'final_closure_operator': 'PASS',
+              'protected_workflow_contract': 'PASS',
+              'existing_ga_regression': 'PASS',
+              'external_evidence_complete': False,
+              'final_signing_performed': False,
+              'production_ga': 'BLOCKED',
+              'ga_eligible': False,
+              'files': files,
+          }
+          (root / 'preflight-status.json').write_text(
+              json.dumps(value, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
+          print(json.dumps(value, indent=2, sort_keys=True))
+          PY
+
+      - name: Record fail-closed Pack 07 state
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          evidence="${PSMATRIX_PACK07_EVIDENCE:-$RUNNER_TEMP/psmatrix-pack07-source-preflight}"
+          install -d -m 0700 "$evidence"
+          python - "$evidence" "${GITHUB_SHA,,}" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          (root / 'preflight-failure.json').write_text(
+              json.dumps({
+                  'schema': 1,
+                  'kind': 'psmatrix.pack07-source-preflight-status',
+                  'status': 'FAIL',
+                  'release_commit': sys.argv[2],
+                  'external_evidence_complete': False,
+                  'final_signing_performed': False,
+                  'production_ga': 'BLOCKED',
+                  'ga_eligible': False,
+              }, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
+          PY
+
+      - name: Upload Pack 07 source evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: production-ga-pack07-source-preflight
+          path: ${{ runner.temp }}/psmatrix-pack07-source-preflight
+          if-no-files-found: error
+          retention-days: 30
