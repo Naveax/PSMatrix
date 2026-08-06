@@ -35,9 +35,17 @@
     "note": "Deployment readiness cannot replace the external live OAuth and mTLS proofs."
   },
   "release_binding": {
+    "binder": "scripts/ga/bind_public_auth_release.py",
     "exact_full_commit_required": true,
     "exact_deployed_version_required": true,
+    "signed_release_manifest_sha256_required": true,
+    "exact_release_wheel_sha256_required": true,
+    "server_certificate_sha256_required": true,
     "live_report_digest_signed": true,
+    "same_live_report_required_for_oauth_and_mtls": true,
+    "separate_endpoint_urls_required": true,
+    "final_evaluator_cross_binding_required": true,
+    "final_evaluator_version": "2.0.0",
     "oauth_proof_type": "public-oauth",
     "mtls_proof_type": "public-mtls"
   },
@@ -109,6 +117,7 @@
     "deployment_verification": "verification-first.json",
     "deployment_reproducibility": "reproducibility.json",
     "live_report": "public-auth-live-report.json",
+    "release_binding": "public-auth-release-binding.json",
     "enforcement": "public-auth-enforcement.json",
     "oauth_signed_proof": "public-oauth.dsse.json",
     "mtls_signed_proof": "public-mtls.dsse.json",
@@ -120,6 +129,7 @@
     "oauth_required_status": "PASS",
     "mtls_required_status": "PASS",
     "signed_proofs_required": 2,
+    "final_release_cross_binding_required": true,
     "ga_eligible": false,
     "note": "Pack proof completion supplies two mandatory GA evidence gates but does not by itself open Production GA."
   }
