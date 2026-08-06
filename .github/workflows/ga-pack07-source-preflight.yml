@@ -1,5 +1,9 @@
 name: production-ga-pack07-source-preflight
 
+# Source-preflight invariants; this workflow never supplies final external evidence.
+# external_evidence_complete: false
+# ga_eligible: false
+
 on:
   workflow_dispatch:
   push:
