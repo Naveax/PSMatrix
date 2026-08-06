@@ -89,8 +89,25 @@
     },
     {
       "id": "04-public-auth",
-      "state": "EXTERNAL_PROOF_WORKFLOW_READY_DEPLOYMENT_PENDING",
+      "state": "DEPLOYMENT_KIT_PREFLIGHT_READY_EXTERNAL_PROOF_DEPLOYMENT_PENDING",
       "ga_eligible": false,
+      "deployment_preflight": {
+        "workflow": "production-ga-public-auth-deployment-preflight",
+        "workflow_path": ".github/workflows/ga-public-auth-deployment-preflight.yml",
+        "builder": "scripts/ga/public_auth_deployment_kit.py",
+        "protected_environment": "production-ga-public-auth",
+        "runner": "ubuntu-latest",
+        "exact_release_commit_required": true,
+        "exact_version_required": true,
+        "release_manifest_sha256_required": true,
+        "wheel_sha256_required": true,
+        "double_build_reproducibility_required": true,
+        "signed_deployment_attestation_required": true,
+        "credential_free_archive_required": true,
+        "private_key_removed_before_verification": true,
+        "ga_eligible": false,
+        "status": "READY_FOR_RELEASE_INPUTS"
+      },
       "external_workflow": {
         "workflow": "production-ga-public-auth-external",
         "workflow_path": ".github/workflows/ga-public-auth-external.yml",
@@ -109,7 +126,7 @@
         "status": "READY_FOR_DEPLOYMENT"
       },
       "authority_contract": "ga-packs/04-public-auth/authority-contract.json",
-      "remaining": "Deploy separate public OAuth and direct mTLS MCP endpoints for the exact release commit; configure the protected five-token OAuth controls, four distinct mTLS certificate states and external authority key; then run production-ga-public-auth-external and verify both signed DSSE proofs."
+      "remaining": "Run the reproducible deployment preflight after the exact signed release-manifest and wheel digests are available. Deploy the generated separate OAuth and direct-mTLS services, configure five distinct OAuth tokens, four mTLS certificate states and the external authority key, then run production-ga-public-auth-external and verify both signed DSSE proofs."
     },
     {"id": "05-external-otlp", "state": "PACK_REQUIRED", "ga_eligible": false},
     {"id": "06-independent-review", "state": "READY_FOR_REVIEWER", "ga_eligible": false},
