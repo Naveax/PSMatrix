@@ -1,0 +1,165 @@
+name: production-ga-pack04-source-preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/ga-pack04-source-preflight.yml"
+      - ".github/workflows/ga-public-auth-deployment-preflight.yml"
+      - ".github/workflows/ga-public-auth-external.yml"
+      - "ga-packs/04-public-auth/**"
+      - "scripts/ga/bind_public_auth_release.py"
+      - "scripts/ga/enforce_public_auth_report.py"
+      - "scripts/ga/probe_public_auth.py"
+      - "scripts/ga/public_auth_deployment_kit.py"
+      - "src/psmatrix/ga.py"
+      - "tests/test_ga.py"
+      - "tests/test_public_auth_ga_contract.py"
+      - "tests/test_public_auth_deployment_kit.py"
+
+concurrency:
+  group: production-ga-pack04-source-preflight-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  source-preflight:
+    name: Pack 04 source, deployment and GA evaluator
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Verify source controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          head="$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')"
+          [[ "$head" =~ ^[0-9a-f]{40}$ ]] || { echo 'checked-out head is invalid' >&2; exit 1; }
+          [[ -z "$(git status --porcelain)" ]] || { echo 'source checkout is not clean' >&2; exit 1; }
+          echo "release_commit=$head"
+          echo "python=$(python --version 2>&1)"
+
+      - name: Install exact source package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-deps --no-build-isolation .
+          installed="$(python -c 'import psmatrix; print(psmatrix.__version__)')"
+          expected="$(python -c 'import pathlib, re; text=pathlib.Path("pyproject.toml").read_text(); print(re.search(r"^version = \"([^\"]+)\"$", text, re.M).group(1))')"
+          [[ "$installed" == "$expected" ]] || { echo "installed version mismatch: $installed != $expected" >&2; exit 1; }
+          echo "installed_version=$installed"
+
+      - name: Compile Pack 04 Python sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/psmatrix-pack04-source-preflight"
+          rm -rf "$evidence"
+          install -d -m 0700 "$evidence"
+          python -m py_compile \
+            scripts/ga/probe_public_auth.py \
+            scripts/ga/bind_public_auth_release.py \
+            scripts/ga/enforce_public_auth_report.py \
+            scripts/ga/public_auth_deployment_kit.py \
+            src/psmatrix/ga.py \
+            tests/test_ga.py \
+            tests/test_public_auth_ga_contract.py \
+            tests/test_public_auth_deployment_kit.py \
+            2>&1 | tee "$evidence/py-compile.log"
+
+      - name: Run final GA evaluator tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/psmatrix-pack04-source-preflight"
+          python -m unittest -v tests.test_ga \
+            2>&1 | tee "$evidence/test-ga.log"
+
+      - name: Run Pack 04 authority contract tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/psmatrix-pack04-source-preflight"
+          python -m unittest -v tests.test_public_auth_ga_contract \
+            2>&1 | tee "$evidence/test-public-auth-ga-contract.log"
+
+      - name: Run deployment kit functional tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/psmatrix-pack04-source-preflight"
+          python -m unittest -v tests.test_public_auth_deployment_kit \
+            2>&1 | tee "$evidence/test-public-auth-deployment-kit.log"
+
+      - name: Enforce Pack 04 source preflight result
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/psmatrix-pack04-source-preflight"
+          python - "$evidence" "$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          commit = sys.argv[2]
+          required = (
+              "py-compile.log",
+              "test-ga.log",
+              "test-public-auth-ga-contract.log",
+              "test-public-auth-deployment-kit.log",
+          )
+          files = []
+          for name in required:
+              path = root / name
+              if not path.is_file() or path.stat().st_size <= 0:
+                  raise SystemExit(f"required Pack 04 evidence is missing: {name}")
+              data = path.read_bytes()
+              files.append({
+                  "name": name,
+                  "sha256": hashlib.sha256(data).hexdigest(),
+                  "size": len(data),
+              })
+          value = {
+              "schema": 1,
+              "kind": "psmatrix.pack04-source-preflight-status",
+              "status": "PASS",
+              "release_commit": commit,
+              "python": "3.13",
+              "compiled": True,
+              "ga_evaluator_tests": "PASS",
+              "authority_contract_tests": "PASS",
+              "deployment_kit_tests": "PASS",
+              "ga_eligible": False,
+              "files": files,
+          }
+          (root / "preflight-status.json").write_text(
+              json.dumps(value, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(value, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload Pack 04 source preflight evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: production-ga-pack04-source-preflight
+          path: ${{ runner.temp }}/psmatrix-pack04-source-preflight
+          if-no-files-found: error
+          retention-days: 30
