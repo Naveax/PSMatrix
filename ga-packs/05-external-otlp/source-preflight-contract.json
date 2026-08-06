@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.pack05-source-preflight-contract",
+  "pack": "05-external-otlp",
+  "workflow": "production-ga-pack05-source-preflight",
+  "workflow_path": ".github/workflows/ga-pack05-source-preflight.yml",
+  "runner": "ubuntu-latest",
+  "python": "3.13",
+  "secret_free": true,
+  "required_compilation_targets": [
+    "scripts/ga/probe_external_otlp.py",
+    "scripts/ga/bind_external_otlp_release.py",
+    "scripts/ga/enforce_external_otlp_report.py",
+    "src/psmatrix/observability.py",
+    "src/psmatrix/ga.py",
+    "tests/test_observability.py",
+    "tests/test_external_otlp_ga_contract.py"
+  ],
+  "required_test_modules": [
+    "tests.test_observability",
+    "tests.test_external_otlp_ga_contract"
+  ],
+  "required_assertions": [
+    "otlp-http-json-export",
+    "redacted-metric-payload",
+    "public-https-v1-metrics-contract",
+    "unauthenticated-401-or-403",
+    "authenticated-pre-restart-ingestion",
+    "collector-receipt-payload-binding",
+    "collector-instance-change",
+    "bounded-restart-recovery",
+    "authenticated-post-restart-ingestion",
+    "exact-release-binding",
+    "tampered-live-report-rejected",
+    "credential-and-source-material-absent"
+  ],
+  "result": {
+    "required_status": "PASS",
+    "external_collector_proven": false,
+    "ga_eligible": false,
+    "note": "Source preflight validates the Pack 05 code and evidence contract; it cannot replace a live external collector campaign."
+  }
+}
