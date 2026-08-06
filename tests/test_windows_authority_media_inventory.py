@@ -9,6 +9,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "ga" / "Get-PSMatrixWindowsAuthorityMediaInventory.ps1"
 CONTRACT = ROOT / "ga-packs" / "03-authoritative-windows" / "media-inventory-contract.json"
+MANIFEST_SCRIPT = ROOT / "scripts" / "ga" / "New-PSMatrixWindowsAuthorityMediaManifest.ps1"
+MANIFEST_CONTRACT = ROOT / "ga-packs" / "03-authoritative-windows" / "media-manifest-contract.json"
 SOURCE_WORKFLOW = ROOT / ".github" / "workflows" / "ga-pack03-windows-source-preflight.yml"
 
 
@@ -137,10 +139,116 @@ class WindowsAuthorityMediaInventoryTests(unittest.TestCase):
             self.assertFalse(report["ga_eligible"])
             self.assertFalse(report["ready_for_media_manifest"])
 
+    def test_manifest_contract_freezes_reviewed_selection_boundary(self) -> None:
+        value = json.loads(MANIFEST_CONTRACT.read_text(encoding="utf-8"))
+        self.assertEqual(value["schema"], 1)
+        self.assertEqual(
+            value["kind"],
+            "psmatrix.windows-authority-media-manifest-contract",
+        )
+        self.assertEqual(value["mode"], "reviewed-selection-materialization")
+        self.assertEqual(
+            value["manifest_kind"],
+            "psmatrix.windows-authority-lab-media",
+        )
+        self.assertTrue(value["selection"]["inventory_sha256_must_match"])
+        self.assertTrue(value["selection"]["iso_metadata_must_match_inventory"])
+        self.assertTrue(
+            value["selection"]["source_archive_must_match_signed_release_manifest"]
+        )
+        self.assertTrue(value["selection"]["placeholder_values_are_forbidden"])
+        self.assertFalse(value["safety"]["downloads_files"])
+        self.assertFalse(value["safety"]["opens_secret_bundles"])
+        self.assertFalse(value["safety"]["creates_virtual_machines"])
+        self.assertFalse(value["safety"]["creates_checkpoints"])
+        self.assertFalse(value["safety"]["writes_validator_input_files"])
+        self.assertTrue(value["safety"]["atomic_final_manifest_write"])
+        self.assertFalse(value["safety"]["authoritative"])
+        self.assertFalse(value["safety"]["ga_eligible"])
+
+    def test_manifest_materializer_is_fail_closed(self) -> None:
+        text = MANIFEST_SCRIPT.read_text(encoding="utf-8")
+        required = (
+            "Write-Utf8NoBomAtomic",
+            "Get-FileHash",
+            "inventory_sha256",
+            "windows-lab-media-selection.example.json",
+            "source_archive_must_match_signed_release_manifest",
+            "Selected source archive is not listed in the signed release manifest.",
+            "ISO image index",
+            "ready_for_hyper_v_provisioning",
+            "if ($readyForMediaManifest)",
+            "final_manifest_written = $finalManifestWritten",
+            "creates_virtual_machines = $false",
+            "creates_checkpoints = $false",
+            "opens_secret_bundles = $false",
+            "writes_validator_inputs = $false",
+            "authoritative = $false",
+            "ga_eligible = $false",
+        )
+        for value in required:
+            with self.subTest(value=value):
+                self.assertIn(value, text)
+
+        forbidden = (
+            "Invoke-WebRequest",
+            "Start-BitsTransfer",
+            "Mount-DiskImage",
+            "Dismount-DiskImage",
+            "New-VM",
+            "Remove-VM",
+            "Start-VM",
+            "Stop-VM",
+            "Checkpoint-VM",
+            "Restore-VMSnapshot",
+            "New-VHD",
+            "Expand-Archive",
+            "Invoke-Expression",
+            "authoritative = $true",
+            "ga_eligible = $true",
+        )
+        for value in forbidden:
+            with self.subTest(value=value):
+                self.assertNotIn(value, text)
+
+    @unittest.skipUnless(shutil.which("pwsh"), "pwsh is required for parser validation")
+    def test_manifest_materializer_parses(self) -> None:
+        pwsh = shutil.which("pwsh")
+        self.assertIsNotNone(pwsh)
+        command = (
+            "$tokens = $null; $errors = $null; "
+            "[void][System.Management.Automation.Language.Parser]::ParseFile("
+            "$args[0], [ref]$tokens, [ref]$errors); "
+            "if ($errors.Count -ne 0) { "
+            "$errors | ForEach-Object { Write-Error $_.Message }; exit 1 }; "
+            "Write-Output 'powershell_parse=PASS'"
+        )
+        result = subprocess.run(
+            [
+                str(pwsh),
+                "-NoLogo",
+                "-NoProfile",
+                "-Command",
+                command,
+                str(MANIFEST_SCRIPT),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+        self.assertIn("powershell_parse=PASS", result.stdout)
+
     def test_source_preflight_tracks_media_inventory(self) -> None:
         text = SOURCE_WORKFLOW.read_text(encoding="utf-8")
         required = (
             "scripts/ga/Get-PSMatrixWindowsAuthorityMediaInventory.ps1",
+            "scripts/ga/New-PSMatrixWindowsAuthorityMediaManifest.ps1",
             "tests/test_windows_authority_media_inventory.py",
             "Parse Windows authority PowerShell scripts",
             "tests.test_windows_authority_media_inventory",
