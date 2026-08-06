@@ -1,0 +1,485 @@
+name: production-ga-external-otlp
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_commit:
+        description: Exact full 40-character deployed release commit
+        required: true
+        type: string
+      expected_version:
+        description: Exact deployed PSMatrix version, 2.0.0rcN or 2.0.0
+        required: true
+        type: string
+      release_manifest_sha256:
+        description: SHA-256 of the exact signed release manifest
+        required: true
+        type: string
+      wheel_sha256:
+        description: SHA-256 of the exact deployed PSMatrix wheel
+        required: true
+        type: string
+      endpoint:
+        description: Public authenticated OTLP/HTTP endpoint ending in /v1/metrics
+        required: true
+        type: string
+      health_url:
+        description: Public authenticated collector health endpoint
+        required: true
+        type: string
+      receipt_url:
+        description: Public authenticated collector receipt endpoint
+        required: true
+        type: string
+      restart_url:
+        description: Protected collector restart-control endpoint
+        required: true
+        type: string
+      auth_header_name:
+        description: Authentication header name
+        required: true
+        default: Authorization
+        type: string
+      recovery_timeout:
+        description: Maximum collector recovery time in seconds, 30-300
+        required: true
+        default: "300"
+        type: string
+      poll_interval:
+        description: Collector health polling interval in seconds, 1-30
+        required: true
+        default: "5"
+        type: string
+
+concurrency:
+  group: production-ga-external-otlp
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  external-otlp:
+    name: External authenticated OTLP ingestion and restart recovery
+    runs-on: ubuntu-latest
+    environment: production-ga-external-otlp
+    timeout-minutes: 20
+
+    steps:
+      - name: Initialize fail-closed evidence directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/psmatrix-external-otlp-evidence"
+          secret_root="$RUNNER_TEMP/psmatrix-external-otlp-secrets"
+          rm -rf "$evidence" "$secret_root"
+          install -d -m 0700 "$evidence" "$secret_root"
+          {
+            echo "PSMATRIX_EXTERNAL_OTLP_EVIDENCE=$evidence"
+            echo "PSMATRIX_EXTERNAL_OTLP_SECRET_ROOT=$secret_root"
+          } >> "$GITHUB_ENV"
+          {
+            echo "workflow=production-ga-external-otlp"
+            echo "runner_environment=${RUNNER_ENVIRONMENT:-unknown}"
+          } > "$evidence/controller-context.txt"
+
+      - name: Check out exact release revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.release_commit }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Validate exact release and external endpoint inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$GITHUB_WORKSPACE/src"
+          python - \
+            '${{ inputs.release_commit }}' \
+            '${{ inputs.expected_version }}' \
+            '${{ inputs.release_manifest_sha256 }}' \
+            '${{ inputs.wheel_sha256 }}' \
+            '${{ inputs.endpoint }}' \
+            '${{ inputs.health_url }}' \
+            '${{ inputs.receipt_url }}' \
+            '${{ inputs.restart_url }}' \
+            '${{ inputs.auth_header_name }}' \
+            '${{ inputs.recovery_timeout }}' \
+            '${{ inputs.poll_interval }}' <<'PY' \
+            2>&1 | tee "$PSMATRIX_EXTERNAL_OTLP_EVIDENCE/input-validation.log"
+          import json
+          import re
+          import subprocess
+          import sys
+          from urllib.parse import urlsplit
+
+          (
+              commit,
+              version,
+              manifest_digest,
+              wheel_digest,
+              endpoint,
+              health_url,
+              receipt_url,
+              restart_url,
+              auth_header,
+              recovery_raw,
+              poll_raw,
+          ) = sys.argv[1:]
+          commit = commit.lower()
+          manifest_digest = manifest_digest.lower()
+          wheel_digest = wheel_digest.lower()
+          if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+              raise SystemExit("release_commit must be a full Git SHA")
+          if re.fullmatch(r"2\.0\.0(?:rc[0-9]+)?", version) is None:
+              raise SystemExit("expected_version must be 2.0.0 or 2.0.0rcN")
+          for value, label in (
+              (manifest_digest, "release_manifest_sha256"),
+              (wheel_digest, "wheel_sha256"),
+          ):
+              if re.fullmatch(r"[0-9a-f]{64}", value) is None:
+                  raise SystemExit(f"{label} is invalid")
+          head = subprocess.check_output(
+              ["git", "rev-parse", "HEAD"], text=True
+          ).strip().lower()
+          if head != commit:
+              raise SystemExit(f"checked out {head} instead of {commit}")
+          if subprocess.check_output(
+              ["git", "status", "--porcelain"], text=True
+          ).strip():
+              raise SystemExit("source checkout is not clean")
+          if not re.fullmatch(r"[A-Za-z0-9-]{1,64}", auth_header):
+              raise SystemExit("auth_header_name is invalid")
+          recovery = int(recovery_raw)
+          poll = float(poll_raw)
+          if not 30 <= recovery <= 300:
+              raise SystemExit("recovery_timeout must be 30-300")
+          if not 1 <= poll <= 30:
+              raise SystemExit("poll_interval must be 1-30")
+          urls = {
+              "endpoint": endpoint,
+              "health_url": health_url,
+              "receipt_url": receipt_url,
+              "restart_url": restart_url,
+          }
+          for label, value in urls.items():
+              parsed = urlsplit(value)
+              if (
+                  parsed.scheme != "https"
+                  or not parsed.hostname
+                  or parsed.username
+                  or parsed.password
+                  or parsed.query
+                  or parsed.fragment
+              ):
+                  raise SystemExit(f"{label} must be credential-free public HTTPS")
+          if urlsplit(endpoint).path != "/v1/metrics":
+              raise SystemExit("endpoint path must be exactly /v1/metrics")
+          if len(set(urls.values())) != len(urls):
+              raise SystemExit("OTLP, health, receipt and restart URLs must be distinct")
+          print(json.dumps({
+              "status": "PASS",
+              "release_commit": commit,
+              "expected_version": version,
+              "release_manifest_sha256": manifest_digest,
+              "release_wheel_sha256": wheel_digest,
+              "runner_environment": __import__("os").environ.get("RUNNER_ENVIRONMENT"),
+              "endpoint_paths": {
+                  key: urlsplit(value).path for key, value in urls.items()
+              },
+              "recovery_timeout": recovery,
+              "poll_interval": poll,
+          }, indent=2, sort_keys=True))
+          PY
+          [[ "${RUNNER_ENVIRONMENT:-}" == "github-hosted" ]] || {
+            echo "external OTLP authority must run from a GitHub-hosted runner" >&2
+            exit 1
+          }
+          {
+            echo "PYTHONPATH=$GITHUB_WORKSPACE/src"
+            echo "PSMATRIX_EXTERNAL_OTLP_RELEASE_COMMIT=${{ inputs.release_commit }}"
+            echo "PSMATRIX_EXTERNAL_OTLP_VERSION=${{ inputs.expected_version }}"
+            echo "PSMATRIX_EXTERNAL_OTLP_MANIFEST_SHA256=${{ inputs.release_manifest_sha256 }}"
+            echo "PSMATRIX_EXTERNAL_OTLP_WHEEL_SHA256=${{ inputs.wheel_sha256 }}"
+          } >> "$GITHUB_ENV"
+
+      - name: Materialize operations-authority signing keys
+        shell: bash
+        env:
+          OPERATIONS_PRIVATE_KEY: ${{ secrets.PSMATRIX_EXTERNAL_OTLP_OPERATIONS_PRIVATE_KEY }}
+          OPERATIONS_PUBLIC_KEY: ${{ secrets.PSMATRIX_EXTERNAL_OTLP_OPERATIONS_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$OPERATIONS_PRIVATE_KEY" ]] || { echo 'operations private key is missing' >&2; exit 1; }
+          [[ -n "$OPERATIONS_PUBLIC_KEY" ]] || { echo 'operations public key is missing' >&2; exit 1; }
+          printf '%s\n' "$OPERATIONS_PRIVATE_KEY" > "$PSMATRIX_EXTERNAL_OTLP_SECRET_ROOT/operations.private.pem"
+          printf '%s\n' "$OPERATIONS_PUBLIC_KEY" > "$PSMATRIX_EXTERNAL_OTLP_SECRET_ROOT/operations.public.pem"
+          chmod 0600 \
+            "$PSMATRIX_EXTERNAL_OTLP_SECRET_ROOT/operations.private.pem" \
+            "$PSMATRIX_EXTERNAL_OTLP_SECRET_ROOT/operations.public.pem"
+
+      - name: Execute external collector authority probe
+        shell: bash
+        env:
+          PSMATRIX_EXTERNAL_OTLP_AUTH_VALUE: ${{ secrets.PSMATRIX_EXTERNAL_OTLP_AUTH_VALUE }}
+        run: |
+          set -euo pipefail
+          [[ -n "$PSMATRIX_EXTERNAL_OTLP_AUTH_VALUE" ]] || {
+            echo 'external OTLP authentication secret is missing' >&2
+            exit 1
+          }
+          output="$PSMATRIX_EXTERNAL_OTLP_EVIDENCE/live"
+          stdout_log="$RUNNER_TEMP/external-otlp-probe.stdout.log"
+          stderr_log="$RUNNER_TEMP/external-otlp-probe.stderr.log"
+          rm -rf "$output"
+          rm -f "$stdout_log" "$stderr_log"
+          set +e
+          python scripts/ga/probe_external_otlp.py \
+            --endpoint '${{ inputs.endpoint }}' \
+            --health-url '${{ inputs.health_url }}' \
+            --receipt-url '${{ inputs.receipt_url }}' \
+            --restart-url '${{ inputs.restart_url }}' \
+            --release-commit "$PSMATRIX_EXTERNAL_OTLP_RELEASE_COMMIT" \
+            --expected-version "$PSMATRIX_EXTERNAL_OTLP_VERSION" \
+            --auth-header-name '${{ inputs.auth_header_name }}' \
+            --auth-env PSMATRIX_EXTERNAL_OTLP_AUTH_VALUE \
+            --output-dir "$output" \
+            --recovery-timeout '${{ inputs.recovery_timeout }}' \
+            --poll-interval '${{ inputs.poll_interval }}' \
+            > "$stdout_log" 2> "$stderr_log"
+          code=$?
+          set -e
+          install -d -m 0700 "$output"
+          mv "$stdout_log" "$output/probe.stdout.log"
+          mv "$stderr_log" "$output/probe.stderr.log"
+          printf '%s\n' "$code" > "$output/probe-exit-code.txt"
+          cat "$output/probe.stdout.log"
+          cat "$output/probe.stderr.log" >&2
+          python - "$output" <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          secret = os.environ["PSMATRIX_EXTERNAL_OTLP_AUTH_VALUE"].encode("utf-8")
+          for path in root.rglob("*"):
+              if path.is_file() and secret in path.read_bytes():
+                  raise SystemExit(f"authentication value leaked into evidence: {path.name}")
+          PY
+          (( code == 0 )) || {
+            echo "external OTLP probe failed with exit code $code" >&2
+            exit "$code"
+          }
+
+      - name: Bind proof to exact signed release artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          live="$PSMATRIX_EXTERNAL_OTLP_EVIDENCE/live"
+          python scripts/ga/bind_external_otlp_release.py \
+            --report "$live/external-otlp-live-report.json" \
+            --proof "$live/external-otlp-proof-input.json" \
+            --release-commit "$PSMATRIX_EXTERNAL_OTLP_RELEASE_COMMIT" \
+            --expected-version "$PSMATRIX_EXTERNAL_OTLP_VERSION" \
+            --release-manifest-sha256 "$PSMATRIX_EXTERNAL_OTLP_MANIFEST_SHA256" \
+            --release-wheel-sha256 "$PSMATRIX_EXTERNAL_OTLP_WHEEL_SHA256" \
+            --output "$live/external-otlp-release-binding.json"
+
+      - name: Enforce restart, privacy and release semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          live="$PSMATRIX_EXTERNAL_OTLP_EVIDENCE/live"
+          python scripts/ga/enforce_external_otlp_report.py \
+            --report "$live/external-otlp-live-report.json" \
+            --proof "$live/external-otlp-proof-input.json" \
+            --release-commit "$PSMATRIX_EXTERNAL_OTLP_RELEASE_COMMIT" \
+            --expected-version "$PSMATRIX_EXTERNAL_OTLP_VERSION" \
+            --release-manifest-sha256 "$PSMATRIX_EXTERNAL_OTLP_MANIFEST_SHA256" \
+            --release-wheel-sha256 "$PSMATRIX_EXTERNAL_OTLP_WHEEL_SHA256" \
+            > "$live/external-otlp-enforcement.json"
+          cat "$live/external-otlp-enforcement.json"
+
+      - name: Sign and verify operations-authority proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          live="$PSMATRIX_EXTERNAL_OTLP_EVIDENCE/live"
+          python -m psmatrix ga proof-create \
+            --input "$live/external-otlp-proof-input.json" \
+            --type external-otlp \
+            --private-key "$PSMATRIX_EXTERNAL_OTLP_SECRET_ROOT/operations.private.pem" \
+            --public-key "$PSMATRIX_EXTERNAL_OTLP_SECRET_ROOT/operations.public.pem" \
+            --output "$live/external-otlp.dsse.json"
+          python -m psmatrix ga proof-verify \
+            --attestation "$live/external-otlp.dsse.json" \
+            --type external-otlp \
+            --public-key "$PSMATRIX_EXTERNAL_OTLP_SECRET_ROOT/operations.public.pem" \
+            > "$live/external-otlp-verification.json"
+          cat "$live/external-otlp-verification.json"
+
+      - name: Remove operations-authority key material
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          if [[ -d "${PSMATRIX_EXTERNAL_OTLP_SECRET_ROOT:-}" ]]; then
+            find "$PSMATRIX_EXTERNAL_OTLP_SECRET_ROOT" -type f -exec sh -c '
+              for file do
+                size=$(wc -c < "$file" 2>/dev/null || echo 0)
+                if [[ "$size" =~ ^[0-9]+$ ]] && (( size > 0 )); then
+                  dd if=/dev/zero of="$file" bs=1 count="$size" conv=notrunc status=none 2>/dev/null || true
+                fi
+              done
+            ' sh {} +
+            rm -rf "$PSMATRIX_EXTERNAL_OTLP_SECRET_ROOT"
+          fi
+
+      - name: Enforce evidence inventory and final status
+        shell: bash
+        run: |
+          set -euo pipefail
+          live="$PSMATRIX_EXTERNAL_OTLP_EVIDENCE/live"
+          python - \
+            "$PSMATRIX_EXTERNAL_OTLP_EVIDENCE" \
+            "$live" \
+            "$PSMATRIX_EXTERNAL_OTLP_RELEASE_COMMIT" \
+            "$PSMATRIX_EXTERNAL_OTLP_VERSION" \
+            "$PSMATRIX_EXTERNAL_OTLP_MANIFEST_SHA256" \
+            "$PSMATRIX_EXTERNAL_OTLP_WHEEL_SHA256" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          live = Path(sys.argv[2]).resolve()
+          commit, version, manifest_digest, wheel_digest = sys.argv[3:]
+          required = (
+              "external-otlp-live-report.json",
+              "external-otlp-proof-input.json",
+              "external-otlp-release-binding.json",
+              "external-otlp-enforcement.json",
+              "external-otlp.dsse.json",
+              "external-otlp-verification.json",
+              "probe.stdout.log",
+              "probe.stderr.log",
+              "probe-exit-code.txt",
+          )
+          for name in required:
+              path = live / name
+              if not path.is_file():
+                  raise SystemExit(f"required external OTLP evidence is missing: {name}")
+          binding = json.loads((live / "external-otlp-release-binding.json").read_text())
+          enforcement = json.loads((live / "external-otlp-enforcement.json").read_text())
+          verification = json.loads((live / "external-otlp-verification.json").read_text())
+          expected = {
+              "release_commit": commit,
+              "expected_version": version,
+              "release_manifest_sha256": manifest_digest,
+              "release_wheel_sha256": wheel_digest,
+          }
+          for label, value in (("binding", binding), ("enforcement", enforcement)):
+              if value.get("status") != "PASS":
+                  raise SystemExit(f"external OTLP {label} is not PASS")
+              for key, expected_value in expected.items():
+                  if value.get(key) != expected_value:
+                      raise SystemExit(f"external OTLP {label} mismatch: {key}")
+          if verification.get("valid") is not True:
+              raise SystemExit("external OTLP DSSE verification is not valid")
+          if binding.get("live_report_sha256") != enforcement.get("live_report_sha256"):
+              raise SystemExit("external OTLP binding and enforcement report digests differ")
+
+          forbidden = (
+              b"BEGIN PRIVATE KEY",
+              b"BEGIN RSA PRIVATE KEY",
+              b"BEGIN EC PRIVATE KEY",
+              b"BEGIN OPENSSH PRIVATE KEY",
+              b"Authorization: Bearer",
+              b"Write-Host",
+              b"Write-Output",
+              b"Set-StrictMode",
+          )
+          files = []
+          for path in sorted(root.rglob("*")):
+              if not path.is_file():
+                  continue
+              data = path.read_bytes()
+              if any(marker in data for marker in forbidden):
+                  raise SystemExit(f"forbidden secret or source material in evidence: {path.name}")
+              files.append({
+                  "path": path.relative_to(root).as_posix(),
+                  "sha256": hashlib.sha256(data).hexdigest(),
+                  "size": len(data),
+              })
+          final_compatible = version == "2.0.0"
+          status = {
+              "schema": 1,
+              "kind": "psmatrix.external-otlp-operation-status",
+              "status": "PASS" if final_compatible else "PASS_PARTIAL",
+              "release_commit": commit,
+              "expected_version": version,
+              "release_manifest_sha256": manifest_digest,
+              "release_wheel_sha256": wheel_digest,
+              "server_certificate_sha256": enforcement["server_certificate_sha256"],
+              "live_report_sha256": enforcement["live_report_sha256"],
+              "unauthenticated_status": enforcement["unauthenticated_status"],
+              "pre_restart_status": enforcement["pre_restart_status"],
+              "post_restart_status": enforcement["post_restart_status"],
+              "recovery_seconds": enforcement["recovery_seconds"],
+              "operations_signature_verified": True,
+              "final_ga_compatible": final_compatible,
+              "ga_eligible": False,
+              "external_collector_proven": True,
+              "files": files,
+          }
+          (root / "operation-status.json").write_text(
+              json.dumps(status, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(status, indent=2, sort_keys=True))
+          PY
+
+      - name: Record fail-closed external operation state
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          evidence="${PSMATRIX_EXTERNAL_OTLP_EVIDENCE:-$RUNNER_TEMP/psmatrix-external-otlp-evidence}"
+          install -d -m 0700 "$evidence"
+          python - "$evidence" "${GITHUB_SHA,,}" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          failure = {
+              "schema": 1,
+              "kind": "psmatrix.external-otlp-operation-status",
+              "status": "FAIL",
+              "release_commit": sys.argv[2],
+              "operations_signature_verified": False,
+              "final_ga_compatible": False,
+              "ga_eligible": False,
+              "external_collector_proven": False,
+          }
+          (root / "operation-failure.json").write_text(
+              json.dumps(failure, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload external OTLP authority evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: production-ga-external-otlp
+          path: ${{ runner.temp }}/psmatrix-external-otlp-evidence
+          if-no-files-found: error
+          retention-days: 30
