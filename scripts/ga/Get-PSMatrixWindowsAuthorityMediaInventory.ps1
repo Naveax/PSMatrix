@@ -186,10 +186,18 @@ function Get-IsoImageInventory {
                 throw ('DISM /Get-WimInfo failed: {0}' -f ($dismOutput -join ' '))
             }
 
+            $rawDismOutput = $dismOutput -join [Environment]::NewLine
+
+            if ($rawDismOutput.Length -gt 4096) {
+                $rawDismOutput = $rawDismOutput.Substring(
+                    $rawDismOutput.Length - 4096
+                )
+            }
+
             $images = @(
                 [ordered]@{
                     parser = 'dism-text-fallback'
-                    raw_output = ($dismOutput -join [Environment]::NewLine)[-4096..-1] -join ''
+                    raw_output = $rawDismOutput
                 }
             )
         }
@@ -379,6 +387,13 @@ $missingReleaseRoles = @(
         Where-Object { [int]$roleSummary[$_].count -eq 0 }
 )
 
+# PowerShell 7 can throw "Argument types do not match" when a generic List[T]
+# is embedded directly through @($list) in a hashtable. Materialize each list
+# through its strongly typed ToArray() method before report construction.
+$resolvedRootArray = $resolvedRoots.ToArray()
+$candidateArray = $candidates.ToArray()
+$scanWarningArray = $scanWarnings.ToArray()
+
 $report = [ordered]@{
     schema = 1
     kind = 'psmatrix.windows-authority-media-inventory'
@@ -387,10 +402,10 @@ $report = [ordered]@{
     generated_at_utc = [DateTime]::UtcNow.ToString('o')
     source_root = $source
     ga_root = $ga
-    search_roots = @($resolvedRoots)
+    search_roots = $resolvedRootArray
     inspect_iso_images = [bool]$InspectIsoImages
-    candidate_count = $candidates.Count
-    candidates = @($candidates)
+    candidate_count = $candidateArray.Count
+    candidates = $candidateArray
     role_summary = $roleSummary
     missing_media_roles = $missingMediaRoles
     missing_release_roles = $missingReleaseRoles
@@ -405,7 +420,7 @@ $report = [ordered]@{
     writes_validator_inputs = $false
     authoritative = $false
     ga_eligible = $false
-    warnings = @($scanWarnings)
+    warnings = $scanWarningArray
     next_required = @(
         if ($missingMediaRoles.Count -ne 0) {
             'Provide exact local artifacts for media roles: {0}.' -f (
