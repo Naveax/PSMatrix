@@ -167,6 +167,43 @@ def _public_https(assertions: dict[str, Any], *, mode: str) -> None:
             raise GAGateError(f"{mode} proof assertion failed: {key}")
 
 
+def _public_release_binding(result: dict[str, Any], assertions: dict[str, Any], *, mode: str) -> dict[str, str]:
+    if assertions.get("release_commit_bound") is not True:
+        raise GAGateError(f"{mode} proof does not assert release commit binding")
+    release_commit = str(assertions.get("release_commit") or "").lower()
+    top_level_commit = str(result.get("release_commit") or "").lower()
+    release_manifest = str(assertions.get("release_manifest_sha256") or "").lower()
+    release_wheel = str(assertions.get("release_wheel_sha256") or "").lower()
+    deployed_version = str(assertions.get("expected_version") or "")
+    server_certificate = str(assertions.get("server_certificate_sha256") or "").lower()
+    if _COMMIT_RE.fullmatch(release_commit) is None or top_level_commit != release_commit:
+        raise GAGateError(f"{mode} proof release commit binding is invalid")
+    if deployed_version != _GA_VERSION:
+        raise GAGateError(f"{mode} proof is not for the final {_GA_VERSION} deployment")
+    if _SHA256_RE.fullmatch(release_manifest) is None:
+        raise GAGateError(f"{mode} proof release manifest binding is invalid")
+    if _SHA256_RE.fullmatch(release_wheel) is None:
+        raise GAGateError(f"{mode} proof release wheel binding is invalid")
+    if _SHA256_RE.fullmatch(server_certificate) is None:
+        raise GAGateError(f"{mode} proof server certificate binding is invalid")
+    artifacts = result.get("artifacts") if isinstance(result.get("artifacts"), list) else []
+    if len(artifacts) != 1 or not isinstance(artifacts[0], dict):
+        raise GAGateError(f"{mode} proof must bind exactly one live report")
+    artifact_name = str(artifacts[0].get("name") or "")
+    live_report = str(artifacts[0].get("sha256") or "").lower()
+    if artifact_name != "public-auth-live-report.json" or _SHA256_RE.fullmatch(live_report) is None:
+        raise GAGateError(f"{mode} proof live-report subject is invalid")
+    return {
+        "release_commit": release_commit,
+        "release_manifest_sha256": release_manifest,
+        "release_wheel_sha256": release_wheel,
+        "deployed_version": deployed_version,
+        "server_certificate_sha256": server_certificate,
+        "live_report_sha256": live_report,
+        "endpoint": str(assertions.get("endpoint") or ""),
+    }
+
+
 def create_ga_artifact_attestation(
     artifact: Path, *, artifact_type: str, observed_at: str,
     private_key: Path, public_key: Path,
@@ -305,16 +342,28 @@ def _proof_gate(policy: dict[str, Any], base: Path, gate: str, proof_type: str, 
         )
         default_age = 90 if proof_type == "security-review" else (30 if proof_type == "vulnerability-scan" else 14)
         _require_fresh(result.get("observed_at"), "observed_at", max(1, min(int(requirements.get(age_key) or default_age), 180)))
+        public_binding: dict[str, str] | None = None
         if proof_type == "public-oauth":
             _public_https(assertions, mode="public OAuth")
-            for key in ("oauth_external", "audience_verified", "scope_verified", "token_expiry_verified"):
+            for key in (
+                "oauth_external", "discovery_verified", "audience_verified", "scope_verified",
+                "token_expiry_verified", "missing_token_rejected", "wrong_audience_rejected",
+                "missing_scope_rejected", "replay_protection_verified", "rate_limiting_verified",
+                "release_commit_bound",
+            ):
                 if assertions.get(key) is not True:
                     raise GAGateError(f"public OAuth proof assertion failed: {key}")
+            public_binding = _public_release_binding(result, assertions, mode="public OAuth")
         elif proof_type == "public-mtls":
             _public_https(assertions, mode="public mTLS")
-            for key in ("client_certificate_required", "untrusted_client_rejected", "certificate_rotation_ready"):
+            for key in (
+                "client_certificate_required", "untrusted_client_rejected",
+                "certificate_rotation_ready", "revoked_client_rejected",
+                "tls_passthrough_verified", "release_commit_bound",
+            ):
                 if assertions.get(key) is not True:
                     raise GAGateError(f"public mTLS proof assertion failed: {key}")
+            public_binding = _public_release_binding(result, assertions, mode="public mTLS")
         elif proof_type == "external-otlp":
             _public_https(assertions, mode="external OTLP")
             if assertions.get("collector_external") is not True or assertions.get("request_path") != "/v1/metrics":
@@ -401,7 +450,9 @@ def _proof_gate(policy: dict[str, Any], base: Path, gate: str, proof_type: str, 
             "path": str(path), "sha256": sha256_file(path), "key_ids": proof["key_ids"],
             "observed_at": result.get("observed_at"),
         }
-        if proof_type == "security-review":
+        if public_binding is not None:
+            gate_evidence.update(public_binding)
+        elif proof_type == "security-review":
             gate_evidence.update({
                 "reviewed_commit": str(assertions.get("reviewed_commit") or "").lower(),
                 "reviewed_release_sha256": str(assertions.get("reviewed_release_sha256") or "").lower(),
@@ -591,6 +642,7 @@ def _matrix_gate(policy: dict[str, Any], base: Path) -> GateResult:
     except (PSMatrixError, OSError, ValueError, TypeError) as exc:
         return GateResult(gate, "FAIL", str(exc), {})
 
+
 def _recovery_gate(policy: dict[str, Any], base: Path) -> GateResult:
     gate = "disaster-recovery"
     record = (policy.get("evidence") or {}).get(gate) if isinstance(policy.get("evidence"), dict) else None
@@ -687,6 +739,38 @@ def _enforce_cross_gate_bindings(results: list[GateResult]) -> list[GateResult]:
             reason = "Full-matrix proof does not bind a wheel from the signed release"
         if reason:
             replacements[matrix.gate] = GateResult(matrix.gate, "FAIL", reason, matrix.evidence)
+
+    for gate_name, mode in (("public-oauth", "Public OAuth"), ("public-mtls", "Public mTLS")):
+        public = by_gate.get(gate_name)
+        if public is None or public.status != "PASS":
+            continue
+        reason = None
+        if public.evidence.get("release_commit") != expected_commit:
+            reason = f"{mode} proof does not bind the validated release commit"
+        elif public.evidence.get("release_manifest_sha256") != expected_release:
+            reason = f"{mode} proof does not bind the signed final release manifest"
+        elif public.evidence.get("release_wheel_sha256") not in wheel_digests:
+            reason = f"{mode} proof does not bind a wheel from the signed release"
+        elif public.evidence.get("deployed_version") != _GA_VERSION:
+            reason = f"{mode} proof is not for the final {_GA_VERSION} deployment"
+        if reason:
+            replacements[gate_name] = GateResult(gate_name, "FAIL", reason, public.evidence)
+
+    oauth = by_gate.get("public-oauth")
+    mtls = by_gate.get("public-mtls")
+    if (
+        oauth is not None and mtls is not None
+        and oauth.status == "PASS" and mtls.status == "PASS"
+        and "public-oauth" not in replacements and "public-mtls" not in replacements
+    ):
+        reason = None
+        if oauth.evidence.get("endpoint") == mtls.evidence.get("endpoint"):
+            reason = "Public OAuth and mTLS proofs must use separate endpoints"
+        elif oauth.evidence.get("live_report_sha256") != mtls.evidence.get("live_report_sha256"):
+            reason = "Public OAuth and mTLS proofs do not bind the same live report"
+        if reason:
+            replacements["public-oauth"] = GateResult("public-oauth", "FAIL", reason, oauth.evidence)
+            replacements["public-mtls"] = GateResult("public-mtls", "FAIL", reason, mtls.evidence)
 
     review = by_gate.get("security-review")
     if review is not None and review.status == "PASS":
