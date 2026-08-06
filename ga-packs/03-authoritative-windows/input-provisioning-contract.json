@@ -1,0 +1,71 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-authority-input-provisioning-contract",
+  "pack": "03-authoritative-windows",
+  "required_runtime_ids": [
+    "windows-powershell-4.0",
+    "windows-powershell-5.0",
+    "windows-powershell-5.1"
+  ],
+  "canonical_hyper_v": {
+    "clean_snapshot_name": "psmatrix-clean",
+    "generation": 2,
+    "vm_names": {
+      "windows-powershell-4.0": "PSMatrix-Windows-PowerShell-4.0",
+      "windows-powershell-5.0": "PSMatrix-Windows-PowerShell-5.0",
+      "windows-powershell-5.1": "PSMatrix-Windows-PowerShell-5.1"
+    }
+  },
+  "required_validator_inputs": {
+    "release_manifest_pattern": "^psmatrix-2\\.0\\.0(?:rc[0-9]+)?-release\\.json$",
+    "release_artifact_suffixes": [
+      "-source.zip",
+      "-windows-workers.zip",
+      "-windows-certification-kit.zip",
+      "-windows-provisioning-kit.zip"
+    ],
+    "endpoint_and_image_filenames": [
+      "windows-powershell-4.0-endpoint.json",
+      "windows-powershell-4.0-image.json",
+      "windows-powershell-5.0-endpoint.json",
+      "windows-powershell-5.0-image.json",
+      "windows-powershell-5.1-endpoint.json",
+      "windows-powershell-5.1-image.json"
+    ]
+  },
+  "required_image_capabilities": [
+    "registry",
+    "services",
+    "com",
+    "wmi",
+    "event-log"
+  ],
+  "inventory": {
+    "script": "scripts/ga/Get-PSMatrixWindowsAuthorityInputPlan.ps1",
+    "default_output": "windows-authority-input-plan.json",
+    "requires_exact_release_commit": true,
+    "requires_clean_source_checkout": true,
+    "requires_real_windows_controller": true,
+    "requires_elevation": true,
+    "uses_product_fixture_pack_hashing": true,
+    "mutates_hyper_v": false,
+    "creates_validator_inputs": false
+  },
+  "authority": {
+    "inventory_is_authoritative_evidence": false,
+    "inventory_is_infrastructure_evidence": false,
+    "inventory_is_ga_eligible": false,
+    "placeholder_promotion_forbidden": true,
+    "real_vm_and_snapshot_identity_required": true,
+    "live_mtls_worker_identity_required": true,
+    "signed_release_binding_required": true
+  },
+  "completion": {
+    "ready_to_dispatch_requires_all_six_real_manifests": true,
+    "ready_to_dispatch_requires_one_signed_release_manifest": true,
+    "ready_to_dispatch_requires_three_immutable_vms": true,
+    "ready_to_dispatch_requires_three_clean_snapshots": true,
+    "authoritative": false,
+    "ga_eligible": false
+  }
+}
