@@ -98,9 +98,9 @@ $scriptPath = $MyInvocation.MyCommand.Path
 $process = Get-Process -Id $PID
 $processPath = Get-CurrentProcessPath
 $osCurrentVersion = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
-$psEdition = $null
+$detectedPSEdition = $null
 if ($PSVersionTable.ContainsKey('PSEdition')) {
-    $psEdition = [string]$PSVersionTable.PSEdition
+    $detectedPSEdition = [string]$PSVersionTable.PSEdition
 }
 $clrVersion = ''
 if ($PSVersionTable.ContainsKey('CLRVersion') -and $null -ne $PSVersionTable.CLRVersion) {
@@ -118,8 +118,8 @@ Invoke-AuthorityCheck -Name 'desktop-process-host' -Body {
     if (-not (Test-Path -LiteralPath (Join-Path $PSHOME 'powershell.exe') -PathType Leaf)) {
         throw ('powershell.exe was not found under PSHOME: {0}' -f $PSHOME)
     }
-    if ($psEdition -and $psEdition -ne 'Desktop') {
-        throw ('Expected PSEdition Desktop; detected {0}' -f $psEdition)
+    if ($detectedPSEdition -and $detectedPSEdition -ne 'Desktop') {
+        throw ('Expected PSEdition Desktop; detected {0}' -f $detectedPSEdition)
     }
     return $PSHOME
 }
@@ -262,7 +262,7 @@ $payload = [ordered]@{
     ga_eligible = $false
     expected_runtime_line = $expectedVersion
     detected_runtime_version = $detectedVersion.ToString()
-    psedition = $psEdition
+    psedition = $detectedPSEdition
     clr_version = $clrVersion
     ps_home = $PSHOME
     process_path = $processPath
