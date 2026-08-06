@@ -143,7 +143,10 @@ jobs:
         run: |
           set -euo pipefail
           output="$RUNNER_TEMP/psmatrix-public-auth-evidence"
+          stdout_log="$RUNNER_TEMP/psmatrix-public-auth-probe.stdout.log"
+          stderr_log="$RUNNER_TEMP/psmatrix-public-auth-probe.stderr.log"
           rm -rf "$output"
+          rm -f "$stdout_log" "$stderr_log"
           install -d -m 0700 "$output"
           set +e
           python scripts/ga/probe_public_auth.py \
@@ -164,10 +167,13 @@ jobs:
             --untrusted-client-key "$PSMATRIX_PUBLIC_AUTH_SECRET_ROOT/untrusted-client-key.pem" \
             --rate-limit-attempts '${{ inputs.rate_limit_attempts }}' \
             --output-dir "$output" \
-            > >(tee "$output/probe.stdout.log") \
-            2> >(tee "$output/probe.stderr.log" >&2)
+            > "$stdout_log" 2> "$stderr_log"
           code=$?
           set -e
+          cat "$stdout_log"
+          cat "$stderr_log" >&2
+          mv "$stdout_log" "$output/probe.stdout.log"
+          mv "$stderr_log" "$output/probe.stderr.log"
           printf '%s\n' "$code" > "$output/probe-exit-code.txt"
           (( code == 0 )) || { echo "external public-auth probe failed with exit code $code" >&2; exit "$code"; }
 
