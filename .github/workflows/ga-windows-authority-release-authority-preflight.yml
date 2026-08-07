@@ -1,0 +1,139 @@
+name: production-ga-windows-authority-release-authority-preflight
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: production-ga-windows-authority-release-authority-preflight
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate-release-authority:
+    name: Validate protected release authority keypair
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production-ga-release-signing
+    permissions:
+      contents: read
+    env:
+      PSMATRIX_RELEASE_KEY_ROOT: ${{ runner.temp }}/psmatrix-release-authority-preflight-keys
+      PSMATRIX_RELEASE_PREFLIGHT: ${{ runner.temp }}/psmatrix-release-authority-preflight
+
+    steps:
+      - name: Check out signing controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Materialize protected release private key
+        shell: bash
+        env:
+          RELEASE_PRIVATE_KEY: ${{ secrets.PSMATRIX_RELEASE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$RELEASE_PRIVATE_KEY" ]] || { echo 'PSMATRIX_RELEASE_PRIVATE_KEY is missing from production-ga-release-signing.' >&2; exit 1; }
+          rm -rf "$PSMATRIX_RELEASE_KEY_ROOT" "$PSMATRIX_RELEASE_PREFLIGHT"
+          install -d -m 0700 "$PSMATRIX_RELEASE_KEY_ROOT" "$PSMATRIX_RELEASE_PREFLIGHT"
+          printf '%s\n' "$RELEASE_PRIVATE_KEY" > "$PSMATRIX_RELEASE_KEY_ROOT/release.private.pem"
+          chmod 0600 "$PSMATRIX_RELEASE_KEY_ROOT/release.private.pem"
+
+      - name: Verify private key against locked RC2 release authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH="$GITHUB_WORKSPACE/src" python - "$PSMATRIX_RELEASE_KEY_ROOT/release.private.pem" "$PSMATRIX_RELEASE_PREFLIGHT/release-authority-preflight.json" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          from psmatrix.signing import public_key_id, sign_bytes, verify_bytes
+
+          root = Path.cwd()
+          private_key = Path(sys.argv[1]).resolve()
+          output = Path(sys.argv[2]).resolve()
+          lock = json.loads(
+              (root / 'ga-packs/03-authoritative-windows/rc3-release-lock.json').read_text(encoding='utf-8')
+          )
+          public_key = (root / lock['release_public_key']['path']).resolve()
+          expected_public_sha = str(lock['release_public_key']['sha256']).lower()
+          actual_public_sha = hashlib.sha256(public_key.read_bytes()).hexdigest()
+          if actual_public_sha != expected_public_sha:
+              raise SystemExit('locked release public key SHA-256 mismatch')
+
+          challenge = b'PSMatrix protected release authority preflight v1\n'
+          signature = sign_bytes(challenge, private_key)
+          if not verify_bytes(challenge, signature, public_key):
+              raise SystemExit('PSMATRIX_RELEASE_PRIVATE_KEY does not match the locked RC2 release authority')
+
+          result = {
+              'schema': 1,
+              'kind': 'psmatrix.windows-authority-release-authority-preflight',
+              'status': 'PASS',
+              'release_public_key_sha256': actual_public_sha,
+              'release_key_id': public_key_id(public_key),
+              'private_key_secret_present': True,
+              'private_key_matches_locked_release_authority': True,
+              'private_key_published': False,
+              'release_authority_rotated': False,
+              'signed_release_manifest_written': False,
+              'downloads_files': False,
+              'authoritative': False,
+              'ga_eligible': False,
+          }
+          output.write_text(json.dumps(result, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - name: Remove protected release private key
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          shred -u "$PSMATRIX_RELEASE_KEY_ROOT/release.private.pem" 2>/dev/null || rm -f "$PSMATRIX_RELEASE_KEY_ROOT/release.private.pem"
+          rmdir "$PSMATRIX_RELEASE_KEY_ROOT" 2>/dev/null || true
+
+      - name: Enforce private-key-free preflight evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ ! -e "$PSMATRIX_RELEASE_KEY_ROOT/release.private.pem" ]] || { echo 'release private key still exists after preflight' >&2; exit 1; }
+          python - "$PSMATRIX_RELEASE_PREFLIGHT" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          markers = (
+              b'-----BEGIN PRIVATE KEY-----',
+              b'-----BEGIN RSA PRIVATE KEY-----',
+              b'-----BEGIN EC PRIVATE KEY-----',
+              b'-----BEGIN OPENSSH PRIVATE KEY-----',
+          )
+          for path in root.rglob('*'):
+              if path.is_file() and any(marker in path.read_bytes() for marker in markers):
+                  raise SystemExit(f'private-key material found in preflight evidence: {path.name}')
+          value = json.loads((root / 'release-authority-preflight.json').read_text(encoding='utf-8'))
+          if value.get('status') != 'PASS' or value.get('private_key_matches_locked_release_authority') is not True:
+              raise SystemExit('release authority preflight did not pass')
+          if value.get('private_key_published') is not False or value.get('release_authority_rotated') is not False:
+              raise SystemExit('release authority preflight violated safety policy')
+          print('private_key_free_release_authority_preflight=PASS')
+          PY
+
+      - name: Upload release authority preflight evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: production-ga-windows-authority-release-authority-preflight
+          path: ${{ env.PSMATRIX_RELEASE_PREFLIGHT }}
+          if-no-files-found: error
+          retention-days: 30
