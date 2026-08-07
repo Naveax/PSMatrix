@@ -198,7 +198,9 @@ class WindowsAuthorityOperationPackageBindingTests(unittest.TestCase):
                 msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
             )
             report = json.loads(output.read_text(encoding="utf-8"))
-            self.assertEqual(report["status"], "STALE_BINDING")
+            report_debug = json.dumps(report, indent=2, sort_keys=True)
+            self.assertEqual(report["errors"], [], msg=report_debug)
+            self.assertEqual(report["status"], "STALE_BINDING", msg=report_debug)
             self.assertFalse(report["ready_for_release_artifact_recovery"])
             self.assertTrue(report["operation_package"]["release_binding_valid"])
             self.assertFalse(
