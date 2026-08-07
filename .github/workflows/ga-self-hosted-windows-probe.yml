@@ -1,0 +1,48 @@
+name: production-ga-self-hosted-windows-probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-ga-self-hosted-windows-probe
+  cancel-in-progress: false
+
+jobs:
+  self-hosted-windows-probe:
+    name: Self-hosted Windows runner probe
+    runs-on: [self-hosted, Windows]
+    timeout-minutes: 5
+    steps:
+      - name: Confirm self-hosted Windows runner assignment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host "runner_os=$env:RUNNER_OS"
+          Write-Host "runner_arch=$env:RUNNER_ARCH"
+          Write-Host "runner_name=$env:RUNNER_NAME"
+          Write-Host "runner_temp=$env:RUNNER_TEMP"
+          if ($env:RUNNER_OS -ne 'Windows') {
+              throw "Expected Windows runner; got $env:RUNNER_OS"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:RUNNER_NAME)) {
+              throw 'RUNNER_NAME is unavailable.'
+          }
+          if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
+              throw 'RUNNER_TEMP is unavailable.'
+          }
+
+      - name: Confirm required local toolchain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($command in @('git','python','pwsh')) {
+              $resolved = Get-Command $command -ErrorAction SilentlyContinue
+              if (-not $resolved) { throw "Required tool missing on self-hosted runner: $command" }
+              Write-Host "$command=$($resolved.Source)"
+          }
+          git --version
+          python --version
+          pwsh --version
