@@ -186,7 +186,7 @@ if ($manifestIdentityGroups.Count -eq 1) {
         $releaseVersion = $null
     }
 }
-elif ($manifestIdentityGroups.Count -gt 1) {
+elseif ($manifestIdentityGroups.Count -gt 1) {
     $releaseAuthorityStatus = 'AMBIGUOUS'
     $canonicalizationErrors += (
         'Multiple distinct signed release manifest identities were discovered: {0}.' -f
