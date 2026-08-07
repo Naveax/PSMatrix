@@ -1,6 +1,6 @@
 """PSMatrix core package."""
 
-__version__ = "2.0.0rc2"
+__version__ = "2.0.0rc3"
 
 # Install the Pack 05 fail-closed OTLP proof and final-release cross-binding
 # before CLI modules import symbols from psmatrix.ga.
