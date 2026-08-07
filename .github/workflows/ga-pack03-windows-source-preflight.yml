@@ -10,6 +10,7 @@ on:
       - ".github/workflows/ga-windows-authority-infrastructure-preflight.yml"
       - ".github/workflows/ga-windows-authoritative.yml"
       - ".github/workflows/ga-windows-authority-release-sign.yml"
+      - ".github/workflows/ga-windows-authority-release-authority-preflight.yml"
       - "ga-packs/03-authoritative-windows/**"
       - "scripts/ga/validate_windows_authority_infrastructure.py"
       - "scripts/ga/build_windows_authority_release_candidate.py"
@@ -33,6 +34,7 @@ on:
       - "tests/test_windows_authority_release_manifest_closure.py"
       - "tests/test_windows_authority_release_candidate_builder.py"
       - "tests/test_windows_authority_protected_release_signing.py"
+      - "tests/test_windows_authority_release_authority_preflight.py"
       - "tests/test_windows_authority_protected_release_import.py"
       - "tests/test_windows_authority_operation_package_binding.py"
 
@@ -109,6 +111,7 @@ jobs:
               tests/test_windows_authority_release_manifest_closure.py \
               tests/test_windows_authority_release_candidate_builder.py \
               tests/test_windows_authority_protected_release_signing.py \
+              tests/test_windows_authority_release_authority_preflight.py \
               tests/test_windows_authority_protected_release_import.py \
               tests/test_windows_authority_operation_package_binding.py
             echo "py_compile=PASS"
@@ -156,6 +159,7 @@ jobs:
             tests.test_windows_authority_release_manifest_closure \
             tests.test_windows_authority_release_candidate_builder \
             tests.test_windows_authority_protected_release_signing \
+            tests.test_windows_authority_release_authority_preflight \
             tests.test_windows_authority_protected_release_import \
             tests.test_windows_authority_operation_package_binding \
             2>&1 | tee "$PSMATRIX_PACK03_SOURCE_EVIDENCE/test-windows-authority.log"
@@ -211,6 +215,8 @@ jobs:
               'protected_release_signing_contract': 'PASS',
               'protected_release_signer_python_compile': 'PASS',
               'protected_release_signing_workflow_contract': 'PASS',
+              'release_authority_preflight_contract': 'PASS',
+              'release_authority_preflight_workflow_contract': 'PASS',
               'protected_release_import_contract': 'PASS',
               'protected_release_import_python_compile': 'PASS',
               'media_manifest_contract': 'PASS',
