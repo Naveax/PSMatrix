@@ -9,9 +9,11 @@ on:
       - ".github/workflows/ga-windows-authority-preflight.yml"
       - ".github/workflows/ga-windows-authority-infrastructure-preflight.yml"
       - ".github/workflows/ga-windows-authoritative.yml"
+      - ".github/workflows/ga-windows-authority-release-sign.yml"
       - "ga-packs/03-authoritative-windows/**"
       - "scripts/ga/validate_windows_authority_infrastructure.py"
       - "scripts/ga/build_windows_authority_release_candidate.py"
+      - "scripts/ga/sign_windows_authority_release_candidate.py"
       - "scripts/ga/Initialize-PSMatrixWindowsAuthorityLab.ps1"
       - "scripts/ga/Get-PSMatrixWindowsAuthorityInputPlan.ps1"
       - "scripts/ga/Get-PSMatrixWindowsAuthorityMediaInventory.ps1"
@@ -29,6 +31,7 @@ on:
       - "tests/test_windows_authority_media_canonicalization.py"
       - "tests/test_windows_authority_release_manifest_closure.py"
       - "tests/test_windows_authority_release_candidate_builder.py"
+      - "tests/test_windows_authority_protected_release_signing.py"
       - "tests/test_windows_authority_operation_package_binding.py"
 
 concurrency:
@@ -94,6 +97,7 @@ jobs:
             python -m py_compile \
               scripts/ga/validate_windows_authority_infrastructure.py \
               scripts/ga/build_windows_authority_release_candidate.py \
+              scripts/ga/sign_windows_authority_release_candidate.py \
               tests/test_windows_authority_ga_contract.py \
               tests/test_windows_authority_controller_bootstrap.py \
               tests/test_windows_authority_input_provisioning.py \
@@ -101,6 +105,7 @@ jobs:
               tests/test_windows_authority_media_canonicalization.py \
               tests/test_windows_authority_release_manifest_closure.py \
               tests/test_windows_authority_release_candidate_builder.py \
+              tests/test_windows_authority_protected_release_signing.py \
               tests/test_windows_authority_operation_package_binding.py
             echo "py_compile=PASS"
           } 2>&1 | tee "$PSMATRIX_PACK03_SOURCE_EVIDENCE/py-compile.log"
@@ -146,6 +151,7 @@ jobs:
             tests.test_windows_authority_media_canonicalization \
             tests.test_windows_authority_release_manifest_closure \
             tests.test_windows_authority_release_candidate_builder \
+            tests.test_windows_authority_protected_release_signing \
             tests.test_windows_authority_operation_package_binding \
             2>&1 | tee "$PSMATRIX_PACK03_SOURCE_EVIDENCE/test-windows-authority.log"
 
@@ -197,6 +203,9 @@ jobs:
               'release_manifest_closure_powershell_parse': 'PASS',
               'release_candidate_builder_contract': 'PASS',
               'release_candidate_builder_python_compile': 'PASS',
+              'protected_release_signing_contract': 'PASS',
+              'protected_release_signer_python_compile': 'PASS',
+              'protected_release_signing_workflow_contract': 'PASS',
               'media_manifest_contract': 'PASS',
               'media_manifest_powershell_parse': 'PASS',
               'operation_package_binding_contract': 'PASS',
