@@ -14,8 +14,12 @@ class WindowsAuthoritySelfHostedRC3StagingTests(unittest.TestCase):
             "workflow_dispatch:",
             'default: "34e87c60885001f8dd11744b8bf194a59e51bd1f"',
             "runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]",
+            "Set up Python 3.12 for reviewed RC3 build",
+            "actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405",
+            'python-version: "3.12"',
             "Expected NAVEAX runner",
-            "Expected local Python 3.12",
+            "Expected job-local Python 3.12",
+            "reviewed_rc3_python=",
             "python -m venv",
             '"pip==26.1.2" "setuptools==83.0.0"',
             "rc3-release-lock.json",
@@ -37,14 +41,19 @@ class WindowsAuthoritySelfHostedRC3StagingTests(unittest.TestCase):
             "secrets.",
             "authoritative: true",
             "ga_eligible: true",
+            "Expected local Python 3.12",
         )
         for value in forbidden:
             with self.subTest(value=value):
                 self.assertNotIn(value, text)
 
+        setup_python = text.index("Set up Python 3.12 for reviewed RC3 build")
+        validate = text.index("Validate self-hosted runner and create isolated Python")
         build = text.index("Deterministically rebuild unsigned RC3 staging")
         lock = text.index("Enforce exact reviewed artifact lock")
         upload = text.index("Upload exact locked unsigned staging")
+        self.assertLess(setup_python, validate)
+        self.assertLess(validate, build)
         self.assertLess(build, lock)
         self.assertLess(lock, upload)
 
