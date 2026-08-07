@@ -15,6 +15,7 @@ on:
       - "scripts/ga/Get-PSMatrixWindowsAuthorityInputPlan.ps1"
       - "scripts/ga/Get-PSMatrixWindowsAuthorityMediaInventory.ps1"
       - "scripts/ga/Resolve-PSMatrixWindowsAuthorityMediaInventory.ps1"
+      - "scripts/ga/Test-PSMatrixWindowsAuthorityReleaseManifestClosure.ps1"
       - "scripts/ga/New-PSMatrixWindowsAuthorityMediaManifest.ps1"
       - "scripts/ga/Test-PSMatrixWindowsAuthorityOperationPackageBinding.ps1"
       - "scripts/ga/Invoke-PSMatrixAuthoritativeWindowsGA.ps1"
@@ -23,6 +24,7 @@ on:
       - "tests/test_windows_authority_input_provisioning.py"
       - "tests/test_windows_authority_media_inventory.py"
       - "tests/test_windows_authority_media_canonicalization.py"
+      - "tests/test_windows_authority_release_manifest_closure.py"
       - "tests/test_windows_authority_operation_package_binding.py"
 
 concurrency:
@@ -92,6 +94,7 @@ jobs:
               tests/test_windows_authority_input_provisioning.py \
               tests/test_windows_authority_media_inventory.py \
               tests/test_windows_authority_media_canonicalization.py \
+              tests/test_windows_authority_release_manifest_closure.py \
               tests/test_windows_authority_operation_package_binding.py
             echo "py_compile=PASS"
           } 2>&1 | tee "$PSMATRIX_PACK03_SOURCE_EVIDENCE/py-compile.log"
@@ -105,6 +108,7 @@ jobs:
               'scripts/ga/Get-PSMatrixWindowsAuthorityInputPlan.ps1',
               'scripts/ga/Get-PSMatrixWindowsAuthorityMediaInventory.ps1',
               'scripts/ga/Resolve-PSMatrixWindowsAuthorityMediaInventory.ps1',
+              'scripts/ga/Test-PSMatrixWindowsAuthorityReleaseManifestClosure.ps1',
               'scripts/ga/New-PSMatrixWindowsAuthorityMediaManifest.ps1',
               'scripts/ga/Test-PSMatrixWindowsAuthorityOperationPackageBinding.ps1'
           )
@@ -134,6 +138,7 @@ jobs:
             tests.test_windows_authority_input_provisioning \
             tests.test_windows_authority_media_inventory \
             tests.test_windows_authority_media_canonicalization \
+            tests.test_windows_authority_release_manifest_closure \
             tests.test_windows_authority_operation_package_binding \
             2>&1 | tee "$PSMATRIX_PACK03_SOURCE_EVIDENCE/test-windows-authority.log"
 
@@ -181,6 +186,8 @@ jobs:
               'media_inventory_powershell_parse': 'PASS',
               'media_canonicalization_contract': 'PASS',
               'media_canonicalization_powershell_parse': 'PASS',
+              'release_manifest_closure_contract': 'PASS',
+              'release_manifest_closure_powershell_parse': 'PASS',
               'media_manifest_contract': 'PASS',
               'media_manifest_powershell_parse': 'PASS',
               'operation_package_binding_contract': 'PASS',
