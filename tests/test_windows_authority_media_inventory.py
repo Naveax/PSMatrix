@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -214,10 +215,15 @@ class WindowsAuthorityMediaInventoryTests(unittest.TestCase):
     def test_manifest_materializer_parses(self) -> None:
         pwsh = shutil.which("pwsh")
         self.assertIsNotNone(pwsh)
+        env = os.environ.copy()
+        env["PSMATRIX_MANIFEST_SCRIPT"] = str(MANIFEST_SCRIPT)
         command = (
+            "$path = [Environment]::GetEnvironmentVariable('PSMATRIX_MANIFEST_SCRIPT'); "
+            "if ([string]::IsNullOrWhiteSpace($path)) { "
+            "Write-Error 'PSMATRIX_MANIFEST_SCRIPT is missing'; exit 1 }; "
             "$tokens = $null; $errors = $null; "
             "[void][System.Management.Automation.Language.Parser]::ParseFile("
-            "$args[0], [ref]$tokens, [ref]$errors); "
+            "$path, [ref]$tokens, [ref]$errors); "
             "if ($errors.Count -ne 0) { "
             "$errors | ForEach-Object { Write-Error $_.Message }; exit 1 }; "
             "Write-Output 'powershell_parse=PASS'"
@@ -229,9 +235,9 @@ class WindowsAuthorityMediaInventoryTests(unittest.TestCase):
                 "-NoProfile",
                 "-Command",
                 command,
-                str(MANIFEST_SCRIPT),
             ],
             cwd=ROOT,
+            env=env,
             capture_output=True,
             text=True,
             check=False,
