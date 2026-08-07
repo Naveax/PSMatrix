@@ -65,9 +65,123 @@ function Invoke-CheckedNative {
     }
 }
 
+function Expand-ProtectedReleaseArtifactSafely {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ArchivePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ExtractionRoot,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Version
+    )
+
+    $archiveFile = [System.IO.Path]::GetFullPath($ArchivePath)
+    if (-not (Test-Path -LiteralPath $archiveFile -PathType Leaf)) {
+        throw ('Protected release artifact ZIP does not exist: {0}' -f $archiveFile)
+    }
+    if ([System.IO.Path]::GetExtension($archiveFile) -ine '.zip') {
+        throw 'Protected release artifact input must be a .zip file or an already extracted directory.'
+    }
+
+    $extract = [System.IO.Path]::GetFullPath($ExtractionRoot)
+    if (Test-Path -LiteralPath $extract) {
+        throw ('Protected release extraction root already exists: {0}' -f $extract)
+    }
+    [System.IO.Directory]::CreateDirectory($extract) | Out-Null
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($archiveFile)
+    try {
+        if ($archive.Entries.Count -le 0 -or $archive.Entries.Count -gt 64) {
+            throw ('Protected release artifact ZIP entry count is outside the accepted boundary: {0}' -f $archive.Entries.Count)
+        }
+
+        $totalExpandedBytes = [int64]0
+        $maxExpandedBytes = [int64](128MB)
+        $extractPrefix = $extract.TrimEnd('\') + '\'
+
+        foreach ($entry in $archive.Entries) {
+            $entryName = [string]$entry.FullName
+            if ([string]::IsNullOrWhiteSpace($entryName)) {
+                throw 'Protected release artifact ZIP contains an empty entry name.'
+            }
+            if (
+                $entryName.StartsWith('/') -or
+                $entryName.StartsWith('\') -or
+                $entryName -match '^[A-Za-z]:'
+            ) {
+                throw ('Protected release artifact ZIP contains an absolute path: {0}' -f $entryName)
+            }
+
+            $totalExpandedBytes += [int64]$entry.Length
+            if ($totalExpandedBytes -gt $maxExpandedBytes) {
+                throw 'Protected release artifact ZIP exceeds the 128 MiB expanded-size boundary.'
+            }
+
+            $relative = $entryName.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+            $target = [System.IO.Path]::GetFullPath((Join-Path $extract $relative))
+            if (-not $target.StartsWith($extractPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw ('Protected release artifact ZIP path escapes the isolated extraction root: {0}' -f $entryName)
+            }
+
+            if ([string]::IsNullOrEmpty($entry.Name)) {
+                [System.IO.Directory]::CreateDirectory($target) | Out-Null
+                continue
+            }
+
+            $parent = [System.IO.Path]::GetDirectoryName($target)
+            if (-not [string]::IsNullOrWhiteSpace($parent)) {
+                [System.IO.Directory]::CreateDirectory($parent) | Out-Null
+            }
+            if (Test-Path -LiteralPath $target) {
+                throw ('Protected release artifact ZIP contains a duplicate extraction target: {0}' -f $entryName)
+            }
+
+            $input = $entry.Open()
+            try {
+                $output = [System.IO.File]::Open(
+                    $target,
+                    [System.IO.FileMode]::CreateNew,
+                    [System.IO.FileAccess]::Write,
+                    [System.IO.FileShare]::None
+                )
+                try {
+                    $input.CopyTo($output)
+                }
+                finally {
+                    $output.Dispose()
+                }
+            }
+            finally {
+                $input.Dispose()
+            }
+        }
+    }
+    catch {
+        Remove-Item -LiteralPath $extract -Recurse -Force -ErrorAction SilentlyContinue
+        throw
+    }
+    finally {
+        $archive.Dispose()
+    }
+
+    $inventoryName = 'psmatrix-{0}-protected-release-bundle.json' -f $Version
+    $inventoryMatches = @(
+        Get-ChildItem -LiteralPath $extract -File -Recurse -Filter $inventoryName -ErrorAction Stop
+    )
+    if ($inventoryMatches.Count -ne 1) {
+        Remove-Item -LiteralPath $extract -Recurse -Force -ErrorAction SilentlyContinue
+        throw ('Protected release artifact ZIP must contain exactly one {0}; found {1}.' -f $inventoryName, $inventoryMatches.Count)
+    }
+
+    return [System.IO.Path]::GetFullPath($inventoryMatches[0].DirectoryName)
+}
+
 $source = [System.IO.Path]::GetFullPath($SourceRoot)
 $ga = [System.IO.Path]::GetFullPath($GaRoot)
-$bundle = [System.IO.Path]::GetFullPath($BundleRoot)
+$bundleInput = [System.IO.Path]::GetFullPath($BundleRoot)
 
 if (-not (Test-Path -LiteralPath $source -PathType Container)) {
     throw ('Source root does not exist: {0}' -f $source)
@@ -75,8 +189,8 @@ if (-not (Test-Path -LiteralPath $source -PathType Container)) {
 if (-not (Test-Path -LiteralPath $ga -PathType Container)) {
     throw ('GA root does not exist: {0}' -f $ga)
 }
-if (-not (Test-Path -LiteralPath $bundle -PathType Container)) {
-    throw ('Protected release bundle root does not exist: {0}' -f $bundle)
+if (-not (Test-Path -LiteralPath $bundleInput)) {
+    throw ('Protected release bundle input does not exist: {0}' -f $bundleInput)
 }
 
 $lockPath = Join-Path $source 'ga-packs\03-authoritative-windows\rc3-release-lock.json'
@@ -96,6 +210,38 @@ if (
 $version = [string]$lock.version
 if ($version -notmatch '^2\.0\.0rc[0-9]+$') {
     throw ('RC release lock version is invalid: {0}' -f $version)
+}
+
+$bundleInputKind = ''
+$bundleArchiveSha256 = $null
+$bundleExtractedByIntake = $false
+$bundleExtractionRoot = $null
+if (Test-Path -LiteralPath $bundleInput -PathType Container) {
+    $bundle = $bundleInput
+    $bundleInputKind = 'directory'
+}
+elseif (Test-Path -LiteralPath $bundleInput -PathType Leaf) {
+    if ([System.IO.Path]::GetExtension($bundleInput) -ine '.zip') {
+        throw 'Protected release bundle input must be a directory or .zip artifact.'
+    }
+    $bundleArchiveSha256 = (
+        Get-FileHash -LiteralPath $bundleInput -Algorithm SHA256 -ErrorAction Stop
+    ).Hash.ToLowerInvariant()
+    $bundleExtractionRoot = Join-Path $ga (
+        'release-inbox\{0}-{1}-{2}' -f
+            $version,
+            $bundleArchiveSha256.Substring(0, 12),
+            ([Guid]::NewGuid().ToString('N'))
+    )
+    $bundle = Expand-ProtectedReleaseArtifactSafely `
+        -ArchivePath $bundleInput `
+        -ExtractionRoot $bundleExtractionRoot `
+        -Version $version
+    $bundleInputKind = 'zip'
+    $bundleExtractedByIntake = $true
+}
+else {
+    throw ('Protected release bundle input is neither a file nor a directory: {0}' -f $bundleInput)
 }
 
 if ([string]::IsNullOrWhiteSpace($Destination)) {
@@ -228,6 +374,11 @@ $report = [ordered]@{
     status = 'RELEASE_CLOSURE_READY'
     version = $version
     release_commit = [string]$lock.release_commit
+    bundle_input = $bundleInput
+    bundle_input_kind = $bundleInputKind
+    bundle_archive_sha256 = $bundleArchiveSha256
+    bundle_extracted_by_intake = $bundleExtractedByIntake
+    bundle_extraction_root = $bundleExtractionRoot
     bundle_root = $bundle
     imported_release_root = $reportedDestination
     import_report = $importReportPath
