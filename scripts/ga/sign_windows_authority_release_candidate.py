@@ -19,6 +19,7 @@ from psmatrix.deployment import verify_windows_worker_package
 from psmatrix.lab_certification import verify_certification_kit
 from psmatrix.lab_provisioning import verify_provisioning_kit
 from psmatrix.release import create_release_manifest, verify_release_manifest
+from psmatrix.signing import sign_bytes, verify_bytes
 from psmatrix.util import atomic_write_json, sha256_file
 
 
@@ -30,6 +31,7 @@ _PRIVATE_MARKERS = (
     b"-----BEGIN EC PRIVATE KEY-----",
     b"-----BEGIN OPENSSH PRIVATE KEY-----",
 )
+_RELEASE_AUTHORITY_CHALLENGE = b"PSMatrix protected RC release signer authority precheck v1\n"
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -128,6 +130,16 @@ def _verify_unsigned_proposal(staging_root: Path, version: str, locked: dict[str
         raise RuntimeError("Unsigned release proposal artifact set differs from release lock")
 
 
+def _verify_private_key_matches_public(private_key: Path, public_key: Path) -> None:
+    try:
+        signature = sign_bytes(_RELEASE_AUTHORITY_CHALLENGE, private_key)
+        matches = verify_bytes(_RELEASE_AUTHORITY_CHALLENGE, signature, public_key)
+    except Exception as exc:
+        raise RuntimeError("Protected release private key could not be validated against the locked release authority") from exc
+    if not matches:
+        raise RuntimeError("Protected release private key does not match the locked release authority")
+
+
 def _scan_private_key_material(root: Path) -> None:
     for path in root.rglob("*"):
         if path.is_file() and any(marker in path.read_bytes() for marker in _PRIVATE_MARKERS):
@@ -181,6 +193,8 @@ def sign(
     actual_public_sha = sha256_file(public_key)
     if actual_public_sha != expected_public_sha:
         raise RuntimeError("Release public key does not match the locked release authority")
+
+    _verify_private_key_matches_public(private_key, public_key)
 
     staging_report_path = staging / f"psmatrix-{version}-windows-authority-staging.json"
     staging_report = _read_json(staging_report_path)
@@ -262,6 +276,7 @@ def sign(
         "release_key_ids": key_ids,
         "locked_artifacts": [locked_artifacts[key] for key in sorted(locked_artifacts)],
         "package_verification": package_verification,
+        "release_private_key_matches_locked_authority": True,
         "signed_release_manifest_verified": True,
         "release_authority_rotated": False,
         "stale_rc2_operation_package_used": False,
