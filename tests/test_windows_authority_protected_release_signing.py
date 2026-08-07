@@ -110,6 +110,7 @@ class WindowsAuthorityProtectedReleaseSigningTests(unittest.TestCase):
             "Remove protected release private key",
             "Independently verify signed release manifest",
             "Enforce private-key-free release bundle",
+            "release_private_key_matches_locked_authority",
         )
         for value in required:
             with self.subTest(value=value):
@@ -119,6 +120,25 @@ class WindowsAuthorityProtectedReleaseSigningTests(unittest.TestCase):
         self.assertNotIn("PSMATRIX_RELEASE_PRIVATE_KEY", prepare)
         self.assertNotIn("production-ga-release-signing", prepare)
         self.assertNotIn("release.private.pem", prepare)
+
+    def test_workflow_initializes_runner_temp_only_after_runner_start(self) -> None:
+        text = WORKFLOW.read_text(encoding="utf-8")
+        required = (
+            "Initialize staging runtime path",
+            "Join-Path $env:RUNNER_TEMP 'psmatrix-windows-authority-rc3-staging'",
+            "Initialize protected signing runtime paths",
+            'PSMATRIX_RELEASE_KEY_ROOT=$RUNNER_TEMP/psmatrix-release-keys',
+            'PSMATRIX_RC3_SIGNED=$RUNNER_TEMP/psmatrix-rc3-protected-signing',
+            'PSMATRIX_RC3_BUNDLE=$RUNNER_TEMP/psmatrix-2.0.0rc3-protected-release',
+            'path: ${{ runner.temp }}\\psmatrix-windows-authority-rc3-staging',
+            'path: ${{ runner.temp }}/psmatrix-2.0.0rc3-protected-release',
+        )
+        for value in required:
+            with self.subTest(value=value):
+                self.assertIn(value, text)
+
+        self.assertNotIn("    env:\n      PSMATRIX_RC3_STAGE: ${{ runner.temp }}", text)
+        self.assertNotIn("    env:\n      PSMATRIX_RELEASE_KEY_ROOT: ${{ runner.temp }}", text)
 
 
 if __name__ == "__main__":
