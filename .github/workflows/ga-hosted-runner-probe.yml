@@ -1,0 +1,42 @@
+name: production-ga-hosted-runner-probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-ga-hosted-runner-probe
+  cancel-in-progress: false
+
+jobs:
+  ubuntu-probe:
+    name: Ubuntu hosted runner probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Confirm Ubuntu runner assignment
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "runner_os=$RUNNER_OS"
+          echo "runner_arch=$RUNNER_ARCH"
+          echo "runner_name=$RUNNER_NAME"
+          [[ "$RUNNER_OS" == "Linux" ]]
+
+  windows-probe:
+    name: Windows hosted runner probe
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - name: Confirm Windows runner assignment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host "runner_os=$env:RUNNER_OS"
+          Write-Host "runner_arch=$env:RUNNER_ARCH"
+          Write-Host "runner_name=$env:RUNNER_NAME"
+          if ($env:RUNNER_OS -ne 'Windows') {
+              throw "Expected Windows runner; got $env:RUNNER_OS"
+          }
