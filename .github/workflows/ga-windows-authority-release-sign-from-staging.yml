@@ -1,0 +1,347 @@
+name: production-ga-windows-authority-release-sign-from-staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_commit:
+        description: Exact reviewed Windows Authority RC3 commit
+        required: true
+        default: "34e87c60885001f8dd11744b8bf194a59e51bd1f"
+        type: string
+      staging_run_id:
+        description: Successful self-hosted locked RC3 staging workflow run ID
+        required: true
+        default: "31189374564"
+        type: string
+      staging_control_head:
+        description: Exact control head that produced the locked staging artifact
+        required: true
+        default: "af4cef4a959941d6e35dc0b6ae88b183f35eadbb"
+        type: string
+
+concurrency:
+  group: production-ga-windows-authority-release-sign-from-staging
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  sign-locked-staging:
+    name: Sign verified locked RC3 staging with protected release authority
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production-ga-release-signing
+    permissions:
+      contents: read
+      actions: read
+
+    steps:
+      - name: Initialize protected signing runtime paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "${RUNNER_TEMP:-}" ]] || { echo 'RUNNER_TEMP is unavailable.' >&2; exit 1; }
+          {
+            echo "PSMATRIX_RELEASE_KEY_ROOT=$RUNNER_TEMP/psmatrix-release-keys"
+            echo "PSMATRIX_RC3_SIGNED=$RUNNER_TEMP/psmatrix-rc3-protected-signing"
+            echo "PSMATRIX_RC3_BUNDLE=$RUNNER_TEMP/psmatrix-2.0.0rc3-protected-release"
+          } >> "$GITHUB_ENV"
+
+      - name: Check out signing controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out exact reviewed release source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.release_commit }}
+          path: release-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Validate staging run provenance before download
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGING_RUN_ID: ${{ inputs.staging_run_id }}
+          STAGING_CONTROL_HEAD: ${{ inputs.staging_control_head }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.request
+
+          repo = 'Naveax/PSMatrix'
+          run_id = os.environ['STAGING_RUN_ID']
+          expected_head = os.environ['STAGING_CONTROL_HEAD'].lower()
+          if not re.fullmatch(r'[0-9]+', run_id):
+              raise SystemExit('staging_run_id must contain only decimal digits')
+          if not re.fullmatch(r'[0-9a-f]{40}', expected_head):
+              raise SystemExit('staging_control_head must be 40 lowercase hex characters')
+
+          token = os.environ['GH_TOKEN']
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {token}',
+              'X-GitHub-Api-Version': '2026-03-10',
+              'User-Agent': 'psmatrix-protected-release-signing',
+          }
+
+          def fetch(path):
+              request = urllib.request.Request(f'https://api.github.com/repos/{repo}/{path}', headers=headers)
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+
+          run = fetch(f'actions/runs/{run_id}')
+          if run.get('name') != 'production-ga-windows-authority-rc3-staging-selfhosted':
+              raise SystemExit(f'unexpected staging workflow name: {run.get("name")!r}')
+          if run.get('event') != 'workflow_dispatch':
+              raise SystemExit(f'unexpected staging workflow event: {run.get("event")!r}')
+          if run.get('status') != 'completed' or run.get('conclusion') != 'success':
+              raise SystemExit('staging workflow run is not completed successfully')
+          if (run.get('head_sha') or '').lower() != expected_head:
+              raise SystemExit('staging workflow head does not match staging_control_head')
+
+          artifacts = fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts', [])
+          matching = [item for item in artifacts if item.get('name') == 'windows-authority-rc3-locked-staging' and not item.get('expired')]
+          if len(matching) != 1:
+              raise SystemExit(f'expected exactly one non-expired locked staging artifact; found {len(matching)}')
+          artifact = matching[0]
+          print(f'staging_run_provenance=PASS')
+          print(f'staging_artifact_id={artifact.get("id")}')
+          print(f'staging_artifact_digest={artifact.get("digest")}')
+          PY
+
+      - name: Download exact locked unsigned staging
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-authority-rc3-locked-staging
+          path: staging
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.staging_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Enforce exact reviewed staging artifact lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          control = Path('control')
+          staging = Path('staging')
+          lock = json.loads((control / 'ga-packs/03-authoritative-windows/rc3-release-lock.json').read_text(encoding='utf-8'))
+          if lock.get('release_commit') != '${{ inputs.release_commit }}':
+              raise SystemExit('release_commit does not match reviewed RC3 release lock')
+          if lock.get('version') != '2.0.0rc3':
+              raise SystemExit('reviewed RC3 release lock version mismatch')
+
+          expected_names = {item['name'] for item in lock['artifacts']}
+          if len(expected_names) != 6:
+              raise SystemExit('reviewed RC3 release lock does not contain exactly six artifacts')
+          for item in lock['artifacts']:
+              path = staging / item['name']
+              if not path.is_file():
+                  raise SystemExit(f'locked staging artifact is missing: {item["name"]}')
+              data = path.read_bytes()
+              actual_hash = hashlib.sha256(data).hexdigest()
+              if actual_hash != item['sha256'] or len(data) != item['size']:
+                  raise SystemExit(f'locked staging artifact bytes differ: {item["name"]}')
+          report_path = staging / 'psmatrix-2.0.0rc3-windows-authority-staging.json'
+          report = json.loads(report_path.read_text(encoding='utf-8'))
+          if report.get('status') != 'READY_FOR_PROTECTED_SIGNING':
+              raise SystemExit('staging report is not READY_FOR_PROTECTED_SIGNING')
+          if report.get('release_commit') != lock['release_commit'] or report.get('version') != lock['version']:
+              raise SystemExit('staging report identity differs from release lock')
+          for field in ('private_key_read','signed_release_manifest_written','downloads_files','extracts_existing_operation_package','authoritative','ga_eligible'):
+              if bool(report.get(field)):
+                  raise SystemExit(f'unsafe staging field is true: {field}')
+          print('locked_staging_bytes=PASS')
+          PY
+
+      - name: Validate protected signer authority inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          root = Path('control')
+          lock = json.loads((root / 'ga-packs/03-authoritative-windows/rc3-release-lock.json').read_text(encoding='utf-8'))
+          if '${{ inputs.release_commit }}' != lock['release_commit']:
+              raise SystemExit('release_commit does not match the reviewed RC3 release lock')
+          public = root / lock['release_public_key']['path']
+          if hashlib.sha256(public.read_bytes()).hexdigest() != lock['release_public_key']['sha256']:
+              raise SystemExit('release public key does not match locked release authority')
+          print('locked_release_authority=PASS')
+          PY
+
+      - name: Materialize protected release private key
+        shell: bash
+        env:
+          RELEASE_PRIVATE_KEY: ${{ secrets.PSMATRIX_RELEASE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$RELEASE_PRIVATE_KEY" ]] || { echo 'PSMATRIX_RELEASE_PRIVATE_KEY is missing from production-ga-release-signing.' >&2; exit 1; }
+          rm -rf "$PSMATRIX_RELEASE_KEY_ROOT"
+          install -d -m 0700 "$PSMATRIX_RELEASE_KEY_ROOT"
+          printf '%s\n' "$RELEASE_PRIVATE_KEY" > "$PSMATRIX_RELEASE_KEY_ROOT/release.private.pem"
+          chmod 0600 "$PSMATRIX_RELEASE_KEY_ROOT/release.private.pem"
+
+      - name: Sign exact locked RC3 artifact set
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$PSMATRIX_RC3_SIGNED"
+          PYTHONPATH="$GITHUB_WORKSPACE/control/src" python control/scripts/ga/sign_windows_authority_release_candidate.py \
+            --source-root release-source \
+            --staging-root staging \
+            --release-lock control/ga-packs/03-authoritative-windows/rc3-release-lock.json \
+            --release-private-key "$PSMATRIX_RELEASE_KEY_ROOT/release.private.pem" \
+            --release-public-key control/release-assets/2.0.0rc2/psmatrix-2.0.0rc2-release-public.pem \
+            --output-root "$PSMATRIX_RC3_SIGNED"
+
+      - name: Remove protected release private key
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          shred -u "$PSMATRIX_RELEASE_KEY_ROOT/release.private.pem" 2>/dev/null || rm -f "$PSMATRIX_RELEASE_KEY_ROOT/release.private.pem"
+
+      - name: Independently verify signed release manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ ! -e "$PSMATRIX_RELEASE_KEY_ROOT/release.private.pem" ]] || { echo 'release private key still exists before independent verification' >&2; exit 1; }
+          PYTHONPATH="$GITHUB_WORKSPACE/control/src" python -m psmatrix.cli release verify \
+            "$PSMATRIX_RC3_SIGNED/psmatrix-2.0.0rc3-release.json" \
+            --artifact-dir staging \
+            --public-key control/release-assets/2.0.0rc2/psmatrix-2.0.0rc2-release-public.pem \
+            > "$PSMATRIX_RC3_SIGNED/psmatrix-2.0.0rc3-release-independent-verification.json"
+          python - "$PSMATRIX_RC3_SIGNED/psmatrix-2.0.0rc3-release-independent-verification.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          value = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+          if value.get('valid') is not True or (value.get('signature') or {}).get('valid') is not True or not (value.get('signature') or {}).get('key_ids'):
+              raise SystemExit('independent release verification did not pass')
+          print('independent_release_verification=PASS')
+          PY
+
+      - name: Enforce private-key-free release bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ ! -e "$PSMATRIX_RELEASE_KEY_ROOT/release.private.pem" ]] || { echo 'release private key remains present' >&2; exit 1; }
+          python - "$PSMATRIX_RC3_SIGNED" staging <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          roots = [Path(item).resolve() for item in sys.argv[1:]]
+          markers = (b'-----BEGIN PRIVATE KEY-----', b'-----BEGIN RSA PRIVATE KEY-----', b'-----BEGIN EC PRIVATE KEY-----', b'-----BEGIN OPENSSH PRIVATE KEY-----')
+          for root in roots:
+              for path in root.rglob('*'):
+                  if path.is_file() and any(marker in path.read_bytes() for marker in markers):
+                      raise SystemExit(f'private-key material found in release artifact: {path}')
+          status = json.loads((roots[0] / 'psmatrix-2.0.0rc3-protected-release-signing-status.json').read_text(encoding='utf-8'))
+          if status.get('status') != 'PASS' or status.get('signed_release_manifest_verified') is not True:
+              raise SystemExit('protected release signing status is not PASS')
+          if status.get('release_private_key_matches_locked_authority') is not True:
+              raise SystemExit('protected release signing did not prove private-key continuity')
+          if status.get('release_authority_rotated') is not False or status.get('stale_rc2_operation_package_used') is not False:
+              raise SystemExit('protected release signing violated authority/binding policy')
+          print('private_key_free_release_bundle=PASS')
+          PY
+
+      - name: Assemble canonical RC3 release bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$PSMATRIX_RC3_BUNDLE"
+          install -d -m 0755 "$PSMATRIX_RC3_BUNDLE"
+          python - "$PSMATRIX_RC3_BUNDLE" staging "$PSMATRIX_RC3_SIGNED" control/ga-packs/03-authoritative-windows/rc3-release-lock.json <<'PY'
+          import hashlib
+          import json
+          import shutil
+          import sys
+          from pathlib import Path
+          bundle, staging, signed, lock_path = map(Path, sys.argv[1:])
+          lock = json.loads(lock_path.read_text(encoding='utf-8'))
+          copied = []
+          for item in lock['artifacts']:
+              source = staging / item['name']
+              target = bundle / item['name']
+              shutil.copyfile(source, target)
+              data = target.read_bytes()
+              if hashlib.sha256(data).hexdigest() != item['sha256'] or len(data) != item['size']:
+                  raise SystemExit(f'bundle artifact changed during copy: {item["name"]}')
+              copied.append(target)
+          for name in (
+              'psmatrix-2.0.0rc3-release.json',
+              'psmatrix-2.0.0rc3-release-public.pem',
+              'psmatrix-2.0.0rc3-release-verification.json',
+              'psmatrix-2.0.0rc3-release-independent-verification.json',
+              'psmatrix-2.0.0rc3-protected-release-signing-status.json',
+          ):
+              target = bundle / name
+              shutil.copyfile(signed / name, target)
+              copied.append(target)
+          inventory = {
+              'schema': 1,
+              'kind': 'psmatrix.windows-authority-protected-release-bundle',
+              'status': 'PASS',
+              'version': lock['version'],
+              'release_commit': lock['release_commit'],
+              'staging_run_id': int('${{ inputs.staging_run_id }}'),
+              'staging_control_head': '${{ inputs.staging_control_head }}',
+              'release_public_key_sha256': lock['release_public_key']['sha256'],
+              'files': [
+                  {'name': path.name, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'size': path.stat().st_size}
+                  for path in sorted(copied, key=lambda item: item.name)
+              ],
+              'private_key_material_absent': True,
+              'release_authority_rotated': False,
+              'stale_rc2_operation_package_used': False,
+              'authoritative': False,
+              'ga_eligible': False,
+          }
+          inventory_path = bundle / 'psmatrix-2.0.0rc3-protected-release-bundle.json'
+          inventory_path.write_text(json.dumps(inventory, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          public_files = sorted([*copied, inventory_path], key=lambda item: item.name)
+          (bundle / 'SHA256SUMS.txt').write_text(
+              ''.join(f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n' for path in public_files),
+              encoding='utf-8',
+          )
+          print(json.dumps(inventory, indent=2, sort_keys=True))
+          PY
+
+      - name: Remove remaining protected key files
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          shred -u "$PSMATRIX_RELEASE_KEY_ROOT/release.private.pem" 2>/dev/null || rm -f "$PSMATRIX_RELEASE_KEY_ROOT/release.private.pem"
+          rmdir "$PSMATRIX_RELEASE_KEY_ROOT" 2>/dev/null || true
+
+      - name: Upload protected RC3 release bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-2.0.0rc3-protected-release
+          path: ${{ runner.temp }}/psmatrix-2.0.0rc3-protected-release
+          if-no-files-found: error
+          retention-days: 90
