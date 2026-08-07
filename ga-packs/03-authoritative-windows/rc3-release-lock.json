@@ -1,0 +1,62 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-authority-release-staging-lock",
+  "pack": "03-authoritative-windows",
+  "version": "2.0.0rc3",
+  "release_commit": "34e87c60885001f8dd11744b8bf194a59e51bd1f",
+  "source_date_epoch": 0,
+  "release_public_key": {
+    "path": "release-assets/2.0.0rc2/psmatrix-2.0.0rc2-release-public.pem",
+    "sha256": "ebe3041f5e24b3d9fc21d50a3a33585e399ae505271fdf8900a0b49750188b83"
+  },
+  "artifacts": [
+    {
+      "name": "psmatrix-2.0.0rc3-py3-none-any.whl",
+      "sha256": "3350b280e62a2bd023a013c6853f852f7aea898d23e8db1c0ce915ccf7719fac",
+      "size": 347574
+    },
+    {
+      "name": "psmatrix-2.0.0rc3-source.tar.gz",
+      "sha256": "3f88bf831aeea5c63f943444fb7e9918dd7b2d07acea77924f0a0dba909d4dea",
+      "size": 7481594
+    },
+    {
+      "name": "psmatrix-2.0.0rc3-source.zip",
+      "sha256": "3ea0d3efdaf01b0901f30a90a2fa0389f88774475355621c81d582ea2df35039",
+      "size": 7708170
+    },
+    {
+      "name": "psmatrix-2.0.0rc3-windows-certification-kit.zip",
+      "sha256": "aff9686b75eb4cd3f8dc89975a0ed17316dbdd9842054b827b1ebefe781b5366",
+      "size": 7437
+    },
+    {
+      "name": "psmatrix-2.0.0rc3-windows-provisioning-kit.zip",
+      "sha256": "7fa3cce5abaf3a08b2f0232993645a4b8aa53aa347299e7df01922253a0e91f4",
+      "size": 13622
+    },
+    {
+      "name": "psmatrix-2.0.0rc3-windows-workers.zip",
+      "sha256": "e8643553d26909a143f0639a4c0d26c6d691b7ba3b694f17db9e0395ec0ca7c4",
+      "size": 355228
+    }
+  ],
+  "review_evidence": {
+    "builder_status": "READY_FOR_PROTECTED_SIGNING",
+    "artifact_count": 6,
+    "all_reproducible": true,
+    "package_verification": true,
+    "private_key_read": false,
+    "signed_release_manifest_written": false,
+    "downloads_files": false,
+    "extracts_existing_operation_package": false,
+    "authoritative": false,
+    "ga_eligible": false
+  },
+  "safety": {
+    "stale_rc2_operation_package_allowed": false,
+    "release_authority_rotation_allowed": false,
+    "private_key_in_repository_allowed": false,
+    "sign_without_exact_hash_match_allowed": false
+  }
+}
