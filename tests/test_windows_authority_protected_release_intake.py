@@ -60,6 +60,32 @@ class WindowsAuthorityProtectedReleaseIntakeTests(unittest.TestCase):
         self.assertLess(canonical, closure)
         self.assertLess(closure, final_status)
 
+    def test_intake_accepts_artifact_zip_only_through_bounded_safe_extraction(self) -> None:
+        text = SCRIPT.read_text(encoding="utf-8")
+        required = (
+            "Expand-ProtectedReleaseArtifactSafely",
+            "[System.IO.Compression.ZipFile]::OpenRead",
+            "Protected release artifact ZIP entry count is outside the accepted boundary",
+            "Protected release artifact ZIP exceeds the 128 MiB expanded-size boundary.",
+            "Protected release artifact ZIP path escapes the isolated extraction root",
+            "Protected release artifact ZIP contains a duplicate extraction target",
+            "must contain exactly one {0}; found {1}",
+            "bundle_input_kind = $bundleInputKind",
+            "bundle_archive_sha256 = $bundleArchiveSha256",
+            "bundle_extracted_by_intake = $bundleExtractedByIntake",
+            "release-inbox\\{0}-{1}-{2}",
+        )
+        for value in required:
+            with self.subTest(value=value):
+                self.assertIn(value, text)
+
+        self.assertNotIn("Expand-Archive", text)
+        self.assertNotIn("ExtractToDirectory", text)
+
+        archive_open = text.index("[System.IO.Compression.ZipFile]::OpenRead")
+        importer = text.index("import_windows_authority_protected_release.py")
+        self.assertLess(archive_open, importer)
+
     def test_source_preflight_tracks_protected_release_intake(self) -> None:
         text = PREFLIGHT.read_text(encoding="utf-8")
         required = (
