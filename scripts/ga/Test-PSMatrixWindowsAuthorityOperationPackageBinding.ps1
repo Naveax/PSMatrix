@@ -285,7 +285,7 @@ if (Test-Path -LiteralPath $metadataFile -PathType Leaf) {
 
         foreach ($expectation in $bindingExpectations) {
             $expectedDigest = [string]$expectation.digest
-            $matches = @(
+            $matchingEntries = @(
                 $zipEntries |
                     Where-Object {
                         $_.name.EndsWith([string]$expectation.suffix, [System.StringComparison]::OrdinalIgnoreCase) -and
@@ -294,9 +294,9 @@ if (Test-Path -LiteralPath $metadataFile -PathType Leaf) {
             )
             $embeddedBindingMatches[$expectation.key] = [ordered]@{
                 expected_sha256 = if ($expectedDigest -match '^[0-9a-f]{64}$') { $expectedDigest } else { $null }
-                matching_entry_count = $matches.Count
-                matching_entries = @($matches | ForEach-Object { $_.full_name })
-                match = ($expectedDigest -match '^[0-9a-f]{64}$' -and $matches.Count -eq 1)
+                matching_entry_count = $matchingEntries.Count
+                matching_entries = @($matchingEntries | ForEach-Object { $_.full_name })
+                match = ($expectedDigest -match '^[0-9a-f]{64}$' -and $matchingEntries.Count -eq 1)
             }
         }
     }
