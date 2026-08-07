@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-authority-media-canonicalization-contract",
+  "pack": "03-authoritative-windows",
+  "input_kind": "psmatrix.windows-authority-media-inventory",
+  "output_kind": "psmatrix.windows-authority-media-inventory",
+  "release_manifest_role": "signed-release-manifest",
+  "release_bound_roles": [
+    "source-archive",
+    "windows-workers-package",
+    "windows-certification-kit",
+    "windows-provisioning-kit"
+  ],
+  "rules": {
+    "identical_manifest_copies_share_one_identity": true,
+    "different_manifest_identities_are_ambiguous": true,
+    "prefer_source_release_assets_copy": true,
+    "release_bound_filename_must_be_declared": true,
+    "release_bound_sha256_must_match": true,
+    "release_bound_size_must_match": true,
+    "legacy_or_cross_version_release_artifacts_are_excluded": true,
+    "recompute_role_readiness_after_filtering": true
+  },
+  "safety": {
+    "downloads_files": false,
+    "opens_secret_bundles": false,
+    "extracts_archives": false,
+    "creates_virtual_machines": false,
+    "creates_checkpoints": false,
+    "writes_validator_input_files": false,
+    "modifies_candidate_files": false,
+    "authoritative": false,
+    "ga_eligible": false
+  }
+}
