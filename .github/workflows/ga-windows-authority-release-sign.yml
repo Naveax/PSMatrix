@@ -23,6 +23,8 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    env:
+      PSMATRIX_RC3_STAGE: ${{ runner.temp }}\psmatrix-windows-authority-rc3-staging
 
     steps:
       - name: Check out signing controls
@@ -59,40 +61,34 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $lockPath = Join-Path $env:GITHUB_WORKSPACE 'control\ga-packs\03-authoritative-windows\rc3-release-lock.json'
-          $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+          $lock = Get-Content -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'control\ga-packs\03-authoritative-windows\rc3-release-lock.json') -Raw | ConvertFrom-Json
           $requested = '${{ inputs.release_commit }}'.ToLowerInvariant()
           if ($requested -notmatch '^[0-9a-f]{40}$') { throw 'release_commit must be 40 lowercase hex characters.' }
           if ([string]$lock.release_commit -ne $requested) { throw 'release_commit does not match the reviewed RC3 release lock.' }
-          $actual = (git -C (Join-Path $env:GITHUB_WORKSPACE 'release-source') rev-parse HEAD).Trim().ToLowerInvariant()
+          $releaseSource = Join-Path $env:GITHUB_WORKSPACE 'release-source'
+          $actual = (git -C $releaseSource rev-parse HEAD).Trim().ToLowerInvariant()
           if ($actual -ne $requested) { throw 'Release-source checkout does not match release_commit.' }
-          if (-not [string]::IsNullOrWhiteSpace(((git -C (Join-Path $env:GITHUB_WORKSPACE 'release-source') status --porcelain) -join [Environment]::NewLine))) {
-              throw 'Release-source checkout is not clean.'
-          }
+          if (-not [string]::IsNullOrWhiteSpace(((git -C $releaseSource status --porcelain) -join [Environment]::NewLine))) { throw 'Release-source checkout is not clean.' }
           if ([string]$lock.version -ne '2.0.0rc3') { throw 'Reviewed release lock version is not 2.0.0rc3.' }
 
       - name: Deterministically rebuild unsigned RC3 staging
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $stage = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-authority-rc3-staging'
-          if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
+          if (Test-Path -LiteralPath $env:PSMATRIX_RC3_STAGE) { Remove-Item -LiteralPath $env:PSMATRIX_RC3_STAGE -Recurse -Force }
           python `
             (Join-Path $env:GITHUB_WORKSPACE 'release-source\scripts\ga\build_windows_authority_release_candidate.py') `
             --expected-head '${{ inputs.release_commit }}' `
-            --output-root $stage
+            --output-root $env:PSMATRIX_RC3_STAGE
           if ($LASTEXITCODE -ne 0) { throw 'Deterministic RC3 staging rebuild failed.' }
-          "PSMATRIX_RC3_STAGE=$stage" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Enforce exact reviewed artifact lock
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $lock = Get-Content -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'control\ga-packs\03-authoritative-windows\rc3-release-lock.json') -Raw | ConvertFrom-Json
-          $reportPath = Join-Path $env:PSMATRIX_RC3_STAGE 'psmatrix-2.0.0rc3-windows-authority-staging.json'
-          $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
-          if ($report.status -ne 'READY_FOR_PROTECTED_SIGNING') { throw 'Staging report is not READY_FOR_PROTECTED_SIGNING.' }
-          if ($report.release_commit -ne $lock.release_commit -or $report.version -ne $lock.version) { throw 'Staging identity differs from release lock.' }
+          $report = Get-Content -LiteralPath (Join-Path $env:PSMATRIX_RC3_STAGE 'psmatrix-2.0.0rc3-windows-authority-staging.json') -Raw | ConvertFrom-Json
+          if ($report.status -ne 'READY_FOR_PROTECTED_SIGNING' -or $report.release_commit -ne $lock.release_commit -or $report.version -ne $lock.version) { throw 'Staging identity/status differs from release lock.' }
           foreach ($field in @('private_key_read','signed_release_manifest_written','downloads_files','extracts_existing_operation_package','authoritative','ga_eligible')) {
               if ([bool]$report.$field) { throw "Unsafe staging field is true: $field" }
           }
@@ -101,16 +97,12 @@ jobs:
               $matches = @($report.artifacts | Where-Object { $_.name -eq $expected.name })
               if ($matches.Count -ne 1) { throw "Staging report does not contain exactly one locked artifact: $($expected.name)" }
               $observed = $matches[0]
-              if ($observed.sha256 -ne $expected.sha256 -or [int64]$observed.size -ne [int64]$expected.size) {
-                  throw "Staging report metadata differs from release lock: $($expected.name)"
-              }
+              if ($observed.sha256 -ne $expected.sha256 -or [int64]$observed.size -ne [int64]$expected.size) { throw "Staging report metadata differs from release lock: $($expected.name)" }
               $path = Join-Path $env:PSMATRIX_RC3_STAGE $expected.name
               if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Locked artifact is missing: $($expected.name)" }
               $actualHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
               $actualSize = (Get-Item -LiteralPath $path).Length
-              if ($actualHash -ne $expected.sha256 -or [int64]$actualSize -ne [int64]$expected.size) {
-                  throw "Locked artifact bytes differ from reviewed evidence: $($expected.name)"
-              }
+              if ($actualHash -ne $expected.sha256 -or [int64]$actualSize -ne [int64]$expected.size) { throw "Locked artifact bytes differ from reviewed evidence: $($expected.name)" }
           }
           Write-Host 'locked_rc3_artifact_set=PASS'
 
@@ -130,6 +122,10 @@ jobs:
     environment: production-ga-release-signing
     permissions:
       contents: read
+    env:
+      PSMATRIX_RELEASE_KEY_ROOT: ${{ runner.temp }}/psmatrix-release-keys
+      PSMATRIX_RC3_SIGNED: ${{ runner.temp }}/psmatrix-rc3-protected-signing
+      PSMATRIX_RC3_BUNDLE: ${{ runner.temp }}/psmatrix-2.0.0rc3-protected-release
 
     steps:
       - name: Check out signing controls
@@ -166,17 +162,12 @@ jobs:
           import hashlib
           import json
           from pathlib import Path
-
           root = Path('control')
           lock = json.loads((root / 'ga-packs/03-authoritative-windows/rc3-release-lock.json').read_text(encoding='utf-8'))
-          requested = '${{ inputs.release_commit }}'
-          if requested != lock['release_commit']:
+          if '${{ inputs.release_commit }}' != lock['release_commit']:
               raise SystemExit('release_commit does not match the reviewed RC3 release lock')
           public = root / lock['release_public_key']['path']
-          if not public.is_file():
-              raise SystemExit('locked release public key is missing')
-          digest = hashlib.sha256(public.read_bytes()).hexdigest()
-          if digest != lock['release_public_key']['sha256']:
+          if hashlib.sha256(public.read_bytes()).hexdigest() != lock['release_public_key']['sha256']:
               raise SystemExit('release public key does not match locked release authority')
           print('locked_release_authority=PASS')
           PY
@@ -188,36 +179,30 @@ jobs:
         run: |
           set -euo pipefail
           [[ -n "$RELEASE_PRIVATE_KEY" ]] || { echo 'PSMATRIX_RELEASE_PRIVATE_KEY is missing from production-ga-release-signing.' >&2; exit 1; }
-          key_root="$RUNNER_TEMP/psmatrix-release-keys"
-          rm -rf "$key_root"
-          install -d -m 0700 "$key_root"
-          printf '%s\n' "$RELEASE_PRIVATE_KEY" > "$key_root/release.private.pem"
-          chmod 0600 "$key_root/release.private.pem"
-          echo "PSMATRIX_RELEASE_KEY_ROOT=$key_root" >> "$GITHUB_ENV"
+          rm -rf "$PSMATRIX_RELEASE_KEY_ROOT"
+          install -d -m 0700 "$PSMATRIX_RELEASE_KEY_ROOT"
+          printf '%s\n' "$RELEASE_PRIVATE_KEY" > "$PSMATRIX_RELEASE_KEY_ROOT/release.private.pem"
+          chmod 0600 "$PSMATRIX_RELEASE_KEY_ROOT/release.private.pem"
 
       - name: Sign exact locked RC3 artifact set
         shell: bash
         run: |
           set -euo pipefail
-          output="$RUNNER_TEMP/psmatrix-rc3-protected-signing"
-          rm -rf "$output"
+          rm -rf "$PSMATRIX_RC3_SIGNED"
           PYTHONPATH="$GITHUB_WORKSPACE/control/src" python control/scripts/ga/sign_windows_authority_release_candidate.py \
             --source-root release-source \
             --staging-root staging \
             --release-lock control/ga-packs/03-authoritative-windows/rc3-release-lock.json \
             --release-private-key "$PSMATRIX_RELEASE_KEY_ROOT/release.private.pem" \
             --release-public-key control/release-assets/2.0.0rc2/psmatrix-2.0.0rc2-release-public.pem \
-            --output-root "$output"
-          echo "PSMATRIX_RC3_SIGNED=$output" >> "$GITHUB_ENV"
+            --output-root "$PSMATRIX_RC3_SIGNED"
 
       - name: Remove protected release private key
         if: always()
         shell: bash
         run: |
           set +e
-          if [[ -n "${PSMATRIX_RELEASE_KEY_ROOT:-}" ]]; then
-            shred -u "$PSMATRIX_RELEASE_KEY_ROOT/release.private.pem" 2>/dev/null || rm -f "$PSMATRIX_RELEASE_KEY_ROOT/release.private.pem"
-          fi
+          shred -u "$PSMATRIX_RELEASE_KEY_ROOT/release.private.pem" 2>/dev/null || rm -f "$PSMATRIX_RELEASE_KEY_ROOT/release.private.pem"
 
       - name: Independently verify signed release manifest
         shell: bash
@@ -234,11 +219,8 @@ jobs:
           import sys
           from pathlib import Path
           value = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
-          if value.get('valid') is not True:
+          if value.get('valid') is not True or (value.get('signature') or {}).get('valid') is not True or not (value.get('signature') or {}).get('key_ids'):
               raise SystemExit('independent release verification did not pass')
-          signature = value.get('signature') or {}
-          if signature.get('valid') is not True or not signature.get('key_ids'):
-              raise SystemExit('independent release signature verification did not pass')
           print('independent_release_verification=PASS')
           PY
 
@@ -251,14 +233,8 @@ jobs:
           import json
           import sys
           from pathlib import Path
-
           roots = [Path(item).resolve() for item in sys.argv[1:]]
-          markers = (
-              b'-----BEGIN PRIVATE KEY-----',
-              b'-----BEGIN RSA PRIVATE KEY-----',
-              b'-----BEGIN EC PRIVATE KEY-----',
-              b'-----BEGIN OPENSSH PRIVATE KEY-----',
-          )
+          markers = (b'-----BEGIN PRIVATE KEY-----', b'-----BEGIN RSA PRIVATE KEY-----', b'-----BEGIN EC PRIVATE KEY-----', b'-----BEGIN OPENSSH PRIVATE KEY-----')
           for root in roots:
               for path in root.rglob('*'):
                   if path.is_file() and any(marker in path.read_bytes() for marker in markers):
@@ -275,16 +251,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bundle="$RUNNER_TEMP/psmatrix-2.0.0rc3-protected-release"
-          rm -rf "$bundle"
-          install -d -m 0755 "$bundle"
-          python - "$bundle" staging "$PSMATRIX_RC3_SIGNED" control/ga-packs/03-authoritative-windows/rc3-release-lock.json <<'PY'
+          rm -rf "$PSMATRIX_RC3_BUNDLE"
+          install -d -m 0755 "$PSMATRIX_RC3_BUNDLE"
+          python - "$PSMATRIX_RC3_BUNDLE" staging "$PSMATRIX_RC3_SIGNED" control/ga-packs/03-authoritative-windows/rc3-release-lock.json <<'PY'
           import hashlib
           import json
           import shutil
           import sys
           from pathlib import Path
-
           bundle, staging, signed, lock_path = map(Path, sys.argv[1:])
           lock = json.loads(lock_path.read_text(encoding='utf-8'))
           copied = []
@@ -293,8 +267,7 @@ jobs:
               target = bundle / item['name']
               shutil.copyfile(source, target)
               data = target.read_bytes()
-              digest = hashlib.sha256(data).hexdigest()
-              if digest != item['sha256'] or len(data) != item['size']:
+              if hashlib.sha256(data).hexdigest() != item['sha256'] or len(data) != item['size']:
                   raise SystemExit(f'bundle artifact changed during copy: {item["name"]}')
               copied.append(target)
           for name in (
@@ -304,9 +277,8 @@ jobs:
               'psmatrix-2.0.0rc3-release-independent-verification.json',
               'psmatrix-2.0.0rc3-protected-release-signing-status.json',
           ):
-              source = signed / name
               target = bundle / name
-              shutil.copyfile(source, target)
+              shutil.copyfile(signed / name, target)
               copied.append(target)
           inventory = {
               'schema': 1,
@@ -327,22 +299,21 @@ jobs:
           }
           inventory_path = bundle / 'psmatrix-2.0.0rc3-protected-release-bundle.json'
           inventory_path.write_text(json.dumps(inventory, indent=2, sort_keys=True) + '\n', encoding='utf-8')
-          sums = bundle / 'SHA256SUMS.txt'
           public_files = sorted([*copied, inventory_path], key=lambda item: item.name)
-          sums.write_text(''.join(f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n' for path in public_files), encoding='utf-8')
+          (bundle / 'SHA256SUMS.txt').write_text(
+              ''.join(f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n' for path in public_files),
+              encoding='utf-8',
+          )
           print(json.dumps(inventory, indent=2, sort_keys=True))
           PY
-          echo "PSMATRIX_RC3_BUNDLE=$bundle" >> "$GITHUB_ENV"
 
       - name: Remove remaining protected key files
         if: always()
         shell: bash
         run: |
           set +e
-          if [[ -n "${PSMATRIX_RELEASE_KEY_ROOT:-}" ]]; then
-            shred -u "$PSMATRIX_RELEASE_KEY_ROOT/release.private.pem" 2>/dev/null || rm -f "$PSMATRIX_RELEASE_KEY_ROOT/release.private.pem"
-            rmdir "$PSMATRIX_RELEASE_KEY_ROOT" 2>/dev/null || true
-          fi
+          shred -u "$PSMATRIX_RELEASE_KEY_ROOT/release.private.pem" 2>/dev/null || rm -f "$PSMATRIX_RELEASE_KEY_ROOT/release.private.pem"
+          rmdir "$PSMATRIX_RELEASE_KEY_ROOT" 2>/dev/null || true
 
       - name: Upload protected RC3 release bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
