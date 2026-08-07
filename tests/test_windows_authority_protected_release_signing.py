@@ -63,8 +63,11 @@ class WindowsAuthorityProtectedReleaseSigningTests(unittest.TestCase):
         required = (
             "windows-authority-release-staging-lock",
             "Release public key does not match the locked release authority",
+            "Protected release private key does not match the locked release authority",
+            "_verify_private_key_matches_public(private_key, public_key)",
             "Locked staging artifact SHA-256 mismatch",
             "Signed release manifest verification did not pass",
+            "release_private_key_matches_locked_authority\": True",
             "release_authority_rotated\": False",
             "stale_rc2_operation_package_used\": False",
             "private_key_copied_to_output\": False",
@@ -73,6 +76,10 @@ class WindowsAuthorityProtectedReleaseSigningTests(unittest.TestCase):
         for value in required:
             with self.subTest(value=value):
                 self.assertIn(value, text)
+
+        precheck = text.index("_verify_private_key_matches_public(private_key, public_key)")
+        manifest_write = text.index('manifest_path = output / f"psmatrix-{version}-release.json"')
+        self.assertLess(precheck, manifest_write)
 
         forbidden = (
             "generate_ed25519_keypair",
