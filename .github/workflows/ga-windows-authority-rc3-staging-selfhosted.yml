@@ -52,6 +52,11 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Set up Python 3.12 for reviewed RC3 build
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
       - name: Validate self-hosted runner and create isolated Python
         shell: pwsh
         run: |
@@ -59,7 +64,10 @@ jobs:
           if ($env:RUNNER_OS -ne 'Windows') { throw "Expected Windows runner; got $env:RUNNER_OS" }
           if ($env:RUNNER_NAME -ne 'NAVEAX') { throw "Expected NAVEAX runner; got $env:RUNNER_NAME" }
           $version = python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
-          if ($LASTEXITCODE -ne 0 -or $version.Trim() -ne '3.12') { throw "Expected local Python 3.12; got $version" }
+          if ($LASTEXITCODE -ne 0 -or $version.Trim() -ne '3.12') { throw "Expected job-local Python 3.12; got $version" }
+          $fullVersion = python -c "import platform; print(platform.python_version())"
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to resolve job-local Python version.' }
+          Write-Host "reviewed_rc3_python=$($fullVersion.Trim())"
           if (Test-Path -LiteralPath $env:PSMATRIX_RC3_VENV) { Remove-Item -LiteralPath $env:PSMATRIX_RC3_VENV -Recurse -Force }
           python -m venv $env:PSMATRIX_RC3_VENV
           if ($LASTEXITCODE -ne 0) { throw 'Isolated Python venv creation failed.' }
