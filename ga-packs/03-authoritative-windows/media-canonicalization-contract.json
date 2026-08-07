@@ -11,10 +11,17 @@
     "windows-certification-kit",
     "windows-provisioning-kit"
   ],
+  "required_release_artifacts": {
+    "source-archive": "-source.zip",
+    "windows-workers-package": "-windows-workers.zip",
+    "windows-certification-kit": "-windows-certification-kit.zip",
+    "windows-provisioning-kit": "-windows-provisioning-kit.zip"
+  },
   "rules": {
     "identical_manifest_copies_share_one_identity": true,
     "different_manifest_identities_are_ambiguous": true,
     "prefer_source_release_assets_copy": true,
+    "signed_release_manifest_must_declare_each_release_bound_role": true,
     "release_bound_filename_must_be_declared": true,
     "release_bound_sha256_must_match": true,
     "release_bound_size_must_match": true,
