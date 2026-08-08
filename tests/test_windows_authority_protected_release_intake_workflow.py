@@ -1,12 +1,82 @@
+import json
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ga-windows-authority-release-intake-selfhosted.yml"
+CONTRACT = (
+    ROOT
+    / "ga-packs"
+    / "03-authoritative-windows"
+    / "protected-release-intake-workflow-contract.json"
+)
 
 
 class WindowsAuthorityProtectedReleaseIntakeWorkflowTests(unittest.TestCase):
+    def test_contract_freezes_intake_authority_boundary(self) -> None:
+        value = json.loads(CONTRACT.read_text(encoding="utf-8"))
+        self.assertEqual(value["schema"], 1)
+        self.assertEqual(
+            value["kind"],
+            "psmatrix.windows-authority-protected-release-intake-workflow-contract",
+        )
+        self.assertEqual(value["pack"], "03-authoritative-windows")
+        self.assertEqual(value["release_version"], "2.0.0rc3")
+        self.assertEqual(
+            value["release_commit"],
+            "34e87c60885001f8dd11744b8bf194a59e51bd1f",
+        )
+        self.assertEqual(
+            value["source_signing_workflow"],
+            "production-ga-windows-authority-release-sign-from-staging",
+        )
+        self.assertEqual(value["source_artifact"], "psmatrix-2.0.0rc3-protected-release")
+        self.assertEqual(
+            value["required_runner_labels"],
+            ["self-hosted", "Windows", "X64", "psmatrix-hyperv"],
+        )
+        for key, expected in {
+            "signing_run_id_required": True,
+            "signing_control_head_required": True,
+            "signing_workflow_name_must_match": True,
+            "signing_event_must_be_workflow_dispatch": True,
+            "signing_run_must_be_completed_successfully": True,
+            "signing_head_sha_must_match": True,
+            "exactly_one_non_expired_source_artifact_required": True,
+        }.items():
+            self.assertIs(value["provenance"][key], expected)
+        for key in (
+            "bundle_inventory_required",
+            "sha256sums_required",
+            "sha256sums_must_cover_every_public_bundle_file",
+            "private_key_scan_required",
+            "release_commit_must_match_lock",
+            "release_authority_rotation_forbidden",
+            "stale_rc2_operation_package_forbidden",
+        ):
+            self.assertTrue(value["bundle_validation"][key])
+        self.assertEqual(value["intake_result"]["required_status"], "RELEASE_CLOSURE_READY")
+        self.assertFalse(value["intake_result"]["media_manifest_materialized"])
+        self.assertFalse(value["intake_result"]["operation_package_rebuilt"])
+        self.assertFalse(value["intake_result"]["authoritative"])
+        self.assertFalse(value["intake_result"]["ga_eligible"])
+        for key in (
+            "release_private_key_available_to_windows_controller",
+            "windows_lab_private_key_required",
+            "downloads_unreviewed_files",
+            "broad_downloads_search",
+            "creates_virtual_machines",
+            "creates_checkpoints",
+            "restores_snapshots",
+            "uploads_ga_root",
+            "uploads_protected_release_bundle",
+            "authoritative",
+            "ga_eligible",
+        ):
+            self.assertFalse(value["safety"][key])
+        self.assertTrue(value["safety"]["uploads_non_secret_status_only"])
+
     def test_intake_consumes_only_verified_protected_release_on_authority_host(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")
 
