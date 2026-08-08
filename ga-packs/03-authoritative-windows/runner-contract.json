@@ -20,9 +20,12 @@
     "required_environment_variable": "PSMATRIX_WINDOWS_GA_ROOT",
     "required_protected_secrets": [
       "PSMATRIX_WINDOWS_LAB_PRIVATE_KEY",
-      "PSMATRIX_WINDOWS_LAB_PUBLIC_KEY",
-      "PSMATRIX_RELEASE_PUBLIC_KEY"
-    ]
+      "PSMATRIX_WINDOWS_LAB_PUBLIC_KEY"
+    ],
+    "release_public_key_source": "verified-protected-release-bundle",
+    "release_public_key_secret_required": false,
+    "exact_release_wheel_source": "verified-protected-release-bundle",
+    "exact_release_wheel_install_mode": "offline-no-index-no-deps"
   },
   "campaign": {
     "minimum_iterations_per_runtime": 10,
