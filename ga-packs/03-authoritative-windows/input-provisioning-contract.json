@@ -2,6 +2,9 @@
   "schema": 1,
   "kind": "psmatrix.windows-authority-input-provisioning-contract",
   "pack": "03-authoritative-windows",
+  "release_version": "2.0.0rc3",
+  "isolated_release_root": "media/release/2.0.0rc3",
+  "isolated_operation_root": "operation/2.0.0rc3",
   "required_runtime_ids": [
     "windows-powershell-4.0",
     "windows-powershell-5.0",
@@ -16,14 +19,35 @@
       "windows-powershell-5.1": "PSMatrix-Windows-PowerShell-5.1"
     }
   },
-  "required_validator_inputs": {
-    "release_manifest_pattern": "^psmatrix-2\\.0\\.0(?:rc[0-9]+)?-release\\.json$",
+  "release_authority": {
+    "protected_release_intake_status": "RELEASE_CLOSURE_READY",
+    "release_manifest": "psmatrix-2.0.0rc3-release.json",
+    "release_public_key": "psmatrix-2.0.0rc3-release-public.pem",
+    "release_public_key_source": "verified-protected-release-bundle",
+    "release_public_key_secret_required": false,
     "release_artifact_suffixes": [
       "-source.zip",
       "-windows-workers.zip",
       "-windows-certification-kit.zip",
       "-windows-provisioning-kit.zip"
-    ],
+    ]
+  },
+  "media_authority": {
+    "manifest": "config/windows-lab-media.json",
+    "release_version_must_match": true,
+    "complete": true,
+    "ready_for_hyper_v_provisioning": true,
+    "authoritative": false,
+    "ga_eligible": false
+  },
+  "operation_authority": {
+    "package_status": "READY_FOR_WINDOWS_HOST",
+    "binding_status": "PASS",
+    "ready_for_release_artifact_recovery": true,
+    "stale_rc2_operation_package_used": false,
+    "run_attempt_scoped": true
+  },
+  "required_validator_inputs": {
     "endpoint_and_image_filenames": [
       "windows-powershell-4.0-endpoint.json",
       "windows-powershell-4.0-image.json",
@@ -44,12 +68,13 @@
     "script": "scripts/ga/Get-PSMatrixWindowsAuthorityInputPlan.ps1",
     "default_output": "windows-authority-input-plan.json",
     "requires_exact_release_commit": true,
-    "requires_clean_source_checkout": true,
+    "requires_clean_release_source_checkout": true,
     "requires_real_windows_controller": true,
     "requires_elevation": true,
     "uses_product_fixture_pack_hashing": true,
     "mutates_hyper_v": false,
-    "creates_validator_inputs": false
+    "creates_validator_inputs": false,
+    "searches_broad_download_locations": false
   },
   "authority": {
     "inventory_is_authoritative_evidence": false,
@@ -61,10 +86,13 @@
     "signed_release_binding_required": true
   },
   "completion": {
+    "ready_for_input_materialization_requires_three_immutable_vms": true,
+    "ready_for_input_materialization_requires_three_clean_snapshots": true,
+    "ready_for_input_materialization_requires_verified_rc3_release": true,
+    "ready_for_input_materialization_requires_complete_media_manifest": true,
+    "ready_for_input_materialization_requires_pass_bound_operation_package": true,
     "ready_to_dispatch_requires_all_six_real_manifests": true,
-    "ready_to_dispatch_requires_one_signed_release_manifest": true,
-    "ready_to_dispatch_requires_three_immutable_vms": true,
-    "ready_to_dispatch_requires_three_clean_snapshots": true,
+    "ready_to_dispatch_infrastructure_preflight_requires_all_prerequisites": true,
     "authoritative": false,
     "ga_eligible": false
   }
