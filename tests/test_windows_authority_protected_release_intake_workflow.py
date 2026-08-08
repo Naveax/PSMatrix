@@ -169,6 +169,12 @@ class WindowsAuthorityProtectedReleaseIntakeWorkflowTests(unittest.TestCase):
         self.assertIn("required: true", signing_head_block)
         self.assertNotIn("default:", signing_head_block)
 
+    def test_failure_evidence_is_initialized_before_ga_root_validation(self) -> None:
+        text = WORKFLOW.read_text(encoding="utf-8")
+        initialize = text.index("PSMATRIX_RC3_INTAKE_EVIDENCE=$evidence")
+        ga_root_validation = text.index("PSMATRIX_WINDOWS_GA_ROOT is missing")
+        self.assertLess(initialize, ga_root_validation)
+
 
 if __name__ == "__main__":
     unittest.main()
