@@ -5,7 +5,7 @@
   "mode": "reviewed-selection-materialization",
   "inventory_kind": "psmatrix.windows-authority-media-inventory",
   "selection_kind": "psmatrix.windows-authority-media-selection",
-  "manifest_kind": "psmatrix.windows-authority-lab-media",
+  "manifest_kind": "psmatrix.windows-authority-media-selection-materialization",
   "required_roles": [
     "windows-server-2012-r2-iso",
     "windows-server-2016-iso",
@@ -46,13 +46,17 @@
     "creates_virtual_machines": false,
     "creates_checkpoints": false,
     "writes_validator_input_files": false,
-    "writes_final_manifest_only_when_complete": true,
-    "atomic_final_manifest_write": true,
+    "writes_provisioning_manifest": false,
+    "writes_selection_materialization_only_when_complete": true,
+    "atomic_selection_materialization_write": true,
     "authoritative": false,
     "ga_eligible": false
   },
   "completion": {
-    "manifest_is_provisioning_input": true,
+    "selection_materialization_is_provisioning_input": false,
+    "selection_materialization_ready_for_provisioning_manifest_materialization": true,
+    "actual_provisioning_manifest_kind": "psmatrix.windows-lab-media",
+    "actual_provisioning_manifest_requires_separate_profile": true,
     "manifest_is_authoritative_evidence": false,
     "manifest_is_ga_eligible": false
   }
