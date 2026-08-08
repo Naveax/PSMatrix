@@ -50,6 +50,18 @@ class WindowsAuthorityGAContractTests(unittest.TestCase):
                 "windows-powershell-5.1",
             ),
         )
+        for value in (
+            "--release-dir",
+            "--operation-package-metadata",
+            "--operation-binding-report",
+            "exact-release-source-commit",
+            "isolated-release-directory",
+            "rc3-operation-package-closure",
+            "media/release/2.0.0rc3",
+            "stale_rc2_operation_package_used",
+        ):
+            with self.subTest(value=value):
+                self.assertIn(value, source)
 
     def test_release_manifest_pattern_accepts_only_final_or_rc_line(self) -> None:
         spec = importlib.util.spec_from_file_location("windows_authority_validator_regex", VALIDATOR)
@@ -131,22 +143,48 @@ class WindowsAuthorityGAContractTests(unittest.TestCase):
         self.assertIn("reset_after = 'UNAVAILABLE_ON_GITHUB_HOSTED_RUNNER'", text)
         self.assertNotIn("Invoke-Expression", text)
 
-    def test_infrastructure_workflow_is_protected_and_fail_closed(self) -> None:
+    def test_infrastructure_workflow_separates_current_controls_from_exact_rc3_release(self) -> None:
         text = INFRA_WORKFLOW.read_text(encoding="utf-8")
         required = (
             "name: production-ga-windows-authority-infrastructure-preflight",
             "runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]",
             "environment: production-ga-windows-lab",
             "PSMATRIX_WINDOWS_GA_ROOT: ${{ vars.PSMATRIX_WINDOWS_GA_ROOT }}",
-            "PSMATRIX_RELEASE_PUBLIC_KEY: ${{ secrets.PSMATRIX_RELEASE_PUBLIC_KEY }}",
+            'default: "34e87c60885001f8dd11744b8bf194a59e51bd1f"',
+            "operation_run_id:",
+            "operation_run_attempt:",
+            "path: control",
+            "path: release-source",
+            "ref: ${{ inputs.release_commit }}",
+            "media\\release\\2.0.0rc3",
+            "psmatrix-2.0.0rc3-release-public.pem",
+            "psmatrix-2.0.0rc3-py3-none-any.whl",
+            "release_public_key.sha256",
+            "pip install --no-index --no-deps --force-reinstall",
+            "Revalidate exact operation package binding",
+            "Test-PSMatrixWindowsAuthorityOperationPackageBinding.ps1",
             "validate_windows_authority_infrastructure.py",
+            "--source-root $env:PSMATRIX_WINDOWS_RELEASE_SOURCE",
+            "--release-dir $env:PSMATRIX_WINDOWS_RELEASE_ROOT",
+            "--operation-package-metadata $env:PSMATRIX_WINDOWS_OPERATION_METADATA",
+            "--operation-binding-report $env:PSMATRIX_WINDOWS_OPERATION_BINDING_RECHECK",
+            "release_public_key_secret_used = $false",
+            "exact_release_wheel_installed_offline = $true",
             "if: always()",
             "if-no-files-found: error",
         )
         for value in required:
             with self.subTest(value=value):
                 self.assertIn(value, text)
-        self.assertNotIn("PSMATRIX_WINDOWS_LAB_PRIVATE_KEY", text)
+        for forbidden in (
+            "PSMATRIX_RELEASE_PUBLIC_KEY: ${{ secrets.PSMATRIX_RELEASE_PUBLIC_KEY }}",
+            "PSMATRIX_WINDOWS_LAB_PRIVATE_KEY",
+            "PSMATRIX_WINDOWS_LAB_PUBLIC_KEY",
+            "Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'release'",
+            "pip install --disable-pip-version-check --no-deps --no-build-isolation .",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, text)
 
     def test_authoritative_workflow_discovers_unique_final_or_rc_manifest(self) -> None:
         text = AUTHORITY_WORKFLOW.read_text(encoding="utf-8")
@@ -173,6 +211,23 @@ class WindowsAuthorityGAContractTests(unittest.TestCase):
         self.assertEqual(
             contract["controller"]["runner_labels"],
             ["self-hosted", "Windows", "X64", "psmatrix-hyperv"],
+        )
+        self.assertEqual(
+            contract["controller"]["required_protected_secrets"],
+            ["PSMATRIX_WINDOWS_LAB_PRIVATE_KEY", "PSMATRIX_WINDOWS_LAB_PUBLIC_KEY"],
+        )
+        self.assertEqual(
+            contract["controller"]["release_public_key_source"],
+            "verified-protected-release-bundle",
+        )
+        self.assertFalse(contract["controller"]["release_public_key_secret_required"])
+        self.assertEqual(
+            contract["controller"]["exact_release_wheel_source"],
+            "verified-protected-release-bundle",
+        )
+        self.assertEqual(
+            contract["controller"]["exact_release_wheel_install_mode"],
+            "offline-no-index-no-deps",
         )
         self.assertEqual(contract["campaign"]["minimum_iterations_per_runtime"], 10)
         self.assertEqual(
