@@ -4,8 +4,18 @@ on:
   workflow_dispatch:
     inputs:
       release_commit:
-        description: Full 40-character commit SHA whose Windows authority infrastructure will be validated
+        description: Exact reviewed Windows Authority RC3 release commit
         required: true
+        default: "34e87c60885001f8dd11744b8bf194a59e51bd1f"
+        type: string
+      operation_run_id:
+        description: Successful RC3 operation-package workflow run ID
+        required: true
+        type: string
+      operation_run_attempt:
+        description: Successful RC3 operation-package workflow run attempt
+        required: true
+        default: "1"
         type: string
       worker_timeout_seconds:
         description: Per-worker authoritative health timeout, 5-120 seconds
@@ -25,13 +35,18 @@ jobs:
     name: Protected Hyper-V authority infrastructure
     runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
     environment: production-ga-windows-lab
-    timeout-minutes: 30
+    timeout-minutes: 35
+    permissions:
+      contents: read
     env:
       PSMATRIX_WINDOWS_GA_ROOT: ${{ vars.PSMATRIX_WINDOWS_GA_ROOT }}
-      PSMATRIX_RELEASE_PUBLIC_KEY: ${{ secrets.PSMATRIX_RELEASE_PUBLIC_KEY }}
+      RELEASE_COMMIT: ${{ inputs.release_commit }}
+      OPERATION_RUN_ID: ${{ inputs.operation_run_id }}
+      OPERATION_RUN_ATTEMPT: ${{ inputs.operation_run_attempt }}
+      WORKER_TIMEOUT_SECONDS: ${{ inputs.worker_timeout_seconds }}
 
     steps:
-      - name: Initialize fail-closed infrastructure evidence
+      - name: Initialize fail-closed infrastructure evidence and exact paths
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -42,44 +57,67 @@ jobs:
           New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
           "PSMATRIX_WINDOWS_INFRA_EVIDENCE=$outputRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-          $releaseCommit = '${{ inputs.release_commit }}'
-          $timeoutText = '${{ inputs.worker_timeout_seconds }}'
-          $context = [ordered]@{
-              schema = 1
-              kind = 'psmatrix.windows-authority-infrastructure-controller-context'
-              release_commit = $releaseCommit
-              worker_timeout_seconds = $timeoutText
-              runner_name = $env:RUNNER_NAME
-              runner_os = $env:RUNNER_OS
-              runner_arch = $env:RUNNER_ARCH
-              runner_environment = $env:RUNNER_ENVIRONMENT
-              github_workflow = $env:GITHUB_WORKFLOW
-              github_run_id = $env:GITHUB_RUN_ID
-              github_run_attempt = $env:GITHUB_RUN_ATTEMPT
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_WINDOWS_GA_ROOT)) {
+              throw 'PSMATRIX_WINDOWS_GA_ROOT is missing from the protected environment.'
           }
-          [System.IO.File]::WriteAllText(
-              (Join-Path $outputRoot 'controller-context.json'),
-              (($context | ConvertTo-Json -Depth 5) + [Environment]::NewLine),
-              [System.Text.UTF8Encoding]::new($false)
-          )
-
-          if ($releaseCommit -cnotmatch '^[0-9a-f]{40}$') {
+          if (-not [System.IO.Path]::IsPathRooted($env:PSMATRIX_WINDOWS_GA_ROOT)) {
+              throw 'PSMATRIX_WINDOWS_GA_ROOT must be an absolute path.'
+          }
+          $gaRoot = [System.IO.Path]::GetFullPath($env:PSMATRIX_WINDOWS_GA_ROOT)
+          if (-not (Test-Path -LiteralPath $gaRoot -PathType Container)) {
+              throw "PSMATRIX_WINDOWS_GA_ROOT does not exist: $gaRoot"
+          }
+          if ($env:RELEASE_COMMIT -cnotmatch '^[0-9a-f]{40}$') {
               throw 'release_commit must contain exactly 40 lowercase hexadecimal characters.'
           }
+          if ($env:OPERATION_RUN_ID -notmatch '^[0-9]+$' -or $env:OPERATION_RUN_ATTEMPT -notmatch '^[1-9][0-9]*$') {
+              throw 'operation_run_id and operation_run_attempt must contain decimal digits.'
+          }
           $timeout = 0
-          if (-not [int]::TryParse($timeoutText, [ref]$timeout)) {
+          if (-not [int]::TryParse($env:WORKER_TIMEOUT_SECONDS, [ref]$timeout)) {
               throw 'worker_timeout_seconds must be an integer.'
           }
           if ($timeout -lt 5 -or $timeout -gt 120) {
               throw "worker_timeout_seconds must be between 5 and 120; received $timeout."
           }
-          "PSMATRIX_WINDOWS_INFRA_COMMIT=$releaseCommit" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "PSMATRIX_WINDOWS_INFRA_TIMEOUT=$timeout" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Check out exact revision
+          $releaseRoot = Join-Path $gaRoot 'media\release\2.0.0rc3'
+          $operationRoot = Join-Path $gaRoot ('operation\2.0.0rc3\run-{0}-attempt-{1}' -f $env:OPERATION_RUN_ID, $env:OPERATION_RUN_ATTEMPT)
+          $metadata = Join-Path $operationRoot 'psmatrix-2.0.0rc3-windows-authoritative-operation-package.json'
+          $binding = Join-Path $operationRoot 'windows-authority-operation-package-binding.json'
+          $publicKey = Join-Path $releaseRoot 'psmatrix-2.0.0rc3-release-public.pem'
+          $wheel = Join-Path $releaseRoot 'psmatrix-2.0.0rc3-py3-none-any.whl'
+          foreach ($path in @($releaseRoot, $operationRoot)) {
+              if (-not (Test-Path -LiteralPath $path -PathType Container)) {
+                  throw "Required protected RC3 directory is missing: $path"
+              }
+          }
+          foreach ($path in @($metadata, $binding, $publicKey, $wheel)) {
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                  throw "Required protected RC3 file is missing: $path"
+              }
+          }
+
+          "PSMATRIX_WINDOWS_INFRA_TIMEOUT=$timeout" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_WINDOWS_RELEASE_ROOT=$releaseRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_WINDOWS_OPERATION_ROOT=$operationRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_WINDOWS_OPERATION_METADATA=$metadata" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_WINDOWS_OPERATION_BINDING=$binding" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_WINDOWS_RELEASE_PUBLIC_KEY=$publicKey" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_WINDOWS_RELEASE_WHEEL=$wheel" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Check out current infrastructure controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out exact RC3 release source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           ref: ${{ inputs.release_commit }}
+          path: release-source
           fetch-depth: 1
           persist-credentials: false
 
@@ -88,71 +126,77 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Validate exact controller and protected environment
+      - name: Validate control head, exact release source and RC3 lock
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_WINDOWS_GA_ROOT)) {
-              throw 'PSMATRIX_WINDOWS_GA_ROOT is missing from the protected environment.'
-          }
-          if (-not [System.IO.Path]::IsPathRooted($env:PSMATRIX_WINDOWS_GA_ROOT)) {
-              throw 'PSMATRIX_WINDOWS_GA_ROOT must be an absolute path.'
-          }
-          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_RELEASE_PUBLIC_KEY)) {
-              throw 'PSMATRIX_RELEASE_PUBLIC_KEY is missing from the protected environment.'
-          }
-          $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
-          if ($LASTEXITCODE -ne 0 -or $head -ne $env:PSMATRIX_WINDOWS_INFRA_COMMIT) {
-              throw "Checked-out head does not match release_commit: $head"
-          }
-          if (-not [string]::IsNullOrWhiteSpace((git status --porcelain))) {
-              throw 'Windows authority infrastructure checkout is not clean.'
-          }
-          if ($env:OS -ne 'Windows_NT') {
-              throw "Expected Windows_NT controller; detected $env:OS"
-          }
-          if ($env:RUNNER_ARCH -ne 'X64') {
-              throw "Expected X64 controller; detected $env:RUNNER_ARCH"
-          }
-          Write-Host "release_commit=$head"
-          Write-Host "worker_timeout_seconds=$env:PSMATRIX_WINDOWS_INFRA_TIMEOUT"
-          Write-Host "runner_name=$env:RUNNER_NAME"
+          $controlRoot = Join-Path $env:GITHUB_WORKSPACE 'control'
+          $releaseSource = Join-Path $env:GITHUB_WORKSPACE 'release-source'
+          $controlHead = (git -C $controlRoot rev-parse HEAD).Trim().ToLowerInvariant()
+          $releaseHead = (git -C $releaseSource rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0) { throw 'Could not resolve release-source head.' }
+          if ($controlHead -cnotmatch '^[0-9a-f]{40}$') { throw 'Current control head is invalid.' }
+          if ($releaseHead -ne $env:RELEASE_COMMIT) { throw "Release-source head mismatch: $releaseHead" }
+          if (-not [string]::IsNullOrWhiteSpace((git -C $controlRoot status --porcelain))) { throw 'Current control checkout is not clean.' }
+          if (-not [string]::IsNullOrWhiteSpace((git -C $releaseSource status --porcelain))) { throw 'Release-source checkout is not clean.' }
 
-      - name: Install exact controller package
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          python -c "import setuptools; print('setuptools=' + setuptools.__version__)"
-          if ($LASTEXITCODE -ne 0) {
-              throw 'setuptools is unavailable on the protected controller.'
-          }
-          python -m pip install --disable-pip-version-check --no-deps --no-build-isolation .
-          if ($LASTEXITCODE -ne 0) {
-              throw "PSMatrix installation failed: $LASTEXITCODE"
-          }
-          python -c "import psmatrix; print('psmatrix=' + psmatrix.__version__)"
-          if ($LASTEXITCODE -ne 0) {
-              throw 'Installed PSMatrix package cannot be imported.'
-          }
+          $lockPath = Join-Path $controlRoot 'ga-packs\03-authoritative-windows\rc3-release-lock.json'
+          $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+          if ([int]$lock.schema -ne 1 -or [string]$lock.kind -ne 'psmatrix.windows-authority-release-staging-lock') { throw 'RC3 release lock identity is invalid.' }
+          if ([string]$lock.version -ne '2.0.0rc3' -or [string]$lock.release_commit -ne $env:RELEASE_COMMIT) { throw 'RC3 release lock does not match requested release commit.' }
 
-      - name: Materialize release public key
+          $publicKeySha = (Get-FileHash -LiteralPath $env:PSMATRIX_WINDOWS_RELEASE_PUBLIC_KEY -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($publicKeySha -ne [string]$lock.release_public_key.sha256) { throw 'Imported RC3 release public key does not match reviewed lock.' }
+          $wheelLock = @($lock.artifacts | Where-Object { [string]$_.name -eq 'psmatrix-2.0.0rc3-py3-none-any.whl' })
+          if ($wheelLock.Count -ne 1) { throw 'RC3 wheel is not uniquely locked.' }
+          $wheelSha = (Get-FileHash -LiteralPath $env:PSMATRIX_WINDOWS_RELEASE_WHEEL -Algorithm SHA256).Hash.ToLowerInvariant()
+          $wheelSize = [int64](Get-Item -LiteralPath $env:PSMATRIX_WINDOWS_RELEASE_WHEEL).Length
+          if ($wheelSha -ne [string]$wheelLock[0].sha256 -or $wheelSize -ne [int64]$wheelLock[0].size) { throw 'Imported RC3 wheel does not match reviewed lock.' }
+
+          "PSMATRIX_WINDOWS_CONTROL_ROOT=$controlRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_WINDOWS_RELEASE_SOURCE=$releaseSource" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_WINDOWS_CONTROL_HEAD=$controlHead" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "control_head=$controlHead"
+          Write-Host "release_source_head=$releaseHead"
+
+      - name: Install exact signed RC3 controller package offline
+        shell: pwsh
+        env:
+          PIP_NO_INDEX: "1"
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install --no-index --no-deps --force-reinstall "$env:PSMATRIX_WINDOWS_RELEASE_WHEEL"
+          if ($LASTEXITCODE -ne 0) {
+              throw "Exact signed RC3 wheel installation failed: $LASTEXITCODE"
+          }
+          $observed = (python -c "import psmatrix; print(psmatrix.__version__)").Trim()
+          if ($LASTEXITCODE -ne 0 -or $observed -ne '2.0.0rc3') {
+              throw "Installed controller package is not PSMatrix 2.0.0rc3: $observed"
+          }
+          Write-Host "installed_psmatrix=$observed"
+
+      - name: Revalidate exact operation package binding
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $keyRoot = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-infrastructure-key'
-          if (Test-Path -LiteralPath $keyRoot) {
-              Remove-Item -LiteralPath $keyRoot -Recurse -Force
+          $report = Join-Path $env:PSMATRIX_WINDOWS_INFRA_EVIDENCE 'operation-binding-recheck.json'
+          & "$env:PSMATRIX_WINDOWS_CONTROL_ROOT\scripts\ga\Test-PSMatrixWindowsAuthorityOperationPackageBinding.ps1" `
+              -SourceRoot $env:PSMATRIX_WINDOWS_CONTROL_ROOT `
+              -GaRoot $env:PSMATRIX_WINDOWS_GA_ROOT `
+              -CanonicalInventoryPath (Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'windows-authority-media-inventory.canonical.json') `
+              -OperationPackageMetadataPath $env:PSMATRIX_WINDOWS_OPERATION_METADATA `
+              -OutputPath $report
+          if ($LASTEXITCODE -ne 0) { throw 'Operation-package binding recheck failed to execute.' }
+          $value = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
+          if ([string]$value.status -ne 'PASS' -or [bool]$value.ready_for_release_artifact_recovery -ne $true) {
+              throw 'Operation-package binding recheck is not PASS/ready.'
           }
-          New-Item -ItemType Directory -Path $keyRoot | Out-Null
-          $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-          & icacls.exe $keyRoot /inheritance:r /grant:r "${identity}:(OI)(CI)F" | Out-Null
-          if ($LASTEXITCODE -ne 0) {
-              throw 'Failed to restrict the public-key directory ACL.'
+          if ([string]$value.operation_package.release_commit -ne $env:RELEASE_COMMIT) { throw 'Operation-package release commit mismatch.' }
+          if ([bool]$value.operation_package.release_manifest_matches_canonical -ne $true -or [bool]$value.operation_package.embedded_release_artifacts_match_binding -ne $true) {
+              throw 'Operation-package RC3 release binding is incomplete.'
           }
-          $path = Join-Path $keyRoot 'release.public.pem'
-          $utf8 = [System.Text.UTF8Encoding]::new($false)
-          [System.IO.File]::WriteAllText($path, $env:PSMATRIX_RELEASE_PUBLIC_KEY.Trim() + "`n", $utf8)
-          "PSMATRIX_INFRA_RELEASE_PUBLIC_KEY=$path" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_WINDOWS_OPERATION_BINDING_RECHECK=$report" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Validate protected Windows authority infrastructure
         shell: pwsh
@@ -162,11 +206,14 @@ jobs:
           $report = Join-Path $outputRoot 'infrastructure-preflight.json'
           $log = Join-Path $outputRoot 'validator.log'
 
-          & python scripts/ga/validate_windows_authority_infrastructure.py `
-              --source-root $env:GITHUB_WORKSPACE `
+          & python "$env:PSMATRIX_WINDOWS_CONTROL_ROOT\scripts\ga\validate_windows_authority_infrastructure.py" `
+              --source-root $env:PSMATRIX_WINDOWS_RELEASE_SOURCE `
               --ga-root $env:PSMATRIX_WINDOWS_GA_ROOT `
-              --release-commit $env:PSMATRIX_WINDOWS_INFRA_COMMIT `
-              --release-public-key $env:PSMATRIX_INFRA_RELEASE_PUBLIC_KEY `
+              --release-dir $env:PSMATRIX_WINDOWS_RELEASE_ROOT `
+              --release-commit $env:RELEASE_COMMIT `
+              --release-public-key $env:PSMATRIX_WINDOWS_RELEASE_PUBLIC_KEY `
+              --operation-package-metadata $env:PSMATRIX_WINDOWS_OPERATION_METADATA `
+              --operation-binding-report $env:PSMATRIX_WINDOWS_OPERATION_BINDING_RECHECK `
               --timeout $env:PSMATRIX_WINDOWS_INFRA_TIMEOUT `
               --output $report 2>&1 | Tee-Object -FilePath $log
           $code = $LASTEXITCODE
@@ -181,6 +228,40 @@ jobs:
           if ($code -ne 0) {
               throw "Windows authority infrastructure is not ready; validator exit code $code."
           }
+          $value = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
+          if ([string]$value.status -ne 'PASS' -or [bool]$value.ready -ne $true) { throw 'Infrastructure report is not PASS/ready.' }
+          if ([string]$value.release_commit -ne $env:RELEASE_COMMIT -or [string]$value.release_version -ne '2.0.0rc3') { throw 'Infrastructure release identity mismatch.' }
+          if ([bool]$value.ga_eligible -ne $false) { throw 'Infrastructure preflight improperly claims GA eligibility.' }
+
+      - name: Record infrastructure controller context
+        if: success()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $context = [ordered]@{
+              schema = 1
+              kind = 'psmatrix.windows-authority-infrastructure-controller-context'
+              status = 'PASS'
+              release_commit = $env:RELEASE_COMMIT
+              release_version = '2.0.0rc3'
+              control_head = $env:PSMATRIX_WINDOWS_CONTROL_HEAD
+              operation_run_id = [int64]$env:OPERATION_RUN_ID
+              operation_run_attempt = [int]$env:OPERATION_RUN_ATTEMPT
+              worker_timeout_seconds = [int]$env:PSMATRIX_WINDOWS_INFRA_TIMEOUT
+              release_public_key_source = 'verified-protected-rc3-bundle'
+              release_public_key_secret_used = $false
+              exact_release_wheel_installed_offline = $true
+              runner_name = $env:RUNNER_NAME
+              runner_os = $env:RUNNER_OS
+              runner_arch = $env:RUNNER_ARCH
+              authoritative_campaign_evidence = $false
+              ga_eligible = $false
+          }
+          [System.IO.File]::WriteAllText(
+              (Join-Path $env:PSMATRIX_WINDOWS_INFRA_EVIDENCE 'controller-context.json'),
+              (($context | ConvertTo-Json -Depth 8) + [Environment]::NewLine),
+              [System.Text.UTF8Encoding]::new($false)
+          )
 
       - name: Record fail-closed infrastructure state
         if: failure()
@@ -197,7 +278,9 @@ jobs:
               kind = 'psmatrix.windows-authority-infrastructure-preflight'
               status = 'FAIL'
               ready = $false
-              release_commit = $env:PSMATRIX_WINDOWS_INFRA_COMMIT
+              release_commit = $env:RELEASE_COMMIT
+              operation_run_id = $env:OPERATION_RUN_ID
+              operation_run_attempt = $env:OPERATION_RUN_ATTEMPT
               runner_name = $env:RUNNER_NAME
               authority_level = 'protected-infrastructure-preflight'
               authoritative_campaign_evidence = $false
@@ -205,19 +288,9 @@ jobs:
           }
           [System.IO.File]::WriteAllText(
               (Join-Path $outputRoot 'preflight-failure.json'),
-              (($failure | ConvertTo-Json -Depth 5) + [Environment]::NewLine),
+              (($failure | ConvertTo-Json -Depth 8) + [Environment]::NewLine),
               [System.Text.UTF8Encoding]::new($false)
           )
-
-      - name: Remove release public key materialization
-        if: always()
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $keyRoot = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-infrastructure-key'
-          if (Test-Path -LiteralPath $keyRoot) {
-              Remove-Item -LiteralPath $keyRoot -Recurse -Force -ErrorAction SilentlyContinue
-          }
 
       - name: Upload infrastructure preflight evidence
         if: always()
