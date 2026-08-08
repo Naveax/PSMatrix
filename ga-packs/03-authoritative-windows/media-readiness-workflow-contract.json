@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-authority-media-readiness-workflow-contract",
+  "pack": "03-authoritative-windows",
+  "release_version": "2.0.0rc3",
+  "release_commit": "34e87c60885001f8dd11744b8bf194a59e51bd1f",
+  "workflow": "production-ga-windows-authority-media-readiness-selfhosted",
+  "protected_environment": "production-ga-windows-lab",
+  "required_runner_labels": [
+    "self-hosted",
+    "Windows",
+    "X64",
+    "psmatrix-hyperv"
+  ],
+  "prerequisite": {
+    "protected_release_intake_status": "RELEASE_CLOSURE_READY",
+    "release_authority_rotated": false,
+    "stale_rc2_operation_package_used": false,
+    "authoritative": false,
+    "ga_eligible": false
+  },
+  "search_roots": [
+    "media/release/2.0.0rc3",
+    "media/external"
+  ],
+  "rules": {
+    "exactly_two_search_roots": true,
+    "broad_downloads_search_forbidden": true,
+    "release_bound_candidates_must_match_signed_release_manifest": true,
+    "iso_inspection_is_read_only": true,
+    "iso_dismount_is_mandatory": true,
+    "selection_inventory_sha256_must_match": true,
+    "operator_review_required_before_final_manifest": true,
+    "final_manifest_written_only_when_complete": true
+  },
+  "result_classes": [
+    "EXTERNAL_MEDIA_INCOMPLETE",
+    "READY_FOR_OPERATOR_SELECTION",
+    "READY_FOR_HYPER_V_PROVISIONING",
+    "FAIL"
+  ],
+  "safety": {
+    "downloads_files": false,
+    "opens_secret_bundles": false,
+    "uploads_media_inventory": false,
+    "uploads_candidate_files": false,
+    "uploads_non_secret_status_only": true,
+    "creates_virtual_machines": false,
+    "creates_checkpoints": false,
+    "restores_snapshots": false,
+    "writes_endpoint_manifests": false,
+    "writes_image_manifests": false,
+    "authoritative": false,
+    "ga_eligible": false
+  }
+}
