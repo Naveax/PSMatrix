@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-authority-operation-package-workflow-contract",
+  "pack": "03-authoritative-windows",
+  "release_version": "2.0.0rc3",
+  "release_commit": "34e87c60885001f8dd11744b8bf194a59e51bd1f",
+  "workflow": "production-ga-windows-authority-operation-package-selfhosted",
+  "protected_environment": "production-ga-windows-lab",
+  "required_runner_labels": [
+    "self-hosted",
+    "Windows",
+    "X64",
+    "psmatrix-hyperv"
+  ],
+  "prerequisites": {
+    "protected_release_intake_status": "RELEASE_CLOSURE_READY",
+    "canonical_release_authority_status": "READY",
+    "media_manifest_complete": true,
+    "media_manifest_ready_for_hyper_v_provisioning": true
+  },
+  "execution": {
+    "primary_build_required": true,
+    "independent_rebuild_required": true,
+    "byte_determinism_required": true,
+    "operation_package_binding_validator_required": true,
+    "binding_status_required": "PASS",
+    "ready_for_release_artifact_recovery_required": true,
+    "run_attempt_scoped_output": true,
+    "overwrite_existing_output": false
+  },
+  "output": {
+    "package_status": "READY_FOR_WINDOWS_HOST",
+    "production_ga_gate": "INCOMPLETE",
+    "authoritative_campaign_executed": false,
+    "authoritative": false,
+    "ga_eligible": false
+  },
+  "safety": {
+    "release_private_key_required": false,
+    "windows_lab_private_key_required": false,
+    "credential_bundle_contents_uploaded": false,
+    "worker_signing_bundle_contents_uploaded": false,
+    "operation_package_uploaded": false,
+    "uploads_non_secret_status_only": true,
+    "downloads_files": false,
+    "uses_historical_rc2_operation_package": false,
+    "creates_virtual_machines": false,
+    "creates_checkpoints": false,
+    "restores_snapshots": false,
+    "runs_authoritative_campaign": false,
+    "authoritative": false,
+    "ga_eligible": false
+  }
+}
