@@ -29,6 +29,9 @@ $requiredHyperVCommands = @(
     'Restore-VMSnapshot',
     'Checkpoint-VM'
 )
+$releaseVersion = '2.0.0rc3'
+$releaseManifestName = 'psmatrix-2.0.0rc3-release.json'
+$releasePublicKeyName = 'psmatrix-2.0.0rc3-release-public.pem'
 
 $checks = New-Object System.Collections.ArrayList
 $remaining = New-Object System.Collections.ArrayList
@@ -106,10 +109,23 @@ if ([string]::IsNullOrWhiteSpace($OutputPath)) {
     $OutputPath = Join-Path $root 'controller-bootstrap-report.json'
 }
 $output = [System.IO.Path]::GetFullPath($OutputPath)
+$releaseRoot = Join-Path $root 'media\release\2.0.0rc3'
+$externalRoot = Join-Path $root 'media\external'
+$operationRoot = Join-Path $root 'operation\2.0.0rc3'
+$configRoot = Join-Path $root 'config'
+$trustRoot = Join-Path $root 'trust-home'
+$intakeReport = Join-Path $root 'windows-authority-protected-release-intake.json'
+$mediaManifestPath = Join-Path $configRoot 'windows-lab-media.json'
 
 if ($CreateLayout) {
-    foreach ($name in @('release', 'config', 'trust-home')) {
-        [System.IO.Directory]::CreateDirectory((Join-Path $root $name)) | Out-Null
+    foreach ($path in @(
+        (Join-Path $root 'media\release'),
+        $externalRoot,
+        (Join-Path $root 'operation'),
+        $configRoot,
+        $trustRoot
+    )) {
+        [System.IO.Directory]::CreateDirectory($path) | Out-Null
     }
 
     $setupText = @'
@@ -121,7 +137,11 @@ Required GitHub configuration:
 - self-hosted runner labels: self-hosted, Windows, X64, psmatrix-hyperv
 - protected environment: production-ga-windows-lab
 - environment variable: PSMATRIX_WINDOWS_GA_ROOT
-- protected secret: PSMATRIX_RELEASE_PUBLIC_KEY
+- protected campaign secrets: PSMATRIX_WINDOWS_LAB_PRIVATE_KEY and PSMATRIX_WINDOWS_LAB_PUBLIC_KEY
+
+The release public key is NOT a protected secret. It must come from the verified
+protected RC3 release bundle under media/release/2.0.0rc3 and must match the
+reviewed RC3 release lock.
 
 Do not rename *.example.json files into validator filenames until real worker,
 certificate, signing, VM and snapshot identities have been provisioned.
@@ -148,7 +168,7 @@ The infrastructure preflight must remain fail-closed while placeholders exist.
             )
         }
         Write-JsonTemplateIfMissing `
-            -Path (Join-Path $root ('config\{0}-endpoint.example.json' -f $runtime)) `
+            -Path (Join-Path $configRoot ('{0}-endpoint.example.json' -f $runtime)) `
             -Value $endpointTemplate
 
         $imageTemplate = [ordered]@{
@@ -184,7 +204,7 @@ The infrastructure preflight must remain fail-closed while placeholders exist.
             required_real_filename = ('{0}-image.json' -f $runtime)
         }
         Write-JsonTemplateIfMissing `
-            -Path (Join-Path $root ('config\{0}-image.example.json' -f $runtime)) `
+            -Path (Join-Path $configRoot ('{0}-image.example.json' -f $runtime)) `
             -Value $imageTemplate
     }
 }
@@ -271,10 +291,15 @@ The infrastructure preflight must remain fail-closed while placeholders exist.
 
 [void](Invoke-BootstrapCheck -Name 'ga-root-layout' -Required $true -Body {
     $missing = @()
-    foreach ($name in @('release', 'config', 'trust-home')) {
-        $path = Join-Path $root $name
+    foreach ($path in @(
+        (Join-Path $root 'media\release'),
+        $externalRoot,
+        (Join-Path $root 'operation'),
+        $configRoot,
+        $trustRoot
+    )) {
         if (-not (Test-Path -LiteralPath $path -PathType Container)) {
-            $missing += $name
+            $missing += $path
         }
     }
     if ($missing.Count -ne 0) {
@@ -309,43 +334,103 @@ else {
 }
 
 $releaseRequired = [bool]$RequireReleaseInputs
-[void](Invoke-BootstrapCheck -Name 'release-and-worker-inputs' -Required $releaseRequired -Body {
-    $releaseDir = Join-Path $root 'release'
-    $configDir = Join-Path $root 'config'
-    $manifests = @(Get-ChildItem -LiteralPath $releaseDir -File -ErrorAction Stop | Where-Object {
-        $_.Name -match '^psmatrix-2\.0\.0(?:rc[0-9]+)?-release\.json$'
-    })
-    if ($manifests.Count -ne 1) {
-        throw ('Expected exactly one signed 2.0.0/2.0.0rcN release manifest; found {0}.' -f $manifests.Count)
+$releaseReady = $false
+$mediaReady = $false
+$operationReady = $false
+$workerInputsReady = $true
+
+[void](Invoke-BootstrapCheck -Name 'verified-rc3-release-inputs' -Required $releaseRequired -Body {
+    if (-not (Test-Path -LiteralPath $releaseRoot -PathType Container)) {
+        throw 'Verified RC3 release root is missing. Run protected release intake first.'
     }
+    $manifest = Join-Path $releaseRoot $releaseManifestName
+    $publicKey = Join-Path $releaseRoot $releasePublicKeyName
+    foreach ($path in @($manifest, $publicKey, $intakeReport)) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw ('Required verified RC3 release input is missing: {0}' -f $path)
+        }
+    }
+    $intake = Get-Content -LiteralPath $intakeReport -Raw | ConvertFrom-Json
+    if ([string]$intake.status -ne 'RELEASE_CLOSURE_READY' -or [string]$intake.version -ne $releaseVersion) {
+        throw 'Protected RC3 release intake is not RELEASE_CLOSURE_READY.'
+    }
+    if ([bool]$intake.private_key_material_absent -ne $true -or [bool]$intake.release_authority_rotated -ne $false) {
+        throw 'Protected RC3 release intake safety state is invalid.'
+    }
+    $script:releaseReady = $true
+    return $releaseManifestName
+})
+
+[void](Invoke-BootstrapCheck -Name 'windows-lab-media-manifest' -Required $releaseRequired -Body {
+    if (-not (Test-Path -LiteralPath $mediaManifestPath -PathType Leaf)) {
+        throw 'Final windows-lab-media.json is missing.'
+    }
+    $media = Get-Content -LiteralPath $mediaManifestPath -Raw | ConvertFrom-Json
+    if ([string]$media.release_version -ne $releaseVersion -or [bool]$media.complete -ne $true -or [bool]$media.ready_for_hyper_v_provisioning -ne $true) {
+        throw 'Windows lab media manifest is not complete and RC3-bound.'
+    }
+    if ([bool]$media.authoritative -ne $false -or [bool]$media.ga_eligible -ne $false) {
+        throw 'Windows lab media manifest improperly claims authority or GA eligibility.'
+    }
+    $script:mediaReady = $true
+    return 'complete=true; ready_for_hyper_v_provisioning=true'
+})
+
+[void](Invoke-BootstrapCheck -Name 'rc3-operation-package-candidate' -Required $releaseRequired -Body {
+    if (-not (Test-Path -LiteralPath $operationRoot -PathType Container)) {
+        throw 'RC3 operation root is missing.'
+    }
+    $candidates = @(
+        Get-ChildItem -LiteralPath $operationRoot -Directory -ErrorAction Stop |
+            Where-Object { $_.Name -match '^run-[0-9]+-attempt-[1-9][0-9]*$' } |
+            ForEach-Object {
+                $metadata = Join-Path $_.FullName 'psmatrix-2.0.0rc3-windows-authoritative-operation-package.json'
+                $binding = Join-Path $_.FullName 'windows-authority-operation-package-binding.json'
+                if ((Test-Path -LiteralPath $metadata -PathType Leaf) -and (Test-Path -LiteralPath $binding -PathType Leaf)) {
+                    $meta = Get-Content -LiteralPath $metadata -Raw | ConvertFrom-Json
+                    $bound = Get-Content -LiteralPath $binding -Raw | ConvertFrom-Json
+                    if ([string]$meta.status -eq 'READY_FOR_WINDOWS_HOST' -and [string]$meta.release_version -eq $releaseVersion -and [bool]$meta.stale_rc2_operation_package_used -eq $false -and [string]$bound.status -eq 'PASS' -and [bool]$bound.ready_for_release_artifact_recovery -eq $true) {
+                        $_.Name
+                    }
+                }
+            }
+    )
+    if ($candidates.Count -eq 0) {
+        throw 'No RC3 operation-package candidate has READY_FOR_WINDOWS_HOST + PASS binding.'
+    }
+    $script:operationReady = $true
+    return ($candidates -join ',')
+})
+
+[void](Invoke-BootstrapCheck -Name 'real-worker-and-image-manifests' -Required $releaseRequired -Body {
     $missing = @()
     foreach ($runtime in $requiredRuntimes) {
         foreach ($suffix in @('endpoint.json', 'image.json')) {
-            $path = Join-Path $configDir ('{0}-{1}' -f $runtime, $suffix)
+            $path = Join-Path $configRoot ('{0}-{1}' -f $runtime, $suffix)
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
                 $missing += [System.IO.Path]::GetFileName($path)
             }
         }
     }
     if ($missing.Count -ne 0) {
+        $script:workerInputsReady = $false
         throw ('Missing real worker/image manifests: {0}' -f ($missing -join ', '))
     }
-    return $manifests[0].Name
+    return 'all three runtime endpoint/image pairs present'
 })
 
-$releaseManifestCount = 0
-if (Test-Path -LiteralPath (Join-Path $root 'release') -PathType Container) {
-    $releaseManifestCount = @(
-        Get-ChildItem -LiteralPath (Join-Path $root 'release') -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -match '^psmatrix-2\.0\.0(?:rc[0-9]+)?-release\.json$' }
-    ).Count
+if (-not $releaseReady) {
+    [void]$remaining.Add('Run protected RC3 release signing and intake; verified release files must live under media/release/2.0.0rc3/.')
 }
-if ($releaseManifestCount -ne 1) {
-    [void]$remaining.Add('Place exactly one signed 2.0.0 or 2.0.0rcN release inventory under release/.')
+if (-not $mediaReady) {
+    [void]$remaining.Add('Complete reviewed external-media selection and materialize config/windows-lab-media.json.')
+}
+if (-not $operationReady) {
+    [void]$remaining.Add('Run the deterministic RC3 operation-package workflow and keep the PASS-bound run under operation/2.0.0rc3/.')
 }
 foreach ($runtime in $requiredRuntimes) {
     foreach ($suffix in @('endpoint.json', 'image.json')) {
-        $path = Join-Path $root ('config\{0}-{1}' -f $runtime, $suffix)
+        $path = Join-Path $configRoot ('{0}-{1}' -f $runtime, $suffix)
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
             [void]$remaining.Add(('Provision real {0}-{1}.' -f $runtime, $suffix))
         }
@@ -353,21 +438,13 @@ foreach ($runtime in $requiredRuntimes) {
 }
 [void]$remaining.Add('Create protected GitHub environment production-ga-windows-lab.')
 [void]$remaining.Add('Set environment variable PSMATRIX_WINDOWS_GA_ROOT to this absolute root.')
-[void]$remaining.Add('Set protected secret PSMATRIX_RELEASE_PUBLIC_KEY from the matching signed release authority.')
+[void]$remaining.Add('Keep PSMATRIX_WINDOWS_LAB_PRIVATE_KEY and PSMATRIX_WINDOWS_LAB_PUBLIC_KEY only in the protected campaign environment.')
 
 $requiredFailures = @($checks | Where-Object { $_.required -eq $true -and $_.status -ne 'PASS' })
 $allFailures = @($checks | Where-Object { $_.status -ne 'PASS' })
 $controllerReady = $requiredFailures.Count -eq 0
 $runnerReady = @($runnerServices | Where-Object { $_.Status -eq 'Running' }).Count -gt 0
-$inputReady = $releaseManifestCount -eq 1
-foreach ($runtime in $requiredRuntimes) {
-    if (-not (Test-Path -LiteralPath (Join-Path $root ('config\{0}-endpoint.json' -f $runtime)) -PathType Leaf)) {
-        $inputReady = $false
-    }
-    if (-not (Test-Path -LiteralPath (Join-Path $root ('config\{0}-image.json' -f $runtime)) -PathType Leaf)) {
-        $inputReady = $false
-    }
-}
+$inputReady = ($releaseReady -and $mediaReady -and $operationReady -and $workerInputsReady)
 
 $status = 'PASS_PARTIAL'
 if (-not $controllerReady) {
@@ -382,11 +459,18 @@ $report = [ordered]@{
     controller_ready = $controllerReady
     runner_service_ready = $runnerReady
     release_and_worker_inputs_present = $inputReady
+    verified_rc3_release_ready = $releaseReady
+    media_manifest_ready = $mediaReady
+    operation_package_candidate_present = $operationReady
     ready_to_dispatch_infrastructure_preflight = ($controllerReady -and $runnerReady -and $inputReady)
     authority_level = 'local-controller-bootstrap'
     authoritative = $false
     ga_eligible = $false
     ga_root = $root
+    release_version = $releaseVersion
+    release_root = $releaseRoot
+    release_public_key_source = 'verified-protected-release-bundle'
+    release_public_key_secret_required = $false
     required_runner_labels = $requiredRunnerLabels
     protected_environment = 'production-ga-windows-lab'
     required_runtimes = $requiredRuntimes
