@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-authority-operation-package-builder-contract",
+  "pack": "03-authoritative-windows",
+  "release_version": "2.0.0rc3",
+  "release_commit": "34e87c60885001f8dd11744b8bf194a59e51bd1f",
+  "input_requirements": {
+    "protected_release_intake_status": "RELEASE_CLOSURE_READY",
+    "canonical_release_authority_status": "READY",
+    "media_manifest_complete": true,
+    "media_manifest_ready_for_hyper_v_provisioning": true,
+    "signed_release_manifest_reverified": true,
+    "signed_release_artifacts_must_equal_reviewed_lock": true,
+    "canonical_manifest_sha256_must_match_disk": true,
+    "media_manifest_inventory_sha256_must_match_disk": true
+  },
+  "release_binding": {
+    "release_commit": true,
+    "release_manifest_sha256": true,
+    "source_sha256": true,
+    "windows_workers_sha256": true,
+    "windows_certification_kit_sha256": true,
+    "windows_provisioning_kit_sha256": true,
+    "windows_lab_media_sha256": true,
+    "canonical_binding_sha256": true
+  },
+  "package": {
+    "kind": "psmatrix.windows-authoritative-operation-package",
+    "status": "READY_FOR_WINDOWS_HOST",
+    "deterministic_zip": true,
+    "fixed_zip_timestamp": "1980-01-01T00:00:00",
+    "stable_entry_order": true,
+    "private_key_scan_required": true,
+    "embeds_reviewed_release_artifacts": true,
+    "embeds_signed_release_manifest": true,
+    "embeds_public_release_verification_material": true,
+    "embeds_windows_lab_media_manifest": true,
+    "embeds_controller_contracts": true,
+    "credential_bundle_contents_included": false,
+    "worker_signing_bundle_contents_included": false,
+    "release_private_key_included": false,
+    "windows_lab_private_key_included": false
+  },
+  "safety": {
+    "downloads_files": false,
+    "extracts_existing_operation_package": false,
+    "reads_historical_rc2_operation_package": false,
+    "creates_virtual_machines": false,
+    "creates_checkpoints": false,
+    "restores_snapshots": false,
+    "runs_authoritative_campaign": false,
+    "authoritative": false,
+    "ga_eligible": false
+  }
+}
