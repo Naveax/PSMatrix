@@ -45,16 +45,6 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_WINDOWS_GA_ROOT)) {
-              throw 'PSMATRIX_WINDOWS_GA_ROOT is missing from production-ga-windows-lab.'
-          }
-          if (-not [System.IO.Path]::IsPathRooted($env:PSMATRIX_WINDOWS_GA_ROOT)) {
-              throw 'PSMATRIX_WINDOWS_GA_ROOT must be an absolute path.'
-          }
-          $gaRoot = [System.IO.Path]::GetFullPath($env:PSMATRIX_WINDOWS_GA_ROOT)
-          if (-not (Test-Path -LiteralPath $gaRoot -PathType Container)) {
-              throw "PSMATRIX_WINDOWS_GA_ROOT does not exist: $gaRoot"
-          }
           $bundle = Join-Path $env:RUNNER_TEMP 'psmatrix-2.0.0rc3-protected-release-input'
           $evidence = Join-Path $env:RUNNER_TEMP 'psmatrix-rc3-protected-release-intake-evidence'
           foreach ($path in @($bundle, $evidence)) {
@@ -65,6 +55,17 @@ jobs:
           }
           "PSMATRIX_RC3_INTAKE_BUNDLE=$bundle" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "PSMATRIX_RC3_INTAKE_EVIDENCE=$evidence" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_WINDOWS_GA_ROOT)) {
+              throw 'PSMATRIX_WINDOWS_GA_ROOT is missing from production-ga-windows-lab.'
+          }
+          if (-not [System.IO.Path]::IsPathRooted($env:PSMATRIX_WINDOWS_GA_ROOT)) {
+              throw 'PSMATRIX_WINDOWS_GA_ROOT must be an absolute path.'
+          }
+          $gaRoot = [System.IO.Path]::GetFullPath($env:PSMATRIX_WINDOWS_GA_ROOT)
+          if (-not (Test-Path -LiteralPath $gaRoot -PathType Container)) {
+              throw "PSMATRIX_WINDOWS_GA_ROOT does not exist: $gaRoot"
+          }
 
       - name: Check out intake controls
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
