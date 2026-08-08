@@ -18,6 +18,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 
+$releaseVersion = '2.0.0rc3'
 $requiredRuntimes = @(
     [ordered]@{
         runtime_id = 'windows-powershell-4.0'
@@ -40,7 +41,12 @@ $requiredRuntimes = @(
 )
 $cleanSnapshotName = 'psmatrix-clean'
 $requiredCapabilities = @('registry', 'services', 'com', 'wmi', 'event-log')
-$releaseManifestPattern = '^psmatrix-2\.0\.0(?:rc[0-9]+)?-release\.json$'
+$requiredArtifactSuffixes = @(
+    '-source.zip',
+    '-windows-workers.zip',
+    '-windows-certification-kit.zip',
+    '-windows-provisioning-kit.zip'
+)
 
 function Test-IsAdministrator {
     $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
@@ -50,13 +56,9 @@ function Test-IsAdministrator {
 
 function Write-Utf8NoBom {
     param(
-        [Parameter(Mandatory = $true)]
-        [string]$Path,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Content
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Content
     )
-
     $parent = [System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath($Path))
     if (-not [string]::IsNullOrWhiteSpace($parent)) {
         [System.IO.Directory]::CreateDirectory($parent) | Out-Null
@@ -66,10 +68,7 @@ function Write-Utf8NoBom {
 }
 
 function Get-ExactFixturePackDigest {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$RepositoryRoot
-    )
+    param([Parameter(Mandatory = $true)][string]$RepositoryRoot)
 
     $python = Get-Command python.exe -ErrorAction SilentlyContinue
     if ($null -eq $python) {
@@ -78,12 +77,10 @@ function Get-ExactFixturePackDigest {
     if ($null -eq $python) {
         throw 'python.exe/python was not found; exact fixture-pack hashing requires the PSMatrix Python implementation.'
     }
-
     $fixtureRoot = Join-Path $RepositoryRoot 'fixtures\windows-authoritative'
     if (-not (Test-Path -LiteralPath $fixtureRoot -PathType Container)) {
         throw ('Authoritative fixture pack is missing: {0}' -f $fixtureRoot)
     }
-
     $previousPythonPath = $env:PYTHONPATH
     try {
         $env:PYTHONPATH = Join-Path $RepositoryRoot 'src'
@@ -120,14 +117,19 @@ if ([string]::IsNullOrWhiteSpace($OutputPath)) {
     $OutputPath = Join-Path $root 'windows-authority-input-plan.json'
 }
 $output = [System.IO.Path]::GetFullPath($OutputPath)
+$releaseDirectory = Join-Path $root 'media\release\2.0.0rc3'
+$operationDirectory = Join-Path $root 'operation\2.0.0rc3'
+$configDirectory = Join-Path $root 'config'
+$trustDirectory = Join-Path $root 'trust-home'
+$intakePath = Join-Path $root 'windows-authority-protected-release-intake.json'
+$mediaManifestPath = Join-Path $configDirectory 'windows-lab-media.json'
 
 if (-not (Test-Path -LiteralPath (Join-Path $source '.git') -PathType Container)) {
     throw ('SourceRoot is not a Git checkout: {0}' -f $source)
 }
-foreach ($name in @('release', 'config', 'trust-home')) {
-    $path = Join-Path $root $name
+foreach ($path in @($releaseDirectory, $operationDirectory, $configDirectory, $trustDirectory)) {
     if (-not (Test-Path -LiteralPath $path -PathType Container)) {
-        throw ('GA root layout is incomplete; missing {0}' -f $path)
+        throw ('GA root RC3 layout is incomplete; missing {0}' -f $path)
     }
 }
 
@@ -216,8 +218,8 @@ foreach ($profile in $requiredRuntimes) {
         throw ('VM {0} has {1} checkpoints named {2}; expected exactly one.' -f $profile.vm_name, $snapshots.Count, $cleanSnapshotName)
     }
 
-    $imagePath = Join-Path $root ('config\{0}-image.json' -f $profile.runtime_id)
-    $endpointPath = Join-Path $root ('config\{0}-endpoint.json' -f $profile.runtime_id)
+    $imagePath = Join-Path $configDirectory ('{0}-image.json' -f $profile.runtime_id)
+    $endpointPath = Join-Path $configDirectory ('{0}-endpoint.json' -f $profile.runtime_id)
     $row.image_identity_complete = Test-Path -LiteralPath $imagePath -PathType Leaf
     $row.endpoint_identity_complete = Test-Path -LiteralPath $endpointPath -PathType Leaf
     $row.ready_for_manifest_materialization = (
@@ -231,22 +233,28 @@ foreach ($profile in $requiredRuntimes) {
     [void]$runtimeRows.Add($row)
 }
 
-$releaseDirectory = Join-Path $root 'release'
-$releaseManifests = @(
-    Get-ChildItem -LiteralPath $releaseDirectory -File -ErrorAction Stop |
-        Where-Object { $_.Name -match $releaseManifestPattern } |
-        Sort-Object Name
-)
-if ($releaseManifests.Count -ne 1) {
-    [void]$nextRequired.Add(('Place exactly one signed 2.0.0/2.0.0rcN release manifest under release/; found {0}.' -f $releaseManifests.Count))
+$releaseManifest = Join-Path $releaseDirectory 'psmatrix-2.0.0rc3-release.json'
+$releasePublicKey = Join-Path $releaseDirectory 'psmatrix-2.0.0rc3-release-public.pem'
+$releaseManifestCount = if (Test-Path -LiteralPath $releaseManifest -PathType Leaf) { 1 } else { 0 }
+$releasePublicKeyPresent = Test-Path -LiteralPath $releasePublicKey -PathType Leaf
+$intakeReady = $false
+if (Test-Path -LiteralPath $intakePath -PathType Leaf) {
+    $intake = Get-Content -LiteralPath $intakePath -Raw | ConvertFrom-Json
+    $intakeReady = (
+        [string]$intake.status -eq 'RELEASE_CLOSURE_READY' -and
+        [string]$intake.version -eq $releaseVersion -and
+        [string]$intake.release_commit -eq $ReleaseCommit -and
+        [bool]$intake.private_key_material_absent -eq $true -and
+        [bool]$intake.release_authority_rotated -eq $false
+    )
+}
+if (-not $intakeReady) {
+    [void]$nextRequired.Add('Run protected RC3 release intake and preserve RELEASE_CLOSURE_READY state.')
+}
+if ($releaseManifestCount -ne 1 -or -not $releasePublicKeyPresent) {
+    [void]$nextRequired.Add('Verified RC3 release manifest/public key are missing under media/release/2.0.0rc3/.')
 }
 
-$requiredArtifactSuffixes = @(
-    '-source.zip',
-    '-windows-workers.zip',
-    '-windows-certification-kit.zip',
-    '-windows-provisioning-kit.zip'
-)
 $releaseArtifacts = @(
     Get-ChildItem -LiteralPath $releaseDirectory -File -ErrorAction Stop |
         Where-Object { $_.Extension -eq '.zip' } |
@@ -259,11 +267,52 @@ $releaseArtifacts = @(
             }
         }
 )
+$releaseArtifactSetComplete = $true
 foreach ($suffix in $requiredArtifactSuffixes) {
     $count = @($releaseArtifacts | Where-Object { $_.name.EndsWith($suffix, [System.StringComparison]::Ordinal) }).Count
     if ($count -ne 1) {
-        [void]$nextRequired.Add(('Signed release staging requires exactly one artifact ending {0}; found {1}.' -f $suffix, $count))
+        $releaseArtifactSetComplete = $false
+        [void]$nextRequired.Add(('Verified RC3 release root requires exactly one artifact ending {0}; found {1}.' -f $suffix, $count))
     }
+}
+
+$mediaManifestReady = $false
+if (Test-Path -LiteralPath $mediaManifestPath -PathType Leaf) {
+    $mediaManifest = Get-Content -LiteralPath $mediaManifestPath -Raw | ConvertFrom-Json
+    $mediaManifestReady = (
+        [string]$mediaManifest.release_version -eq $releaseVersion -and
+        [bool]$mediaManifest.complete -eq $true -and
+        [bool]$mediaManifest.ready_for_hyper_v_provisioning -eq $true -and
+        [bool]$mediaManifest.authoritative -eq $false -and
+        [bool]$mediaManifest.ga_eligible -eq $false
+    )
+}
+if (-not $mediaManifestReady) {
+    [void]$nextRequired.Add('Materialize a complete RC3-bound config/windows-lab-media.json before provisioning.')
+}
+
+$operationCandidates = @(
+    Get-ChildItem -LiteralPath $operationDirectory -Directory -ErrorAction Stop |
+        Where-Object { $_.Name -match '^run-[0-9]+-attempt-[1-9][0-9]*$' } |
+        ForEach-Object {
+            $metadataPath = Join-Path $_.FullName 'psmatrix-2.0.0rc3-windows-authoritative-operation-package.json'
+            $bindingPath = Join-Path $_.FullName 'windows-authority-operation-package-binding.json'
+            if ((Test-Path -LiteralPath $metadataPath -PathType Leaf) -and (Test-Path -LiteralPath $bindingPath -PathType Leaf)) {
+                $metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
+                $binding = Get-Content -LiteralPath $bindingPath -Raw | ConvertFrom-Json
+                if ([string]$metadata.status -eq 'READY_FOR_WINDOWS_HOST' -and [string]$metadata.release_commit -eq $ReleaseCommit -and [bool]$metadata.stale_rc2_operation_package_used -eq $false -and [string]$binding.status -eq 'PASS' -and [bool]$binding.ready_for_release_artifact_recovery -eq $true) {
+                    [ordered]@{
+                        run_directory = $_.Name
+                        operation_zip_sha256 = [string]$metadata.artifact.sha256
+                        release_binding_sha256 = [string]$metadata.release_binding.binding_sha256
+                    }
+                }
+            }
+        }
+)
+$operationPackageReady = $operationCandidates.Count -gt 0
+if (-not $operationPackageReady) {
+    [void]$nextRequired.Add('Build and PASS-bind at least one deterministic RC3 operation package under operation/2.0.0rc3/.')
 }
 
 $availableVmInventory = @(
@@ -293,20 +342,32 @@ $vmInventoryComplete = $completeVmCount -eq $requiredRuntimes.Count
 $realInputFilesPresent = @($runtimeRows | Where-Object {
     $_.image_identity_complete -and $_.endpoint_identity_complete
 }).Count -eq $requiredRuntimes.Count
-$releaseInventoryPresent = $releaseManifests.Count -eq 1 -and @($nextRequired | Where-Object {
-    $_ -like 'Signed release staging requires*'
-}).Count -eq 0
+$releaseInventoryPresent = (
+    $releaseManifestCount -eq 1 -and
+    $releasePublicKeyPresent -and
+    $releaseArtifactSetComplete -and
+    $intakeReady
+)
 
 if (-not $realInputFilesPresent) {
     [void]$nextRequired.Add('Materialize six real endpoint/image manifests only after VM, snapshot, mTLS and signing identities are provisioned.')
 }
-[void]$nextRequired.Add('Create protected GitHub environment production-ga-windows-lab and set PSMATRIX_WINDOWS_GA_ROOT plus PSMATRIX_RELEASE_PUBLIC_KEY.')
+[void]$nextRequired.Add('Use the protected environment production-ga-windows-lab; release public key comes from the verified RC3 bundle, not from a GitHub secret.')
+
+$readyForInputMaterialization = (
+    $vmInventoryComplete -and
+    $releaseInventoryPresent -and
+    $mediaManifestReady -and
+    $operationPackageReady
+)
+$readyForInfrastructure = ($readyForInputMaterialization -and $realInputFilesPresent)
 
 $report = [ordered]@{
     schema = 1
     kind = 'psmatrix.windows-authority-input-provisioning-plan'
     pack = '03-authoritative-windows'
     status = 'PASS_PARTIAL'
+    release_version = $releaseVersion
     release_commit = $ReleaseCommit
     generated_at_utc = [DateTime]::UtcNow.ToString('o')
     controller = [ordered]@{
@@ -320,16 +381,25 @@ $report = [ordered]@{
     canonical_clean_snapshot_name = $cleanSnapshotName
     required_capabilities = $requiredCapabilities
     required_release_artifact_suffixes = $requiredArtifactSuffixes
-    release_manifest_count = $releaseManifests.Count
-    release_manifest = if ($releaseManifests.Count -eq 1) { $releaseManifests[0].Name } else { $null }
+    isolated_release_root = $releaseDirectory
+    isolated_operation_root = $operationDirectory
+    release_manifest_count = $releaseManifestCount
+    release_manifest = if ($releaseManifestCount -eq 1) { 'psmatrix-2.0.0rc3-release.json' } else { $null }
+    release_public_key_present = $releasePublicKeyPresent
+    release_public_key_source = 'verified-protected-release-bundle'
+    release_public_key_secret_required = $false
+    protected_release_intake_ready = $intakeReady
     release_artifacts = $releaseArtifacts
+    media_manifest_ready = $mediaManifestReady
+    operation_package_ready = $operationPackageReady
+    operation_package_candidates = $operationCandidates
     required_runtimes = @($runtimeRows)
     available_hyper_v_inventory = $availableVmInventory
     vm_inventory_complete = $vmInventoryComplete
     release_inventory_present = $releaseInventoryPresent
     real_input_files_present = $realInputFilesPresent
-    ready_for_input_materialization = ($vmInventoryComplete -and $releaseInventoryPresent)
-    ready_to_dispatch_infrastructure_preflight = ($vmInventoryComplete -and $releaseInventoryPresent -and $realInputFilesPresent)
+    ready_for_input_materialization = $readyForInputMaterialization
+    ready_to_dispatch_infrastructure_preflight = $readyForInfrastructure
     authoritative = $false
     ga_eligible = $false
     next_required = @($nextRequired | Select-Object -Unique)
