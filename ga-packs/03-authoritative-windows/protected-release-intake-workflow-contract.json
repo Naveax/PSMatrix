@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-authority-protected-release-intake-workflow-contract",
+  "pack": "03-authoritative-windows",
+  "release_version": "2.0.0rc3",
+  "release_commit": "34e87c60885001f8dd11744b8bf194a59e51bd1f",
+  "source_signing_workflow": "production-ga-windows-authority-release-sign-from-staging",
+  "source_artifact": "psmatrix-2.0.0rc3-protected-release",
+  "workflow": "production-ga-windows-authority-release-intake-selfhosted",
+  "protected_environment": "production-ga-windows-lab",
+  "required_runner_labels": [
+    "self-hosted",
+    "Windows",
+    "X64",
+    "psmatrix-hyperv"
+  ],
+  "provenance": {
+    "signing_run_id_required": true,
+    "signing_control_head_required": true,
+    "signing_workflow_name_must_match": true,
+    "signing_event_must_be_workflow_dispatch": true,
+    "signing_run_must_be_completed_successfully": true,
+    "signing_head_sha_must_match": true,
+    "exactly_one_non_expired_source_artifact_required": true
+  },
+  "bundle_validation": {
+    "bundle_inventory_required": true,
+    "sha256sums_required": true,
+    "sha256sums_must_cover_every_public_bundle_file": true,
+    "private_key_scan_required": true,
+    "release_commit_must_match_lock": true,
+    "release_authority_rotation_forbidden": true,
+    "stale_rc2_operation_package_forbidden": true
+  },
+  "intake_result": {
+    "required_status": "RELEASE_CLOSURE_READY",
+    "media_manifest_materialized": false,
+    "operation_package_rebuilt": false,
+    "authoritative": false,
+    "ga_eligible": false
+  },
+  "safety": {
+    "release_private_key_available_to_windows_controller": false,
+    "windows_lab_private_key_required": false,
+    "downloads_unreviewed_files": false,
+    "broad_downloads_search": false,
+    "creates_virtual_machines": false,
+    "creates_checkpoints": false,
+    "restores_snapshots": false,
+    "uploads_ga_root": false,
+    "uploads_protected_release_bundle": false,
+    "uploads_non_secret_status_only": true,
+    "authoritative": false,
+    "ga_eligible": false
+  }
+}
