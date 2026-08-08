@@ -13,12 +13,14 @@ on:
       - ".github/workflows/ga-windows-authority-release-sign-from-staging.yml"
       - ".github/workflows/ga-windows-authority-release-intake-selfhosted.yml"
       - ".github/workflows/ga-windows-authority-media-readiness-selfhosted.yml"
+      - ".github/workflows/ga-windows-authority-operation-package-selfhosted.yml"
       - ".github/workflows/ga-windows-authority-release-authority-preflight.yml"
       - "ga-packs/03-authoritative-windows/**"
       - "scripts/ga/validate_windows_authority_infrastructure.py"
       - "scripts/ga/build_windows_authority_release_candidate.py"
       - "scripts/ga/sign_windows_authority_release_candidate.py"
       - "scripts/ga/import_windows_authority_protected_release.py"
+      - "scripts/ga/build_windows_authority_operation_package.py"
       - "scripts/ga/Invoke-PSMatrixWindowsAuthorityProtectedReleaseIntake.ps1"
       - "scripts/ga/Initialize-PSMatrixWindowsAuthorityLab.ps1"
       - "scripts/ga/Get-PSMatrixWindowsAuthorityInputPlan.ps1"
@@ -45,6 +47,8 @@ on:
       - "tests/test_windows_authority_protected_release_intake_workflow.py"
       - "tests/test_windows_authority_media_readiness_workflow.py"
       - "tests/test_windows_authority_operation_package_binding.py"
+      - "tests/test_windows_authority_operation_package_builder.py"
+      - "tests/test_windows_authority_operation_package_workflow.py"
 
 concurrency:
   group: production-ga-pack03-windows-source-preflight-${{ github.ref }}
@@ -111,6 +115,7 @@ jobs:
               scripts/ga/build_windows_authority_release_candidate.py \
               scripts/ga/sign_windows_authority_release_candidate.py \
               scripts/ga/import_windows_authority_protected_release.py \
+              scripts/ga/build_windows_authority_operation_package.py \
               tests/test_windows_authority_ga_contract.py \
               tests/test_windows_authority_controller_bootstrap.py \
               tests/test_windows_authority_input_provisioning.py \
@@ -125,7 +130,9 @@ jobs:
               tests/test_windows_authority_protected_release_intake.py \
               tests/test_windows_authority_protected_release_intake_workflow.py \
               tests/test_windows_authority_media_readiness_workflow.py \
-              tests/test_windows_authority_operation_package_binding.py
+              tests/test_windows_authority_operation_package_binding.py \
+              tests/test_windows_authority_operation_package_builder.py \
+              tests/test_windows_authority_operation_package_workflow.py
             echo "py_compile=PASS"
           } 2>&1 | tee "$PSMATRIX_PACK03_SOURCE_EVIDENCE/py-compile.log"
 
@@ -179,6 +186,8 @@ jobs:
             tests.test_windows_authority_protected_release_intake_workflow \
             tests.test_windows_authority_media_readiness_workflow \
             tests.test_windows_authority_operation_package_binding \
+            tests.test_windows_authority_operation_package_builder \
+            tests.test_windows_authority_operation_package_workflow \
             2>&1 | tee "$PSMATRIX_PACK03_SOURCE_EVIDENCE/test-windows-authority.log"
 
       - name: Enforce Pack 03 source preflight
@@ -245,6 +254,9 @@ jobs:
               'media_manifest_powershell_parse': 'PASS',
               'operation_package_binding_contract': 'PASS',
               'operation_package_binding_powershell_parse': 'PASS',
+              'operation_package_builder_contract': 'PASS',
+              'operation_package_builder_python_compile': 'PASS',
+              'operation_package_workflow_contract': 'PASS',
               'infrastructure_workflow_contract': 'PASS',
               'authoritative_workflow_contract': 'PASS',
               'real_windows_executed': False,
