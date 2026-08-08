@@ -1,0 +1,289 @@
+name: production-ga-windows-authority-media-readiness-selfhosted
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_commit:
+        description: Exact reviewed Windows Authority RC3 release commit
+        required: true
+        default: "34e87c60885001f8dd11744b8bf194a59e51bd1f"
+        type: string
+      inspect_iso_images:
+        description: Mount candidate ISOs read-only and inspect install.wim/install.esd editions
+        required: true
+        default: true
+        type: boolean
+
+concurrency:
+  group: production-ga-windows-authority-media-readiness-selfhosted
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  media-readiness:
+    name: Inventory isolated Windows authority media and materialize reviewed plan
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 45
+    environment: production-ga-windows-lab
+    permissions:
+      contents: read
+    env:
+      PSMATRIX_WINDOWS_GA_ROOT: ${{ vars.PSMATRIX_WINDOWS_GA_ROOT }}
+      RELEASE_COMMIT: ${{ inputs.release_commit }}
+      INSPECT_ISO_IMAGES: ${{ inputs.inspect_iso_images }}
+
+    steps:
+      - name: Initialize isolated media-readiness workspace
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_WINDOWS_GA_ROOT)) {
+              throw 'PSMATRIX_WINDOWS_GA_ROOT is missing from production-ga-windows-lab.'
+          }
+          if (-not [System.IO.Path]::IsPathRooted($env:PSMATRIX_WINDOWS_GA_ROOT)) {
+              throw 'PSMATRIX_WINDOWS_GA_ROOT must be an absolute path.'
+          }
+          $gaRoot = [System.IO.Path]::GetFullPath($env:PSMATRIX_WINDOWS_GA_ROOT)
+          if (-not (Test-Path -LiteralPath $gaRoot -PathType Container)) {
+              throw "PSMATRIX_WINDOWS_GA_ROOT does not exist: $gaRoot"
+          }
+          if ($env:RELEASE_COMMIT -cnotmatch '^[0-9a-f]{40}$') {
+              throw 'release_commit must contain exactly 40 lowercase hexadecimal characters.'
+          }
+          if ($env:INSPECT_ISO_IMAGES -notin @('true', 'false')) {
+              throw 'inspect_iso_images must resolve to true or false.'
+          }
+
+          $releaseRoot = Join-Path $gaRoot 'media\release\2.0.0rc3'
+          $externalRoot = Join-Path $gaRoot 'media\external'
+          if (-not (Test-Path -LiteralPath $releaseRoot -PathType Container)) {
+              throw "Verified RC3 release root is missing. Run protected release intake first: $releaseRoot"
+          }
+          if (-not (Test-Path -LiteralPath $externalRoot -PathType Container)) {
+              New-Item -ItemType Directory -Path $externalRoot -Force | Out-Null
+          }
+
+          $evidence = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-authority-media-readiness-evidence'
+          if (Test-Path -LiteralPath $evidence) {
+              Remove-Item -LiteralPath $evidence -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+
+          "PSMATRIX_MEDIA_RELEASE_ROOT=$releaseRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_MEDIA_EXTERNAL_ROOT=$externalRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_MEDIA_READINESS_EVIDENCE=$evidence" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Check out media-readiness controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate reviewed RC3 intake prerequisite
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lock = Get-Content -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'ga-packs\03-authoritative-windows\rc3-release-lock.json') -Raw | ConvertFrom-Json
+          if ([string]$lock.version -ne '2.0.0rc3' -or [string]$lock.release_commit -ne $env:RELEASE_COMMIT) {
+              throw 'Current RC3 release lock does not match release_commit.'
+          }
+
+          $intakePath = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'windows-authority-protected-release-intake.json'
+          if (-not (Test-Path -LiteralPath $intakePath -PathType Leaf)) {
+              throw 'Protected RC3 intake report is missing.'
+          }
+          $intake = Get-Content -LiteralPath $intakePath -Raw | ConvertFrom-Json
+          if ([string]$intake.status -ne 'RELEASE_CLOSURE_READY') { throw 'Protected RC3 intake is not RELEASE_CLOSURE_READY.' }
+          if ([string]$intake.version -ne '2.0.0rc3') { throw 'Protected RC3 intake version mismatch.' }
+          if ([string]$intake.release_commit -ne $env:RELEASE_COMMIT) { throw 'Protected RC3 intake commit mismatch.' }
+          if ([bool]$intake.private_key_material_absent -ne $true) { throw 'Protected RC3 intake did not prove private-key absence.' }
+          if ([bool]$intake.release_authority_rotated -ne $false) { throw 'Protected RC3 intake rotated release authority.' }
+          if ([bool]$intake.stale_rc2_operation_package_used -ne $false) { throw 'Protected RC3 intake used stale RC2 operation material.' }
+          if ([bool]$intake.authoritative -ne $false -or [bool]$intake.ga_eligible -ne $false) { throw 'Protected RC3 intake improperly claims authority or GA eligibility.' }
+
+          $expectedReleaseRoot = [System.IO.Path]::GetFullPath($env:PSMATRIX_MEDIA_RELEASE_ROOT)
+          $reportedReleaseRoot = [System.IO.Path]::GetFullPath([string]$intake.imported_release_root)
+          if (-not $reportedReleaseRoot.Equals($expectedReleaseRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+              throw 'Protected RC3 intake release root does not match the isolated media release root.'
+          }
+          Write-Host 'protected_rc3_intake_prerequisite=PASS'
+
+      - name: Inventory only isolated release and external-media roots
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $inventoryPath = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'windows-authority-media-inventory.json'
+          $arguments = @{
+              SourceRoot = $env:GITHUB_WORKSPACE
+              GaRoot = $env:PSMATRIX_WINDOWS_GA_ROOT
+              SearchRoot = @($env:PSMATRIX_MEDIA_RELEASE_ROOT, $env:PSMATRIX_MEDIA_EXTERNAL_ROOT)
+              OutputPath = $inventoryPath
+          }
+          if ($env:INSPECT_ISO_IMAGES -eq 'true') {
+              & "$env:GITHUB_WORKSPACE\scripts\ga\Get-PSMatrixWindowsAuthorityMediaInventory.ps1" @arguments -InspectIsoImages
+          }
+          else {
+              & "$env:GITHUB_WORKSPACE\scripts\ga\Get-PSMatrixWindowsAuthorityMediaInventory.ps1" @arguments
+          }
+          if (-not (Test-Path -LiteralPath $inventoryPath -PathType Leaf)) {
+              throw 'Windows authority media inventory was not written.'
+          }
+
+      - name: Canonicalize release-bound and external media candidates
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $inventoryPath = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'windows-authority-media-inventory.json'
+          $canonicalPath = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'windows-authority-media-inventory.canonical.json'
+          & "$env:GITHUB_WORKSPACE\scripts\ga\Resolve-PSMatrixWindowsAuthorityMediaInventory.ps1" `
+              -SourceRoot $env:GITHUB_WORKSPACE `
+              -GaRoot $env:PSMATRIX_WINDOWS_GA_ROOT `
+              -InventoryPath $inventoryPath `
+              -OutputPath $canonicalPath
+          if (-not (Test-Path -LiteralPath $canonicalPath -PathType Leaf)) {
+              throw 'Canonical Windows authority media inventory was not written.'
+          }
+          $canonical = Get-Content -LiteralPath $canonicalPath -Raw | ConvertFrom-Json
+          if ([string]$canonical.canonicalization.release_authority_status -ne 'READY') {
+              throw 'Canonical release authority is not READY after protected RC3 intake.'
+          }
+          if ([string]$canonical.canonicalization.release_version -ne '2.0.0rc3') {
+              throw 'Canonical release version is not 2.0.0rc3.'
+          }
+          if ([bool]$canonical.authoritative -ne $false -or [bool]$canonical.ga_eligible -ne $false) {
+              throw 'Canonical media inventory improperly claims authority or GA eligibility.'
+          }
+
+      - name: Materialize reviewed media selection plan
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $canonicalPath = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'windows-authority-media-inventory.canonical.json'
+          & "$env:GITHUB_WORKSPACE\scripts\ga\New-PSMatrixWindowsAuthorityMediaManifest.ps1" `
+              -SourceRoot $env:GITHUB_WORKSPACE `
+              -GaRoot $env:PSMATRIX_WINDOWS_GA_ROOT `
+              -InventoryPath $canonicalPath `
+              -WriteSelectionTemplate
+
+      - name: Enforce media-readiness result and emit non-secret summary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $inventoryPath = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'windows-authority-media-inventory.json'
+          $canonicalPath = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'windows-authority-media-inventory.canonical.json'
+          $planPath = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'windows-authority-media-manifest-plan.json'
+          foreach ($path in @($inventoryPath, $canonicalPath, $planPath)) {
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                  throw "Required media-readiness report is missing: $path"
+              }
+          }
+          $inventory = Get-Content -LiteralPath $inventoryPath -Raw | ConvertFrom-Json
+          $canonical = Get-Content -LiteralPath $canonicalPath -Raw | ConvertFrom-Json
+          $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+
+          $expectedRoots = @(
+              [System.IO.Path]::GetFullPath($env:PSMATRIX_MEDIA_RELEASE_ROOT),
+              [System.IO.Path]::GetFullPath($env:PSMATRIX_MEDIA_EXTERNAL_ROOT)
+          )
+          $reportedRoots = @($inventory.search_roots | ForEach-Object { [System.IO.Path]::GetFullPath([string]$_) })
+          if ($reportedRoots.Count -ne 2) { throw 'Media inventory did not use exactly two isolated search roots.' }
+          foreach ($expected in $expectedRoots) {
+              if (@($reportedRoots | Where-Object { $_.Equals($expected, [System.StringComparison]::OrdinalIgnoreCase) }).Count -ne 1) {
+                  throw "Expected isolated search root is missing from inventory: $expected"
+              }
+          }
+          if ([string]$canonical.canonicalization.release_authority_status -ne 'READY') { throw 'Canonical release authority is not READY.' }
+          if ([string]$canonical.canonicalization.release_version -ne '2.0.0rc3') { throw 'Canonical release version mismatch.' }
+          if ([string]$plan.status -eq 'FAIL') { throw 'Media manifest planner reported FAIL.' }
+          if ([bool]$inventory.authoritative -or [bool]$inventory.ga_eligible) { throw 'Inventory claims authority or GA eligibility.' }
+          if ([bool]$canonical.authoritative -or [bool]$canonical.ga_eligible) { throw 'Canonical inventory claims authority or GA eligibility.' }
+          if ([bool]$plan.authoritative -or [bool]$plan.ga_eligible) { throw 'Media plan claims authority or GA eligibility.' }
+
+          $isoFailures = @(
+              $canonical.candidates |
+                  Where-Object {
+                      ([string]$_.extension -eq '.iso') -and
+                      $env:INSPECT_ISO_IMAGES -eq 'true' -and
+                      ($null -eq $_.iso_inventory -or [bool]$_.iso_inventory.inspected -ne $true)
+                  } |
+                  ForEach-Object { [string]$_.name }
+          )
+
+          $status = if ([bool]$plan.final_manifest_written) {
+              'READY_FOR_HYPER_V_PROVISIONING'
+          }
+          elseif (@($canonical.missing_media_roles).Count -eq 0 -and $isoFailures.Count -eq 0) {
+              'READY_FOR_OPERATOR_SELECTION'
+          }
+          else {
+              'EXTERNAL_MEDIA_INCOMPLETE'
+          }
+
+          $summary = [ordered]@{
+              schema = 1
+              kind = 'psmatrix.windows-authority-media-readiness-workflow-status'
+              status = $status
+              release_version = '2.0.0rc3'
+              release_commit = $env:RELEASE_COMMIT
+              inspect_iso_images = ($env:INSPECT_ISO_IMAGES -eq 'true')
+              isolated_search_root_count = 2
+              release_authority_status = [string]$canonical.canonicalization.release_authority_status
+              candidate_count = [int]$canonical.candidate_count
+              missing_media_roles = @($canonical.missing_media_roles)
+              missing_release_roles = @($canonical.missing_release_roles)
+              iso_inspection_failures = $isoFailures
+              selection_present = [bool]$plan.selection_present
+              final_manifest_written = [bool]$plan.final_manifest_written
+              ready_for_media_manifest = [bool]$plan.ready_for_media_manifest
+              ready_for_hyper_v_provisioning = [bool]$plan.ready_for_hyper_v_provisioning
+              broad_downloads_search_used = $false
+              opens_secret_bundles = $false
+              creates_virtual_machines = $false
+              creates_checkpoints = $false
+              authoritative = $false
+              ga_eligible = $false
+              next_required = @($plan.next_required)
+          }
+          [System.IO.File]::WriteAllText(
+              (Join-Path $env:PSMATRIX_MEDIA_READINESS_EVIDENCE 'media-readiness-status.json'),
+              (($summary | ConvertTo-Json -Depth 16) + [Environment]::NewLine),
+              [System.Text.UTF8Encoding]::new($false)
+          )
+          Write-Host "media_readiness_status=$status"
+
+      - name: Record fail-closed media-readiness failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_MEDIA_READINESS_EVIDENCE)) { exit 0 }
+          New-Item -ItemType Directory -Path $env:PSMATRIX_MEDIA_READINESS_EVIDENCE -Force | Out-Null
+          $failure = [ordered]@{
+              schema = 1
+              kind = 'psmatrix.windows-authority-media-readiness-workflow-status'
+              status = 'FAIL'
+              release_version = '2.0.0rc3'
+              release_commit = $env:RELEASE_COMMIT
+              broad_downloads_search_used = $false
+              opens_secret_bundles = $false
+              creates_virtual_machines = $false
+              creates_checkpoints = $false
+              authoritative = $false
+              ga_eligible = $false
+          }
+          [System.IO.File]::WriteAllText(
+              (Join-Path $env:PSMATRIX_MEDIA_READINESS_EVIDENCE 'media-readiness-failure.json'),
+              (($failure | ConvertTo-Json -Depth 8) + [Environment]::NewLine),
+              [System.Text.UTF8Encoding]::new($false)
+          )
+
+      - name: Upload non-secret media-readiness audit evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-authority-rc3-media-readiness
+          path: ${{ runner.temp }}/psmatrix-windows-authority-media-readiness-evidence
+          if-no-files-found: error
+          retention-days: 30
