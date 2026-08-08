@@ -1,0 +1,280 @@
+name: production-ga-windows-authority-operation-package-selfhosted
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_commit:
+        description: Exact reviewed Windows Authority RC3 release commit
+        required: true
+        default: "34e87c60885001f8dd11744b8bf194a59e51bd1f"
+        type: string
+
+concurrency:
+  group: production-ga-windows-authority-operation-package-selfhosted
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  operation-package:
+    name: Build and bind deterministic RC3 Windows operation package
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 35
+    environment: production-ga-windows-lab
+    permissions:
+      contents: read
+    env:
+      PSMATRIX_WINDOWS_GA_ROOT: ${{ vars.PSMATRIX_WINDOWS_GA_ROOT }}
+      RELEASE_COMMIT: ${{ inputs.release_commit }}
+
+    steps:
+      - name: Initialize fail-closed operation-package workspace
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-authority-operation-package-evidence'
+          $repro = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-authority-operation-package-repro'
+          foreach ($path in @($evidence, $repro)) {
+              if (Test-Path -LiteralPath $path) {
+                  Remove-Item -LiteralPath $path -Recurse -Force
+              }
+              New-Item -ItemType Directory -Path $path -Force | Out-Null
+          }
+          "PSMATRIX_OPERATION_EVIDENCE=$evidence" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_OPERATION_REPRO=$repro" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_WINDOWS_GA_ROOT)) {
+              throw 'PSMATRIX_WINDOWS_GA_ROOT is missing from production-ga-windows-lab.'
+          }
+          if (-not [System.IO.Path]::IsPathRooted($env:PSMATRIX_WINDOWS_GA_ROOT)) {
+              throw 'PSMATRIX_WINDOWS_GA_ROOT must be an absolute path.'
+          }
+          $gaRoot = [System.IO.Path]::GetFullPath($env:PSMATRIX_WINDOWS_GA_ROOT)
+          if (-not (Test-Path -LiteralPath $gaRoot -PathType Container)) {
+              throw "PSMATRIX_WINDOWS_GA_ROOT does not exist: $gaRoot"
+          }
+          if ($env:RELEASE_COMMIT -cnotmatch '^[0-9a-f]{40}$') {
+              throw 'release_commit must contain exactly 40 lowercase hexadecimal characters.'
+          }
+
+          $output = Join-Path $gaRoot ('operation\2.0.0rc3\run-{0}-attempt-{1}' -f $env:GITHUB_RUN_ID, $env:GITHUB_RUN_ATTEMPT)
+          if (Test-Path -LiteralPath $output) {
+              throw "Operation-package run output already exists; refusing to overwrite: $output"
+          }
+          "PSMATRIX_OPERATION_OUTPUT=$output" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Check out operation-package controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up controller Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Verify exact control checkout and RC3 prerequisites
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $head -cnotmatch '^[0-9a-f]{40}$') {
+              throw 'Unable to resolve operation-package control head.'
+          }
+          if (-not [string]::IsNullOrWhiteSpace((git status --porcelain))) {
+              throw 'Operation-package control checkout is not clean.'
+          }
+          $lock = Get-Content -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'ga-packs\03-authoritative-windows\rc3-release-lock.json') -Raw | ConvertFrom-Json
+          if ([string]$lock.version -ne '2.0.0rc3' -or [string]$lock.release_commit -ne $env:RELEASE_COMMIT) {
+              throw 'Current reviewed RC3 lock does not match release_commit.'
+          }
+
+          $intakePath = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'windows-authority-protected-release-intake.json'
+          $canonicalPath = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'windows-authority-media-inventory.canonical.json'
+          $mediaPath = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'config\windows-lab-media.json'
+          foreach ($path in @($intakePath, $canonicalPath, $mediaPath)) {
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                  throw "Required RC3 operation-package prerequisite is missing: $path"
+              }
+          }
+
+          $intake = Get-Content -LiteralPath $intakePath -Raw | ConvertFrom-Json
+          $canonical = Get-Content -LiteralPath $canonicalPath -Raw | ConvertFrom-Json
+          $media = Get-Content -LiteralPath $mediaPath -Raw | ConvertFrom-Json
+          if ([string]$intake.status -ne 'RELEASE_CLOSURE_READY') { throw 'Protected release intake is not RELEASE_CLOSURE_READY.' }
+          if ([string]$intake.release_commit -ne $env:RELEASE_COMMIT) { throw 'Protected release intake commit mismatch.' }
+          if ([string]$canonical.canonicalization.release_authority_status -ne 'READY') { throw 'Canonical release authority is not READY.' }
+          if ([string]$canonical.canonicalization.release_version -ne '2.0.0rc3') { throw 'Canonical release version mismatch.' }
+          if ([bool]$media.complete -ne $true -or [bool]$media.ready_for_hyper_v_provisioning -ne $true) {
+              throw 'Windows lab media manifest is not complete and ready for Hyper-V provisioning.'
+          }
+          if ([string]$media.release_version -ne '2.0.0rc3') { throw 'Windows lab media manifest release version mismatch.' }
+          if ([bool]$intake.authoritative -or [bool]$intake.ga_eligible -or [bool]$canonical.authoritative -or [bool]$canonical.ga_eligible -or [bool]$media.authoritative -or [bool]$media.ga_eligible) {
+              throw 'A prerequisite improperly claims authority or GA eligibility.'
+          }
+          Write-Host "operation_package_control_head=$head"
+          Write-Host 'operation_package_prerequisites=PASS'
+
+      - name: Build primary deterministic RC3 operation package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python "$env:GITHUB_WORKSPACE\scripts\ga\build_windows_authority_operation_package.py" `
+              --source-root "$env:GITHUB_WORKSPACE" `
+              --ga-root "$env:PSMATRIX_WINDOWS_GA_ROOT" `
+              --release-commit "$env:RELEASE_COMMIT" `
+              --canonical-inventory "$env:PSMATRIX_WINDOWS_GA_ROOT\windows-authority-media-inventory.canonical.json" `
+              --media-manifest "$env:PSMATRIX_WINDOWS_GA_ROOT\config\windows-lab-media.json" `
+              --output-root "$env:PSMATRIX_OPERATION_OUTPUT"
+          if ($LASTEXITCODE -ne 0) {
+              throw "RC3 operation-package build failed: $LASTEXITCODE"
+          }
+
+      - name: Rebuild independently and enforce byte determinism
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python "$env:GITHUB_WORKSPACE\scripts\ga\build_windows_authority_operation_package.py" `
+              --source-root "$env:GITHUB_WORKSPACE" `
+              --ga-root "$env:PSMATRIX_WINDOWS_GA_ROOT" `
+              --release-commit "$env:RELEASE_COMMIT" `
+              --canonical-inventory "$env:PSMATRIX_WINDOWS_GA_ROOT\windows-authority-media-inventory.canonical.json" `
+              --media-manifest "$env:PSMATRIX_WINDOWS_GA_ROOT\config\windows-lab-media.json" `
+              --output-root "$env:PSMATRIX_OPERATION_REPRO"
+          if ($LASTEXITCODE -ne 0) {
+              throw "Independent RC3 operation-package rebuild failed: $LASTEXITCODE"
+          }
+          $name = 'psmatrix-2.0.0rc3-windows-authoritative-operation.zip'
+          $primary = Join-Path $env:PSMATRIX_OPERATION_OUTPUT $name
+          $repro = Join-Path $env:PSMATRIX_OPERATION_REPRO $name
+          $primaryItem = Get-Item -LiteralPath $primary -ErrorAction Stop
+          $reproItem = Get-Item -LiteralPath $repro -ErrorAction Stop
+          $primarySha = (Get-FileHash -LiteralPath $primary -Algorithm SHA256).Hash.ToLowerInvariant()
+          $reproSha = (Get-FileHash -LiteralPath $repro -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($primaryItem.Length -ne $reproItem.Length -or $primarySha -ne $reproSha) {
+              throw 'Independent RC3 operation-package rebuild is not byte deterministic.'
+          }
+          Write-Host "operation_package_deterministic_sha256=$primarySha"
+
+      - name: Verify operation package against canonical RC3 binding
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $metadata = Join-Path $env:PSMATRIX_OPERATION_OUTPUT 'psmatrix-2.0.0rc3-windows-authoritative-operation-package.json'
+          $report = Join-Path $env:PSMATRIX_OPERATION_OUTPUT 'windows-authority-operation-package-binding.json'
+          & "$env:GITHUB_WORKSPACE\scripts\ga\Test-PSMatrixWindowsAuthorityOperationPackageBinding.ps1" `
+              -SourceRoot $env:GITHUB_WORKSPACE `
+              -GaRoot $env:PSMATRIX_WINDOWS_GA_ROOT `
+              -CanonicalInventoryPath (Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'windows-authority-media-inventory.canonical.json') `
+              -OperationPackageMetadataPath $metadata `
+              -OutputPath $report
+          if ($LASTEXITCODE -ne 0) {
+              throw 'RC3 operation-package binding validator failed to execute.'
+          }
+
+      - name: Enforce operation-package closure and emit non-secret status
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $metadataPath = Join-Path $env:PSMATRIX_OPERATION_OUTPUT 'psmatrix-2.0.0rc3-windows-authoritative-operation-package.json'
+          $bindingPath = Join-Path $env:PSMATRIX_OPERATION_OUTPUT 'windows-authority-operation-package-binding.json'
+          $metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
+          $binding = Get-Content -LiteralPath $bindingPath -Raw | ConvertFrom-Json
+
+          if ([string]$metadata.kind -ne 'psmatrix.windows-authoritative-operation-package') { throw 'Operation-package metadata kind mismatch.' }
+          if ([string]$metadata.status -ne 'READY_FOR_WINDOWS_HOST') { throw 'Operation-package metadata status mismatch.' }
+          if ([string]$metadata.release_commit -ne $env:RELEASE_COMMIT) { throw 'Operation-package metadata release commit mismatch.' }
+          if ([string]$metadata.release_version -ne '2.0.0rc3') { throw 'Operation-package metadata release version mismatch.' }
+          if ([bool]$metadata.deterministic_zip -ne $true) { throw 'Operation package is not marked deterministic.' }
+          if ([string]$metadata.private_key_scan -ne 'PASS') { throw 'Operation package private-key scan did not pass.' }
+          if ([bool]$metadata.credential_bundle_contents_included -ne $false -or [bool]$metadata.worker_signing_bundle_contents_included -ne $false) { throw 'Operation package contains protected bundle contents.' }
+          if ([bool]$metadata.release_private_key_included -ne $false -or [bool]$metadata.windows_lab_private_key_included -ne $false) { throw 'Operation package contains private-key material.' }
+          if ([bool]$metadata.downloads_files -ne $false -or [bool]$metadata.extracts_existing_operation_package -ne $false) { throw 'Operation package builder violated offline/non-reuse policy.' }
+          if ([bool]$metadata.stale_rc2_operation_package_used -ne $false) { throw 'Operation package reused stale RC2 operation material.' }
+          if ([bool]$metadata.authoritative_campaign_executed -ne $false -or [bool]$metadata.authoritative -ne $false -or [bool]$metadata.ga_eligible -ne $false) { throw 'Operation package improperly claims execution, authority or GA eligibility.' }
+
+          if ([string]$binding.status -ne 'PASS') { throw "Operation-package binding status is $($binding.status), expected PASS." }
+          if ([bool]$binding.ready_for_release_artifact_recovery -ne $true) { throw 'Operation-package binding is not ready for exact release artifact recovery.' }
+          if ([string]$binding.canonical_release.version -ne '2.0.0rc3') { throw 'Operation-package binding canonical release version mismatch.' }
+          if ([bool]$binding.operation_package.release_binding_valid -ne $true) { throw 'Operation-package release binding is not valid.' }
+          if ([bool]$binding.operation_package.release_manifest_matches_canonical -ne $true) { throw 'Operation package is not bound to the canonical RC3 release manifest.' }
+          if ([bool]$binding.operation_package.zip_sha256_matches_metadata -ne $true -or [bool]$binding.operation_package.zip_size_matches_metadata -ne $true) { throw 'Operation ZIP does not match metadata.' }
+          if ([bool]$binding.operation_package.embedded_release_artifacts_match_binding -ne $true) { throw 'Embedded release artifacts do not match RC3 binding.' }
+          if ([bool]$binding.authoritative -ne $false -or [bool]$binding.ga_eligible -ne $false) { throw 'Binding report improperly claims authority or GA eligibility.' }
+
+          $summary = [ordered]@{
+              schema = 1
+              kind = 'psmatrix.windows-authority-operation-package-workflow-status'
+              status = 'READY_FOR_WINDOWS_HOST'
+              release_version = '2.0.0rc3'
+              release_commit = $env:RELEASE_COMMIT
+              operation_output = $env:PSMATRIX_OPERATION_OUTPUT
+              operation_zip_name = [string]$metadata.artifact.name
+              operation_zip_sha256 = [string]$metadata.artifact.sha256
+              operation_zip_size = [int64]$metadata.artifact.size
+              release_binding_sha256 = [string]$metadata.release_binding.binding_sha256
+              release_manifest_sha256 = [string]$metadata.release_binding.release_manifest_sha256
+              windows_lab_media_sha256 = [string]$metadata.release_binding.windows_lab_media_sha256
+              deterministic_rebuild = $true
+              private_key_scan = 'PASS'
+              stale_rc2_operation_package_used = $false
+              credential_bundle_contents_included = $false
+              worker_signing_bundle_contents_included = $false
+              authoritative_campaign_executed = $false
+              creates_virtual_machines = $false
+              creates_checkpoints = $false
+              authoritative = $false
+              ga_eligible = $false
+              next_required = @($metadata.next_required)
+          }
+          [System.IO.File]::WriteAllText(
+              (Join-Path $env:PSMATRIX_OPERATION_EVIDENCE 'operation-package-status.json'),
+              (($summary | ConvertTo-Json -Depth 12) + [Environment]::NewLine),
+              [System.Text.UTF8Encoding]::new($false)
+          )
+          Write-Host 'operation_package_closure=READY_FOR_WINDOWS_HOST'
+
+      - name: Remove independent rebuild copy
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if (-not [string]::IsNullOrWhiteSpace($env:PSMATRIX_OPERATION_REPRO) -and (Test-Path -LiteralPath $env:PSMATRIX_OPERATION_REPRO)) {
+              Remove-Item -LiteralPath $env:PSMATRIX_OPERATION_REPRO -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Record fail-closed operation-package failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_OPERATION_EVIDENCE)) { exit 0 }
+          New-Item -ItemType Directory -Path $env:PSMATRIX_OPERATION_EVIDENCE -Force | Out-Null
+          $failure = [ordered]@{
+              schema = 1
+              kind = 'psmatrix.windows-authority-operation-package-workflow-status'
+              status = 'FAIL'
+              release_version = '2.0.0rc3'
+              release_commit = $env:RELEASE_COMMIT
+              stale_rc2_operation_package_used = $false
+              creates_virtual_machines = $false
+              creates_checkpoints = $false
+              authoritative = $false
+              ga_eligible = $false
+          }
+          [System.IO.File]::WriteAllText(
+              (Join-Path $env:PSMATRIX_OPERATION_EVIDENCE 'operation-package-failure.json'),
+              (($failure | ConvertTo-Json -Depth 8) + [Environment]::NewLine),
+              [System.Text.UTF8Encoding]::new($false)
+          )
+
+      - name: Upload non-secret operation-package audit evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-authority-rc3-operation-package
+          path: ${{ runner.temp }}/psmatrix-windows-authority-operation-package-evidence
+          if-no-files-found: error
+          retention-days: 30
