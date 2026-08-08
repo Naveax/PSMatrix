@@ -19,12 +19,16 @@ class WindowsAuthorityProtectedReleaseIntakeWorkflowTests(unittest.TestCase):
             "runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]",
             "environment: production-ga-windows-lab",
             "PSMATRIX_WINDOWS_GA_ROOT: ${{ vars.PSMATRIX_WINDOWS_GA_ROOT }}",
+            "RELEASE_COMMIT: ${{ inputs.release_commit }}",
+            "SIGNING_RUN_ID: ${{ inputs.signing_run_id }}",
+            "SIGNING_CONTROL_HEAD: ${{ inputs.signing_control_head }}",
             "actions: read",
             "Set up controller Python",
             'python-version: "3.12"',
             "Validate protected signing run provenance before download",
             "production-ga-windows-authority-release-sign-from-staging",
             "psmatrix-2.0.0rc3-protected-release",
+            "path: ${{ runner.temp }}/psmatrix-2.0.0rc3-protected-release-input",
             "run-id: ${{ inputs.signing_run_id }}",
             "github-token: ${{ github.token }}",
             "Verify protected bundle before GA-root intake",
@@ -42,6 +46,7 @@ class WindowsAuthorityProtectedReleaseIntakeWorkflowTests(unittest.TestCase):
             "authoritative = $false",
             "ga_eligible = $false",
             "windows-authority-rc3-protected-release-intake",
+            "path: ${{ runner.temp }}/psmatrix-rc3-protected-release-intake-evidence",
         )
         for value in required:
             with self.subTest(value=value):
@@ -57,6 +62,11 @@ class WindowsAuthorityProtectedReleaseIntakeWorkflowTests(unittest.TestCase):
             "Restore-VMSnapshot",
             "Invoke-WebRequest",
             "Start-BitsTransfer",
+            "path: ${{ env.PSMATRIX_RC3_INTAKE_BUNDLE }}",
+            "path: ${{ env.PSMATRIX_RC3_INTAKE_EVIDENCE }}",
+            "$releaseCommit = '${{ inputs.release_commit }}'",
+            "$signingRunId = '${{ inputs.signing_run_id }}'",
+            "$signingControlHead = '${{ inputs.signing_control_head }}'",
             "authoritative = $true",
             "ga_eligible = $true",
         )
