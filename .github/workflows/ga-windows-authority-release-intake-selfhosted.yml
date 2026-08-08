@@ -36,6 +36,9 @@ jobs:
       actions: read
     env:
       PSMATRIX_WINDOWS_GA_ROOT: ${{ vars.PSMATRIX_WINDOWS_GA_ROOT }}
+      RELEASE_COMMIT: ${{ inputs.release_commit }}
+      SIGNING_RUN_ID: ${{ inputs.signing_run_id }}
+      SIGNING_CONTROL_HEAD: ${{ inputs.signing_control_head }}
 
     steps:
       - name: Initialize fail-closed intake workspace
@@ -78,9 +81,9 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $releaseCommit = '${{ inputs.release_commit }}'
-          $signingRunId = '${{ inputs.signing_run_id }}'
-          $signingControlHead = '${{ inputs.signing_control_head }}'
+          $releaseCommit = $env:RELEASE_COMMIT
+          $signingRunId = $env:SIGNING_RUN_ID
+          $signingControlHead = $env:SIGNING_CONTROL_HEAD
           if ($releaseCommit -cnotmatch '^[0-9a-f]{40}$') {
               throw 'release_commit must contain exactly 40 lowercase hexadecimal characters.'
           }
@@ -114,8 +117,6 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          SIGNING_RUN_ID: ${{ inputs.signing_run_id }}
-          SIGNING_CONTROL_HEAD: ${{ inputs.signing_control_head }}
         run: |
           $ErrorActionPreference = 'Stop'
           @'
@@ -175,7 +176,7 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: psmatrix-2.0.0rc3-protected-release
-          path: ${{ env.PSMATRIX_RC3_INTAKE_BUNDLE }}
+          path: ${{ runner.temp }}/psmatrix-2.0.0rc3-protected-release-input
           repository: Naveax/PSMatrix
           run-id: ${{ inputs.signing_run_id }}
           github-token: ${{ github.token }}
@@ -184,7 +185,6 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $env:EXPECTED_RELEASE_COMMIT = '${{ inputs.release_commit }}'
           @'
           import hashlib
           import json
@@ -198,7 +198,7 @@ jobs:
               raise SystemExit('protected RC3 bundle inventory or SHA256SUMS.txt is missing')
 
           inventory = json.loads(inventory_path.read_text(encoding='utf-8'))
-          expected_release_commit = os.environ['EXPECTED_RELEASE_COMMIT']
+          expected_release_commit = os.environ['RELEASE_COMMIT']
           required = {
               'kind': 'psmatrix.windows-authority-protected-release-bundle',
               'status': 'PASS',
@@ -271,7 +271,7 @@ jobs:
           $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
           if ([string]$report.status -ne 'RELEASE_CLOSURE_READY') { throw 'Protected RC3 intake status is not RELEASE_CLOSURE_READY.' }
           if ([string]$report.version -ne '2.0.0rc3') { throw 'Protected RC3 intake version mismatch.' }
-          if ([string]$report.release_commit -ne '${{ inputs.release_commit }}') { throw 'Protected RC3 intake release_commit mismatch.' }
+          if ([string]$report.release_commit -ne $env:RELEASE_COMMIT) { throw 'Protected RC3 intake release_commit mismatch.' }
           if ([bool]$report.broad_downloads_search_used -ne $false) { throw 'Protected RC3 intake used a broad downloads search.' }
           if ([bool]$report.private_key_material_absent -ne $true) { throw 'Protected RC3 intake did not prove private-key absence.' }
           if ([bool]$report.release_authority_rotated -ne $false) { throw 'Protected RC3 intake rotated release authority.' }
@@ -287,8 +287,8 @@ jobs:
               status = 'PASS'
               version = [string]$report.version
               release_commit = [string]$report.release_commit
-              signing_run_id = [int64]'${{ inputs.signing_run_id }}'
-              signing_control_head = '${{ inputs.signing_control_head }}'
+              signing_run_id = [int64]$env:SIGNING_RUN_ID
+              signing_control_head = $env:SIGNING_CONTROL_HEAD
               release_authority_status = [string]$report.release_authority_status
               selected_manifest_sha256 = [string]$report.selected_manifest_sha256
               ready_for_release_artifact_recovery = [bool]$report.ready_for_release_artifact_recovery
@@ -331,9 +331,9 @@ jobs:
               kind = 'psmatrix.windows-authority-protected-release-intake-workflow-status'
               status = 'FAIL'
               version = '2.0.0rc3'
-              release_commit = '${{ inputs.release_commit }}'
-              signing_run_id = '${{ inputs.signing_run_id }}'
-              signing_control_head = '${{ inputs.signing_control_head }}'
+              release_commit = $env:RELEASE_COMMIT
+              signing_run_id = $env:SIGNING_RUN_ID
+              signing_control_head = $env:SIGNING_CONTROL_HEAD
               authoritative = $false
               ga_eligible = $false
           }
@@ -348,6 +348,6 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-authority-rc3-protected-release-intake
-          path: ${{ env.PSMATRIX_RC3_INTAKE_EVIDENCE }}
+          path: ${{ runner.temp }}/psmatrix-rc3-protected-release-intake-evidence
           if-no-files-found: error
           retention-days: 30
