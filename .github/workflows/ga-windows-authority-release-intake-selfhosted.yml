@@ -1,0 +1,353 @@
+name: production-ga-windows-authority-release-intake-selfhosted
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_commit:
+        description: Exact reviewed Windows Authority RC3 release commit
+        required: true
+        default: "34e87c60885001f8dd11744b8bf194a59e51bd1f"
+        type: string
+      signing_run_id:
+        description: Successful protected RC3 signing workflow run ID
+        required: true
+        type: string
+      signing_control_head:
+        description: Exact commit SHA that controlled the protected signing run
+        required: true
+        type: string
+
+concurrency:
+  group: production-ga-windows-authority-release-intake-selfhosted
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  intake-protected-release:
+    name: Intake verified protected RC3 release on Windows authority controller
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 25
+    environment: production-ga-windows-lab
+    permissions:
+      contents: read
+      actions: read
+    env:
+      PSMATRIX_WINDOWS_GA_ROOT: ${{ vars.PSMATRIX_WINDOWS_GA_ROOT }}
+
+    steps:
+      - name: Initialize fail-closed intake workspace
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_WINDOWS_GA_ROOT)) {
+              throw 'PSMATRIX_WINDOWS_GA_ROOT is missing from production-ga-windows-lab.'
+          }
+          if (-not [System.IO.Path]::IsPathRooted($env:PSMATRIX_WINDOWS_GA_ROOT)) {
+              throw 'PSMATRIX_WINDOWS_GA_ROOT must be an absolute path.'
+          }
+          $gaRoot = [System.IO.Path]::GetFullPath($env:PSMATRIX_WINDOWS_GA_ROOT)
+          if (-not (Test-Path -LiteralPath $gaRoot -PathType Container)) {
+              throw "PSMATRIX_WINDOWS_GA_ROOT does not exist: $gaRoot"
+          }
+          $bundle = Join-Path $env:RUNNER_TEMP 'psmatrix-2.0.0rc3-protected-release-input'
+          $evidence = Join-Path $env:RUNNER_TEMP 'psmatrix-rc3-protected-release-intake-evidence'
+          foreach ($path in @($bundle, $evidence)) {
+              if (Test-Path -LiteralPath $path) {
+                  Remove-Item -LiteralPath $path -Recurse -Force
+              }
+              New-Item -ItemType Directory -Path $path -Force | Out-Null
+          }
+          "PSMATRIX_RC3_INTAKE_BUNDLE=$bundle" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_RC3_INTAKE_EVIDENCE=$evidence" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Check out intake controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up controller Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Validate dispatch and reviewed RC3 lock
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $releaseCommit = '${{ inputs.release_commit }}'
+          $signingRunId = '${{ inputs.signing_run_id }}'
+          $signingControlHead = '${{ inputs.signing_control_head }}'
+          if ($releaseCommit -cnotmatch '^[0-9a-f]{40}$') {
+              throw 'release_commit must contain exactly 40 lowercase hexadecimal characters.'
+          }
+          if ($signingControlHead -cnotmatch '^[0-9a-f]{40}$') {
+              throw 'signing_control_head must contain exactly 40 lowercase hexadecimal characters.'
+          }
+          if ($signingRunId -notmatch '^[0-9]+$') {
+              throw 'signing_run_id must contain only decimal digits.'
+          }
+          $lockPath = Join-Path $env:GITHUB_WORKSPACE 'ga-packs\03-authoritative-windows\rc3-release-lock.json'
+          $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+          if ([string]$lock.version -ne '2.0.0rc3') {
+              throw 'Reviewed Windows Authority release lock is not 2.0.0rc3.'
+          }
+          if ([string]$lock.release_commit -ne $releaseCommit) {
+              throw 'release_commit does not match the reviewed RC3 release lock.'
+          }
+          $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $head -cnotmatch '^[0-9a-f]{40}$') {
+              throw 'Unable to resolve the intake control head.'
+          }
+          if (-not [string]::IsNullOrWhiteSpace((git status --porcelain))) {
+              throw 'Intake control checkout is not clean.'
+          }
+          Write-Host "intake_control_head=$head"
+          Write-Host "release_commit=$releaseCommit"
+          Write-Host "signing_run_id=$signingRunId"
+          Write-Host "signing_control_head=$signingControlHead"
+
+      - name: Validate protected signing run provenance before download
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIGNING_RUN_ID: ${{ inputs.signing_run_id }}
+          SIGNING_CONTROL_HEAD: ${{ inputs.signing_control_head }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import json
+          import os
+          import re
+          import urllib.request
+
+          repo = 'Naveax/PSMatrix'
+          run_id = os.environ['SIGNING_RUN_ID']
+          expected_head = os.environ['SIGNING_CONTROL_HEAD'].lower()
+          if not re.fullmatch(r'[0-9]+', run_id):
+              raise SystemExit('signing_run_id must contain only decimal digits')
+          if not re.fullmatch(r'[0-9a-f]{40}', expected_head):
+              raise SystemExit('signing_control_head must be 40 lowercase hex characters')
+
+          token = os.environ['GH_TOKEN']
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {token}',
+              'X-GitHub-Api-Version': '2026-03-10',
+              'User-Agent': 'psmatrix-windows-authority-protected-release-intake',
+          }
+
+          def fetch(path):
+              request = urllib.request.Request(f'https://api.github.com/repos/{repo}/{path}', headers=headers)
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+
+          run = fetch(f'actions/runs/{run_id}')
+          if run.get('name') != 'production-ga-windows-authority-release-sign-from-staging':
+              raise SystemExit(f'unexpected protected signing workflow name: {run.get("name")!r}')
+          if run.get('event') != 'workflow_dispatch':
+              raise SystemExit(f'unexpected protected signing workflow event: {run.get("event")!r}')
+          if run.get('status') != 'completed' or run.get('conclusion') != 'success':
+              raise SystemExit('protected signing workflow run is not completed successfully')
+          if (run.get('head_sha') or '').lower() != expected_head:
+              raise SystemExit('protected signing workflow head does not match signing_control_head')
+
+          artifacts = fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts', [])
+          matching = [
+              item for item in artifacts
+              if item.get('name') == 'psmatrix-2.0.0rc3-protected-release' and not item.get('expired')
+          ]
+          if len(matching) != 1:
+              raise SystemExit(f'expected exactly one non-expired protected RC3 release artifact; found {len(matching)}')
+          artifact = matching[0]
+          print('protected_signing_run_provenance=PASS')
+          print(f'protected_release_artifact_id={artifact.get("id")}')
+          print(f'protected_release_artifact_digest={artifact.get("digest")}')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) {
+              throw 'Protected signing run provenance validation failed.'
+          }
+
+      - name: Download exact protected RC3 release bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0rc3-protected-release
+          path: ${{ env.PSMATRIX_RC3_INTAKE_BUNDLE }}
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.signing_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Verify protected bundle before GA-root intake
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:EXPECTED_RELEASE_COMMIT = '${{ inputs.release_commit }}'
+          @'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ['PSMATRIX_RC3_INTAKE_BUNDLE']).resolve()
+          inventory_path = root / 'psmatrix-2.0.0rc3-protected-release-bundle.json'
+          checksums_path = root / 'SHA256SUMS.txt'
+          if not inventory_path.is_file() or not checksums_path.is_file():
+              raise SystemExit('protected RC3 bundle inventory or SHA256SUMS.txt is missing')
+
+          inventory = json.loads(inventory_path.read_text(encoding='utf-8'))
+          expected_release_commit = os.environ['EXPECTED_RELEASE_COMMIT']
+          required = {
+              'kind': 'psmatrix.windows-authority-protected-release-bundle',
+              'status': 'PASS',
+              'version': '2.0.0rc3',
+              'release_commit': expected_release_commit,
+          }
+          for key, expected in required.items():
+              if inventory.get(key) != expected:
+                  raise SystemExit(f'protected RC3 bundle {key} mismatch')
+          if inventory.get('private_key_material_absent') is not True:
+              raise SystemExit('protected RC3 bundle does not assert private-key absence')
+          if inventory.get('release_authority_rotated') is not False:
+              raise SystemExit('protected RC3 bundle unexpectedly rotated release authority')
+          if inventory.get('stale_rc2_operation_package_used') is not False:
+              raise SystemExit('protected RC3 bundle reports stale RC2 operation package use')
+          if inventory.get('authoritative') is not False or inventory.get('ga_eligible') is not False:
+              raise SystemExit('protected RC3 bundle improperly claims authority or GA eligibility')
+
+          expected = {}
+          for line in checksums_path.read_text(encoding='utf-8').splitlines():
+              if not line.strip():
+                  continue
+              digest, separator, name = line.partition('  ')
+              if separator != '  ' or len(digest) != 64 or not name or name in expected:
+                  raise SystemExit('protected RC3 SHA256SUMS.txt is malformed')
+              expected[name] = digest.lower()
+          public_files = sorted(path for path in root.iterdir() if path.is_file() and path.name != 'SHA256SUMS.txt')
+          if set(expected) != {path.name for path in public_files}:
+              raise SystemExit('protected RC3 SHA256SUMS.txt coverage mismatch')
+          for path in public_files:
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              if digest != expected[path.name]:
+                  raise SystemExit(f'protected RC3 checksum mismatch: {path.name}')
+
+          markers = (
+              b'-----BEGIN PRIVATE KEY-----',
+              b'-----BEGIN RSA PRIVATE KEY-----',
+              b'-----BEGIN EC PRIVATE KEY-----',
+              b'-----BEGIN OPENSSH PRIVATE KEY-----',
+          )
+          for path in root.rglob('*'):
+              if path.is_file() and any(marker in path.read_bytes() for marker in markers):
+                  raise SystemExit(f'private-key material found in protected release bundle: {path.name}')
+          print('protected_release_bundle_pre_intake=PASS')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) {
+              throw 'Protected RC3 bundle verification failed before GA-root intake.'
+          }
+
+      - name: Intake verified RC3 release into protected GA root
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & "$env:GITHUB_WORKSPACE\scripts\ga\Invoke-PSMatrixWindowsAuthorityProtectedReleaseIntake.ps1" `
+              -SourceRoot $env:GITHUB_WORKSPACE `
+              -GaRoot $env:PSMATRIX_WINDOWS_GA_ROOT `
+              -BundleRoot $env:PSMATRIX_RC3_INTAKE_BUNDLE
+          if ($LASTEXITCODE -ne 0) {
+              throw 'Protected RC3 release intake orchestration failed.'
+          }
+
+      - name: Enforce fail-closed intake result
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reportPath = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'windows-authority-protected-release-intake.json'
+          if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) {
+              throw 'Protected RC3 release intake report is missing.'
+          }
+          $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+          if ([string]$report.status -ne 'RELEASE_CLOSURE_READY') { throw 'Protected RC3 intake status is not RELEASE_CLOSURE_READY.' }
+          if ([string]$report.version -ne '2.0.0rc3') { throw 'Protected RC3 intake version mismatch.' }
+          if ([string]$report.release_commit -ne '${{ inputs.release_commit }}') { throw 'Protected RC3 intake release_commit mismatch.' }
+          if ([bool]$report.broad_downloads_search_used -ne $false) { throw 'Protected RC3 intake used a broad downloads search.' }
+          if ([bool]$report.private_key_material_absent -ne $true) { throw 'Protected RC3 intake did not prove private-key absence.' }
+          if ([bool]$report.release_authority_rotated -ne $false) { throw 'Protected RC3 intake rotated release authority.' }
+          if ([bool]$report.stale_rc2_operation_package_used -ne $false) { throw 'Protected RC3 intake used the stale RC2 operation package.' }
+          if ([bool]$report.media_manifest_materialized -ne $false) { throw 'Protected RC3 intake unexpectedly materialized the external media manifest.' }
+          if ([bool]$report.operation_package_rebuilt -ne $false) { throw 'Protected RC3 intake unexpectedly rebuilt the operation package.' }
+          if ([bool]$report.creates_virtual_machines -ne $false -or [bool]$report.creates_checkpoints -ne $false) { throw 'Protected RC3 intake unexpectedly changed Hyper-V state.' }
+          if ([bool]$report.authoritative -ne $false -or [bool]$report.ga_eligible -ne $false) { throw 'Protected RC3 intake improperly claims authority or GA eligibility.' }
+
+          $safe = [ordered]@{
+              schema = 1
+              kind = 'psmatrix.windows-authority-protected-release-intake-workflow-status'
+              status = 'PASS'
+              version = [string]$report.version
+              release_commit = [string]$report.release_commit
+              signing_run_id = [int64]'${{ inputs.signing_run_id }}'
+              signing_control_head = '${{ inputs.signing_control_head }}'
+              release_authority_status = [string]$report.release_authority_status
+              selected_manifest_sha256 = [string]$report.selected_manifest_sha256
+              ready_for_release_artifact_recovery = [bool]$report.ready_for_release_artifact_recovery
+              private_key_material_absent = $true
+              release_authority_rotated = $false
+              stale_rc2_operation_package_used = $false
+              media_manifest_materialized = $false
+              operation_package_rebuilt = $false
+              creates_virtual_machines = $false
+              creates_checkpoints = $false
+              authoritative = $false
+              ga_eligible = $false
+              next_required = @($report.next_required)
+          }
+          [System.IO.File]::WriteAllText(
+              (Join-Path $env:PSMATRIX_RC3_INTAKE_EVIDENCE 'intake-status.json'),
+              (($safe | ConvertTo-Json -Depth 12) + [Environment]::NewLine),
+              [System.Text.UTF8Encoding]::new($false)
+          )
+          Write-Host 'protected_release_intake=PASS'
+
+      - name: Remove downloaded protected bundle from runner temp
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if (-not [string]::IsNullOrWhiteSpace($env:PSMATRIX_RC3_INTAKE_BUNDLE) -and (Test-Path -LiteralPath $env:PSMATRIX_RC3_INTAKE_BUNDLE)) {
+              Remove-Item -LiteralPath $env:PSMATRIX_RC3_INTAKE_BUNDLE -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Record fail-closed intake failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_RC3_INTAKE_EVIDENCE)) { exit 0 }
+          New-Item -ItemType Directory -Path $env:PSMATRIX_RC3_INTAKE_EVIDENCE -Force | Out-Null
+          $failure = [ordered]@{
+              schema = 1
+              kind = 'psmatrix.windows-authority-protected-release-intake-workflow-status'
+              status = 'FAIL'
+              version = '2.0.0rc3'
+              release_commit = '${{ inputs.release_commit }}'
+              signing_run_id = '${{ inputs.signing_run_id }}'
+              signing_control_head = '${{ inputs.signing_control_head }}'
+              authoritative = $false
+              ga_eligible = $false
+          }
+          [System.IO.File]::WriteAllText(
+              (Join-Path $env:PSMATRIX_RC3_INTAKE_EVIDENCE 'intake-failure.json'),
+              (($failure | ConvertTo-Json -Depth 8) + [Environment]::NewLine),
+              [System.Text.UTF8Encoding]::new($false)
+          )
+
+      - name: Upload non-secret intake audit evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-authority-rc3-protected-release-intake
+          path: ${{ env.PSMATRIX_RC3_INTAKE_EVIDENCE }}
+          if-no-files-found: error
+          retention-days: 30
