@@ -27,17 +27,31 @@
       "X64",
       "psmatrix-hyperv"
     ],
-    "protected_environment": "production-ga-windows-lab"
+    "protected_environment": "production-ga-windows-lab",
+    "release_public_key_source": "verified-protected-release-bundle",
+    "release_public_key_secret_required": false
   },
   "layout": {
     "required_directories": [
-      "release",
+      "media/release",
+      "media/external",
+      "operation",
       "config",
       "trust-home"
     ],
+    "isolated_release_root": "media/release/2.0.0rc3",
+    "isolated_operation_root": "operation/2.0.0rc3",
     "template_suffix": ".example.json",
     "templates_are_evidence": false,
     "templates_must_not_use_validator_filenames": true
+  },
+  "infrastructure_dispatch_inputs": {
+    "protected_release_intake_status": "RELEASE_CLOSURE_READY",
+    "media_manifest_complete": true,
+    "media_manifest_ready_for_hyper_v_provisioning": true,
+    "operation_package_status": "READY_FOR_WINDOWS_HOST",
+    "operation_package_binding_status": "PASS",
+    "real_endpoint_and_image_manifests_required": true
   },
   "required_runtime_ids": [
     "windows-powershell-4.0",
