@@ -153,7 +153,7 @@ jobs:
               $path = Join-Path $env:GITHUB_WORKSPACE $relative
               $tokens = $null; $errors = $null
               [void][System.Management.Automation.Language.Parser]::ParseFile($path,[ref]$tokens,[ref]$errors)
-              if (@($errors).Count -ne 0) { throw ("RC4 PowerShell parse failed for $relative: " + (@($errors | ForEach-Object { $_.Message }) -join '; ')) }
+              if (@($errors).Count -ne 0) { throw ("RC4 PowerShell parse failed for ${relative}: " + (@($errors | ForEach-Object { $_.Message }) -join '; ')) }
           }
           Write-Host 'rc4_powershell_controls_parse=PASS'
 
