@@ -5,13 +5,17 @@ import errno
 import math
 import os
 import platform
-import resource
 import shutil
 import stat
 import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
+
+try:
+    import resource as _resource
+except ImportError:  # Windows does not provide the POSIX resource module.
+    _resource = None
 
 
 # Linux Landlock constants from linux/landlock.h.
@@ -170,6 +174,16 @@ class SandboxUnavailable(RuntimeError):
     pass
 
 
+def _effective_uid() -> int | None:
+    getter = getattr(os, "geteuid", None)
+    if getter is None:
+        return None
+    try:
+        return int(getter())
+    except OSError:
+        return None
+
+
 def _syscall_numbers() -> tuple[int, int, int] | None:
     machine = platform.machine().lower()
     # Landlock syscall numbers are currently aligned for x86_64 and arm64.
@@ -221,7 +235,6 @@ def _namespace_probe() -> bool:
         return False
 
 
-
 def _has_effective_capability(bit: int) -> bool:
     try:
         for line in Path("/proc/self/status").read_text(encoding="utf-8").splitlines():
@@ -232,9 +245,11 @@ def _has_effective_capability(bit: int) -> bool:
         return False
     return False
 
+
 def detect_capabilities() -> SandboxCapabilities:
     notes: list[str] = []
     system = platform.system()
+    euid = _effective_uid()
     abi = _landlock_abi()
     seccomp = _seccomp_supported()
     if system != "Linux":
@@ -245,12 +260,12 @@ def detect_capabilities() -> SandboxCapabilities:
         notes.append("seccomp filter is unavailable; IP networking cannot be blocked")
     chroot = (
         system == "Linux"
-        and os.geteuid() == 0
+        and euid == 0
         and hasattr(os, "chroot")
         and hasattr(os, "unshare")
         and _has_effective_capability(21)  # CAP_SYS_ADMIN is required to bind-mount /proc.
     )
-    if system == "Linux" and os.geteuid() == 0 and not chroot:
+    if system == "Linux" and euid == 0 and not chroot:
         notes.append("chroot backend disabled because a private/bind-mounted /proc cannot be created")
     return SandboxCapabilities(
         platform=system.lower(),
@@ -368,8 +383,10 @@ def build_plan(
         message = "Required sandbox primitives unavailable: " + ", ".join(missing)
         if mode == "strict":
             raise SandboxUnavailable(message)
-        fallback_uid = 65534 if os.geteuid() == 0 else None
-        fallback_gid = 65534 if os.geteuid() == 0 else None
+        euid = _effective_uid()
+        can_drop_privileges = capabilities.platform == "linux" and capabilities.privilege_drop
+        fallback_uid = 65534 if can_drop_privileges and euid == 0 else None
+        fallback_gid = 65534 if can_drop_privileges and euid == 0 else None
         return SandboxPlan(
             backend="guarded-copy",
             workspace=workspace,
@@ -387,7 +404,7 @@ def build_plan(
     drop_uid: int | None = None
     drop_gid: int | None = None
     rootfs: Path | None = None
-    if os.geteuid() == 0:
+    if capabilities.platform == "linux" and _effective_uid() == 0:
         drop_uid = 65534
         drop_gid = 65534
 
@@ -600,13 +617,24 @@ def _apply_seccomp_policy(*, block_ip_network: bool) -> None:
 
 
 def _apply_limits(limits: SandboxLimits) -> None:
+    if _resource is None:
+        return
     cpu = max(1, int(math.ceil(limits.cpu_seconds)))
-    resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu + 1))
-    resource.setrlimit(resource.RLIMIT_FSIZE, (limits.max_file_bytes, limits.max_file_bytes))
-    resource.setrlimit(resource.RLIMIT_NOFILE, (limits.max_open_files, limits.max_open_files))
-    if hasattr(resource, "RLIMIT_NPROC"):
-        resource.setrlimit(resource.RLIMIT_NPROC, (limits.max_processes, limits.max_processes))
-    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    _resource.setrlimit(_resource.RLIMIT_CPU, (cpu, cpu + 1))
+    _resource.setrlimit(
+        _resource.RLIMIT_FSIZE,
+        (limits.max_file_bytes, limits.max_file_bytes),
+    )
+    _resource.setrlimit(
+        _resource.RLIMIT_NOFILE,
+        (limits.max_open_files, limits.max_open_files),
+    )
+    if hasattr(_resource, "RLIMIT_NPROC"):
+        _resource.setrlimit(
+            _resource.RLIMIT_NPROC,
+            (limits.max_processes, limits.max_processes),
+        )
+    _resource.setrlimit(_resource.RLIMIT_CORE, (0, 0))
 
 
 def _mount(
@@ -648,6 +676,8 @@ def _setup_chroot_namespace(rootfs: Path) -> None:
 
 def make_preexec(plan: SandboxPlan) -> Callable[[], None] | None:
     if plan.backend in {"copy", "direct"}:
+        return None
+    if plan.capabilities.platform != "linux" or _resource is None:
         return None
 
     def _preexec() -> None:
@@ -882,6 +912,7 @@ def materialize_chroot(
     prepare_workspace_permissions(updated)
     return (updated, project, "/opt/psmatrix/runtime/pwsh", tuple(child_harnesses))
 
+
 def stage_execution_assets(
     workspace: Path,
     executable: Path,
@@ -900,4 +931,3 @@ def stage_execution_assets(
         destination.chmod(0o644)
         staged.append(destination)
     return runtime / executable.name, tuple(staged)
-
