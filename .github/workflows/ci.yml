@@ -107,12 +107,22 @@ jobs:
           }
           Write-Host "powershell_parse=PASS files=$($files.Count)"
 
-      - name: Run core test modules in isolated processes
+      - name: Run platform-neutral core test modules in isolated processes
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $files = @(Get-ChildItem -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'tests') -File -Filter 'test_*.py' | Sort-Object Name)
+          $linuxNativeModules = @(
+              'test_integration.py'
+          )
+          $executedModules = 0
+          $deferredModules = @()
           foreach ($file in $files) {
+              if ($linuxNativeModules -contains $file.Name) {
+                  $deferredModules += $file.Name
+                  Write-Host "deferred_to_manual_linux_integration=$($file.Name)"
+                  continue
+              }
               $module = 'tests.' + [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
               Write-Host "::group::$module"
               if ($file.Name -eq 'test_oci.py') {
@@ -135,9 +145,14 @@ jobs:
                       throw "Core test module failed: $module"
                   }
               }
+              $executedModules += 1
               Write-Host '::endgroup::'
           }
-          Write-Host "core_tests=PASS modules=$($files.Count)"
+          if ($deferredModules -notcontains 'test_integration.py') {
+              throw 'Linux-native integration fixture was not explicitly deferred.'
+          }
+          Write-Host "core_tests=PASS modules=$executedModules"
+          Write-Host "manual_linux_modules=$($deferredModules -join ',')"
 
       - name: Run product doctor
         shell: pwsh
@@ -196,7 +211,8 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          Write-Host 'ci_policy=trusted-self-hosted-pr-and-main-source-gate'
+          Write-Host 'ci_policy=trusted-self-hosted-pr-and-main-platform-neutral-core-gate'
           Write-Host 'heavy_integration_policy=manual-full-workflow'
+          Write-Host 'linux_native_fixture_policy=manual-linux-integration'
           Write-Host "run_id=$env:GITHUB_RUN_ID"
           Write-Host "run_attempt=$env:GITHUB_RUN_ATTEMPT"
