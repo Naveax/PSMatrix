@@ -14,6 +14,7 @@ on:
       - ".github/workflows/ga-windows-authority-rc4-release-lock-promotion.yml"
       - ".github/workflows/ga-windows-authority-rc4-release-sign-from-lock.yml"
       - ".github/workflows/ga-windows-authority-rc4-release-intake-selfhosted.yml"
+      - ".github/workflows/ga-windows-authority-rc4-media-readiness-selfhosted.yml"
       - "scripts/ga/enroll_windows_authority_release_authority.py"
       - "scripts/ga/build_windows_authority_release_candidate.py"
       - "scripts/ga/build_windows_authority_release_lock_draft.py"
@@ -21,6 +22,7 @@ on:
       - "scripts/ga/sign_windows_authority_release_candidate.py"
       - "scripts/ga/import_windows_authority_protected_release.py"
       - "scripts/ga/Invoke-PSMatrixWindowsAuthorityProtectedReleaseIntakeV2.ps1"
+      - "scripts/ga/New-PSMatrixWindowsAuthorityMediaManifest.ps1"
       - "ga-packs/03-authoritative-windows/rc3-release-lock.json"
       - "ga-packs/03-authoritative-windows/rc4-release-lock.json"
       - "release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem"
@@ -32,6 +34,7 @@ on:
       - "tests/test_windows_authority_rc4_lock_promotion_signing.py"
       - "tests/test_windows_authority_protected_release_import.py"
       - "tests/test_windows_authority_rc4_protected_release_intake.py"
+      - "tests/test_windows_authority_rc4_media_readiness.py"
   pull_request:
     branches:
       - main
@@ -44,6 +47,7 @@ on:
       - ".github/workflows/ga-windows-authority-rc4-release-lock-promotion.yml"
       - ".github/workflows/ga-windows-authority-rc4-release-sign-from-lock.yml"
       - ".github/workflows/ga-windows-authority-rc4-release-intake-selfhosted.yml"
+      - ".github/workflows/ga-windows-authority-rc4-media-readiness-selfhosted.yml"
       - "scripts/ga/enroll_windows_authority_release_authority.py"
       - "scripts/ga/build_windows_authority_release_candidate.py"
       - "scripts/ga/build_windows_authority_release_lock_draft.py"
@@ -51,6 +55,7 @@ on:
       - "scripts/ga/sign_windows_authority_release_candidate.py"
       - "scripts/ga/import_windows_authority_protected_release.py"
       - "scripts/ga/Invoke-PSMatrixWindowsAuthorityProtectedReleaseIntakeV2.ps1"
+      - "scripts/ga/New-PSMatrixWindowsAuthorityMediaManifest.ps1"
       - "ga-packs/03-authoritative-windows/rc3-release-lock.json"
       - "ga-packs/03-authoritative-windows/rc4-release-lock.json"
       - "release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem"
@@ -62,6 +67,7 @@ on:
       - "tests/test_windows_authority_rc4_lock_promotion_signing.py"
       - "tests/test_windows_authority_protected_release_import.py"
       - "tests/test_windows_authority_rc4_protected_release_intake.py"
+      - "tests/test_windows_authority_rc4_media_readiness.py"
 
 concurrency:
   group: production-ga-windows-authority-rc4-source-preflight-${{ github.event.pull_request.head.ref || github.ref }}
@@ -87,9 +93,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') {
-              throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS"
-          }
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') { throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS" }
           Write-Host 'rc4_source_runner=PASS'
 
       - name: Check out exact source revision
@@ -105,9 +109,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           if ($env:EXPECTED_HEAD -cnotmatch '^[0-9a-f]{40}$') { throw 'Expected RC4 source head is not a full lowercase Git SHA.' }
           $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
-          if ($LASTEXITCODE -ne 0 -or $head -cnotmatch '^[0-9a-f]{40}$' -or $head -ne $env:EXPECTED_HEAD.ToLowerInvariant()) {
-              throw "RC4 source-preflight checkout is not the exact expected branch head: actual=$head expected=$env:EXPECTED_HEAD"
-          }
+          if ($LASTEXITCODE -ne 0 -or $head -cnotmatch '^[0-9a-f]{40}$' -or $head -ne $env:EXPECTED_HEAD.ToLowerInvariant()) { throw "RC4 source-preflight checkout is not the exact expected branch head: actual=$head expected=$env:EXPECTED_HEAD" }
           if (-not [string]::IsNullOrWhiteSpace((git status --porcelain))) { throw 'RC4 source-preflight checkout is dirty.' }
           $project = (python -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text(encoding='utf-8'))['project']['version'])").Trim()
           $package = (python -c "import psmatrix; print(psmatrix.__version__)").Trim()
@@ -131,13 +133,9 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $path = Join-Path $env:GITHUB_WORKSPACE 'scripts\ga\Invoke-PSMatrixWindowsAuthorityProtectedReleaseIntakeV2.ps1'
-          $tokens = $null
-          $errors = $null
-          [void][System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
-          if (@($errors).Count -ne 0) {
-              $detail = @($errors | ForEach-Object { $_.Message }) -join '; '
-              throw "RC4 protected-release intake PowerShell parse failed: $detail"
-          }
+          $tokens = $null; $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile($path,[ref]$tokens,[ref]$errors)
+          if (@($errors).Count -ne 0) { throw ('RC4 protected-release intake PowerShell parse failed: ' + (@($errors | ForEach-Object { $_.Message }) -join '; ')) }
           Write-Host 'rc4_protected_release_intake_powershell_parse=PASS'
 
       - name: Compile RC4 release-control Python
@@ -156,11 +154,12 @@ jobs:
               tests/test_windows_authority_rc4_authority_rotation_runtime.py `
               tests/test_windows_authority_rc4_lock_promotion_signing.py `
               tests/test_windows_authority_protected_release_import.py `
-              tests/test_windows_authority_rc4_protected_release_intake.py
+              tests/test_windows_authority_rc4_protected_release_intake.py `
+              tests/test_windows_authority_rc4_media_readiness.py
           if ($LASTEXITCODE -ne 0) { throw 'RC4 release-control Python compile failed.' }
           Write-Host 'rc4_python_compile=PASS'
 
-      - name: Run RC4 authority, signing, importer, and intake contracts
+      - name: Run RC4 authority, signing, intake, and media readiness contracts
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -170,14 +169,16 @@ jobs:
               tests.test_windows_authority_rc4_authority_rotation_runtime `
               tests.test_windows_authority_rc4_lock_promotion_signing `
               tests.test_windows_authority_protected_release_import `
-              tests.test_windows_authority_rc4_protected_release_intake
-          if ($LASTEXITCODE -ne 0) { throw 'RC4 authority/signing/import/intake contract tests failed.' }
+              tests.test_windows_authority_rc4_protected_release_intake `
+              tests.test_windows_authority_rc4_media_readiness
+          if ($LASTEXITCODE -ne 0) { throw 'RC4 authority/signing/intake/media-readiness contract tests failed.' }
           Write-Host 'rc4_authority_rotation_contracts=PASS'
           Write-Host 'rc4_authority_rotation_runtime=PASS'
           Write-Host 'rc4_lock_promotion_contract=PASS'
           Write-Host 'rc4_protected_signer_runtime=PASS'
           Write-Host 'rc4_protected_release_import_contract=PASS'
           Write-Host 'rc4_protected_release_intake_contract=PASS'
+          Write-Host 'rc4_media_readiness_contract=PASS'
 
       - name: Enforce no tracked private authority material
         shell: pwsh
@@ -193,8 +194,7 @@ jobs:
               if ($file.Length -gt 1048576) { continue }
               try { $text = [System.IO.File]::ReadAllText($file.FullName) } catch { continue }
               foreach ($marker in $markers) {
-                  $pattern = '(?m)^' + [regex]::Escape($marker) + '\r?$'
-                  if ([regex]::IsMatch($text, $pattern)) { throw "Tracked private-key PEM material detected: $relative" }
+                  if ([regex]::IsMatch($text,'(?m)^'+[regex]::Escape($marker)+'\r?$')) { throw "Tracked private-key PEM material detected: $relative" }
               }
           }
           Write-Host "repository_private_authority_absence=PASS tracked_files=$($tracked.Count)"
@@ -210,5 +210,8 @@ jobs:
           Write-Host 'release_artifacts_signed=false'
           Write-Host 'production_inputs_mutated=false'
           Write-Host 'protected_release_intake_mutated=false'
+          Write-Host 'media_manifest_materialized=false'
+          Write-Host 'provisioning_manifest_materialized=false'
+          Write-Host 'hyper_v_state_mutated=false'
           Write-Host 'authoritative=false'
           Write-Host 'ga_eligible=false'
