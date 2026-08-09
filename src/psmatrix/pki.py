@@ -10,7 +10,7 @@ import ssl
 import subprocess
 import tempfile
 import zipfile
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -24,6 +24,7 @@ class PKIError(PSMatrixError):
 
 
 _SAFE_COMMON_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,127}$")
+_SAFE_DNS_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 
 
 def _openssl_env() -> dict[str, str]:
@@ -52,6 +53,27 @@ def _run(args: list[str], *, cwd: Path | None = None, input_data: bytes | None =
     if completed.returncode != 0:
         raise PKIError(completed.stderr.decode("utf-8", errors="replace").strip() or "OpenSSL command failed")
     return completed.stdout
+
+
+def _write_openssl_config(path: Path, sections: list[tuple[str, list[tuple[str, str]]]]) -> None:
+    lines: list[str] = []
+    for section, entries in sections:
+        lines.append(f"[{section}]")
+        lines.extend(f"{key} = {value}" for key, value in entries)
+        lines.append("")
+    path.write_text("\n".join(lines), encoding="utf-8", newline="\n")
+
+
+def _validate_dns_name(name: str) -> str:
+    value = (name or "").strip()
+    if not value or len(value) > 253 or value != name:
+        raise PKIError("Certificate DNS name is invalid")
+    wildcard = value.startswith("*.")
+    candidate = value[2:] if wildcard else value
+    labels = candidate.split(".")
+    if not labels or any(_SAFE_DNS_LABEL_RE.fullmatch(label) is None for label in labels):
+        raise PKIError("Certificate DNS name is invalid")
+    return value
 
 
 def certificate_sha256(path: Path) -> str:
@@ -116,17 +138,40 @@ def create_ca(output: Path, *, common_name: str, days: int = 3650, force: bool =
         staging = Path(temp)
         staged_key = staging / "ca-key.pem"
         staged_cert = staging / "ca-cert.pem"
+        config = staging / "ca.cnf"
+        _write_openssl_config(
+            config,
+            [
+                (
+                    "req",
+                    [
+                        ("prompt", "no"),
+                        ("distinguished_name", "dn"),
+                        ("x509_extensions", "v3_ca"),
+                    ],
+                ),
+                ("dn", [("CN", common_name)]),
+                (
+                    "v3_ca",
+                    [
+                        ("basicConstraints", "critical,CA:TRUE,pathlen:1"),
+                        ("keyUsage", "critical,keyCertSign,cRLSign"),
+                        ("subjectKeyIdentifier", "hash"),
+                        ("authorityKeyIdentifier", "keyid:always,issuer"),
+                    ],
+                ),
+            ],
+        )
         _run([
             "req", "-x509", "-newkey", "rsa:3072", "-nodes",
             "-keyout", str(staged_key), "-out", str(staged_cert),
-            "-days", str(int(days)), "-subj", f"/CN={common_name}",
-            "-addext", "basicConstraints=critical,CA:TRUE,pathlen:1",
-            "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+            "-days", str(int(days)), "-sha256", "-config", str(config),
         ])
         atomic_write_bytes(key, staged_key.read_bytes())
         atomic_write_bytes(certificate, staged_cert.read_bytes())
-    os.chmod(key, 0o600)
-    os.chmod(certificate, 0o644)
+    if os.name != "nt":
+        os.chmod(key, 0o600)
+        os.chmod(certificate, 0o644)
     return {"private_key": str(key), "certificate": str(certificate), "certificate_info": inspect_certificate(certificate)}
 
 
@@ -145,10 +190,7 @@ def issue_certificate(
         raise PKIError("Certificate identity or role is invalid")
     if not 1 <= int(days) <= 825:
         raise PKIError("Certificate validity must be between 1 and 825 days")
-    names = dns_names or []
-    for name in names:
-        if not name or len(name) > 253 or any(ch.isspace() for ch in name):
-            raise PKIError("Certificate DNS name is invalid")
+    names = [_validate_dns_name(name) for name in (dns_names or [])]
     output = output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     key = output / f"{role}-key.pem"
@@ -160,23 +202,49 @@ def issue_certificate(
         csr = staging / "request.csr"
         staged_key = staging / "key.pem"
         staged_cert = staging / "cert.pem"
+        request_config = staging / "request.cnf"
         extensions = staging / "extensions.cnf"
         eku = "serverAuth" if role == "server" else "clientAuth"
-        lines = ["basicConstraints=critical,CA:FALSE", "keyUsage=critical,digitalSignature,keyEncipherment", f"extendedKeyUsage={eku}"]
+
+        _write_openssl_config(
+            request_config,
+            [
+                ("req", [("prompt", "no"), ("distinguished_name", "dn")]),
+                ("dn", [("CN", common_name)]),
+            ],
+        )
+        extension_entries: list[tuple[str, str]] = [
+            ("basicConstraints", "critical,CA:FALSE"),
+            ("keyUsage", "critical,digitalSignature,keyEncipherment"),
+            ("extendedKeyUsage", eku),
+            ("subjectKeyIdentifier", "hash"),
+            ("authorityKeyIdentifier", "keyid,issuer"),
+        ]
         if names:
-            lines.append("subjectAltName=" + ",".join(f"DNS:{name}" for name in names))
-        extensions.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        _run(["req", "-newkey", "rsa:3072", "-nodes", "-keyout", str(staged_key), "-out", str(csr), "-subj", f"/CN={common_name}"])
+            extension_entries.append(("subjectAltName", "@alt_names"))
+        sections: list[tuple[str, list[tuple[str, str]]]] = [("v3_leaf", extension_entries)]
+        if names:
+            sections.append(("alt_names", [(f"DNS.{index}", name) for index, name in enumerate(names, start=1)]))
+        _write_openssl_config(extensions, sections)
+
+        _run([
+            "req", "-newkey", "rsa:3072", "-nodes",
+            "-keyout", str(staged_key), "-out", str(csr),
+            "-config", str(request_config),
+        ])
+        serial = staging / "ca.srl"
         _run([
             "x509", "-req", "-in", str(csr), "-CA", str(ca_certificate.resolve()),
-            "-CAkey", str(ca_private_key.resolve()), "-CAcreateserial", "-out", str(staged_cert),
-            "-days", str(int(days)), "-sha256", "-extfile", str(extensions),
+            "-CAkey", str(ca_private_key.resolve()), "-CAcreateserial", "-CAserial", str(serial),
+            "-out", str(staged_cert), "-days", str(int(days)), "-sha256",
+            "-extfile", str(extensions), "-extensions", "v3_leaf",
         ])
         verify_key_pair(staged_cert, staged_key)
         atomic_write_bytes(key, staged_key.read_bytes())
         atomic_write_bytes(cert, staged_cert.read_bytes())
-    os.chmod(key, 0o600)
-    os.chmod(cert, 0o644)
+    if os.name != "nt":
+        os.chmod(key, 0o600)
+        os.chmod(cert, 0o644)
     return {"private_key": str(key), "certificate": str(cert), "certificate_info": inspect_certificate(cert)}
 
 
@@ -285,7 +353,8 @@ def apply_rotation_bundle(
             destination.mkdir(parents=True, exist_ok=True)
             for name, mode in (("certificate.pem", 0o644), ("private-key.pem", 0o600), ("ca-certificate.pem", 0o644)):
                 atomic_write_bytes(destination / name, (staging / name).read_bytes())
-                os.chmod(destination / name, mode)
+                if os.name != "nt":
+                    os.chmod(destination / name, mode)
             atomic_write_json(destination / "rotation.json", {
                 "schema": 1,
                 "identity": expected_identity,
