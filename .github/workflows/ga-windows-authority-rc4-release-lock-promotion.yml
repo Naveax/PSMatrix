@@ -41,6 +41,7 @@ jobs:
       REVIEW_RUN_ID: ${{ inputs.review_run_id }}
       REVIEWED_DRAFT_SHA256: ${{ inputs.reviewed_draft_sha256 }}
       REVIEWED_PUBLIC_KEY_SHA256: ${{ inputs.reviewed_public_key_sha256 }}
+      PROMOTION_RUN_ID: ${{ github.run_id }}
 
     steps:
       - name: Validate promotion dispatch inputs
@@ -51,7 +52,11 @@ jobs:
               throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS"
           }
           if ($env:CANDIDATE_COMMIT -cnotmatch '^[0-9a-f]{40}$') { throw 'candidate_commit must be 40 lowercase hex characters.' }
-          if ($env:REVIEW_RUN_ID -cnotmatch '^[0-9]+$') { throw 'review_run_id must contain only decimal digits.' }
+          foreach ($name in @('REVIEW_RUN_ID','PROMOTION_RUN_ID')) {
+              $value = [Environment]::GetEnvironmentVariable($name)
+              if ($value -cnotmatch '^[0-9]+$') { throw "$name must contain only decimal digits." }
+          }
+          if ($env:REVIEW_RUN_ID -eq $env:PROMOTION_RUN_ID) { throw 'Review and promotion run IDs must be distinct.' }
           foreach ($name in @('REVIEWED_DRAFT_SHA256','REVIEWED_PUBLIC_KEY_SHA256')) {
               $value = [Environment]::GetEnvironmentVariable($name)
               if ($value -cnotmatch '^[0-9a-f]{64}$') { throw "$name must contain exactly 64 lowercase hexadecimal characters." }
@@ -71,7 +76,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $control = Join-Path $env:GITHUB_WORKSPACE 'control'
           $head = (git -C $control rev-parse HEAD).Trim().ToLowerInvariant()
-          if ($LASTEXITCODE -ne 0 -or $head -cnotmatch '^[0-9a-f]{40}$') { throw 'Unable to resolve promotion control head.' }
+          if ($LASTEXITCODE -ne 0 -or $head -cnotmatch '^[0-9a-f]{40}$' -or $head -ne $env:GITHUB_SHA.ToLowerInvariant()) { throw 'Promotion control checkout is not the exact workflow control head.' }
           if (-not [string]::IsNullOrWhiteSpace((git -C $control status --porcelain))) { throw 'Promotion control checkout is dirty.' }
           $activeLock = Join-Path $control 'ga-packs\03-authoritative-windows\rc4-release-lock.json'
           if (Test-Path -LiteralPath $activeLock -PathType Leaf) {
@@ -145,6 +150,7 @@ jobs:
               --output-root $output `
               --candidate-commit $env:CANDIDATE_COMMIT `
               --promotion-control-head $env:PSMATRIX_RC4_PROMOTION_CONTROL_HEAD `
+              --promotion-run-id $env:PROMOTION_RUN_ID `
               --review-run-id $env:REVIEW_RUN_ID `
               --reviewed-draft-sha256 $env:REVIEWED_DRAFT_SHA256 `
               --reviewed-public-key-sha256 $env:REVIEWED_PUBLIC_KEY_SHA256
@@ -166,18 +172,17 @@ jobs:
           if ([string]$report.status -ne 'READY_FOR_EXACT_REPOSITORY_COMMIT') { throw 'RC4 promotion report status mismatch.' }
           if ([string]$report.candidate_commit -ne $env:CANDIDATE_COMMIT) { throw 'RC4 promotion report candidate mismatch.' }
           if ([string]$report.promotion_control_head -ne $env:PSMATRIX_RC4_PROMOTION_CONTROL_HEAD) { throw 'RC4 promotion control-head mismatch.' }
-          if ([string]$report.review_run_id -ne $env:REVIEW_RUN_ID) { throw 'RC4 promotion review-run mismatch.' }
+          if ([string]$report.promotion_run_id -ne $env:PROMOTION_RUN_ID -or [string]$report.review_run_id -ne $env:REVIEW_RUN_ID) { throw 'RC4 promotion run provenance mismatch.' }
           if ([bool]$report.repository_mutated -or [bool]$report.release_artifacts_signed -or [bool]$report.authoritative -or [bool]$report.ga_eligible) { throw 'RC4 promotion report improperly claims mutation/signing/authority.' }
           if ([string]$lock.promotion_state -ne 'READY_FOR_EXACT_REPOSITORY_COMMIT') { throw 'Promoted RC4 lock is not repository-commit-ready.' }
           if ([string]$lock.release_commit -ne $env:CANDIDATE_COMMIT -or [string]$lock.version -ne '2.0.0rc4') { throw 'Promoted RC4 lock identity mismatch.' }
           if ([bool]$lock.release_artifacts_signed -or [bool]$lock.authoritative -or [bool]$lock.ga_eligible) { throw 'Promoted RC4 lock improperly claims signed/authority state.' }
-          if ([string]$lock.promotion_evidence.review_run_id -ne $env:REVIEW_RUN_ID -or [string]$lock.promotion_evidence.promotion_control_head -ne $env:PSMATRIX_RC4_PROMOTION_CONTROL_HEAD) { throw 'Promoted RC4 lock provenance mismatch.' }
+          if ([string]$lock.promotion_evidence.promotion_run_id -ne $env:PROMOTION_RUN_ID -or [string]$lock.promotion_evidence.review_run_id -ne $env:REVIEW_RUN_ID -or [string]$lock.promotion_evidence.promotion_control_head -ne $env:PSMATRIX_RC4_PROMOTION_CONTROL_HEAD) { throw 'Promoted RC4 lock provenance mismatch.' }
           if ([bool]$lock.promotion_evidence.human_review_bound -ne $true -or [bool]$lock.promotion_evidence.repository_commit_required -ne $true) { throw 'Promoted RC4 lock is missing review/commit boundaries.' }
 
           $privateMarkers = @('-----BEGIN PRIVATE KEY-----','-----BEGIN RSA PRIVATE KEY-----','-----BEGIN EC PRIVATE KEY-----','-----BEGIN OPENSSH PRIVATE KEY-----')
           foreach ($file in Get-ChildItem -LiteralPath $env:PSMATRIX_RC4_PROMOTION -Recurse -File) {
-              $data = [System.IO.File]::ReadAllBytes($file.FullName)
-              $text = [System.Text.Encoding]::UTF8.GetString($data)
+              $text = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($file.FullName))
               foreach ($marker in $privateMarkers) {
                   if ($text.Contains($marker)) { throw "Private-key material found in RC4 promotion output: $($file.Name)" }
               }
