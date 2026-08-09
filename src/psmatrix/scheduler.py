@@ -239,6 +239,32 @@ def _descendant_pids(root_pid: int) -> list[int]:
 
 
 def _terminate_worker_tree(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            try:
+                process.kill()
+            except OSError:
+                pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()
+            except OSError:
+                pass
+            process.wait()
+        return
+
     pids = _descendant_pids(process.pid) + [process.pid]
     for sig in (signal.SIGTERM, signal.SIGKILL):
         for pid in pids:
@@ -321,7 +347,39 @@ def run_target_subprocess(payload: dict) -> dict:
     return value
 
 
+def _windows_available_memory_bytes() -> int | None:
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+
+        class _MemoryStatusEx(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        status = _MemoryStatusEx()
+        status.dwLength = ctypes.sizeof(_MemoryStatusEx)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return int(status.ullAvailPhys)
+    except (AttributeError, OSError, ValueError):
+        pass
+    return None
+
+
 def available_memory_bytes() -> int | None:
+    windows = _windows_available_memory_bytes()
+    if windows is not None:
+        return windows
+
     meminfo = Path("/proc/meminfo")
     if meminfo.is_file():
         try:
@@ -330,8 +388,11 @@ def available_memory_bytes() -> int | None:
                     return int(line.split()[1]) * 1024
         except (OSError, ValueError, IndexError):
             pass
+    sysconf = getattr(os, "sysconf", None)
+    if sysconf is None:
+        return None
     try:
-        return int(os.sysconf("SC_AVPHYS_PAGES")) * int(os.sysconf("SC_PAGE_SIZE"))
+        return int(sysconf("SC_AVPHYS_PAGES")) * int(sysconf("SC_PAGE_SIZE"))
     except (OSError, ValueError, TypeError):
         return None
 

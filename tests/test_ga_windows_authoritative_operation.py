@@ -152,8 +152,11 @@ class GAWindowsAuthoritativeOperationTests(unittest.TestCase):
             tampered = json.loads(path.read_text())
             statement_payload = tampered["payload"]
             self.assertIsInstance(statement_payload, str)
-            # Any direct envelope mutation must invalidate DSSE verification.
-            tampered["signatures"][0]["sig"] = "A" + tampered["signatures"][0]["sig"][1:]
+            signature = str(tampered["signatures"][0]["sig"])
+            self.assertTrue(signature)
+            replacement = "B" if signature[0] == "A" else "A"
+            tampered["signatures"][0]["sig"] = replacement + signature[1:]
+            self.assertNotEqual(tampered["signatures"][0]["sig"], signature)
             path.write_text(json.dumps(tampered), encoding="utf-8")
             with self.assertRaises(Exception):
                 verify_authoritative_matrix_attestation(path, public_key=lab_public)

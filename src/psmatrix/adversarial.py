@@ -215,13 +215,25 @@ except OSError as exc:
     print(json.dumps({'allowed': False, 'errno': exc.errno}))
 """, limits=base)
     payload = json.loads(execution.stdout.strip().splitlines()[-1]) if execution.stdout.strip() else {}
-    results.append(_case(
-        "sandbox-network", "sandbox",
-        payload.get("allowed") is False and payload.get("errno") in {errno.EPERM, errno.EACCES},
-        "AF_INET socket denied",
-        json.dumps(payload, sort_keys=True),
-        evidence={"sandbox": plan.to_dict(), "execution": asdict(execution)},
-    ))
+    network_evidence = {
+        "sandbox": plan.to_dict(),
+        "execution": asdict(execution),
+        "observed": payload,
+    }
+    if plan.capabilities.network_isolation:
+        results.append(_case(
+            "sandbox-network", "sandbox",
+            payload.get("allowed") is False and payload.get("errno") in {errno.EPERM, errno.EACCES},
+            "AF_INET socket denied",
+            json.dumps(payload, sort_keys=True),
+            evidence=network_evidence,
+        ))
+    else:
+        results.append(_inconclusive(
+            "sandbox-network", "sandbox", "AF_INET socket denied",
+            "Host does not expose seccomp network isolation; the AF_INET probe outcome cannot be attributed to PSMatrix sandbox enforcement",
+            network_evidence,
+        ))
 
     fs_root = root / "filesystem"
     fs_root.mkdir()

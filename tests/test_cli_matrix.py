@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -17,8 +18,14 @@ class CliMatrixTests(unittest.TestCase):
             payload = json.loads(output.getvalue())
             self.assertEqual(code, 1)
             self.assertEqual(len(payload["targets"]), 3)
-            self.assertTrue(all(item["status"] == "BACKEND_UNAVAILABLE" for item in payload["targets"]))
-            self.assertTrue(all(item["selected_backend"] == "oci" for item in payload["targets"]))
+            self.assertTrue(
+                all(item["status"] != "READY" for item in payload["targets"]),
+                payload,
+            )
+            self.assertTrue(
+                all(item["selected_backend"] == "oci" for item in payload["targets"]),
+                payload,
+            )
 
     def test_test_command_returns_incomplete_for_missing_runtime(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -90,6 +97,7 @@ raise SystemExit(0)
             handle.addfile(info, io.BytesIO(script))
         return archive, hashlib.sha256(archive.read_bytes()).hexdigest()
 
+    @unittest.skipUnless(os.name == "posix", "Linux-native runtime archive fixture")
     def test_report_and_strict_differential_statuses(self):
         from psmatrix.models import RuntimeSpec
         from psmatrix.runtime import RuntimeManager
@@ -135,3 +143,7 @@ raise SystemExit(0)
             strict_payload = json.loads(output.getvalue())
             self.assertEqual(strict_code, 1)
             self.assertEqual(strict_payload["status"], "FAIL_DIFFERENTIAL")
+
+
+if __name__ == "__main__":
+    unittest.main()

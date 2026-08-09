@@ -23,6 +23,13 @@
     "media/release/2.0.0rc3",
     "media/external"
   ],
+  "selection_materialization": {
+    "kind": "psmatrix.windows-authority-media-selection-materialization",
+    "path": "config/windows-authority-media-selection.json",
+    "direct_hyper_v_input": false,
+    "requires_separate_provisioning_profile": true,
+    "next_output_kind": "psmatrix.windows-lab-media"
+  },
   "rules": {
     "exactly_two_search_roots": true,
     "broad_downloads_search_forbidden": true,
@@ -30,13 +37,14 @@
     "iso_inspection_is_read_only": true,
     "iso_dismount_is_mandatory": true,
     "selection_inventory_sha256_must_match": true,
-    "operator_review_required_before_final_manifest": true,
-    "final_manifest_written_only_when_complete": true
+    "operator_review_required_before_selection_materialization": true,
+    "selection_materialization_written_only_when_complete": true,
+    "provisioning_manifest_materialization_is_separate": true
   },
   "result_classes": [
     "EXTERNAL_MEDIA_INCOMPLETE",
     "READY_FOR_OPERATOR_SELECTION",
-    "READY_FOR_HYPER_V_PROVISIONING",
+    "READY_FOR_PROVISIONING_MANIFEST_MATERIALIZATION",
     "FAIL"
   ],
   "safety": {
@@ -45,6 +53,7 @@
     "uploads_media_inventory": false,
     "uploads_candidate_files": false,
     "uploads_non_secret_status_only": true,
+    "writes_provisioning_manifest": false,
     "creates_virtual_machines": false,
     "creates_checkpoints": false,
     "restores_snapshots": false,

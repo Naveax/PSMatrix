@@ -108,19 +108,40 @@ class SemanticVerifierTests(unittest.TestCase):
             mode="required", fail_under=None,
         ))
 
-    def test_semantic_contract_is_private_and_owned_by_sandbox_identity(self):
+    def test_semantic_contract_contains_only_bounded_expectations_and_posix_is_private(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "internal" / "semantic-contract.json"
             uid = 65534 if hasattr(os, "geteuid") and os.geteuid() == 0 else None
             gid = 65534 if uid is not None else None
-            ScriptRunner._write_semantic_contract(
-                path, {"schema": 1, "expect": {}}, uid=uid, gid=gid
-            )
+            contract = {
+                "schema": 1,
+                "expect": {
+                    "module": {"name": "safe-module"},
+                    "manifest": {"kind": "ModuleManifest"},
+                },
+                # These fields intentionally model sensitive/execution material
+                # that must never be copied into the child semantic contract.
+                "environment": {"SECRET": "must-not-leak"},
+                "parameters": {"ApiKey": "must-not-leak"},
+                "stdin": "must-not-leak",
+            }
+            ScriptRunner._write_semantic_contract(path, contract, uid=uid, gid=gid)
+
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(set(payload), {"schema", "module", "manifest"})
+            self.assertEqual(payload["schema"], 1)
+            serialized = path.read_text(encoding="utf-8")
+            self.assertNotIn("must-not-leak", serialized)
+            self.assertNotIn("environment", serialized)
+            self.assertNotIn("parameters", serialized)
+            self.assertNotIn("stdin", serialized)
+
             details = path.stat()
-            self.assertEqual(stat.S_IMODE(details.st_mode), 0o600)
-            if uid is not None:
-                self.assertEqual(details.st_uid, uid)
-                self.assertEqual(details.st_gid, gid)
+            if os.name != "nt":
+                self.assertEqual(stat.S_IMODE(details.st_mode), 0o600)
+                if uid is not None:
+                    self.assertEqual(details.st_uid, uid)
+                    self.assertEqual(details.st_gid, gid)
 
     def test_generated_semantic_tests_include_module_cases_and_manifest(self):
         with tempfile.TemporaryDirectory() as temp:

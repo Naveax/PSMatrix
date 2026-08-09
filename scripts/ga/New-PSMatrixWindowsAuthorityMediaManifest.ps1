@@ -119,7 +119,7 @@ if ([string]::IsNullOrWhiteSpace($SelectionPath)) {
     $SelectionPath = Join-Path $ga 'media\windows-lab-media-selection.json'
 }
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
-    $OutputPath = Join-Path $ga 'config\windows-lab-media.json'
+    $OutputPath = Join-Path $ga 'config\windows-authority-media-selection.json'
 }
 if ([string]::IsNullOrWhiteSpace($PlanOutputPath)) {
     $PlanOutputPath = Join-Path $ga 'windows-authority-media-manifest-plan.json'
@@ -530,14 +530,14 @@ if ($selectionPresent) {
 }
 
 $finalManifestWritten = $false
-$readyForMediaManifest = (
+$readyForSelectionMaterialization = (
     $selectionPresent -and
     $validationErrors.Count -eq 0 -and
     $normalizedSelections.Count -eq $allRoles.Count -and
     -not [string]::IsNullOrWhiteSpace($releaseVersion)
 )
 
-if ($readyForMediaManifest) {
+if ($readyForSelectionMaterialization) {
     $finalManifest = [ordered]@{
         schema = 1
         kind = $contract.manifest_kind
@@ -555,14 +555,16 @@ if ($readyForMediaManifest) {
         }
         selections = @($normalizedSelections | Sort-Object role)
         complete = $true
-        ready_for_hyper_v_provisioning = $true
+        ready_for_provisioning_manifest_materialization = $true
+        provisioning_manifest_materialized = $false
+        ready_for_hyper_v_provisioning = $false
         creates_virtual_machines = $false
         creates_checkpoints = $false
         opens_secret_bundles = $false
         writes_validator_inputs = $false
         authoritative = $false
         ga_eligible = $false
-        note = 'This reviewed manifest binds local media and release inputs for provisioning. It is not execution evidence, authoritative evidence, or GA eligibility.'
+        note = 'This reviewed selection binds local media and release inputs for provisioning-manifest materialization. It is not a psmatrix.windows-lab-media manifest, execution evidence, authoritative evidence, or GA eligibility.'
     }
 
     Write-Utf8NoBomAtomic `
@@ -591,10 +593,10 @@ if (-not $selectionPresent) {
     $nextRequired += ('Review {0} and save the completed selection as {1}.' -f $templateFile, $selectionFile)
 }
 if ($validationErrors.Count -ne 0) {
-    $nextRequired += 'Correct every selection validation error before materializing windows-lab-media.json.'
+    $nextRequired += 'Correct every selection validation error before materializing the reviewed media-selection binding.'
 }
 if ($finalManifestWritten) {
-    $nextRequired += 'Invoke the Hyper-V provisioning phase only with this exact manifest path and SHA-256 binding.'
+    $nextRequired += 'Materialize psmatrix.windows-lab-media from this exact reviewed selection and an operator-reviewed provisioning profile before any Hyper-V provisioning.'
 }
 
 $planStatus = 'PASS_PARTIAL'
@@ -626,8 +628,10 @@ $plan = [ordered]@{
     release_manifest_errors = $releaseManifestErrors
     validation_errors = $validationErrors
     final_manifest_written = $finalManifestWritten
-    ready_for_media_manifest = $readyForMediaManifest
-    ready_for_hyper_v_provisioning = $finalManifestWritten
+    ready_for_selection_materialization = $readyForSelectionMaterialization
+    ready_for_provisioning_manifest_materialization = $finalManifestWritten
+    provisioning_manifest_materialized = $false
+    ready_for_hyper_v_provisioning = $false
     creates_virtual_machines = $false
     creates_checkpoints = $false
     opens_secret_bundles = $false
@@ -648,5 +652,5 @@ if ($selectionPresent -and $validationErrors.Count -ne 0) {
     throw ('Media selection validation failed with {0} error(s). See {1}.' -f $validationErrors.Count, $planFile)
 }
 if ($RequireComplete -and -not $finalManifestWritten) {
-    throw ('Reviewed media manifest is incomplete. See {0}.' -f $planFile)
+    throw ('Reviewed media selection materialization is incomplete. See {0}.' -f $planFile)
 }

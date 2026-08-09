@@ -1,0 +1,63 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-authority-provisioning-manifest-workflow-contract",
+  "pack": "03-authoritative-windows",
+  "release_version": "2.0.0rc3",
+  "release_commit": "34e87c60885001f8dd11744b8bf194a59e51bd1f",
+  "workflow": "production-ga-windows-authority-provisioning-manifest-selfhosted",
+  "protected_environment": "production-ga-windows-lab",
+  "required_runner_labels": [
+    "self-hosted",
+    "Windows",
+    "X64",
+    "psmatrix-hyperv"
+  ],
+  "product_identity": {
+    "current_control_checkout_required": true,
+    "exact_rc3_product_checkout_required": true,
+    "reviewed_release_lock_required": true,
+    "product_loader_validation_required": true
+  },
+  "prerequisites": {
+    "protected_release_intake_status": "RELEASE_CLOSURE_READY",
+    "selection_materialization_kind": "psmatrix.windows-authority-media-selection-materialization",
+    "selection_materialization_path": "config/windows-authority-media-selection.json",
+    "selection_materialization_complete": true,
+    "selection_ready_for_provisioning_manifest_materialization": true,
+    "provisioning_profile_kind": "psmatrix.windows-authority-provisioning-profile",
+    "provisioning_profile_path": "config/windows-lab-provisioning-profile.json",
+    "operator_review_required": true
+  },
+  "output": {
+    "manifest_kind": "psmatrix.windows-lab-media",
+    "manifest_path": "config/windows-lab-media.json",
+    "materialization_report_kind": "psmatrix.windows-authority-provisioning-manifest-materialization",
+    "materialization_report_path": "windows-authority-provisioning-manifest-materialization.json",
+    "materialization_status": "PASS",
+    "product_loader_validation": "PASS",
+    "exact_runtime_count": 3,
+    "hyper_v_generation": 2,
+    "clean_checkpoint_name": "psmatrix-clean",
+    "complete": true,
+    "ready_for_hyper_v_provisioning": true,
+    "actual_os_identity_measured": false,
+    "authoritative": false,
+    "ga_eligible": false
+  },
+  "safety": {
+    "downloads_files": false,
+    "opens_secret_bundles": false,
+    "reads_private_key_contents": false,
+    "creates_virtual_machines": false,
+    "creates_checkpoints": false,
+    "restores_snapshots": false,
+    "writes_endpoint_manifests": false,
+    "writes_image_manifests": false,
+    "uploads_manifest": false,
+    "uploads_profile": false,
+    "uploads_selection": false,
+    "uploads_non_secret_status_only": true,
+    "authoritative": false,
+    "ga_eligible": false
+  }
+}

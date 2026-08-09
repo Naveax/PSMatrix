@@ -1,0 +1,180 @@
+name: production-ga-windows-authority-provisioning-handoff-source-preflight
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/ga-windows-authority-media-readiness-selfhosted.yml"
+      - ".github/workflows/ga-windows-authority-provisioning-manifest-selfhosted.yml"
+      - ".github/workflows/ga-windows-authority-operation-package-selfhosted.yml"
+      - ".github/workflows/ga-windows-authority-provisioning-handoff-source-preflight.yml"
+      - "ga-packs/03-authoritative-windows/media-manifest-contract.json"
+      - "ga-packs/03-authoritative-windows/media-readiness-workflow-contract.json"
+      - "ga-packs/03-authoritative-windows/provisioning-manifest-contract.json"
+      - "ga-packs/03-authoritative-windows/provisioning-manifest-workflow-contract.json"
+      - "ga-packs/03-authoritative-windows/operation-package-builder-contract.json"
+      - "ga-packs/03-authoritative-windows/operation-package-workflow-contract.json"
+      - "scripts/ga/New-PSMatrixWindowsAuthorityMediaManifest.ps1"
+      - "scripts/ga/New-PSMatrixWindowsAuthorityProvisioningManifest.ps1"
+      - "scripts/ga/build_windows_authority_provisioning_manifest.py"
+      - "scripts/ga/build_windows_authority_operation_package.py"
+      - "tests/test_windows_authority_media_inventory.py"
+      - "tests/test_windows_authority_media_readiness_workflow.py"
+      - "tests/test_windows_authority_provisioning_manifest.py"
+      - "tests/test_windows_authority_provisioning_manifest_workflow.py"
+      - "tests/test_windows_authority_operation_package_builder.py"
+      - "tests/test_windows_authority_operation_package_workflow.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/ga-windows-authority-media-readiness-selfhosted.yml"
+      - ".github/workflows/ga-windows-authority-provisioning-manifest-selfhosted.yml"
+      - ".github/workflows/ga-windows-authority-operation-package-selfhosted.yml"
+      - ".github/workflows/ga-windows-authority-provisioning-handoff-source-preflight.yml"
+      - "ga-packs/03-authoritative-windows/**"
+      - "scripts/ga/New-PSMatrixWindowsAuthorityMediaManifest.ps1"
+      - "scripts/ga/New-PSMatrixWindowsAuthorityProvisioningManifest.ps1"
+      - "scripts/ga/build_windows_authority_provisioning_manifest.py"
+      - "scripts/ga/build_windows_authority_operation_package.py"
+      - "tests/test_windows_authority_media_inventory.py"
+      - "tests/test_windows_authority_media_readiness_workflow.py"
+      - "tests/test_windows_authority_provisioning_manifest.py"
+      - "tests/test_windows_authority_provisioning_manifest_workflow.py"
+      - "tests/test_windows_authority_operation_package_builder.py"
+      - "tests/test_windows_authority_operation_package_workflow.py"
+
+concurrency:
+  group: production-ga-windows-authority-provisioning-handoff-source-preflight-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  provisioning-handoff-source:
+    name: RC3 media selection to provisioning to operation-package contracts
+    if: >-
+      github.event_name == 'push' ||
+      (github.event.pull_request.head.repo.full_name == github.repository && github.actor == 'Naveax')
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 20
+
+    steps:
+      - name: Verify trusted self-hosted runner assignment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows') {
+              throw "Expected Windows self-hosted runner; got $env:RUNNER_OS"
+          }
+          if ($env:RUNNER_NAME -ne 'NAVEAX') {
+              throw "Expected NAVEAX runner; got $env:RUNNER_NAME"
+          }
+          Write-Host "runner_assignment=PASS"
+          Write-Host "runner_name=$env:RUNNER_NAME"
+
+      - name: Check out exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify clean exact checkout and Python runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $head -cnotmatch '^[0-9a-f]{40}$') {
+              throw 'Unable to resolve exact checkout head.'
+          }
+          if ($head -ne $env:GITHUB_SHA.ToLowerInvariant()) {
+              throw "Checkout head $head does not match GITHUB_SHA $env:GITHUB_SHA."
+          }
+          if (-not [string]::IsNullOrWhiteSpace((git status --porcelain))) {
+              throw 'Handoff source checkout is not clean.'
+          }
+          $python = (python -c "import platform; print(platform.python_version())").Trim()
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($python)) {
+              throw 'Python is unavailable on the trusted self-hosted runner.'
+          }
+          Write-Host "control_head=$head"
+          Write-Host "python_version=$python"
+
+      - name: Compile provisioning handoff Python controls
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = @(
+              'scripts/ga/build_windows_authority_provisioning_manifest.py',
+              'scripts/ga/build_windows_authority_operation_package.py',
+              'tests/test_windows_authority_media_inventory.py',
+              'tests/test_windows_authority_media_readiness_workflow.py',
+              'tests/test_windows_authority_provisioning_manifest.py',
+              'tests/test_windows_authority_provisioning_manifest_workflow.py',
+              'tests/test_windows_authority_operation_package_builder.py',
+              'tests/test_windows_authority_operation_package_workflow.py'
+          )
+          & python -m py_compile @files
+          if ($LASTEXITCODE -ne 0) {
+              throw "py_compile failed: $LASTEXITCODE"
+          }
+          Write-Host 'py_compile=PASS'
+
+      - name: Parse handoff PowerShell controls
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($relative in @(
+              'scripts/ga/New-PSMatrixWindowsAuthorityMediaManifest.ps1',
+              'scripts/ga/New-PSMatrixWindowsAuthorityProvisioningManifest.ps1'
+          )) {
+              $tokens = $null
+              $errors = $null
+              [void][System.Management.Automation.Language.Parser]::ParseFile(
+                  (Join-Path $env:GITHUB_WORKSPACE $relative),
+                  [ref]$tokens,
+                  [ref]$errors
+              )
+              if ($errors.Count -ne 0) {
+                  $errors | ForEach-Object { Write-Error ("{0}: {1}" -f $relative, $_.Message) }
+                  throw "PowerShell parser reported $($errors.Count) error(s) for $relative."
+              }
+          }
+          Write-Host 'powershell_parse=PASS'
+
+      - name: Run RC3 provisioning handoff contract tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:PYTHONPATH = Join-Path $env:GITHUB_WORKSPACE 'src'
+          $modules = @(
+              'tests.test_windows_authority_media_inventory',
+              'tests.test_windows_authority_media_readiness_workflow',
+              'tests.test_windows_authority_provisioning_manifest',
+              'tests.test_windows_authority_provisioning_manifest_workflow',
+              'tests.test_windows_authority_operation_package_builder',
+              'tests.test_windows_authority_operation_package_workflow'
+          )
+          & python -m unittest -v @modules
+          if ($LASTEXITCODE -ne 0) {
+              throw "RC3 handoff contract tests failed: $LASTEXITCODE"
+          }
+
+      - name: Enforce forbidden RC2 and private-key references
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $targets = @(
+              '.github/workflows/ga-windows-authority-media-readiness-selfhosted.yml',
+              '.github/workflows/ga-windows-authority-provisioning-manifest-selfhosted.yml',
+              'scripts/ga/build_windows_authority_operation_package.py'
+          )
+          $text = ($targets | ForEach-Object {
+              Get-Content -LiteralPath $_ -Raw -ErrorAction Stop
+          }) -join "`n"
+          if ($text -match 'psmatrix-2\.0\.0rc2-windows-authoritative-operation|release-assets[/\\]2\.0\.0rc2') {
+              throw 'Historical RC2 operation-package reference is forbidden in RC3 handoff controls.'
+          }
+          if ($text -match 'PSMATRIX_RELEASE_PRIVATE_KEY|PSMATRIX_WINDOWS_LAB_PRIVATE_KEY') {
+              throw 'Private-key environment references are forbidden in media/provisioning/operation handoff controls.'
+          }
+          Write-Host 'handoff_safety_scan=PASS'
