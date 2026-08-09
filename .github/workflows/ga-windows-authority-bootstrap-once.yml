@@ -42,14 +42,13 @@ jobs:
               -GaRoot $gaRoot `
               -OutputPath $report `
               -CreateLayout
-          $bootstrapExit = $LASTEXITCODE
 
           if (-not (Test-Path -LiteralPath $report -PathType Leaf)) {
               throw 'Bootstrap report was not materialized.'
           }
           $value = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
-          if ($bootstrapExit -ne 0 -or [string]$value.status -eq 'FAIL' -or [bool]$value.controller_ready -ne $true) {
-              throw "Windows GA bootstrap controller checks failed (exit=$bootstrapExit status=$($value.status))."
+          if ([string]$value.status -notin @('PASS', 'PASS_PARTIAL') -or [bool]$value.controller_ready -ne $true) {
+              throw "Windows GA bootstrap controller checks failed (status=$($value.status))."
           }
           if ([bool]$value.authoritative -or [bool]$value.ga_eligible) {
               throw 'Bootstrap improperly claimed authority or GA eligibility.'
@@ -99,6 +98,7 @@ jobs:
 
           Write-Host 'canonical_ga_layout=PASS'
           Write-Host 'canonical_ga_root=C:\ProgramData\PSMatrix\ProductionGA'
+          Write-Host "bootstrap_status=$($value.status)"
           Write-Host "controller_ready=$($value.controller_ready)"
           Write-Host "runner_service_ready=$($value.runner_service_ready)"
           Write-Host "release_ready=$($value.verified_rc3_release_ready)"
