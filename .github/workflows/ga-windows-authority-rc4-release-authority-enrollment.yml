@@ -25,7 +25,6 @@ jobs:
       contents: read
     env:
       CANDIDATE_COMMIT: ${{ inputs.candidate_commit }}
-      RELEASE_PRIVATE_KEY: ${{ secrets.PSMATRIX_RELEASE_PRIVATE_KEY }}
 
     steps:
       - name: Initialize isolated enrollment paths
@@ -43,7 +42,6 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$CANDIDATE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo 'candidate_commit must be 40 lowercase hex characters.' >&2; exit 1; }
-          [[ -n "$RELEASE_PRIVATE_KEY" ]] || { echo 'PSMATRIX_RELEASE_PRIVATE_KEY is missing from production-ga-release-signing.' >&2; exit 1; }
 
       - name: Check out exact RC4 candidate
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -64,22 +62,25 @@ jobs:
           actual="$(git rev-parse HEAD)"
           [[ "$actual" == "$CANDIDATE_COMMIT" ]] || { echo "candidate checkout mismatch: $actual" >&2; exit 1; }
           [[ -z "$(git status --porcelain)" ]] || { echo 'candidate checkout is dirty' >&2; exit 1; }
-          python - <<'PY'
+          PYTHONPATH=src python - <<'PY'
           import tomllib
           from pathlib import Path
+          import psmatrix
           value = tomllib.loads(Path('pyproject.toml').read_text(encoding='utf-8'))
           if value['project']['version'] != '2.0.0rc4':
               raise SystemExit('candidate package version is not 2.0.0rc4')
-          from src.psmatrix import __version__
-          if __version__ != '2.0.0rc4':
+          if psmatrix.__version__ != '2.0.0rc4':
               raise SystemExit('candidate package __version__ is not 2.0.0rc4')
           print('rc4_candidate_identity=PASS')
           PY
 
       - name: Materialize protected private key only in hosted temp
         shell: bash
+        env:
+          RELEASE_PRIVATE_KEY: ${{ secrets.PSMATRIX_RELEASE_PRIVATE_KEY }}
         run: |
           set -euo pipefail
+          [[ -n "$RELEASE_PRIVATE_KEY" ]] || { echo 'PSMATRIX_RELEASE_PRIVATE_KEY is missing from production-ga-release-signing.' >&2; exit 1; }
           rm -rf "$PSMATRIX_RC4_KEY_ROOT" "$PSMATRIX_RC4_ENROLLMENT"
           install -d -m 0700 "$PSMATRIX_RC4_KEY_ROOT" "$PSMATRIX_RC4_ENROLLMENT"
           printf '%s\n' "$RELEASE_PRIVATE_KEY" > "$PSMATRIX_RC4_KEY_ROOT/release.private.pem"
