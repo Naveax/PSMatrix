@@ -41,6 +41,7 @@ class WindowsAuthorityMediaReadinessWorkflowTests(unittest.TestCase):
             value["search_roots"],
             ["media/release/2.0.0rc3", "media/external"],
         )
+        self.assertTrue(value["rules"]["exactly_two_search_roots"])
         selection = value["selection_materialization"]
         self.assertEqual(
             selection["kind"],
@@ -76,7 +77,13 @@ class WindowsAuthorityMediaReadinessWorkflowTests(unittest.TestCase):
             'default: "34e87c60885001f8dd11744b8bf194a59e51bd1f"',
             "media\\release\\2.0.0rc3",
             "media\\external",
+            "Current RC3 release lock pack mismatch",
             "RELEASE_CLOSURE_READY",
+            "Protected RC3 intake unexpectedly materialized media state",
+            "Protected RC3 intake unexpectedly rebuilt operation state",
+            "Expected exactly two isolated media search roots",
+            "isolated_media_search_roots=PASS count=2",
+            "SearchRoot = $resolvedSearchRoots",
             "Get-PSMatrixWindowsAuthorityMediaInventory.ps1",
             "Resolve-PSMatrixWindowsAuthorityMediaInventory.ps1",
             "New-PSMatrixWindowsAuthorityMediaManifest.ps1",
