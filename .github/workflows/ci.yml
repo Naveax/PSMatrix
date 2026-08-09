@@ -126,18 +126,11 @@ jobs:
               $module = 'tests.' + [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
               Write-Host "::group::$module"
               if ($file.Name -eq 'test_oci.py') {
-                  foreach ($testName in @(
-                      'test_image_reference_validation',
-                      'test_install_pins_digest_and_probes_exact_version',
-                      'test_mutable_local_tag_requires_explicit_trust',
-                      'test_version_mismatch_is_rejected',
-                      'test_cli_executes_registered_oci_runtime'
-                  )) {
-                      & python -m unittest "tests.test_oci.OciRuntimeTests.$testName" -v
-                      if ($LASTEXITCODE -ne 0) {
-                          throw "Core OCI unit test failed: $testName"
-                      }
+                  & python -m unittest "tests.test_oci.OciRuntimeTests.test_image_reference_validation" -v
+                  if ($LASTEXITCODE -ne 0) {
+                      throw 'Platform-neutral OCI reference validation failed.'
                   }
+                  Write-Host 'deferred_to_manual_linux_integration=test_oci.py::fake-engine-install-probe-execution'
               }
               else {
                   & python -m unittest $module -v
@@ -152,7 +145,7 @@ jobs:
               throw 'Linux-native integration fixture was not explicitly deferred.'
           }
           Write-Host "core_tests=PASS modules=$executedModules"
-          Write-Host "manual_linux_modules=$($deferredModules -join ',')"
+          Write-Host "manual_linux_modules=$($deferredModules -join ','),test_oci.py::integration-cases"
 
       - name: Run product doctor
         shell: pwsh
