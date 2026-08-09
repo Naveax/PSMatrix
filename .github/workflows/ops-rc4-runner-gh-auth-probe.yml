@@ -12,11 +12,11 @@ permissions:
 
 jobs:
   probe:
-    name: Probe NAVEAX gh environment-admin readiness without values
+    name: Probe NAVEAX local crypto and gh admin readiness without values
     runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
     timeout-minutes: 10
     steps:
-      - name: Probe gh authentication and environment metadata access
+      - name: Smoke in-memory Ed25519 and CurrentUser DPAPI
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -24,6 +24,47 @@ jobs:
           if ($env:RUNNER_NAME -ne 'NAVEAX' -or $env:RUNNER_OS -ne 'Windows') {
               throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS"
           }
+          $openssl = (Get-Command openssl.exe -ErrorAction SilentlyContinue).Source
+          if ([string]::IsNullOrWhiteSpace($openssl)) {
+              $fallback = Join-Path $env:ProgramFiles 'Git\usr\bin\openssl.exe'
+              if (Test-Path -LiteralPath $fallback -PathType Leaf) { $openssl = $fallback }
+          }
+          if ([string]::IsNullOrWhiteSpace($openssl)) { throw 'OpenSSL unavailable.' }
+
+          $privateLines = @(& $openssl genpkey -algorithm ED25519 2>$null)
+          if ($LASTEXITCODE -ne 0 -or $privateLines.Count -eq 0) { throw 'Ed25519 generation failed.' }
+          $privatePem = (($privateLines -join "`n").TrimEnd() + "`n")
+          $privateLines = @()
+          if ($privatePem -notmatch '(?m)^-----BEGIN PRIVATE KEY-----\r?$') { throw 'Generated key is not PKCS#8 PEM.' }
+
+          $publicLines = @($privatePem | & $openssl pkey -pubout 2>$null)
+          if ($LASTEXITCODE -ne 0 -or $publicLines.Count -eq 0) { throw 'Public-key derivation failed.' }
+          $publicPem = (($publicLines -join "`n").TrimEnd() + "`n")
+          if ($publicPem -notmatch '(?m)^-----BEGIN PUBLIC KEY-----\r?$') { throw 'Derived public key is not SPKI PEM.' }
+
+          $privateBytes = [System.Text.Encoding]::UTF8.GetBytes($privatePem)
+          $entropy = [System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes('PSMatrix/2.0.0rc4/Naveax/PSMatrix/probe'))
+          $before = [System.Security.Cryptography.SHA256]::HashData($privateBytes)
+          $cipher = [System.Security.Cryptography.ProtectedData]::Protect($privateBytes, $entropy, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+          $roundtrip = [System.Security.Cryptography.ProtectedData]::Unprotect($cipher, $entropy, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+          $after = [System.Security.Cryptography.SHA256]::HashData($roundtrip)
+          if (-not [System.Linq.Enumerable]::SequenceEqual[byte]($before, $after)) { throw 'CurrentUser DPAPI round-trip mismatch.' }
+
+          [System.Array]::Clear($privateBytes, 0, $privateBytes.Length)
+          [System.Array]::Clear($roundtrip, 0, $roundtrip.Length)
+          [System.Array]::Clear($cipher, 0, $cipher.Length)
+          $privatePem = $null
+          $publicPem = $null
+          $publicLines = @()
+          Write-Host 'in_memory_ed25519=PASS'
+          Write-Host 'current_user_dpapi_roundtrip=PASS'
+          Write-Host 'plaintext_private_key_file_created=false'
+
+      - name: Probe gh authentication and environment metadata access
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version 2.0
           $gh = (Get-Command gh.exe -ErrorAction SilentlyContinue).Source
           if ([string]::IsNullOrWhiteSpace($gh)) {
               $fallback = Join-Path $env:ProgramFiles 'GitHub CLI\gh.exe'
