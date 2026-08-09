@@ -297,7 +297,7 @@ if ($ProvisionReleaseAuthority) {
         $publicLines = @()
     }
 }
-elif ($RestoreReleaseAuthorityFromEscrow) {
+elseif ($RestoreReleaseAuthorityFromEscrow) {
     $privateBytes = Unprotect-BytesCurrentUser -Source $releaseEscrowPath -Purpose 'release-authority-private-key'
     try {
         Set-EnvironmentSecretFromBytes -Environment $ReleaseEnvironment -Name $releaseSecretName -Bytes $privateBytes
