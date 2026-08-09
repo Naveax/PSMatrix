@@ -1,0 +1,117 @@
+name: ga-windows-authority-bootstrap-once
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/ga-windows-authority-bootstrap-once.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap:
+    name: Bootstrap canonical non-authoritative Windows GA layout
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 10
+
+    steps:
+      - name: Verify trusted runner assignment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') {
+              throw "Expected trusted NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS"
+          }
+          Write-Host 'bootstrap_runner_assignment=PASS'
+
+      - name: Check out exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Create and validate canonical RC3 GA layout
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gaRoot = 'C:\ProgramData\PSMatrix\ProductionGA'
+          $report = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-ga-bootstrap.json'
+
+          & "$env:GITHUB_WORKSPACE\scripts\ga\Initialize-PSMatrixWindowsAuthorityLab.ps1" `
+              -GaRoot $gaRoot `
+              -OutputPath $report `
+              -CreateLayout
+          $bootstrapExit = $LASTEXITCODE
+
+          if (-not (Test-Path -LiteralPath $report -PathType Leaf)) {
+              throw 'Bootstrap report was not materialized.'
+          }
+          $value = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
+          if ($bootstrapExit -ne 0 -or [string]$value.status -eq 'FAIL' -or [bool]$value.controller_ready -ne $true) {
+              throw "Windows GA bootstrap controller checks failed (exit=$bootstrapExit status=$($value.status))."
+          }
+          if ([bool]$value.authoritative -or [bool]$value.ga_eligible) {
+              throw 'Bootstrap improperly claimed authority or GA eligibility.'
+          }
+          if ([string]$value.release_version -ne '2.0.0rc3') {
+              throw 'Bootstrap release version mismatch.'
+          }
+
+          $requiredDirs = @(
+              'media\release',
+              'media\external',
+              'operation',
+              'config',
+              'trust-home'
+          )
+          foreach ($relative in $requiredDirs) {
+              if (-not (Test-Path -LiteralPath (Join-Path $gaRoot $relative) -PathType Container)) {
+                  throw "Required GA layout directory missing: $relative"
+              }
+          }
+
+          $templates = @(Get-ChildItem -LiteralPath (Join-Path $gaRoot 'config') -File -Filter '*.example.json')
+          if ($templates.Count -ne 6) {
+              throw "Expected exactly six endpoint/image templates; found $($templates.Count)."
+          }
+          foreach ($template in $templates) {
+              $json = Get-Content -LiteralPath $template.FullName -Raw | ConvertFrom-Json
+              if ([bool]$json.template_only -ne $true) {
+                  throw "Bootstrap template is not explicitly template-only: $($template.Name)"
+              }
+          }
+
+          $forbiddenReal = @(
+              'windows-powershell-4.0-endpoint.json',
+              'windows-powershell-4.0-image.json',
+              'windows-powershell-5.0-endpoint.json',
+              'windows-powershell-5.0-image.json',
+              'windows-powershell-5.1-endpoint.json',
+              'windows-powershell-5.1-image.json',
+              'windows-lab-media.json'
+          )
+          foreach ($name in $forbiddenReal) {
+              if (Test-Path -LiteralPath (Join-Path $gaRoot "config\$name") -PathType Leaf) {
+                  throw "Bootstrap unexpectedly materialized real authority input: $name"
+              }
+          }
+
+          Write-Host 'canonical_ga_layout=PASS'
+          Write-Host 'canonical_ga_root=C:\ProgramData\PSMatrix\ProductionGA'
+          Write-Host "controller_ready=$($value.controller_ready)"
+          Write-Host "runner_service_ready=$($value.runner_service_ready)"
+          Write-Host "release_ready=$($value.verified_rc3_release_ready)"
+          Write-Host "media_ready=$($value.media_manifest_ready)"
+          Write-Host "operation_ready=$($value.operation_package_candidate_present)"
+          Write-Host "templates=$($templates.Count)"
+
+      - name: Complete
+        shell: pwsh
+        run: |
+          Write-Host 'bootstrap_mutation_scope=directories-and-example-templates-only'
+          Write-Host 'creates_vms=false'
+          Write-Host 'creates_checkpoints=false'
+          Write-Host 'writes_release_material=false'
+          Write-Host 'authoritative=false'
+          Write-Host 'ga_eligible=false'
