@@ -86,6 +86,9 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $lock = Get-Content -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'ga-packs\03-authoritative-windows\rc3-release-lock.json') -Raw | ConvertFrom-Json
+          if ([string]$lock.pack -ne '03-authoritative-windows') {
+              throw 'Current RC3 release lock pack mismatch.'
+          }
           if ([string]$lock.version -ne '2.0.0rc3' -or [string]$lock.release_commit -ne $env:RELEASE_COMMIT) {
               throw 'Current RC3 release lock does not match release_commit.'
           }
@@ -101,6 +104,8 @@ jobs:
           if ([bool]$intake.private_key_material_absent -ne $true) { throw 'Protected RC3 intake did not prove private-key absence.' }
           if ([bool]$intake.release_authority_rotated -ne $false) { throw 'Protected RC3 intake rotated release authority.' }
           if ([bool]$intake.stale_rc2_operation_package_used -ne $false) { throw 'Protected RC3 intake used stale RC2 operation material.' }
+          if ([bool]$intake.media_manifest_materialized -ne $false) { throw 'Protected RC3 intake unexpectedly materialized media state.' }
+          if ([bool]$intake.operation_package_rebuilt -ne $false) { throw 'Protected RC3 intake unexpectedly rebuilt operation state.' }
           if ([bool]$intake.authoritative -or [bool]$intake.ga_eligible) { throw 'Protected RC3 intake improperly claims authority or GA eligibility.' }
 
           $expectedReleaseRoot = [System.IO.Path]::GetFullPath($env:PSMATRIX_MEDIA_RELEASE_ROOT)
@@ -115,10 +120,43 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $inventoryPath = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'windows-authority-media-inventory.json'
+          $gaRoot = [System.IO.Path]::GetFullPath($env:PSMATRIX_WINDOWS_GA_ROOT)
+          $searchRoots = @(
+              $env:PSMATRIX_MEDIA_RELEASE_ROOT,
+              $env:PSMATRIX_MEDIA_EXTERNAL_ROOT
+          )
+          if ($searchRoots.Count -ne 2) {
+              throw "Expected exactly two isolated media search roots; found $($searchRoots.Count)."
+          }
+          $resolvedSearchRoots = @(
+              foreach ($root in $searchRoots) {
+                  if ([string]::IsNullOrWhiteSpace([string]$root)) {
+                      throw 'An isolated media search root is empty.'
+                  }
+                  [System.IO.Path]::GetFullPath([string]$root)
+              }
+          )
+          if (@($resolvedSearchRoots | Sort-Object -Unique).Count -ne 2) {
+              throw 'The two isolated media search roots must be distinct.'
+          }
+          $expectedSearchRoots = @(
+              [System.IO.Path]::GetFullPath((Join-Path $gaRoot 'media\release\2.0.0rc3')),
+              [System.IO.Path]::GetFullPath((Join-Path $gaRoot 'media\external'))
+          )
+          for ($index = 0; $index -lt 2; $index++) {
+              if (-not $resolvedSearchRoots[$index].Equals($expectedSearchRoots[$index], [System.StringComparison]::OrdinalIgnoreCase)) {
+                  throw "Isolated media search root $index differs from the exact RC3 contract."
+              }
+              if (-not (Test-Path -LiteralPath $resolvedSearchRoots[$index] -PathType Container)) {
+                  throw "Isolated media search root $index does not exist."
+              }
+          }
+          Write-Host 'isolated_media_search_roots=PASS count=2'
+
           $arguments = @{
               SourceRoot = $env:GITHUB_WORKSPACE
               GaRoot = $env:PSMATRIX_WINDOWS_GA_ROOT
-              SearchRoot = @($env:PSMATRIX_MEDIA_RELEASE_ROOT, $env:PSMATRIX_MEDIA_EXTERNAL_ROOT)
+              SearchRoot = $resolvedSearchRoots
               OutputPath = $inventoryPath
           }
           if ($env:INSPECT_ISO_IMAGES -eq 'true') {
