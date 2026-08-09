@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       candidate_commit:
-        description: Exact reviewed PSMatrix 2.0.0rc4 candidate commit
+        description: Exact reviewed PSMatrix 2.0.0rc4 candidate commit; must equal this control head
         required: true
         type: string
 
@@ -42,6 +42,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$CANDIDATE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo 'candidate_commit must be 40 lowercase hex characters.' >&2; exit 1; }
+          [[ "$CANDIDATE_COMMIT" == "${GITHUB_SHA,,}" ]] || { echo "candidate_commit must equal exact workflow control head ${GITHUB_SHA,,}." >&2; exit 1; }
 
       - name: Check out exact RC4 candidate
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
