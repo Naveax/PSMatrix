@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-authority-provisioning-manifest-contract",
+  "pack": "03-authoritative-windows",
+  "release_version": "2.0.0rc4",
+  "release_commit_binding": "active-rc4-release-lock-and-workflow-input",
+  "selection_kind": "psmatrix.windows-authority-media-selection-materialization",
+  "provisioning_profile_kind": "psmatrix.windows-authority-provisioning-profile",
+  "output_kind": "psmatrix.windows-lab-media",
+  "required_runtime_ids": [
+    "windows-powershell-4.0",
+    "windows-powershell-5.0",
+    "windows-powershell-5.1"
+  ],
+  "runtime_media_mapping": {
+    "windows-powershell-4.0": {
+      "iso_role": "windows-server-2012-r2-iso",
+      "wmf_role": null
+    },
+    "windows-powershell-5.0": {
+      "iso_role": "windows-server-2012-r2-iso",
+      "wmf_role": "wmf-5.0-offline-package"
+    },
+    "windows-powershell-5.1": {
+      "iso_role": "windows-server-2016-iso",
+      "wmf_role": null
+    }
+  },
+  "shared_media_roles": {
+    "worker_package": "windows-workers-package",
+    "python_installer": "offline-python-x64-installer",
+    "credential_bundle": "controller-credential-bundle",
+    "signing_bundle": "worker-signing-bundle"
+  },
+  "canonical_images": {
+    "windows-powershell-4.0": "PSMatrix-Windows-PowerShell-4.0",
+    "windows-powershell-5.0": "PSMatrix-Windows-PowerShell-5.0",
+    "windows-powershell-5.1": "PSMatrix-Windows-PowerShell-5.1"
+  },
+  "rules": {
+    "reviewed_selection_hashes_reverified": true,
+    "exact_release_commit_required": true,
+    "release_commit_must_match_active_lock": true,
+    "profile_operator_review_required": true,
+    "absolute_lab_root_required": true,
+    "absolute_output_vhdx_required": true,
+    "hyper_v_generation_2_required": true,
+    "unique_worker_ports_required": true,
+    "computer_name_max_length": 15,
+    "expected_os_seeded_from_inspected_installation_media": true,
+    "actual_os_identity_must_be_measured_after_provisioning": true,
+    "product_loader_validation_required": true,
+    "placeholder_values_forbidden": true
+  },
+  "safety": {
+    "downloads_files": false,
+    "opens_secret_bundles": false,
+    "reads_private_key_contents": false,
+    "creates_virtual_machines": false,
+    "creates_checkpoints": false,
+    "writes_endpoint_manifests": false,
+    "writes_image_manifests": false,
+    "authoritative": false,
+    "ga_eligible": false
+  }
+}
