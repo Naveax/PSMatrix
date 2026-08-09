@@ -51,7 +51,7 @@ class WindowsAuthorityRC4AuthorityRotationTests(unittest.TestCase):
             '"ga_eligible": False',
             "candidate_commit must be a full 40-character lowercase Git SHA",
             "must not be stored inside the repository",
-            "unexpectedly equals previous authority",
+            "must not silently reuse the previous release authority",
         )
         for value in required:
             with self.subTest(value=value):
