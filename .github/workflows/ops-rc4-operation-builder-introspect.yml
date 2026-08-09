@@ -1,0 +1,55 @@
+name: ops-rc4-operation-builder-introspect
+
+on:
+  pull_request:
+    branches:
+      - release/2.0.0rc4-provisioning-manifest
+    paths:
+      - ".github/workflows/ops-rc4-operation-builder-introspect.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    name: Inspect operation builder API and intake contract
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact probe head
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Print non-secret builder API and intake validator source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host '=== BUILDER HELP ==='
+          & python scripts/ga/build_windows_authority_operation_package.py --help
+          if ($LASTEXITCODE -ne 0) { throw 'operation builder --help failed' }
+          Write-Host '=== PYTHON INSPECTION ==='
+          @'
+          import importlib.util
+          import inspect
+          from pathlib import Path
+          path = Path('scripts/ga/build_windows_authority_operation_package.py').resolve()
+          spec = importlib.util.spec_from_file_location('opbuilder', path)
+          if spec is None or spec.loader is None:
+              raise SystemExit('unable to load operation builder')
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+          print('module_file=' + str(path))
+          for name in ('parse_args','_validate_intake','validate_intake','build','main'):
+              value = getattr(mod, name, None)
+              if value is None:
+                  continue
+              print(f'--- {name}{inspect.signature(value)} ---')
+              try:
+                  print(inspect.getsource(value))
+              except OSError:
+                  print('<source unavailable>')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'operation builder introspection failed' }
+          Write-Host 'mutation=false'
