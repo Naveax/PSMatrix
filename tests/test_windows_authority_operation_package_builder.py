@@ -42,6 +42,11 @@ class WindowsAuthorityOperationPackageBuilderTests(unittest.TestCase):
         self.assertEqual(value["release_version"], "2.0.0rc3")
         requirements = value["input_requirements"]
         self.assertEqual(
+            requirements["reviewed_release_lock_pack"], "03-authoritative-windows"
+        )
+        self.assertFalse(requirements["protected_release_intake_media_manifest_materialized"])
+        self.assertFalse(requirements["protected_release_intake_operation_package_rebuilt"])
+        self.assertEqual(
             requirements["selection_materialization_kind"],
             "psmatrix.windows-authority-media-selection-materialization",
         )
@@ -75,6 +80,7 @@ class WindowsAuthorityOperationPackageBuilderTests(unittest.TestCase):
         )
         self.assertEqual(value["package"]["status"], "READY_FOR_WINDOWS_HOST")
         self.assertTrue(value["package"]["deterministic_zip"])
+        self.assertTrue(value["package"]["embeds_media_manifest_contract"])
         self.assertTrue(value["package"]["embeds_sanitized_provisioning_binding"])
         self.assertFalse(value["package"]["credential_bundle_contents_included"])
         self.assertFalse(value["package"]["worker_signing_bundle_contents_included"])
@@ -169,6 +175,9 @@ class WindowsAuthorityOperationPackageBuilderTests(unittest.TestCase):
         for required in (
             "verify_release_manifest",
             "RELEASE_CLOSURE_READY",
+            '"media_manifest_materialized": False',
+            '"operation_package_rebuilt": False',
+            'lock.get("pack") != "03-authoritative-windows"',
             "psmatrix.windows-authority-media-selection-materialization",
             "psmatrix.windows-lab-media",
             "windows-authority-provisioning-manifest-materialization",
@@ -178,6 +187,7 @@ class WindowsAuthorityOperationPackageBuilderTests(unittest.TestCase):
             "manifest_sha256",
             "windows-authority-media-selection.json",
             "windows-lab-media.json",
+            '"controller/media-manifest-contract.json"',
             "signed_artifacts != locked_artifacts",
             "_write_deterministic_zip",
             "_FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)",
