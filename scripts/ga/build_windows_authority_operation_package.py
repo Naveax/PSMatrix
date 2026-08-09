@@ -236,6 +236,8 @@ def _validate_intake(
         "private_key_material_absent": True,
         "release_authority_rotated": False,
         "stale_rc2_operation_package_used": False,
+        "media_manifest_materialized": False,
+        "operation_package_rebuilt": False,
         "authoritative": False,
         "ga_eligible": False,
     }
@@ -468,6 +470,8 @@ def build_operation_package(
     lock = _read_json(source / "ga-packs" / "03-authoritative-windows" / "rc3-release-lock.json")
     if lock.get("schema") != 1 or lock.get("kind") != "psmatrix.windows-authority-release-staging-lock":
         raise RuntimeError("RC3 release lock identity is invalid")
+    if lock.get("pack") != "03-authoritative-windows":
+        raise RuntimeError("RC3 release lock pack is invalid")
     version = str(lock.get("version") or "")
     if version != "2.0.0rc3" or not _VERSION.fullmatch(version):
         raise RuntimeError("Operation-package builder requires the reviewed 2.0.0rc3 lock")
@@ -592,6 +596,7 @@ def build_operation_package(
 
     control_paths = (
         ("controller/Invoke-PSMatrixAuthoritativeWindowsGA.ps1", source / "scripts" / "ga" / "Invoke-PSMatrixAuthoritativeWindowsGA.ps1"),
+        ("controller/media-manifest-contract.json", source / "ga-packs" / "03-authoritative-windows" / "media-manifest-contract.json"),
         ("controller/operation-package-binding-contract.json", source / "ga-packs" / "03-authoritative-windows" / "operation-package-binding-contract.json"),
         ("controller/operation-package-builder-contract.json", source / "ga-packs" / "03-authoritative-windows" / "operation-package-builder-contract.json"),
         ("controller/provisioning-manifest-contract.json", source / "ga-packs" / "03-authoritative-windows" / "provisioning-manifest-contract.json"),
