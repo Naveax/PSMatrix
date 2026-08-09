@@ -78,12 +78,14 @@ def promote(
     output_root: Path,
     candidate_commit: str,
     promotion_control_head: str,
+    promotion_run_id: str,
     review_run_id: str,
     reviewed_draft_sha256: str,
     reviewed_public_key_sha256: str,
 ) -> dict[str, Any]:
     candidate_commit = candidate_commit.strip().lower()
     promotion_control_head = promotion_control_head.strip().lower()
+    promotion_run_id = promotion_run_id.strip()
     review_run_id = review_run_id.strip()
     reviewed_draft_sha256 = reviewed_draft_sha256.strip().lower()
     reviewed_public_key_sha256 = reviewed_public_key_sha256.strip().lower()
@@ -91,8 +93,12 @@ def promote(
         raise RuntimeError("candidate_commit must be a full 40-character lowercase Git SHA")
     if not _SHA40.fullmatch(promotion_control_head):
         raise RuntimeError("promotion_control_head must be a full 40-character lowercase Git SHA")
+    if not _RUN_ID.fullmatch(promotion_run_id):
+        raise RuntimeError("promotion_run_id must contain only decimal digits")
     if not _RUN_ID.fullmatch(review_run_id):
         raise RuntimeError("review_run_id must contain only decimal digits")
+    if promotion_run_id == review_run_id:
+        raise RuntimeError("promotion_run_id and review_run_id must be distinct")
     if not _SHA256.fullmatch(reviewed_draft_sha256):
         raise RuntimeError("reviewed_draft_sha256 must be 64 lowercase hexadecimal characters")
     if not _SHA256.fullmatch(reviewed_public_key_sha256):
@@ -168,11 +174,9 @@ def promote(
             raise RuntimeError("RC4 source-run provenance contains an invalid run ID")
         if item.get("workflow") != workflow or item.get("artifact") != artifact:
             raise RuntimeError("RC4 source-run workflow/artifact provenance mismatch")
-    if str(enrollment["run_id"]) == str(staging["run_id"]) or review_run_id in {
-        str(enrollment["run_id"]),
-        str(staging["run_id"]),
-    }:
-        raise RuntimeError("RC4 enrollment, staging, and review provenance must use distinct workflow runs")
+    source_run_ids = {str(enrollment["run_id"]), str(staging["run_id"])}
+    if len(source_run_ids) != 2 or review_run_id in source_run_ids or promotion_run_id in source_run_ids:
+        raise RuntimeError("RC4 enrollment, staging, review, and promotion provenance must use distinct workflow runs")
 
     rotation = draft.get("authority_rotation")
     if not isinstance(rotation, dict):
@@ -204,6 +208,9 @@ def promote(
     active_lock.pop("review_state", None)
     active_lock.pop("active_lock_written", None)
     active_lock["promotion_evidence"] = {
+        "promotion_run_id": promotion_run_id,
+        "promotion_workflow": "production-ga-windows-authority-rc4-release-lock-promotion",
+        "promotion_artifact": f"psmatrix-{_VERSION}-release-lock-promotion-candidate",
         "review_run_id": review_run_id,
         "review_workflow": "production-ga-windows-authority-rc4-release-lock-review",
         "review_artifact": f"psmatrix-{_VERSION}-release-lock-review",
@@ -235,6 +242,7 @@ def promote(
         "version": _VERSION,
         "candidate_commit": candidate_commit,
         "promotion_control_head": promotion_control_head,
+        "promotion_run_id": promotion_run_id,
         "review_run_id": review_run_id,
         "reviewed_draft_sha256": reviewed_draft_sha256,
         "reviewed_public_key_sha256": reviewed_public_key_sha256,
@@ -271,6 +279,7 @@ def main() -> int:
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--candidate-commit", required=True)
     parser.add_argument("--promotion-control-head", required=True)
+    parser.add_argument("--promotion-run-id", required=True)
     parser.add_argument("--review-run-id", required=True)
     parser.add_argument("--reviewed-draft-sha256", required=True)
     parser.add_argument("--reviewed-public-key-sha256", required=True)
@@ -280,6 +289,7 @@ def main() -> int:
         output_root=args.output_root,
         candidate_commit=args.candidate_commit,
         promotion_control_head=args.promotion_control_head,
+        promotion_run_id=args.promotion_run_id,
         review_run_id=args.review_run_id,
         reviewed_draft_sha256=args.reviewed_draft_sha256,
         reviewed_public_key_sha256=args.reviewed_public_key_sha256,
