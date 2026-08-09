@@ -64,7 +64,38 @@ def _decode_capture(capture: _BoundedCapture) -> str:
     return text
 
 
+def _terminate_windows_process_tree(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        completed = subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+        if completed.returncode not in {0, 128}:  # 128 commonly means already exited.
+            process.kill()
+    except (OSError, subprocess.SubprocessError):
+        try:
+            process.kill()
+        except OSError:
+            pass
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+        except OSError:
+            pass
+        process.wait()
+
+
 def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
+    if os.name == "nt" or not hasattr(os, "killpg"):
+        _terminate_windows_process_tree(process)
+        return
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -154,6 +185,8 @@ def run_process(
         raise ValueError("timeout_seconds must be positive")
     if max_output_bytes <= 0:
         raise ValueError("max_output_bytes must be positive")
+    if os.name == "nt" and preexec_fn is not None:
+        raise ValueError("preexec_fn is unsupported on Windows")
 
     started = time.monotonic()
     process = subprocess.Popen(
