@@ -4,7 +4,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from psmatrix.pki import apply_rotation_bundle, create_ca, create_rotation_bundle, issue_certificate, verify_key_pair
+from psmatrix.pki import (
+    PKIError,
+    apply_rotation_bundle,
+    create_ca,
+    create_rotation_bundle,
+    issue_certificate,
+    verify_key_pair,
+)
 from psmatrix.signing import generate_ed25519_keypair
 
 
@@ -15,52 +22,148 @@ class PKITests(unittest.TestCase):
             root = Path(temp)
             ca = create_ca(root / "ca", common_name="PSMatrix Test CA", days=30)
             leaf = issue_certificate(
-                Path(ca["certificate"]), Path(ca["private_key"]), root / "leaf",
-                common_name="worker-a", role="server", dns_names=["localhost"], days=7,
+                Path(ca["certificate"]),
+                Path(ca["private_key"]),
+                root / "leaf",
+                common_name="worker-a",
+                role="server",
+                dns_names=["localhost"],
+                days=7,
             )
             verify_key_pair(Path(leaf["certificate"]), Path(leaf["private_key"]))
             signing_private, signing_public = root / "release.pem", root / "release.pub"
             generate_ed25519_keypair(signing_private, signing_public)
             bundle = root / "rotation.zip"
             create_rotation_bundle(
-                bundle, identity="worker-a", role="worker-server",
-                certificate=Path(leaf["certificate"]), private_key=Path(leaf["private_key"]),
-                ca_certificate=Path(ca["certificate"]), signing_private_key=signing_private,
-                signing_public_key=signing_public, generation=2,
+                bundle,
+                identity="worker-a",
+                role="worker-server",
+                certificate=Path(leaf["certificate"]),
+                private_key=Path(leaf["private_key"]),
+                ca_certificate=Path(ca["certificate"]),
+                signing_private_key=signing_private,
+                signing_public_key=signing_public,
+                generation=2,
             )
             result = apply_rotation_bundle(
-                bundle, root / "active", signing_public_key=signing_public,
-                expected_identity="worker-a", expected_role="worker-server",
+                bundle,
+                root / "active",
+                signing_public_key=signing_public,
+                expected_identity="worker-a",
+                expected_role="worker-server",
             )
             self.assertEqual(result["generation"], 2)
             if os.name != "nt":
-                self.assertEqual((root / "active" / "private-key.pem").stat().st_mode & 0o777, 0o600)
+                self.assertEqual(
+                    (root / "active" / "private-key.pem").stat().st_mode & 0o777,
+                    0o600,
+                )
 
-
-if __name__ == "__main__":
-    unittest.main()
 
 class PKIHardeningTests(unittest.TestCase):
-    def test_rejects_subject_injection_characters(self):
-        from psmatrix.pki import PKIError
+    def test_rejects_subject_and_dns_config_injection_characters(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             with self.assertRaises(PKIError):
                 create_ca(root / "bad-ca", common_name="safe/CN=evil", days=30)
             with self.assertRaises(PKIError):
-                create_ca(root / "bad-ca-2", common_name="safe\nsubjectAltName=DNS:evil", days=30)
+                create_ca(
+                    root / "bad-ca-2",
+                    common_name="safe\nsubjectAltName=DNS:evil",
+                    days=30,
+                )
+            with self.assertRaises(PKIError):
+                issue_certificate(
+                    root / "missing-ca.pem",
+                    root / "missing-key.pem",
+                    root / "bad-leaf",
+                    common_name="worker-a",
+                    role="server",
+                    dns_names=["localhost,IP:127.0.0.1"],
+                    days=7,
+                )
+            with self.assertRaises(PKIError):
+                issue_certificate(
+                    root / "missing-ca.pem",
+                    root / "missing-key.pem",
+                    root / "bad-leaf-2",
+                    common_name="worker-a",
+                    role="server",
+                    dns_names=["bad$name.example"],
+                    days=7,
+                )
 
     def test_openssl_runner_has_timeout_and_sanitized_environment(self):
         from unittest.mock import patch
         import subprocess
         import psmatrix.pki as pki
 
-        completed = subprocess.CompletedProcess(["openssl"], 0, stdout=b"ok", stderr=b"")
-        with patch.dict(os.environ, {"OPENSSL_CONF": "/tmp/evil.cnf", "OPENSSL_MODULES": "/tmp/modules"}, clear=False), \
-             patch.object(pki, "_openssl", return_value="openssl"), \
-             patch.object(pki.subprocess, "run", return_value=completed) as run:
+        completed = subprocess.CompletedProcess(
+            ["openssl"], 0, stdout=b"ok", stderr=b""
+        )
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "OPENSSL_CONF": "/tmp/evil.cnf",
+                    "OPENSSL_MODULES": "/tmp/modules",
+                },
+                clear=False,
+            ),
+            patch.object(pki, "_openssl", return_value="openssl"),
+            patch.object(pki.subprocess, "run", return_value=completed) as run,
+        ):
             self.assertEqual(pki._run(["version"]), b"ok")
         kwargs = run.call_args.kwargs
         self.assertEqual(kwargs["timeout"], 30)
         self.assertNotIn("OPENSSL_CONF", kwargs["env"])
         self.assertNotIn("OPENSSL_MODULES", kwargs["env"])
+
+    def test_ca_and_leaf_commands_use_explicit_configs_without_addext(self):
+        from unittest.mock import patch
+        import psmatrix.pki as pki
+
+        calls: list[list[str]] = []
+
+        def fake_run(args, **kwargs):
+            calls.append(list(args))
+            for flag in ("-keyout", "-out"):
+                if flag in args:
+                    path = Path(args[args.index(flag) + 1])
+                    if path.suffix in {".pem", ".csr"}:
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(b"fixture")
+            return b""
+
+        with tempfile.TemporaryDirectory() as temp, patch.object(
+            pki, "_run", side_effect=fake_run
+        ), patch.object(
+            pki, "inspect_certificate", return_value={"sha256": "a" * 64}
+        ), patch.object(
+            pki, "verify_key_pair", return_value={"valid": True}
+        ):
+            root = Path(temp)
+            pki.create_ca(root / "ca", common_name="PSMatrix Test CA", days=30)
+            pki.issue_certificate(
+                root / "ca" / "ca-cert.pem",
+                root / "ca" / "ca-key.pem",
+                root / "leaf",
+                common_name="worker-a",
+                role="server",
+                dns_names=["localhost"],
+                days=7,
+            )
+
+        flattened = [item for call in calls for item in call]
+        self.assertNotIn("-addext", flattened)
+        req_calls = [call for call in calls if call and call[0] == "req"]
+        self.assertTrue(req_calls)
+        self.assertTrue(all("-config" in call for call in req_calls))
+        leaf_sign = [call for call in calls if call[:2] == ["x509", "-req"]]
+        self.assertEqual(len(leaf_sign), 1)
+        self.assertIn("-extfile", leaf_sign[0])
+        self.assertIn("-extensions", leaf_sign[0])
+
+
+if __name__ == "__main__":
+    unittest.main()
