@@ -19,7 +19,7 @@ jobs:
     name: Trusted self-hosted source and core gate
     if: >-
       github.event_name != 'pull_request' ||
-      (github.event.pull_request.head.repo.full_name == github.repository && github.actor == 'Naveax')
+      (github.event.pull_request.head.repo.full_name == github.repository && github.actor == 'NaveAX')
     runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
     timeout-minutes: 45
     env:
@@ -157,11 +157,46 @@ jobs:
           }
           Write-Host 'doctor=PASS'
 
-      - name: Require canonical complete-matrix contract
+      - name: Emit source/core gate summary
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host 'ci_policy=trusted-self-hosted-pr-and-main-platform-neutral-core-gate'
+          Write-Host 'heavy_integration_policy=manual-full-workflow'
+          Write-Host 'linux_native_fixture_policy=manual-linux-integration'
+          Write-Host "run_id=$env:GITHUB_RUN_ID"
+          Write-Host "run_attempt=$env:GITHUB_RUN_ATTEMPT"
+
+  canonical-matrix:
+    name: Canonical 25-target matrix contract
+    needs: source-and-core
+    if: needs.source-and-core.result == 'success'
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: ${{ github.workspace }}\src
+
+    steps:
+      - name: Verify trusted runner assignment
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $root = Join-Path $env:RUNNER_TEMP "psmatrix-ci-full-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') {
+              throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS"
+          }
+          Write-Host 'matrix_runner_assignment=PASS'
+
+      - name: Check out exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Materialize and diagnose canonical matrix contract
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP "psmatrix-ci-matrix-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
           if (Test-Path -LiteralPath $root) {
               Remove-Item -LiteralPath $root -Recurse -Force
           }
@@ -177,35 +212,40 @@ jobs:
 
           & python -m psmatrix.cli --home $home full plan --spec $spec --output $plan
           $planExit = $LASTEXITCODE
+          if (-not (Test-Path -LiteralPath $plan -PathType Leaf)) {
+              throw 'full plan did not materialize plan.json'
+          }
+
+          $specValue = Get-Content -LiteralPath $spec -Raw | ConvertFrom-Json
+          $planValue = Get-Content -LiteralPath $plan -Raw | ConvertFrom-Json
+          $targetCount = @($specValue.targets).Count
+          $remoteCount = @($specValue.targets | Where-Object { [string]$_.kind -eq 'remote' }).Count
+          $required = [int]$planValue.coverage.required
+          $missingRequired = @($planValue.coverage.missing_required).Count
+
+          Write-Host "canonical_matrix_exit=$planExit"
+          Write-Host "canonical_matrix_spec_targets=$targetCount"
+          Write-Host "canonical_matrix_remote_targets=$remoteCount"
+          Write-Host "canonical_matrix_status=$($planValue.status)"
+          Write-Host "canonical_matrix_required=$required"
+          Write-Host "canonical_matrix_missing_required=$missingRequired"
+
           if ($planExit -ne 1) {
               throw "Expected incomplete full-plan exit code 1; got $planExit"
           }
-
-          $env:PSMATRIX_CI_SPEC = $spec
-          $env:PSMATRIX_CI_PLAN = $plan
-          @'
-          import json
-          import os
-          from pathlib import Path
-          spec = json.loads(Path(os.environ['PSMATRIX_CI_SPEC']).read_text(encoding='utf-8'))
-          plan = json.loads(Path(os.environ['PSMATRIX_CI_PLAN']).read_text(encoding='utf-8'))
-          assert len(spec['targets']) == 25
-          assert sum(item['kind'] == 'remote' for item in spec['targets']) == 13
-          assert plan['status'] == 'INCOMPLETE'
-          assert plan['coverage']['required'] == 23
-          assert plan['coverage']['missing_required']
-          print('complete_matrix_contract=PASS')
-          '@ | python -
-          if ($LASTEXITCODE -ne 0) {
-              throw 'Canonical complete-matrix contract validation failed.'
+          if ($targetCount -ne 25) {
+              throw "Expected exactly 25 canonical targets; got $targetCount"
           }
-
-      - name: Emit gate summary
-        if: always()
-        shell: pwsh
-        run: |
-          Write-Host 'ci_policy=trusted-self-hosted-pr-and-main-platform-neutral-core-gate'
-          Write-Host 'heavy_integration_policy=manual-full-workflow'
-          Write-Host 'linux_native_fixture_policy=manual-linux-integration'
-          Write-Host "run_id=$env:GITHUB_RUN_ID"
-          Write-Host "run_attempt=$env:GITHUB_RUN_ATTEMPT"
+          if ($remoteCount -ne 13) {
+              throw "Expected exactly 13 remote canonical targets; got $remoteCount"
+          }
+          if ([string]$planValue.status -ne 'INCOMPLETE') {
+              throw "Expected canonical plan INCOMPLETE; got $($planValue.status)"
+          }
+          if ($required -ne 23) {
+              throw "Expected canonical required coverage 23; got $required"
+          }
+          if ($missingRequired -lt 1) {
+              throw 'Expected at least one missing required canonical target before worker provisioning.'
+          }
+          Write-Host 'complete_matrix_contract=PASS'
