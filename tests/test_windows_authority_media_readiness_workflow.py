@@ -5,6 +5,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ga-windows-authority-media-readiness-selfhosted.yml"
+HANDOFF_PREFLIGHT = (
+    ROOT
+    / ".github"
+    / "workflows"
+    / "ga-windows-authority-provisioning-handoff-source-preflight.yml"
+)
 CONTRACT = (
     ROOT
     / "ga-packs"
@@ -105,6 +111,17 @@ class WindowsAuthorityMediaReadinessWorkflowTests(unittest.TestCase):
         ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, text)
+
+    def test_handoff_source_preflight_is_pinned_to_trusted_self_hosted_runner(self) -> None:
+        text = HANDOFF_PREFLIGHT.read_text(encoding="utf-8")
+        self.assertIn(
+            "runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]",
+            text,
+        )
+        self.assertIn("Expected NAVEAX runner", text)
+        self.assertIn("runner_assignment=PASS", text)
+        self.assertNotIn("runs-on: ubuntu-latest", text)
+        self.assertNotIn("runs-on: windows-latest", text)
 
     def test_failure_evidence_is_initialized_before_ga_root_validation(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")
