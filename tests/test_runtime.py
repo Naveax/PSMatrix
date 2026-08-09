@@ -1,8 +1,10 @@
 import io
+import os
 import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from psmatrix.errors import RuntimeInstallError
 from psmatrix.runtime import RuntimeManager, expected_hash_from_manifest, normalize_arch
@@ -12,7 +14,6 @@ class RuntimeTests(unittest.TestCase):
     def test_arch_normalization(self):
         self.assertEqual(normalize_arch("x86_64"), "x64")
         self.assertEqual(normalize_arch("aarch64"), "arm64")
-
 
     def test_official_utf16_manifest_is_supported(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -68,11 +69,10 @@ class RuntimeTests(unittest.TestCase):
             RuntimeManager._safe_extract(archive, destination)
             self.assertTrue((destination / "pwsh").is_file())
 
-class RuntimeCacheFallbackTests(unittest.TestCase):
 
+class RuntimeCacheFallbackTests(unittest.TestCase):
     def test_local_hash_manifest_installs_archive(self):
         import hashlib
-        import os
         from psmatrix.models import RuntimeSpec
 
         with tempfile.TemporaryDirectory() as temp:
@@ -91,19 +91,26 @@ class RuntimeCacheFallbackTests(unittest.TestCase):
             manifest.write_bytes(
                 f"{digest} *{spec.artifact_name}\r\n".encode("utf-16")
             )
-            installation = manager.install(
-                spec,
-                archive_override=archive,
-                hashes_override=manifest,
-            )
-            self.assertTrue(os.access(installation.executable, os.X_OK))
+            # This test owns archive/hash/install semantics. Native runtime
+            # probing is covered separately on actual platform runtimes; the
+            # fixture itself is intentionally a tiny POSIX shell file.
+            with patch.object(manager, "_probe_executable", return_value="7.6.4") as probe:
+                installation = manager.install(
+                    spec,
+                    archive_override=archive,
+                    hashes_override=manifest,
+                )
+            probe.assert_called_once()
+            self.assertTrue(installation.executable.is_file())
+            if os.name != "nt":
+                self.assertTrue(os.access(installation.executable, os.X_OK))
             metadata = (installation.root / ".psmatrix-runtime.json").read_text(
                 encoding="utf-8"
             )
             self.assertIn(str(manifest.resolve()), metadata)
+            self.assertIn('"detected_version": "7.6.4"', metadata)
 
     def test_hash_parser_uses_cached_file_when_refresh_fails(self):
-        from unittest.mock import patch
         from psmatrix.models import RuntimeSpec
 
         with tempfile.TemporaryDirectory() as temp:
@@ -115,7 +122,9 @@ class RuntimeCacheFallbackTests(unittest.TestCase):
                 "powershell-7.6.4-linux-x64.tar.gz\n",
                 encoding="utf-8",
             )
-            with patch.object(manager, "_download", side_effect=RuntimeInstallError("offline")):
+            with patch.object(
+                manager, "_download", side_effect=RuntimeInstallError("offline")
+            ):
                 value = manager._fetch_expected_hash(spec)
             self.assertEqual(
                 value,
