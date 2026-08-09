@@ -22,10 +22,36 @@
       "PSMATRIX_WINDOWS_LAB_PRIVATE_KEY",
       "PSMATRIX_WINDOWS_LAB_PUBLIC_KEY"
     ],
+    "provisioning_required_protected_secrets": [
+      "PSMATRIX_WPS40_ADMIN_PASSWORD",
+      "PSMATRIX_WPS50_ADMIN_PASSWORD",
+      "PSMATRIX_WPS51_ADMIN_PASSWORD"
+    ],
+    "campaign_required_protected_secrets": [
+      "PSMATRIX_WINDOWS_LAB_PRIVATE_KEY",
+      "PSMATRIX_WINDOWS_LAB_PUBLIC_KEY"
+    ],
+    "provisioning_must_not_receive_campaign_signing_secrets": true,
+    "infrastructure_preflight_requires_no_private_key_secret": true,
     "release_public_key_source": "verified-protected-release-bundle",
     "release_public_key_secret_required": false,
     "exact_release_wheel_source": "verified-protected-release-bundle",
     "exact_release_wheel_install_mode": "offline-no-index-no-deps"
+  },
+  "provisioning": {
+    "manual_only": true,
+    "protected_environment_required": true,
+    "requires_guest_admin_passwords_only": true,
+    "campaign_signing_secrets_forbidden": true,
+    "exact_runtime_count": 3,
+    "hyper_v_generation": 2,
+    "clean_checkpoint_name": "psmatrix-clean",
+    "creates_virtual_machines": true,
+    "creates_checkpoints": true,
+    "runs_authoritative_campaign": false,
+    "actual_os_identity_measured": false,
+    "authoritative": false,
+    "ga_eligible": false
   },
   "campaign": {
     "minimum_iterations_per_runtime": 10,
