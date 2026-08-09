@@ -53,16 +53,23 @@ jobs:
               return (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
           }
 
-          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_WINDOWS_GA_ROOT)) {
-              throw 'PSMATRIX_WINDOWS_GA_ROOT is missing from runner environment.'
+          $gaRootSource = 'runner-environment'
+          $gaRootValue = [string]$env:PSMATRIX_WINDOWS_GA_ROOT
+          if ([string]::IsNullOrWhiteSpace($gaRootValue)) {
+              if ([string]::IsNullOrWhiteSpace($env:ProgramData)) {
+                  throw 'ProgramData is unavailable; canonical GA layout root cannot be resolved.'
+              }
+              $gaRootSource = 'canonical-layout-default'
+              $gaRootValue = Join-Path $env:ProgramData 'PSMatrix\ProductionGA'
           }
-          if (-not [System.IO.Path]::IsPathRooted($env:PSMATRIX_WINDOWS_GA_ROOT)) {
-              throw 'PSMATRIX_WINDOWS_GA_ROOT must be absolute.'
+          if (-not [System.IO.Path]::IsPathRooted($gaRootValue)) {
+              throw 'Resolved Windows GA root must be absolute.'
           }
-          $gaRoot = [System.IO.Path]::GetFullPath($env:PSMATRIX_WINDOWS_GA_ROOT)
+          $gaRoot = [System.IO.Path]::GetFullPath($gaRootValue)
           if (-not (Test-Path -LiteralPath $gaRoot -PathType Container)) {
-              throw 'PSMATRIX_WINDOWS_GA_ROOT does not exist.'
+              throw "Resolved Windows GA root does not exist (source=$gaRootSource)."
           }
+          Write-Host "ga_root_source=$gaRootSource"
 
           $mediaPath = Join-Path $gaRoot 'config\windows-lab-media.json'
           $selectionPath = Join-Path $gaRoot 'config\windows-authority-media-selection.json'
@@ -70,7 +77,7 @@ jobs:
           $canonicalPath = Join-Path $gaRoot 'windows-authority-media-inventory.canonical.json'
           foreach ($path in @($mediaPath, $selectionPath, $materializationPath, $canonicalPath)) {
               if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-                  throw 'A required current RC3 binding input is missing.'
+                  throw "A required current RC3 binding input is missing (source=$gaRootSource)."
               }
           }
 
@@ -219,6 +226,7 @@ jobs:
               schema = 1
               kind = 'psmatrix.windows-authority-operation-package-resolution'
               status = $status
+              ga_root_source = $gaRootSource
               release_version = '2.0.0rc3'
               release_commit = $env:RELEASE_COMMIT
               scanned_run_directories = $scanned
@@ -241,6 +249,7 @@ jobs:
           )
 
           Write-Host "operation_package_resolution=$status"
+          Write-Host "operation_package_ga_root_source=$gaRootSource"
           Write-Host "operation_package_scanned_runs=$scanned"
           Write-Host "operation_package_eligible_count=$($eligible.Count)"
           foreach ($candidate in $eligible) {
