@@ -53,19 +53,24 @@ jobs:
               if ($LASTEXITCODE -ne 0) { throw 'Unable to normalize locked public key.' }
               $lockedSha = (Get-FileHash -LiteralPath $lockedDer -Algorithm SHA256).Hash.ToLowerInvariant()
 
-              $userHome = [Environment]::GetFolderPath('UserProfile')
+              $currentHome = [Environment]::GetFolderPath('UserProfile')
+              $profileRoots = @($currentHome, 'C:\Users\umut') | Where-Object { Test-Path -LiteralPath $_ -PathType Container } | Select-Object -Unique
+
               $historyFiles = @()
-              foreach ($dir in @(
-                  (Join-Path $env:APPDATA 'Microsoft\Windows\PowerShell\PSReadLine'),
-                  (Join-Path $env:APPDATA 'Microsoft\PowerShell\PSReadLine')
-              )) {
-                  if (Test-Path -LiteralPath $dir -PathType Container) {
-                      $historyFiles += @(Get-ChildItem -LiteralPath $dir -File -Filter '*history*.txt' -ErrorAction SilentlyContinue)
+              foreach ($profileRoot in $profileRoots) {
+                  foreach ($dir in @(
+                      (Join-Path $profileRoot 'AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine'),
+                      (Join-Path $profileRoot 'AppData\Roaming\Microsoft\PowerShell\PSReadLine')
+                  )) {
+                      if (Test-Path -LiteralPath $dir -PathType Container) {
+                          $historyFiles += @(Get-ChildItem -LiteralPath $dir -File -Filter '*history*.txt' -ErrorAction SilentlyContinue)
+                      }
+                  }
+                  foreach ($candidate in @((Join-Path $profileRoot '.bash_history'), (Join-Path $profileRoot '.zsh_history'))) {
+                      if (Test-Path -LiteralPath $candidate -PathType Leaf) { $historyFiles += Get-Item -LiteralPath $candidate }
                   }
               }
-              foreach ($candidate in @((Join-Path $userHome '.bash_history'), (Join-Path $userHome '.zsh_history'))) {
-                  if (Test-Path -LiteralPath $candidate -PathType Leaf) { $historyFiles += Get-Item -LiteralPath $candidate }
-              }
+              $historyFiles = @($historyFiles | Sort-Object FullName -Unique)
 
               $historyKeywordHits = 0
               $historyAbsolutePaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -85,14 +90,20 @@ jobs:
               }
 
               $roots = @(
-                  (Join-Path $userHome 'Downloads'),
-                  (Join-Path $userHome 'Desktop'),
-                  (Join-Path $userHome 'Documents'),
-                  (Join-Path $env:LOCALAPPDATA 'Temp'),
                   'C:\PSMatrix-Windows-GA',
-                  'C:\ProgramData\PSMatrix',
-                  (Join-Path $userHome 'Downloads\bugbounty-nxb150-validation\actions-runner\_work\_temp')
-              ) | Where-Object { Test-Path -LiteralPath $_ -PathType Container } | Select-Object -Unique
+                  'C:\ProgramData\PSMatrix'
+              )
+              foreach ($profileRoot in $profileRoots) {
+                  $roots += @(
+                      (Join-Path $profileRoot 'Downloads'),
+                      (Join-Path $profileRoot 'Desktop'),
+                      (Join-Path $profileRoot 'Documents'),
+                      (Join-Path $profileRoot 'AppData\Local\Temp'),
+                      (Join-Path $profileRoot 'Downloads\PSMatrix-Windows-Authority'),
+                      (Join-Path $profileRoot 'Downloads\bugbounty-nxb150-validation\actions-runner\_work\_temp')
+                  )
+              }
+              $roots = @($roots | Where-Object { Test-Path -LiteralPath $_ -PathType Container } | Select-Object -Unique)
 
               $candidatePaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
               foreach ($path in $historyAbsolutePaths) {
@@ -100,7 +111,7 @@ jobs:
               }
               foreach ($root in $roots) {
                   try {
-                      foreach ($file in Get-ChildItem -LiteralPath $root -Recurse -Depth 8 -File -ErrorAction SilentlyContinue) {
+                      foreach ($file in Get-ChildItem -LiteralPath $root -Recurse -Depth 10 -File -ErrorAction SilentlyContinue) {
                           if ($file.Length -le 0 -or $file.Length -gt 262144) { continue }
                           if ($file.Extension -in @('.pem','.key','.txt','.bak','.old') -or $file.Name -match '(?i)psmatrix|release|private|authority|sign.*key|key.*sign') {
                               [void]$candidatePaths.Add($file.FullName)
@@ -129,9 +140,11 @@ jobs:
                   catch { }
               }
 
+              Write-Host "profile_roots_checked=$($profileRoots.Count)"
+              Write-Host "legacy_umut_profile_present=$([bool]($profileRoots -contains 'C:\Users\umut'))"
               Write-Host "history_files_checked=$($historyFiles.Count)"
               Write-Host "history_keyword_hits=$historyKeywordHits"
-              Write-Host "history_existing_absolute_paths=$($historyAbsolutePaths.Count)"
+              Write-Host "history_absolute_paths_discovered=$($historyAbsolutePaths.Count)"
               Write-Host "bounded_search_roots=$($roots.Count)"
               Write-Host "candidate_files_checked=$($candidatePaths.Count)"
               Write-Host "pem_private_candidates=$pemPrivateCandidates"
@@ -141,7 +154,7 @@ jobs:
                   $match = $matches[0]
                   $meta = Get-Item -LiteralPath $match
                   Write-Host 'release_key_recovery=UNIQUE_MATCH'
-                  $locationClass = if ($match.StartsWith($userHome,[System.StringComparison]::OrdinalIgnoreCase)) {'USER_PROFILE'} elseif ($match.StartsWith('C:\ProgramData',[System.StringComparison]::OrdinalIgnoreCase)) {'PROGRAM_DATA'} else {'OTHER_BOUNDED_ROOT'}
+                  $locationClass = if ($match.StartsWith('C:\Users\umut',[System.StringComparison]::OrdinalIgnoreCase)) {'LEGACY_UMUT_PROFILE'} elseif ($match.StartsWith($currentHome,[System.StringComparison]::OrdinalIgnoreCase)) {'CURRENT_USER_PROFILE'} elseif ($match.StartsWith('C:\ProgramData',[System.StringComparison]::OrdinalIgnoreCase)) {'PROGRAM_DATA'} else {'OTHER_BOUNDED_ROOT'}
                   Write-Host "match_location_class=$locationClass"
                   Write-Host "match_last_write_utc=$($meta.LastWriteTimeUtc.ToString('o'))"
                   Write-Host 'match_path_disclosed=false'
