@@ -45,6 +45,7 @@ REQUIRED_SELECTION_ROLES = (
     "worker-signing-bundle",
 )
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
+RC_VERSION = re.compile(r"^2\.0\.0rc[0-9]+$")
 PASSWORD_ENV = re.compile(r"^PSMATRIX_[A-Z0-9_]+$")
 COMPUTER_NAME = re.compile(r"^[A-Za-z0-9-]+$")
 PLACEHOLDER = re.compile(r"replace|placeholder|todo|example|<.+>|^null$", re.IGNORECASE)
@@ -52,12 +53,13 @@ PLACEHOLDER = re.compile(r"replace|placeholder|todo|example|<.+>|^null$", re.IGN
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Materialize a real psmatrix.windows-lab-media manifest from reviewed RC3 media selection and an operator-reviewed Hyper-V profile."
+        description="Materialize a real psmatrix.windows-lab-media manifest from reviewed release media selection and an operator-reviewed Hyper-V profile."
     )
     parser.add_argument("--source-root", type=Path, required=True)
     parser.add_argument("--product-source-root", type=Path, required=True)
     parser.add_argument("--ga-root", type=Path, required=True)
     parser.add_argument("--release-commit", required=True)
+    parser.add_argument("--contract", type=Path)
     parser.add_argument("--selection-manifest", type=Path)
     parser.add_argument("--profile", type=Path)
     parser.add_argument("--output", type=Path)
@@ -177,7 +179,7 @@ def validate_profile(profile: dict[str, Any], release_commit: str) -> dict[str, 
     if profile.get("schema") != 1 or profile.get("kind") != "psmatrix.windows-authority-provisioning-profile":
         raise RuntimeError("Provisioning profile identity is invalid")
     if profile.get("pack") != "03-authoritative-windows" or str(profile.get("release_commit") or "") != release_commit:
-        raise RuntimeError("Provisioning profile is not bound to this RC3 release commit")
+        raise RuntimeError("Provisioning profile is not bound to this exact release commit")
     review = profile.get("operator_review")
     if not isinstance(review, dict) or is_placeholder(review.get("reviewed_by")) or is_placeholder(review.get("reviewed_at_utc")):
         raise RuntimeError("Provisioning profile operator_review is incomplete")
@@ -242,6 +244,37 @@ def validate_with_release_loader(product_source_root: Path, output: Path) -> Non
             sys.path.pop(0)
 
 
+def resolve_contract(control_root: Path, contract_arg: Path | None, release_commit: str) -> tuple[Path, dict[str, Any], str]:
+    default = control_root / "ga-packs" / "03-authoritative-windows" / "provisioning-manifest-contract.json"
+    if contract_arg is None:
+        contract_path = default.resolve()
+    else:
+        contract_path = contract_arg.resolve() if contract_arg.is_absolute() else (control_root / contract_arg).resolve()
+    try:
+        contract_path.relative_to(control_root)
+    except ValueError as exc:
+        raise RuntimeError("Provisioning manifest contract must resolve inside the control source checkout") from exc
+    if not contract_path.is_file():
+        raise RuntimeError(f"Provisioning manifest contract is missing: {contract_path}")
+    contract = read_json(contract_path)
+    if contract.get("schema") != 1 or contract.get("kind") != "psmatrix.windows-authority-provisioning-manifest-contract":
+        raise RuntimeError("Provisioning manifest contract identity is invalid")
+    if contract.get("pack") != "03-authoritative-windows":
+        raise RuntimeError("Provisioning manifest contract pack is invalid")
+    release_version = str(contract.get("release_version") or "")
+    if not RC_VERSION.fullmatch(release_version):
+        raise RuntimeError("Provisioning manifest contract release_version is invalid")
+    rules = contract.get("rules")
+    if not isinstance(rules, dict) or rules.get("exact_release_commit_required") is not True:
+        raise RuntimeError("Provisioning manifest contract must require exact release commit binding")
+    frozen_commit = contract.get("release_commit")
+    if frozen_commit is not None:
+        frozen_commit = str(frozen_commit).lower()
+        if not SHA40.fullmatch(frozen_commit) or frozen_commit != release_commit:
+            raise RuntimeError("Provisioning manifest contract frozen release commit does not match requested release")
+    return contract_path, contract, release_version
+
+
 def main() -> int:
     args = parse_args()
     control_root = args.source_root.resolve()
@@ -253,12 +286,7 @@ def main() -> int:
     if not control_root.is_dir() or not product_root.is_dir() or not ga_root.is_dir():
         raise RuntimeError("control source, product source, and GA root must exist")
 
-    contract_path = control_root / "ga-packs" / "03-authoritative-windows" / "provisioning-manifest-contract.json"
-    contract = read_json(contract_path)
-    if contract.get("schema") != 1 or contract.get("kind") != "psmatrix.windows-authority-provisioning-manifest-contract":
-        raise RuntimeError("Provisioning manifest contract identity is invalid")
-    if contract.get("release_version") != "2.0.0rc3" or contract.get("release_commit") != release_commit:
-        raise RuntimeError("Provisioning manifest contract does not match requested RC3 release")
+    contract_path, contract, release_version = resolve_contract(control_root, args.contract, release_commit)
 
     selection_path = (args.selection_manifest or ga_root / "config" / "windows-authority-media-selection.json").resolve()
     profile_path = (args.profile or ga_root / "config" / "windows-lab-provisioning-profile.json").resolve()
@@ -278,8 +306,8 @@ def main() -> int:
         selection = read_json(selection_path)
         if selection.get("schema") != 1 or selection.get("kind") != contract.get("selection_kind"):
             raise RuntimeError(f"Reviewed media selection kind must be {contract.get('selection_kind')}")
-        if selection.get("pack") != "03-authoritative-windows" or selection.get("release_version") != "2.0.0rc3" or selection.get("complete") is not True:
-            raise RuntimeError("Reviewed media selection is not complete RC3 material")
+        if selection.get("pack") != "03-authoritative-windows" or selection.get("release_version") != release_version or selection.get("complete") is not True:
+            raise RuntimeError(f"Reviewed media selection is not complete {release_version} material")
         if selection.get("authoritative") is not False or selection.get("ga_eligible") is not False:
             raise RuntimeError("Reviewed media selection improperly claims authority or GA eligibility")
         selection_sha = sha256_file(selection_path)
@@ -306,10 +334,7 @@ def main() -> int:
         host = profile["hyperv_host"]
         defaults = profile["defaults"]
 
-        shared = {
-            key: artifact(selection_map[role], role)
-            for key, role in SHARED_ROLES.items()
-        }
+        shared = {key: artifact(selection_map[role], role) for key, role in SHARED_ROLES.items()}
         images: list[dict[str, Any]] = []
         for runtime in RUNTIMES:
             profile_row = profile_map[runtime]
@@ -369,8 +394,9 @@ def main() -> int:
         "kind": "psmatrix.windows-authority-provisioning-manifest-materialization",
         "pack": "03-authoritative-windows",
         "status": "PASS" if written else "FAIL",
-        "release_version": "2.0.0rc3",
+        "release_version": release_version,
         "release_commit": release_commit,
+        "contract_path": str(contract_path),
         "selection_manifest_path": str(selection_path),
         "selection_manifest_sha256": selection_sha,
         "profile_path": str(profile_path),
@@ -393,7 +419,7 @@ def main() -> int:
         "errors": errors,
         "next_required": (
             [
-                "Run the protected Hyper-V provisioning workflow with this exact manifest SHA-256.",
+                "Build the protected operation package against this exact provisioning-manifest SHA-256.",
                 "Measure actual guest OS identity after first boot; installation-media expected_os is not certification evidence.",
             ]
             if written
