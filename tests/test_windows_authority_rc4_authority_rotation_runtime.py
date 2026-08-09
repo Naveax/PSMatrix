@@ -11,11 +11,40 @@ ROOT = Path(__file__).resolve().parents[1]
 ENROLL_SCRIPT = ROOT / "scripts" / "ga" / "enroll_windows_authority_release_authority.py"
 LOCK_DRAFT_SCRIPT = ROOT / "scripts" / "ga" / "build_windows_authority_release_lock_draft.py"
 PREVIOUS_PUBLIC_KEY = ROOT / "release-assets" / "2.0.0rc2" / "psmatrix-2.0.0rc2-release-public.pem"
+PREVIOUS_RELEASE_LOCK = ROOT / "ga-packs" / "03-authoritative-windows" / "rc3-release-lock.json"
 VERSION = "2.0.0rc4"
 CANDIDATE_COMMIT = "a" * 40
+EXPECTED_PREVIOUS_PUBLIC_SHA256 = "ebe3041f5e24b3d9fc21d50a3a33585e399ae505271fdf8900a0b49750188b83"
 
 
 class WindowsAuthorityRC4AuthorityRotationRuntimeTests(unittest.TestCase):
+    def _run_enrollment(self, *, private_key: Path, previous_public_key: Path, output_root: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                sys.executable,
+                str(ENROLL_SCRIPT),
+                "--private-key",
+                str(private_key),
+                "--previous-public-key",
+                str(previous_public_key),
+                "--previous-release-lock",
+                str(PREVIOUS_RELEASE_LOCK),
+                "--output-root",
+                str(output_root),
+                "--version",
+                VERSION,
+                "--candidate-commit",
+                CANDIDATE_COMMIT,
+                "--rotation-reason",
+                "lost_previous_private_authority",
+            ],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
     def test_enrollment_and_review_lock_runtime_is_private_key_free_and_provenance_bound(self) -> None:
         from psmatrix.signing import generate_ed25519_keypair
 
@@ -33,28 +62,10 @@ class WindowsAuthorityRC4AuthorityRotationRuntimeTests(unittest.TestCase):
             self.assertTrue(private_key.is_file())
             self.assertTrue(generated_public.is_file())
 
-            enrolled = subprocess.run(
-                [
-                    sys.executable,
-                    str(ENROLL_SCRIPT),
-                    "--private-key",
-                    str(private_key),
-                    "--previous-public-key",
-                    str(PREVIOUS_PUBLIC_KEY),
-                    "--output-root",
-                    str(enrollment),
-                    "--version",
-                    VERSION,
-                    "--candidate-commit",
-                    CANDIDATE_COMMIT,
-                    "--rotation-reason",
-                    "lost_previous_private_authority",
-                ],
-                cwd=ROOT,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
+            enrolled = self._run_enrollment(
+                private_key=private_key,
+                previous_public_key=PREVIOUS_PUBLIC_KEY,
+                output_root=enrollment,
             )
             self.assertEqual(enrolled.returncode, 0, enrolled.stdout + enrolled.stderr)
 
@@ -70,6 +81,15 @@ class WindowsAuthorityRC4AuthorityRotationRuntimeTests(unittest.TestCase):
             self.assertNotEqual(
                 enrollment_report["previous_authority"]["key_id"],
                 enrollment_report["proposed_authority"]["key_id"],
+            )
+            previous_lock = enrollment_report["previous_release_lock"]
+            self.assertEqual(previous_lock["version"], "2.0.0rc3")
+            self.assertEqual(previous_lock["release_commit"], "34e87c60885001f8dd11744b8bf194a59e51bd1f")
+            self.assertEqual(previous_lock["public_key_sha256"], EXPECTED_PREVIOUS_PUBLIC_SHA256)
+            self.assertFalse(previous_lock["release_authority_rotation_allowed"])
+            self.assertEqual(
+                hashlib.sha256(PREVIOUS_PUBLIC_KEY.read_bytes()).hexdigest(),
+                EXPECTED_PREVIOUS_PUBLIC_SHA256,
             )
 
             private_markers = (
@@ -180,6 +200,31 @@ class WindowsAuthorityRC4AuthorityRotationRuntimeTests(unittest.TestCase):
             for path in review.rglob("*"):
                 if path.is_file():
                     self.assertFalse(any(marker in path.read_bytes() for marker in private_markers), path.name)
+
+    def test_enrollment_rejects_previous_public_key_that_differs_from_frozen_rc3_lock(self) -> None:
+        from psmatrix.signing import generate_ed25519_keypair
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-rc4-previous-authority-negative-") as temporary:
+            root = Path(temporary)
+            private_key = root / "protected" / "release.private.pem"
+            generated_public = root / "protected" / "release.public.pem"
+            tampered_previous = root / "tampered-previous-public.pem"
+            output = root / "enrollment"
+            private_key.parent.mkdir(parents=True, exist_ok=True)
+            generate_ed25519_keypair(private_key, generated_public)
+            tampered_previous.write_bytes(PREVIOUS_PUBLIC_KEY.read_bytes() + b"\n")
+
+            enrolled = self._run_enrollment(
+                private_key=private_key,
+                previous_public_key=tampered_previous,
+                output_root=output,
+            )
+            self.assertNotEqual(enrolled.returncode, 0)
+            self.assertIn(
+                "Previous release public key does not match the frozen RC3 release lock",
+                enrolled.stdout + enrolled.stderr,
+            )
+            self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":
