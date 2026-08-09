@@ -162,7 +162,7 @@ class WindowsAuthorityRC4AuthorityRotationTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertNotIn(value, text)
 
-    def test_lock_draft_builder_cannot_activate_or_sign_candidate(self) -> None:
+    def test_lock_draft_builder_cannot_activate_sign_or_drop_source_run_provenance(self) -> None:
         text = LOCK_DRAFT_SCRIPT.read_text(encoding="utf-8")
         required = (
             '"DRAFT_REQUIRES_HUMAN_REVIEW"',
@@ -177,6 +177,15 @@ class WindowsAuthorityRC4AuthorityRotationTests(unittest.TestCase):
             '"sign_without_exact_hash_match_allowed": False',
             'output / "rc4-release-lock.review-draft.json"',
             "Private-key material found in review bundle",
+            "enrollment_run_id",
+            "staging_run_id",
+            '"source_runs": source_runs',
+            '"control_head": candidate_commit',
+            '"workflow": "production-ga-windows-authority-rc4-release-authority-enrollment"',
+            '"artifact": f"psmatrix-{_VERSION}-release-authority-enrollment"',
+            '"workflow": "production-ga-windows-authority-rc4-staging-candidate-selfhosted"',
+            '"artifact": "windows-authority-rc4-unlocked-staging-candidate"',
+            "Enrollment and staging provenance must come from distinct workflow runs",
         )
         for value in required:
             with self.subTest(value=value):
@@ -194,16 +203,27 @@ class WindowsAuthorityRC4AuthorityRotationTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertNotIn(value, text)
 
-    def test_lock_review_workflow_requires_same_exact_control_head_and_two_successful_source_runs(self) -> None:
+    def test_lock_review_workflow_requires_same_exact_control_head_and_freezes_source_runs(self) -> None:
         text = LOCK_REVIEW_WORKFLOW.read_text(encoding="utf-8")
         required = (
             "candidate_commit must equal the exact workflow control head",
+            "Enrollment and staging run IDs must be distinct",
             "production-ga-windows-authority-rc4-release-authority-enrollment",
             "production-ga-windows-authority-rc4-staging-candidate-selfhosted",
             "psmatrix-2.0.0rc4-release-authority-enrollment",
             "windows-authority-rc4-unlocked-staging-candidate",
             "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
             "build_windows_authority_release_lock_draft.py",
+            "--enrollment-run-id $env:ENROLLMENT_RUN_ID",
+            "--staging-run-id $env:STAGING_RUN_ID",
+            "source_runs.control_head",
+            "source_runs.authority_enrollment.run_id",
+            "source_runs.authority_enrollment.workflow",
+            "source_runs.authority_enrollment.artifact",
+            "source_runs.unsigned_staging.run_id",
+            "source_runs.unsigned_staging.workflow",
+            "source_runs.unsigned_staging.artifact",
+            "rc4_source_run_provenance=PASS",
             "DRAFT_REQUIRES_HUMAN_REVIEW",
             "Review workflow must not materialize an active rc4-release-lock.json",
             "rc4_release_lock_review_bundle=PASS",
