@@ -155,7 +155,8 @@ class WindowsAuthorityRC4ProtectedReleaseIntakeTests(unittest.TestCase):
             "scripts/ga/Invoke-PSMatrixWindowsAuthorityProtectedReleaseIntakeV2.ps1",
             "scripts/ga/import_windows_authority_protected_release.py",
             "tests/test_windows_authority_rc4_protected_release_intake.py",
-            "Parse RC4 protected-release intake PowerShell",
+            "Parse RC4 PowerShell control surfaces",
+            "Invoke-PSMatrixWindowsAuthorityProtectedReleaseIntakeV2.ps1",
             "tests.test_windows_authority_rc4_protected_release_intake",
             "rc4_protected_release_intake_contract=PASS",
         )
