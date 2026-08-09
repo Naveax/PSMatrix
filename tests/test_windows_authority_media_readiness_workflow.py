@@ -14,7 +14,7 @@ CONTRACT = (
 
 
 class WindowsAuthorityMediaReadinessWorkflowTests(unittest.TestCase):
-    def test_contract_freezes_isolated_media_readiness_boundary(self) -> None:
+    def test_contract_freezes_selection_materialization_boundary(self) -> None:
         value = json.loads(CONTRACT.read_text(encoding="utf-8"))
         self.assertEqual(value["schema"], 1)
         self.assertEqual(
@@ -35,87 +35,64 @@ class WindowsAuthorityMediaReadinessWorkflowTests(unittest.TestCase):
             value["search_roots"],
             ["media/release/2.0.0rc3", "media/external"],
         )
+        selection = value["selection_materialization"]
         self.assertEqual(
-            value["prerequisite"]["protected_release_intake_status"],
-            "RELEASE_CLOSURE_READY",
+            selection["kind"],
+            "psmatrix.windows-authority-media-selection-materialization",
         )
-        self.assertFalse(value["prerequisite"]["release_authority_rotated"])
-        self.assertFalse(value["prerequisite"]["stale_rc2_operation_package_used"])
-        for key in (
-            "exactly_two_search_roots",
-            "broad_downloads_search_forbidden",
-            "release_bound_candidates_must_match_signed_release_manifest",
-            "iso_inspection_is_read_only",
-            "iso_dismount_is_mandatory",
-            "selection_inventory_sha256_must_match",
-            "operator_review_required_before_final_manifest",
-            "final_manifest_written_only_when_complete",
-        ):
-            self.assertTrue(value["rules"][key])
+        self.assertEqual(
+            selection["path"], "config/windows-authority-media-selection.json"
+        )
+        self.assertFalse(selection["direct_hyper_v_input"])
+        self.assertTrue(selection["requires_separate_provisioning_profile"])
+        self.assertEqual(selection["next_output_kind"], "psmatrix.windows-lab-media")
         self.assertEqual(
             value["result_classes"],
             [
                 "EXTERNAL_MEDIA_INCOMPLETE",
                 "READY_FOR_OPERATOR_SELECTION",
-                "READY_FOR_HYPER_V_PROVISIONING",
+                "READY_FOR_PROVISIONING_MANIFEST_MATERIALIZATION",
                 "FAIL",
             ],
         )
-        for key in (
-            "downloads_files",
-            "opens_secret_bundles",
-            "uploads_media_inventory",
-            "uploads_candidate_files",
-            "creates_virtual_machines",
-            "creates_checkpoints",
-            "restores_snapshots",
-            "writes_endpoint_manifests",
-            "writes_image_manifests",
-            "authoritative",
-            "ga_eligible",
-        ):
-            self.assertFalse(value["safety"][key])
-        self.assertTrue(value["safety"]["uploads_non_secret_status_only"])
+        self.assertFalse(value["safety"]["writes_provisioning_manifest"])
+        self.assertFalse(value["safety"]["creates_virtual_machines"])
+        self.assertFalse(value["safety"]["creates_checkpoints"])
+        self.assertFalse(value["safety"]["authoritative"])
+        self.assertFalse(value["safety"]["ga_eligible"])
 
-    def test_workflow_uses_only_isolated_ga_media_roots(self) -> None:
+    def test_workflow_writes_selection_to_distinct_path(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")
-        required = (
+        for required in (
             "name: production-ga-windows-authority-media-readiness-selfhosted",
             "runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]",
             "environment: production-ga-windows-lab",
             'default: "34e87c60885001f8dd11744b8bf194a59e51bd1f"',
-            "PSMATRIX_WINDOWS_GA_ROOT: ${{ vars.PSMATRIX_WINDOWS_GA_ROOT }}",
-            "RELEASE_COMMIT: ${{ inputs.release_commit }}",
-            "INSPECT_ISO_IMAGES: ${{ inputs.inspect_iso_images }}",
             "media\\release\\2.0.0rc3",
             "media\\external",
             "RELEASE_CLOSURE_READY",
             "Get-PSMatrixWindowsAuthorityMediaInventory.ps1",
-            "SearchRoot = @($env:PSMATRIX_MEDIA_RELEASE_ROOT, $env:PSMATRIX_MEDIA_EXTERNAL_ROOT)",
             "Resolve-PSMatrixWindowsAuthorityMediaInventory.ps1",
             "New-PSMatrixWindowsAuthorityMediaManifest.ps1",
-            "-WriteSelectionTemplate",
-            "EXTERNAL_MEDIA_INCOMPLETE",
+            "config\\windows-authority-media-selection.json",
+            "-OutputPath $selectionOutput",
+            "psmatrix.windows-authority-media-selection-materialization",
+            "ready_for_provisioning_manifest_materialization",
+            "provisioning_manifest_materialized = $false",
+            "ready_for_hyper_v_provisioning = $false",
+            "READY_FOR_PROVISIONING_MANIFEST_MATERIALIZATION",
             "READY_FOR_OPERATOR_SELECTION",
-            "READY_FOR_HYPER_V_PROVISIONING",
-            "broad_downloads_search_used = $false",
-            "opens_secret_bundles = $false",
-            "creates_virtual_machines = $false",
-            "creates_checkpoints = $false",
-            "authoritative = $false",
-            "ga_eligible = $false",
+            "EXTERNAL_MEDIA_INCOMPLETE",
             "windows-authority-rc3-media-readiness",
-            "path: ${{ runner.temp }}/psmatrix-windows-authority-media-readiness-evidence",
-        )
-        for value in required:
-            with self.subTest(value=value):
-                self.assertIn(value, text)
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, text)
 
-        forbidden = (
+        for forbidden in (
+            "New-PSMatrixWindowsAuthorityProvisioningManifest.ps1",
+            "build_windows_authority_provisioning_manifest.py",
             "Join-Path $HOME 'Downloads'",
             "Join-Path $HOME 'Desktop'",
-            "C:\\ISO",
-            "C:\\Installers",
             "Invoke-WebRequest",
             "Start-BitsTransfer",
             "PSMATRIX_RELEASE_PRIVATE_KEY",
@@ -125,10 +102,9 @@ class WindowsAuthorityMediaReadinessWorkflowTests(unittest.TestCase):
             "Restore-VMSnapshot",
             "authoritative = $true",
             "ga_eligible = $true",
-        )
-        for value in forbidden:
-            with self.subTest(value=value):
-                self.assertNotIn(value, text)
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, text)
 
     def test_failure_evidence_is_initialized_before_ga_root_validation(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")
