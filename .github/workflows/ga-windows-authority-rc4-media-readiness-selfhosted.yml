@@ -1,0 +1,282 @@
+name: production-ga-windows-authority-rc4-media-readiness-selfhosted
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_commit:
+        description: Exact reviewed RC4 release source commit frozen by the active lock
+        required: true
+        type: string
+      control_head:
+        description: Exact repository commit containing the active RC4 lock and intake controls
+        required: true
+        type: string
+      inspect_iso_images:
+        description: Mount candidate ISOs read-only and inspect install.wim/install.esd editions
+        required: true
+        default: true
+        type: boolean
+
+concurrency:
+  group: production-ga-windows-authority-rc4-media-readiness-selfhosted
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  media-readiness:
+    name: Inventory isolated RC4 media and materialize reviewed selection
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 45
+    environment: production-ga-windows-lab
+    permissions:
+      contents: read
+    env:
+      PSMATRIX_WINDOWS_GA_ROOT: ${{ vars.PSMATRIX_WINDOWS_GA_ROOT }}
+      RELEASE_COMMIT: ${{ inputs.release_commit }}
+      CONTROL_HEAD: ${{ inputs.control_head }}
+      INSPECT_ISO_IMAGES: ${{ inputs.inspect_iso_images }}
+
+    steps:
+      - name: Initialize isolated RC4 media-readiness workspace
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'psmatrix-rc4-media-readiness-evidence'
+          if (Test-Path -LiteralPath $evidence) { Remove-Item -LiteralPath $evidence -Recurse -Force }
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          "PSMATRIX_MEDIA_READINESS_EVIDENCE=$evidence" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') { throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS" }
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_WINDOWS_GA_ROOT)) { throw 'PSMATRIX_WINDOWS_GA_ROOT is missing from production-ga-windows-lab.' }
+          if (-not [System.IO.Path]::IsPathRooted($env:PSMATRIX_WINDOWS_GA_ROOT)) { throw 'PSMATRIX_WINDOWS_GA_ROOT must be an absolute path.' }
+          $gaRoot = [System.IO.Path]::GetFullPath($env:PSMATRIX_WINDOWS_GA_ROOT)
+          if (-not (Test-Path -LiteralPath $gaRoot -PathType Container)) { throw "PSMATRIX_WINDOWS_GA_ROOT does not exist: $gaRoot" }
+          foreach ($item in @(@{Name='release_commit';Value=$env:RELEASE_COMMIT},@{Name='control_head';Value=$env:CONTROL_HEAD})) {
+              if ([string]$item.Value -cnotmatch '^[0-9a-f]{40}$') { throw "$($item.Name) must contain exactly 40 lowercase hexadecimal characters." }
+          }
+          if ($env:CONTROL_HEAD -ne $env:GITHUB_SHA.ToLowerInvariant()) { throw 'control_head must equal the exact workflow control head.' }
+          if ($env:INSPECT_ISO_IMAGES -notin @('true','false')) { throw 'inspect_iso_images must resolve to true or false.' }
+
+          $releaseRoot = Join-Path $gaRoot 'media\release\2.0.0rc4'
+          $externalRoot = Join-Path $gaRoot 'media\external'
+          if (-not (Test-Path -LiteralPath $releaseRoot -PathType Container)) { throw "Verified RC4 release root is missing. Run protected RC4 release intake first: $releaseRoot" }
+          if (-not (Test-Path -LiteralPath $externalRoot -PathType Container)) { New-Item -ItemType Directory -Path $externalRoot -Force | Out-Null }
+          "PSMATRIX_MEDIA_RELEASE_ROOT=$releaseRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_MEDIA_EXTERNAL_ROOT=$externalRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Check out exact RC4 media-readiness controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.control_head }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate committed RC4 lock and protected intake prerequisite
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $head -ne $env:CONTROL_HEAD) { throw 'RC4 media-readiness checkout does not equal control_head.' }
+          if (-not [string]::IsNullOrWhiteSpace((git status --porcelain))) { throw 'RC4 media-readiness checkout is dirty.' }
+
+          $lockPath = Join-Path $env:GITHUB_WORKSPACE 'ga-packs\03-authoritative-windows\rc4-release-lock.json'
+          $publicPath = Join-Path $env:GITHUB_WORKSPACE 'release-assets\2.0.0rc4\psmatrix-2.0.0rc4-release-public.pem'
+          foreach ($path in @($lockPath,$publicPath)) {
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Committed RC4 authority material is missing: $path" }
+          }
+          $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+          if ([int]$lock.schema -ne 1 -or [string]$lock.kind -ne 'psmatrix.windows-authority-release-staging-lock' -or [string]$lock.pack -ne '03-authoritative-windows') { throw 'Current RC4 release lock identity mismatch.' }
+          if ([string]$lock.version -ne '2.0.0rc4' -or [string]$lock.release_commit -ne $env:RELEASE_COMMIT) { throw 'Current RC4 release lock does not match release_commit.' }
+          $publicSha = (Get-FileHash -LiteralPath $publicPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ([string]$lock.release_public_key.sha256 -ne $publicSha) { throw 'Current RC4 public authority differs from release lock.' }
+          $rotation = $lock.authority_rotation
+          if ([string]$rotation.reason -ne 'lost_previous_private_authority' -or [bool]$rotation.existing_candidate_mutated -ne $false -or [bool]$rotation.new_candidate -ne $true -or [bool]$rotation.review_required -ne $true) { throw 'Current RC4 authority-rotation review metadata mismatch.' }
+
+          $intakePath = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'windows-authority-protected-release-intake.json'
+          if (-not (Test-Path -LiteralPath $intakePath -PathType Leaf)) { throw 'Protected RC4 intake report is missing.' }
+          $intake = Get-Content -LiteralPath $intakePath -Raw | ConvertFrom-Json
+          if ([int]$intake.schema -ne 2 -or [string]$intake.kind -ne 'psmatrix.windows-authority-protected-release-intake') { throw 'Protected RC4 intake report identity mismatch.' }
+          if ([string]$intake.status -ne 'RELEASE_CLOSURE_READY' -or [string]$intake.version -ne '2.0.0rc4' -or [string]$intake.release_commit -ne $env:RELEASE_COMMIT) { throw 'Protected RC4 intake readiness/version/commit mismatch.' }
+          if ([bool]$intake.ready_for_release_artifact_recovery -ne $true -or [bool]$intake.private_key_material_absent -ne $true) { throw 'Protected RC4 intake did not prove release closure/private-key absence.' }
+          if ([bool]$intake.release_authority_rotation_reviewed -ne $true -or [string]$intake.release_authority_rotation_reason -ne 'lost_previous_private_authority') { throw 'Protected RC4 intake did not preserve reviewed authority rotation.' }
+          if ([bool]$intake.release_authority_rotated -ne $false -or [bool]$intake.release_authority_rotated_during_signing -ne $false) { throw 'Protected RC4 intake reports an unsafe authority rotation event.' }
+          if ([bool]$intake.stale_rc2_operation_package_used -ne $false -or [bool]$intake.broad_downloads_search_used -ne $false) { throw 'Protected RC4 intake used stale/broad material.' }
+          if ([bool]$intake.media_manifest_materialized -ne $false) { throw 'Protected RC4 intake unexpectedly materialized media state.' }
+          if ([bool]$intake.operation_package_rebuilt -ne $false) { throw 'Protected RC4 intake unexpectedly rebuilt operation state.' }
+          if ([bool]$intake.authoritative -or [bool]$intake.ga_eligible) { throw 'Protected RC4 intake improperly claims authority or GA eligibility.' }
+          $expectedReleaseRoot = [System.IO.Path]::GetFullPath($env:PSMATRIX_MEDIA_RELEASE_ROOT)
+          $reportedReleaseRoot = [System.IO.Path]::GetFullPath([string]$intake.imported_release_root)
+          if (-not $reportedReleaseRoot.Equals($expectedReleaseRoot,[System.StringComparison]::OrdinalIgnoreCase)) { throw 'Protected RC4 intake release root differs from isolated release root.' }
+          Write-Host 'protected_rc4_intake_prerequisite=PASS'
+
+      - name: Inventory exactly isolated RC4 release and external-media roots
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gaRoot = [System.IO.Path]::GetFullPath($env:PSMATRIX_WINDOWS_GA_ROOT)
+          $inventoryPath = Join-Path $gaRoot 'windows-authority-media-inventory.json'
+          $resolvedSearchRoots = @(
+              [System.IO.Path]::GetFullPath($env:PSMATRIX_MEDIA_RELEASE_ROOT),
+              [System.IO.Path]::GetFullPath($env:PSMATRIX_MEDIA_EXTERNAL_ROOT)
+          )
+          if ($resolvedSearchRoots.Count -ne 2 -or @($resolvedSearchRoots | Sort-Object -Unique).Count -ne 2) { throw 'Expected exactly two distinct isolated media search roots.' }
+          $expectedSearchRoots = @(
+              [System.IO.Path]::GetFullPath((Join-Path $gaRoot 'media\release\2.0.0rc4')),
+              [System.IO.Path]::GetFullPath((Join-Path $gaRoot 'media\external'))
+          )
+          for ($index=0; $index -lt 2; $index++) {
+              if (-not $resolvedSearchRoots[$index].Equals($expectedSearchRoots[$index],[System.StringComparison]::OrdinalIgnoreCase)) { throw "Isolated media search root $index differs from exact RC4 contract." }
+              if (-not (Test-Path -LiteralPath $resolvedSearchRoots[$index] -PathType Container)) { throw "Isolated media search root $index does not exist." }
+          }
+          Write-Host 'isolated_rc4_media_search_roots=PASS count=2'
+          $arguments = @{
+              SourceRoot = $env:GITHUB_WORKSPACE
+              GaRoot = $gaRoot
+              SearchRoot = $resolvedSearchRoots
+              OutputPath = $inventoryPath
+          }
+          if ($env:INSPECT_ISO_IMAGES -eq 'true') {
+              & "$env:GITHUB_WORKSPACE\scripts\ga\Get-PSMatrixWindowsAuthorityMediaInventory.ps1" @arguments -InspectIsoImages
+          }
+          else {
+              & "$env:GITHUB_WORKSPACE\scripts\ga\Get-PSMatrixWindowsAuthorityMediaInventory.ps1" @arguments
+          }
+          if (-not (Test-Path -LiteralPath $inventoryPath -PathType Leaf)) { throw 'Windows authority media inventory was not written.' }
+
+      - name: Canonicalize RC4 release-bound and external media candidates
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $inventoryPath = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'windows-authority-media-inventory.json'
+          $canonicalPath = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'windows-authority-media-inventory.canonical.json'
+          & "$env:GITHUB_WORKSPACE\scripts\ga\Resolve-PSMatrixWindowsAuthorityMediaInventory.ps1" `
+              -SourceRoot $env:GITHUB_WORKSPACE `
+              -GaRoot $env:PSMATRIX_WINDOWS_GA_ROOT `
+              -InventoryPath $inventoryPath `
+              -OutputPath $canonicalPath
+          if (-not (Test-Path -LiteralPath $canonicalPath -PathType Leaf)) { throw 'Canonical Windows authority media inventory was not written.' }
+          $canonical = Get-Content -LiteralPath $canonicalPath -Raw | ConvertFrom-Json
+          if ([string]$canonical.canonicalization.release_authority_status -ne 'READY') { throw 'Canonical release authority is not READY after protected RC4 intake.' }
+          if ([string]$canonical.canonicalization.release_version -ne '2.0.0rc4') { throw 'Canonical release version is not 2.0.0rc4.' }
+          if ([bool]$canonical.authoritative -or [bool]$canonical.ga_eligible) { throw 'Canonical media inventory improperly claims authority or GA eligibility.' }
+
+      - name: Materialize reviewed RC4 media selection only
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $canonicalPath = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'windows-authority-media-inventory.canonical.json'
+          $selectionInput = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'media\windows-lab-media-selection.json'
+          $selectionOutput = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'config\windows-authority-media-selection.json'
+          $planPath = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'windows-authority-media-manifest-plan.json'
+          $templatePath = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'media\windows-lab-media-selection.example.json'
+          & "$env:GITHUB_WORKSPACE\scripts\ga\New-PSMatrixWindowsAuthorityMediaManifest.ps1" `
+              -SourceRoot $env:GITHUB_WORKSPACE `
+              -GaRoot $env:PSMATRIX_WINDOWS_GA_ROOT `
+              -InventoryPath $canonicalPath `
+              -SelectionPath $selectionInput `
+              -OutputPath $selectionOutput `
+              -PlanOutputPath $planPath `
+              -TemplateOutputPath $templatePath `
+              -WriteSelectionTemplate
+          "PSMATRIX_MEDIA_SELECTION_OUTPUT=$selectionOutput" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_MEDIA_PLAN=$planPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Enforce RC4 media-readiness result and emit non-secret summary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $canonicalPath = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'windows-authority-media-inventory.canonical.json'
+          foreach ($path in @($canonicalPath,$env:PSMATRIX_MEDIA_PLAN)) { if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required media-readiness report is missing: $path" } }
+          $canonical = Get-Content -LiteralPath $canonicalPath -Raw | ConvertFrom-Json
+          $plan = Get-Content -LiteralPath $env:PSMATRIX_MEDIA_PLAN -Raw | ConvertFrom-Json
+          if ([string]$plan.status -eq 'FAIL') { throw 'RC4 media selection planner reported FAIL.' }
+          if ([bool]$canonical.authoritative -or [bool]$canonical.ga_eligible -or [bool]$plan.authoritative -or [bool]$plan.ga_eligible) { throw 'RC4 media readiness improperly claims authority/GA eligibility.' }
+          $isoFailures = @(
+              $canonical.candidates | Where-Object { ([string]$_.extension -eq '.iso') -and $env:INSPECT_ISO_IMAGES -eq 'true' -and ($null -eq $_.iso_inventory -or [bool]$_.iso_inventory.inspected -ne $true) } | ForEach-Object { [string]$_.name }
+          )
+          $selectionSha = $null
+          if ([bool]$plan.final_manifest_written) {
+              if (-not (Test-Path -LiteralPath $env:PSMATRIX_MEDIA_SELECTION_OUTPUT -PathType Leaf)) { throw 'Reviewed RC4 media selection materialization was not written.' }
+              $selection = Get-Content -LiteralPath $env:PSMATRIX_MEDIA_SELECTION_OUTPUT -Raw | ConvertFrom-Json
+              if ([int]$selection.schema -ne 1 -or [string]$selection.kind -ne 'psmatrix.windows-authority-media-selection-materialization') { throw 'Reviewed RC4 media selection identity is invalid.' }
+              if ([string]$selection.release_version -ne '2.0.0rc4' -or [bool]$selection.complete -ne $true) { throw 'Reviewed media selection is not complete RC4 material.' }
+              if ([bool]$selection.authoritative -or [bool]$selection.ga_eligible) { throw 'Reviewed RC4 media selection improperly claims authority/GA eligibility.' }
+              if ([bool]$selection.ready_for_provisioning_manifest_materialization -ne $true -or [bool]$selection.provisioning_manifest_materialized -ne $false -or [bool]$selection.ready_for_hyper_v_provisioning -ne $false) { throw 'Reviewed RC4 media selection downstream boundary mismatch.' }
+              $selectionSha = (Get-FileHash -LiteralPath $env:PSMATRIX_MEDIA_SELECTION_OUTPUT -Algorithm SHA256).Hash.ToLowerInvariant()
+          }
+          $status = if ([bool]$plan.final_manifest_written) {
+              'READY_FOR_PROVISIONING_MANIFEST_MATERIALIZATION'
+          }
+          elseif (@($canonical.missing_media_roles).Count -eq 0 -and $isoFailures.Count -eq 0) {
+              'READY_FOR_OPERATOR_SELECTION'
+          }
+          else {
+              'EXTERNAL_MEDIA_INCOMPLETE'
+          }
+          $summary = [ordered]@{
+              schema = 1
+              kind = 'psmatrix.windows-authority-rc4-media-readiness-workflow-status'
+              status = $status
+              release_version = '2.0.0rc4'
+              release_commit = $env:RELEASE_COMMIT
+              control_head = $env:CONTROL_HEAD
+              inspect_iso_images = ($env:INSPECT_ISO_IMAGES -eq 'true')
+              isolated_search_root_count = 2
+              release_authority_status = [string]$canonical.canonicalization.release_authority_status
+              candidate_count = [int]$canonical.candidate_count
+              missing_media_roles = @($canonical.missing_media_roles)
+              missing_release_roles = @($canonical.missing_release_roles)
+              iso_inspection_failures = $isoFailures
+              selection_present = [bool]$plan.selection_present
+              selection_materialization_written = [bool]$plan.final_manifest_written
+              selection_materialization_sha256 = $selectionSha
+              ready_for_provisioning_manifest_materialization = [bool]$plan.final_manifest_written
+              provisioning_manifest_materialized = $false
+              ready_for_hyper_v_provisioning = $false
+              broad_downloads_search_used = $false
+              opens_secret_bundles = $false
+              creates_virtual_machines = $false
+              creates_checkpoints = $false
+              authoritative = $false
+              ga_eligible = $false
+              next_required = @($plan.next_required)
+          }
+          [System.IO.File]::WriteAllText((Join-Path $env:PSMATRIX_MEDIA_READINESS_EVIDENCE 'media-readiness-status.json'),(($summary | ConvertTo-Json -Depth 16)+[Environment]::NewLine),[System.Text.UTF8Encoding]::new($false))
+          Write-Host "rc4_media_readiness_status=$status"
+
+      - name: Record fail-closed RC4 media-readiness failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_MEDIA_READINESS_EVIDENCE)) { exit 0 }
+          New-Item -ItemType Directory -Path $env:PSMATRIX_MEDIA_READINESS_EVIDENCE -Force | Out-Null
+          $failure = [ordered]@{
+              schema = 1
+              kind = 'psmatrix.windows-authority-rc4-media-readiness-workflow-status'
+              status = 'FAIL'
+              release_version = '2.0.0rc4'
+              release_commit = $env:RELEASE_COMMIT
+              control_head = $env:CONTROL_HEAD
+              ready_for_provisioning_manifest_materialization = $false
+              provisioning_manifest_materialized = $false
+              ready_for_hyper_v_provisioning = $false
+              broad_downloads_search_used = $false
+              opens_secret_bundles = $false
+              creates_virtual_machines = $false
+              creates_checkpoints = $false
+              authoritative = $false
+              ga_eligible = $false
+          }
+          [System.IO.File]::WriteAllText((Join-Path $env:PSMATRIX_MEDIA_READINESS_EVIDENCE 'media-readiness-failure.json'),(($failure | ConvertTo-Json -Depth 8)+[Environment]::NewLine),[System.Text.UTF8Encoding]::new($false))
+
+      - name: Upload non-secret RC4 media-readiness audit evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-authority-rc4-media-readiness
+          path: ${{ env.PSMATRIX_MEDIA_READINESS_EVIDENCE }}
+          if-no-files-found: error
+          retention-days: 30
