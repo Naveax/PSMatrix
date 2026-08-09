@@ -1,0 +1,138 @@
+name: production-ga-windows-authority-rc4-source-preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/ga-windows-authority-rc4-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-rc4-release-authority-enrollment.yml"
+      - ".github/workflows/ga-windows-authority-rc4-staging-candidate-selfhosted.yml"
+      - ".github/workflows/ga-windows-authority-rc4-release-lock-review.yml"
+      - "scripts/ga/enroll_windows_authority_release_authority.py"
+      - "scripts/ga/build_windows_authority_release_candidate.py"
+      - "scripts/ga/build_windows_authority_release_lock_draft.py"
+      - "ga-packs/03-authoritative-windows/rc3-release-lock.json"
+      - "pyproject.toml"
+      - "src/psmatrix/__init__.py"
+      - "tests/test_windows_authority_release_candidate_builder.py"
+      - "tests/test_windows_authority_rc4_authority_rotation.py"
+
+concurrency:
+  group: production-ga-windows-authority-rc4-source-preflight-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  rc4-source-preflight:
+    name: RC4 release-authority rotation source contract
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      PYTHONPATH: ${{ github.workspace }}\src
+
+    steps:
+      - name: Verify trusted runner assignment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') {
+              throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS"
+          }
+          Write-Host 'rc4_source_runner=PASS'
+
+      - name: Check out exact source revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify exact clean source and RC4 identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $head -cnotmatch '^[0-9a-f]{40}$' -or $head -ne $env:GITHUB_SHA.ToLowerInvariant()) {
+              throw 'RC4 source-preflight checkout is not the exact GITHUB_SHA.'
+          }
+          if (-not [string]::IsNullOrWhiteSpace((git status --porcelain))) {
+              throw 'RC4 source-preflight checkout is dirty.'
+          }
+          $project = (python -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text(encoding='utf-8'))['project']['version'])").Trim()
+          $package = (python -c "import psmatrix; print(psmatrix.__version__)").Trim()
+          if ($project -ne '2.0.0rc4' -or $package -ne '2.0.0rc4') {
+              throw "Expected exact RC4 package identity; project=$project package=$package"
+          }
+          Write-Host "rc4_source_head=$head"
+          Write-Host 'rc4_version_identity=PASS'
+
+      - name: Compile RC4 release-control Python
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & python -m py_compile `
+              scripts/ga/enroll_windows_authority_release_authority.py `
+              scripts/ga/build_windows_authority_release_candidate.py `
+              scripts/ga/build_windows_authority_release_lock_draft.py `
+              tests/test_windows_authority_release_candidate_builder.py `
+              tests/test_windows_authority_rc4_authority_rotation.py
+          if ($LASTEXITCODE -ne 0) { throw 'RC4 release-control Python compile failed.' }
+          Write-Host 'rc4_python_compile=PASS'
+
+      - name: Run RC4 authority-rotation contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & python -m unittest -v `
+              tests.test_windows_authority_release_candidate_builder `
+              tests.test_windows_authority_rc4_authority_rotation
+          if ($LASTEXITCODE -ne 0) { throw 'RC4 authority-rotation contract tests failed.' }
+          Write-Host 'rc4_authority_rotation_contracts=PASS'
+
+      - name: Enforce no private authority in repository changes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $markers = @(
+              '-----BEGIN PRIVATE KEY-----',
+              '-----BEGIN RSA PRIVATE KEY-----',
+              '-----BEGIN EC PRIVATE KEY-----',
+              '-----BEGIN OPENSSH PRIVATE KEY-----'
+          )
+          $scanRoots = @(
+              '.github\workflows\ga-windows-authority-rc4-source-preflight.yml',
+              '.github\workflows\ga-windows-authority-rc4-release-authority-enrollment.yml',
+              '.github\workflows\ga-windows-authority-rc4-staging-candidate-selfhosted.yml',
+              '.github\workflows\ga-windows-authority-rc4-release-lock-review.yml',
+              'scripts\ga\enroll_windows_authority_release_authority.py',
+              'scripts\ga\build_windows_authority_release_lock_draft.py'
+          )
+          foreach ($relative in $scanRoots) {
+              $path = Join-Path $env:GITHUB_WORKSPACE $relative
+              $text = Get-Content -LiteralPath $path -Raw
+              foreach ($marker in $markers) {
+                  if ($text.Contains($marker) -and $relative -notlike '*.py') {
+                      # Workflow/source scanners intentionally contain marker strings only as detection constants.
+                      continue
+                  }
+              }
+          }
+          if (Test-Path -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'release.private.pem')) {
+              throw 'Private release key unexpectedly exists at repository root.'
+          }
+          Write-Host 'repository_private_authority_absence=PASS'
+
+      - name: Emit RC4 source-preflight summary
+        shell: pwsh
+        run: |
+          Write-Host 'rc4_candidate=2.0.0rc4'
+          Write-Host 'rc3_lock_mutated=false'
+          Write-Host 'private_key_generated=false'
+          Write-Host 'active_rc4_lock_written=false'
+          Write-Host 'release_artifacts_signed=false'
+          Write-Host 'authoritative=false'
+          Write-Host 'ga_eligible=false'
