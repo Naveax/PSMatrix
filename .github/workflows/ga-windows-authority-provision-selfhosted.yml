@@ -1,0 +1,362 @@
+name: production-ga-windows-authority-provision-selfhosted
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_commit:
+        description: Exact reviewed Windows Authority RC3 release commit
+        required: true
+        default: "34e87c60885001f8dd11744b8bf194a59e51bd1f"
+        type: string
+      operation_run_id:
+        description: Successful RC3 operation-package workflow run ID
+        required: true
+        type: string
+      operation_run_attempt:
+        description: Successful RC3 operation-package workflow run attempt
+        required: true
+        default: "1"
+        type: string
+      provision_timeout_seconds:
+        description: Product Hyper-V provision timeout, 300-21600 seconds
+        required: true
+        default: "7200"
+        type: string
+
+concurrency:
+  group: production-ga-windows-authority-provision-selfhosted
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  provision:
+    name: Provision exact RC3 Hyper-V authority VM set
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 360
+    environment: production-ga-windows-lab
+    permissions:
+      contents: read
+    env:
+      PSMATRIX_WINDOWS_GA_ROOT: ${{ vars.PSMATRIX_WINDOWS_GA_ROOT }}
+      RELEASE_COMMIT: ${{ inputs.release_commit }}
+      OPERATION_RUN_ID: ${{ inputs.operation_run_id }}
+      OPERATION_RUN_ATTEMPT: ${{ inputs.operation_run_attempt }}
+      PROVISION_TIMEOUT_SECONDS: ${{ inputs.provision_timeout_seconds }}
+      PSMATRIX_WPS40_ADMIN_PASSWORD: ${{ secrets.PSMATRIX_WPS40_ADMIN_PASSWORD }}
+      PSMATRIX_WPS50_ADMIN_PASSWORD: ${{ secrets.PSMATRIX_WPS50_ADMIN_PASSWORD }}
+      PSMATRIX_WPS51_ADMIN_PASSWORD: ${{ secrets.PSMATRIX_WPS51_ADMIN_PASSWORD }}
+
+    steps:
+      - name: Initialize fail-closed protected provisioning run
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-authority-provision-evidence'
+          if (Test-Path -LiteralPath $evidence) {
+              Remove-Item -LiteralPath $evidence -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          "PSMATRIX_PROVISION_EVIDENCE=$evidence" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_WINDOWS_GA_ROOT)) {
+              throw 'PSMATRIX_WINDOWS_GA_ROOT is missing from production-ga-windows-lab.'
+          }
+          if (-not [System.IO.Path]::IsPathRooted($env:PSMATRIX_WINDOWS_GA_ROOT)) {
+              throw 'PSMATRIX_WINDOWS_GA_ROOT must be an absolute path.'
+          }
+          $gaRoot = [System.IO.Path]::GetFullPath($env:PSMATRIX_WINDOWS_GA_ROOT)
+          if (-not (Test-Path -LiteralPath $gaRoot -PathType Container)) {
+              throw "PSMATRIX_WINDOWS_GA_ROOT does not exist: $gaRoot"
+          }
+          if ($env:RELEASE_COMMIT -cnotmatch '^[0-9a-f]{40}$') {
+              throw 'release_commit must contain exactly 40 lowercase hexadecimal characters.'
+          }
+          if ($env:OPERATION_RUN_ID -notmatch '^[0-9]+$' -or $env:OPERATION_RUN_ATTEMPT -notmatch '^[1-9][0-9]*$') {
+              throw 'operation_run_id and operation_run_attempt must contain decimal digits.'
+          }
+          $timeout = 0
+          if (-not [int]::TryParse($env:PROVISION_TIMEOUT_SECONDS, [ref]$timeout)) {
+              throw 'provision_timeout_seconds must be an integer.'
+          }
+          if ($timeout -lt 300 -or $timeout -gt 21600) {
+              throw "provision_timeout_seconds must be between 300 and 21600; received $timeout."
+          }
+          foreach ($name in @('PSMATRIX_WPS40_ADMIN_PASSWORD', 'PSMATRIX_WPS50_ADMIN_PASSWORD', 'PSMATRIX_WPS51_ADMIN_PASSWORD')) {
+              $value = [Environment]::GetEnvironmentVariable($name)
+              if ([string]::IsNullOrWhiteSpace($value)) {
+                  throw "Required protected provisioning secret is missing: $name"
+              }
+          }
+
+          $releaseRoot = Join-Path $gaRoot 'media\release\2.0.0rc3'
+          $operationRoot = Join-Path $gaRoot ('operation\2.0.0rc3\run-{0}-attempt-{1}' -f $env:OPERATION_RUN_ID, $env:OPERATION_RUN_ATTEMPT)
+          $operationMetadata = Join-Path $operationRoot 'psmatrix-2.0.0rc3-windows-authoritative-operation-package.json'
+          $operationBinding = Join-Path $operationRoot 'windows-authority-operation-package-binding.json'
+          $mediaManifest = Join-Path $gaRoot 'config\windows-lab-media.json'
+          $materialization = Join-Path $gaRoot 'windows-authority-provisioning-manifest-materialization.json'
+          $hostEndpoint = Join-Path $gaRoot 'config\hyperv-host-endpoint.json'
+          $wheel = Join-Path $releaseRoot 'psmatrix-2.0.0rc3-py3-none-any.whl'
+          $publicKey = Join-Path $releaseRoot 'psmatrix-2.0.0rc3-release-public.pem'
+          $releaseManifest = Join-Path $releaseRoot 'psmatrix-2.0.0rc3-release.json'
+          $runRoot = Join-Path $gaRoot ('provisioning\2.0.0rc3\run-{0}-attempt-{1}' -f $env:GITHUB_RUN_ID, $env:GITHUB_RUN_ATTEMPT)
+          if (Test-Path -LiteralPath $runRoot) {
+              throw "Provisioning run output already exists; refusing to overwrite: $runRoot"
+          }
+          New-Item -ItemType Directory -Path $runRoot -Force | Out-Null
+          foreach ($path in @($releaseRoot, $operationRoot)) {
+              if (-not (Test-Path -LiteralPath $path -PathType Container)) {
+                  throw "Required protected RC3 directory is missing: $path"
+              }
+          }
+          foreach ($path in @($operationMetadata, $operationBinding, $mediaManifest, $materialization, $hostEndpoint, $wheel, $publicKey, $releaseManifest)) {
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                  throw "Required protected RC3 provisioning input is missing: $path"
+              }
+          }
+
+          "PSMATRIX_PROVISION_TIMEOUT=$timeout" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_PROVISION_RELEASE_ROOT=$releaseRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_PROVISION_OPERATION_ROOT=$operationRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_PROVISION_OPERATION_METADATA=$operationMetadata" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_PROVISION_OPERATION_BINDING=$operationBinding" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_PROVISION_MEDIA=$mediaManifest" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_PROVISION_MATERIALIZATION=$materialization" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_PROVISION_HOST_ENDPOINT=$hostEndpoint" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_PROVISION_WHEEL=$wheel" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_PROVISION_PUBLIC_KEY=$publicKey" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_PROVISION_RELEASE_MANIFEST=$releaseManifest" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_PROVISION_RUN_ROOT=$runRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Check out current provisioning controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out exact RC3 product source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.release_commit }}
+          path: release-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up controller Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Validate exact product source and protected RC3 identities
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $controlRoot = Join-Path $env:GITHUB_WORKSPACE 'control'
+          $releaseSource = Join-Path $env:GITHUB_WORKSPACE 'release-source'
+          $controlHead = (git -C $controlRoot rev-parse HEAD).Trim().ToLowerInvariant()
+          $releaseHead = (git -C $releaseSource rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($controlHead -cnotmatch '^[0-9a-f]{40}$') { throw 'Current provisioning control head is invalid.' }
+          if ($releaseHead -ne $env:RELEASE_COMMIT) { throw 'Exact RC3 product source checkout mismatch.' }
+          if (-not [string]::IsNullOrWhiteSpace((git -C $controlRoot status --porcelain))) { throw 'Current provisioning control checkout is not clean.' }
+          if (-not [string]::IsNullOrWhiteSpace((git -C $releaseSource status --porcelain))) { throw 'Exact RC3 product source checkout is not clean.' }
+
+          $lock = Get-Content -LiteralPath (Join-Path $controlRoot 'ga-packs\03-authoritative-windows\rc3-release-lock.json') -Raw | ConvertFrom-Json
+          if ([int]$lock.schema -ne 1 -or [string]$lock.kind -ne 'psmatrix.windows-authority-release-staging-lock') { throw 'RC3 release lock identity is invalid.' }
+          if ([string]$lock.version -ne '2.0.0rc3' -or [string]$lock.release_commit -ne $env:RELEASE_COMMIT) { throw 'RC3 release lock does not match requested release commit.' }
+          $publicKeySha = (Get-FileHash -LiteralPath $env:PSMATRIX_PROVISION_PUBLIC_KEY -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($publicKeySha -ne [string]$lock.release_public_key.sha256) { throw 'Protected RC3 release public key does not match reviewed lock.' }
+          $wheelLock = @($lock.artifacts | Where-Object { [string]$_.name -eq 'psmatrix-2.0.0rc3-py3-none-any.whl' })
+          if ($wheelLock.Count -ne 1) { throw 'RC3 wheel is not uniquely locked.' }
+          $wheelSha = (Get-FileHash -LiteralPath $env:PSMATRIX_PROVISION_WHEEL -Algorithm SHA256).Hash.ToLowerInvariant()
+          $wheelSize = [int64](Get-Item -LiteralPath $env:PSMATRIX_PROVISION_WHEEL).Length
+          if ($wheelSha -ne [string]$wheelLock[0].sha256 -or $wheelSize -ne [int64]$wheelLock[0].size) { throw 'Protected RC3 wheel does not match reviewed lock.' }
+
+          "PSMATRIX_PROVISION_CONTROL_ROOT=$controlRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_PROVISION_RELEASE_SOURCE=$releaseSource" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_PROVISION_CONTROL_HEAD=$controlHead" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Validate provisioning manifest and exact operation-package binding
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $media = Get-Content -LiteralPath $env:PSMATRIX_PROVISION_MEDIA -Raw | ConvertFrom-Json
+          $materialization = Get-Content -LiteralPath $env:PSMATRIX_PROVISION_MATERIALIZATION -Raw | ConvertFrom-Json
+          $operation = Get-Content -LiteralPath $env:PSMATRIX_PROVISION_OPERATION_METADATA -Raw | ConvertFrom-Json
+          $binding = Get-Content -LiteralPath $env:PSMATRIX_PROVISION_OPERATION_BINDING -Raw | ConvertFrom-Json
+
+          if ([int]$media.schema -ne 1 -or [string]$media.kind -ne 'psmatrix.windows-lab-media') { throw 'Windows lab provisioning manifest identity is invalid.' }
+          $runtimeIds = @($media.images | ForEach-Object { [string]$_.runtime_id } | Sort-Object -Unique)
+          $expectedRuntimeIds = @('windows-powershell-4.0', 'windows-powershell-5.0', 'windows-powershell-5.1')
+          if ($runtimeIds.Count -ne 3 -or (Compare-Object -ReferenceObject $expectedRuntimeIds -DifferenceObject $runtimeIds).Count -ne 0) { throw 'Windows lab provisioning manifest runtime set is not exact.' }
+          foreach ($image in @($media.images)) {
+              if ([int]$image.generation -ne 2) { throw "Provisioning image is not Hyper-V generation 2: $($image.runtime_id)" }
+              if ([string]$image.checkpoint_name -ne 'psmatrix-clean') { throw "Provisioning checkpoint name is not psmatrix-clean: $($image.runtime_id)" }
+              if ([string]::IsNullOrWhiteSpace([string]$image.admin_password_env)) { throw "Provisioning admin_password_env is missing: $($image.runtime_id)" }
+          }
+
+          if ([int]$materialization.schema -ne 1 -or [string]$materialization.kind -ne 'psmatrix.windows-authority-provisioning-manifest-materialization') { throw 'Provisioning materialization report identity is invalid.' }
+          if ([string]$materialization.status -ne 'PASS' -or [string]$materialization.release_version -ne '2.0.0rc3' -or [string]$materialization.release_commit -ne $env:RELEASE_COMMIT) { throw 'Provisioning materialization is not PASS for this RC3 release.' }
+          if ([string]$materialization.output_kind -ne 'psmatrix.windows-lab-media' -or [bool]$materialization.manifest_written -ne $true -or [string]$materialization.product_loader_validation -ne 'PASS') { throw 'Provisioning materialization is not product-loader-valid.' }
+          if ([bool]$materialization.actual_os_identity_measured -ne $false -or [bool]$materialization.authoritative -ne $false -or [bool]$materialization.ga_eligible -ne $false) { throw 'Provisioning materialization improperly claims measured OS identity, authority or GA eligibility.' }
+          $mediaSha = (Get-FileHash -LiteralPath $env:PSMATRIX_PROVISION_MEDIA -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($mediaSha -ne [string]$materialization.manifest_sha256) { throw 'Provisioning manifest SHA-256 changed after materialization.' }
+
+          if ([string]$operation.kind -ne 'psmatrix.windows-authoritative-operation-package' -or [string]$operation.status -ne 'READY_FOR_WINDOWS_HOST') { throw 'Operation package is not READY_FOR_WINDOWS_HOST.' }
+          if ([string]$operation.release_commit -ne $env:RELEASE_COMMIT -or [string]$operation.release_version -ne '2.0.0rc3') { throw 'Operation package release identity mismatch.' }
+          if ([string]$operation.provisioning_manifest.sha256 -ne $mediaSha) { throw 'Operation package is bound to another provisioning manifest SHA-256.' }
+          if ([string]$operation.provisioning_manifest.selection_sha256 -ne [string]$materialization.selection_manifest_sha256) { throw 'Operation package reviewed-selection SHA mismatch.' }
+          if ([string]$operation.provisioning_manifest.profile_sha256 -ne [string]$materialization.profile_sha256) { throw 'Operation package provisioning-profile SHA mismatch.' }
+          if ([bool]$operation.stale_rc2_operation_package_used -ne $false -or [bool]$operation.authoritative -ne $false -or [bool]$operation.ga_eligible -ne $false) { throw 'Operation package safety state is invalid.' }
+
+          if ([string]$binding.status -ne 'PASS' -or [bool]$binding.ready_for_release_artifact_recovery -ne $true) { throw 'Operation-package binding is not PASS/ready.' }
+          if ([string]$binding.operation_package.release_commit -ne $env:RELEASE_COMMIT -or [bool]$binding.operation_package.release_binding_valid -ne $true) { throw 'Operation-package release binding is invalid.' }
+          if ([bool]$binding.operation_package.release_manifest_matches_canonical -ne $true -or [bool]$binding.operation_package.embedded_release_artifacts_match_binding -ne $true) { throw 'Operation-package canonical RC3 binding is incomplete.' }
+          if ([bool]$binding.authoritative -ne $false -or [bool]$binding.ga_eligible -ne $false) { throw 'Operation-package binding improperly claims authority or GA eligibility.' }
+          "PSMATRIX_PROVISION_MEDIA_SHA=$mediaSha" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "provisioning_manifest_sha256=$mediaSha"
+          Write-Host 'provisioning_operation_binding=PASS'
+
+      - name: Install exact signed RC3 product package offline
+        shell: pwsh
+        env:
+          PIP_NO_INDEX: "1"
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install --no-index --no-deps --force-reinstall "$env:PSMATRIX_PROVISION_WHEEL"
+          if ($LASTEXITCODE -ne 0) { throw "Exact signed RC3 wheel installation failed: $LASTEXITCODE" }
+          $observed = (python -c "import psmatrix; print(psmatrix.__version__)").Trim()
+          if ($LASTEXITCODE -ne 0 -or $observed -ne '2.0.0rc3') { throw "Installed product package is not PSMatrix 2.0.0rc3: $observed" }
+          Write-Host "installed_psmatrix=$observed"
+
+      - name: Build exact RC3 Hyper-V provisioning plan
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $plan = Join-Path $env:PSMATRIX_PROVISION_RUN_ROOT 'windows-hyperv-provision-plan.json'
+          & python -m psmatrix.cli lab plan `
+              --manifest $env:PSMATRIX_PROVISION_MEDIA `
+              --output $plan
+          if ($LASTEXITCODE -ne 0) { throw "PSMatrix lab plan failed: $LASTEXITCODE" }
+          if (-not (Test-Path -LiteralPath $plan -PathType Leaf)) { throw 'PSMatrix lab plan did not write the protected plan.' }
+          "PSMATRIX_PROVISION_PLAN=$plan" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Provision exact RC3 Hyper-V VM set
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $report = Join-Path $env:PSMATRIX_PROVISION_RUN_ROOT 'windows-hyperv-provision-report.json'
+          & python -m psmatrix.cli lab provision `
+              --endpoint $env:PSMATRIX_PROVISION_HOST_ENDPOINT `
+              --plan $env:PSMATRIX_PROVISION_PLAN `
+              --source-root $env:PSMATRIX_PROVISION_RELEASE_SOURCE `
+              --report-json $report `
+              --timeout $env:PSMATRIX_PROVISION_TIMEOUT
+          if ($LASTEXITCODE -ne 0) { throw "PSMatrix lab provision failed: $LASTEXITCODE" }
+          if (-not (Test-Path -LiteralPath $report -PathType Leaf)) { throw 'PSMatrix lab provision did not write its protected report.' }
+          if ((Get-Item -LiteralPath $report).Length -le 0) { throw 'PSMatrix lab provision report is empty.' }
+          "PSMATRIX_PROVISION_REPORT=$report" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Verify canonical Hyper-V VM and clean-checkpoint set
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module Hyper-V -ErrorAction Stop
+          $media = Get-Content -LiteralPath $env:PSMATRIX_PROVISION_MEDIA -Raw | ConvertFrom-Json
+          $rows = @()
+          foreach ($image in @($media.images)) {
+              $vmName = [string]$image.image_id
+              $runtime = [string]$image.runtime_id
+              $checkpointName = [string]$image.checkpoint_name
+              $vms = @(Get-VM -Name $vmName -ErrorAction SilentlyContinue)
+              if ($vms.Count -ne 1) { throw "Expected exactly one Hyper-V VM $vmName for $runtime; found $($vms.Count)." }
+              $vm = $vms[0]
+              if ([int]$vm.Generation -ne 2) { throw "Provisioned VM is not generation 2: $vmName" }
+              $snapshots = @(Get-VMSnapshot -VM $vm -ErrorAction Stop | Where-Object { $_.Name -eq $checkpointName })
+              if ($snapshots.Count -ne 1) { throw "Expected exactly one clean checkpoint $checkpointName for $vmName; found $($snapshots.Count)." }
+              $rows += [ordered]@{
+                  runtime_id = $runtime
+                  vm_name = $vmName
+                  vm_id = $vm.VMId.ToString()
+                  vm_generation = [int]$vm.Generation
+                  checkpoint_name = $checkpointName
+                  checkpoint_id = $snapshots[0].Id.ToString()
+              }
+          }
+          if ($rows.Count -ne 3) { throw "Provisioned VM verification returned $($rows.Count) rows; expected 3." }
+
+          $status = [ordered]@{
+              schema = 1
+              kind = 'psmatrix.windows-authority-hyperv-provisioning-status'
+              status = 'VM_SET_PROVISIONED_OS_MEASUREMENT_PENDING'
+              release_version = '2.0.0rc3'
+              release_commit = $env:RELEASE_COMMIT
+              operation_run_id = [int64]$env:OPERATION_RUN_ID
+              operation_run_attempt = [int]$env:OPERATION_RUN_ATTEMPT
+              provisioning_manifest_sha256 = $env:PSMATRIX_PROVISION_MEDIA_SHA
+              exact_release_source_used = $true
+              exact_signed_release_wheel_installed_offline = $true
+              vm_count = 3
+              clean_checkpoint_count = 3
+              runtimes = $rows
+              actual_os_identity_measured = $false
+              endpoint_manifests_written = $false
+              image_manifests_written = $false
+              creates_virtual_machines = $true
+              creates_checkpoints = $true
+              runs_authoritative_campaign = $false
+              authoritative = $false
+              ga_eligible = $false
+              protected_detailed_report_uploaded = $false
+              next_required = @(
+                  'Measure actual guest OS identity from every provisioned VM and bind it to VM/checkpoint identity.',
+                  'Materialize the three real image manifests from measured identity and exact release fixture-pack SHA.',
+                  'Provision and validate real mTLS/signing endpoint manifests before infrastructure preflight.'
+              )
+          }
+          [System.IO.File]::WriteAllText(
+              (Join-Path $env:PSMATRIX_PROVISION_EVIDENCE 'hyperv-provisioning-status.json'),
+              (($status | ConvertTo-Json -Depth 12) + [Environment]::NewLine),
+              [System.Text.UTF8Encoding]::new($false)
+          )
+          Write-Host 'hyperv_provisioning_status=VM_SET_PROVISIONED_OS_MEASUREMENT_PENDING'
+
+      - name: Record fail-closed provisioning failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_PROVISION_EVIDENCE)) { exit 0 }
+          New-Item -ItemType Directory -Path $env:PSMATRIX_PROVISION_EVIDENCE -Force | Out-Null
+          $failure = [ordered]@{
+              schema = 1
+              kind = 'psmatrix.windows-authority-hyperv-provisioning-status'
+              status = 'FAIL'
+              release_version = '2.0.0rc3'
+              release_commit = $env:RELEASE_COMMIT
+              operation_run_id = $env:OPERATION_RUN_ID
+              operation_run_attempt = $env:OPERATION_RUN_ATTEMPT
+              creates_virtual_machines = $true
+              creates_checkpoints = $true
+              actual_os_identity_measured = $false
+              runs_authoritative_campaign = $false
+              authoritative = $false
+              ga_eligible = $false
+              protected_detailed_report_uploaded = $false
+          }
+          [System.IO.File]::WriteAllText(
+              (Join-Path $env:PSMATRIX_PROVISION_EVIDENCE 'hyperv-provisioning-failure.json'),
+              (($failure | ConvertTo-Json -Depth 8) + [Environment]::NewLine),
+              [System.Text.UTF8Encoding]::new($false)
+          )
+
+      - name: Upload sanitized provisioning status only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-authority-rc3-hyperv-provisioning-status
+          path: ${{ runner.temp }}\psmatrix-windows-authority-provision-evidence
+          if-no-files-found: error
+          retention-days: 30
