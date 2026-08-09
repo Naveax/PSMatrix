@@ -13,11 +13,14 @@ on:
       - ".github/workflows/ga-windows-authority-rc4-release-lock-review.yml"
       - ".github/workflows/ga-windows-authority-rc4-release-lock-promotion.yml"
       - ".github/workflows/ga-windows-authority-rc4-release-sign-from-lock.yml"
+      - ".github/workflows/ga-windows-authority-rc4-release-intake-selfhosted.yml"
       - "scripts/ga/enroll_windows_authority_release_authority.py"
       - "scripts/ga/build_windows_authority_release_candidate.py"
       - "scripts/ga/build_windows_authority_release_lock_draft.py"
       - "scripts/ga/promote_windows_authority_rc4_release_lock.py"
       - "scripts/ga/sign_windows_authority_release_candidate.py"
+      - "scripts/ga/import_windows_authority_protected_release.py"
+      - "scripts/ga/Invoke-PSMatrixWindowsAuthorityProtectedReleaseIntakeV2.ps1"
       - "ga-packs/03-authoritative-windows/rc3-release-lock.json"
       - "ga-packs/03-authoritative-windows/rc4-release-lock.json"
       - "release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem"
@@ -27,6 +30,8 @@ on:
       - "tests/test_windows_authority_rc4_authority_rotation.py"
       - "tests/test_windows_authority_rc4_authority_rotation_runtime.py"
       - "tests/test_windows_authority_rc4_lock_promotion_signing.py"
+      - "tests/test_windows_authority_protected_release_import.py"
+      - "tests/test_windows_authority_rc4_protected_release_intake.py"
   pull_request:
     branches:
       - main
@@ -38,11 +43,14 @@ on:
       - ".github/workflows/ga-windows-authority-rc4-release-lock-review.yml"
       - ".github/workflows/ga-windows-authority-rc4-release-lock-promotion.yml"
       - ".github/workflows/ga-windows-authority-rc4-release-sign-from-lock.yml"
+      - ".github/workflows/ga-windows-authority-rc4-release-intake-selfhosted.yml"
       - "scripts/ga/enroll_windows_authority_release_authority.py"
       - "scripts/ga/build_windows_authority_release_candidate.py"
       - "scripts/ga/build_windows_authority_release_lock_draft.py"
       - "scripts/ga/promote_windows_authority_rc4_release_lock.py"
       - "scripts/ga/sign_windows_authority_release_candidate.py"
+      - "scripts/ga/import_windows_authority_protected_release.py"
+      - "scripts/ga/Invoke-PSMatrixWindowsAuthorityProtectedReleaseIntakeV2.ps1"
       - "ga-packs/03-authoritative-windows/rc3-release-lock.json"
       - "ga-packs/03-authoritative-windows/rc4-release-lock.json"
       - "release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem"
@@ -52,6 +60,8 @@ on:
       - "tests/test_windows_authority_rc4_authority_rotation.py"
       - "tests/test_windows_authority_rc4_authority_rotation_runtime.py"
       - "tests/test_windows_authority_rc4_lock_promotion_signing.py"
+      - "tests/test_windows_authority_protected_release_import.py"
+      - "tests/test_windows_authority_rc4_protected_release_intake.py"
 
 concurrency:
   group: production-ga-windows-authority-rc4-source-preflight-${{ github.event.pull_request.head.ref || github.ref }}
@@ -98,14 +108,10 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $head -cnotmatch '^[0-9a-f]{40}$' -or $head -ne $env:EXPECTED_HEAD.ToLowerInvariant()) {
               throw "RC4 source-preflight checkout is not the exact expected branch head: actual=$head expected=$env:EXPECTED_HEAD"
           }
-          if (-not [string]::IsNullOrWhiteSpace((git status --porcelain))) {
-              throw 'RC4 source-preflight checkout is dirty.'
-          }
+          if (-not [string]::IsNullOrWhiteSpace((git status --porcelain))) { throw 'RC4 source-preflight checkout is dirty.' }
           $project = (python -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text(encoding='utf-8'))['project']['version'])").Trim()
           $package = (python -c "import psmatrix; print(psmatrix.__version__)").Trim()
-          if ($project -ne '2.0.0rc4' -or $package -ne '2.0.0rc4') {
-              throw "Expected exact RC4 package identity; project=$project package=$package"
-          }
+          if ($project -ne '2.0.0rc4' -or $package -ne '2.0.0rc4') { throw "Expected exact RC4 package identity; project=$project package=$package" }
           Write-Host "rc4_source_head=$head"
           Write-Host "rc4_event_sha=$env:GITHUB_SHA"
           Write-Host 'rc4_version_identity=PASS'
@@ -114,16 +120,25 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          foreach ($path in @(
-              'ga-packs\03-authoritative-windows\rc4-release-lock.json',
-              'release-assets\2.0.0rc4\psmatrix-2.0.0rc4-release-public.pem'
-          )) {
-              if (Test-Path -LiteralPath (Join-Path $env:GITHUB_WORKSPACE $path) -PathType Leaf) {
-                  throw "RC4 promotion/signer source-preparation branch must not contain active authority material: $path"
-              }
+          foreach ($path in @('ga-packs\03-authoritative-windows\rc4-release-lock.json','release-assets\2.0.0rc4\psmatrix-2.0.0rc4-release-public.pem')) {
+              if (Test-Path -LiteralPath (Join-Path $env:GITHUB_WORKSPACE $path) -PathType Leaf) { throw "RC4 source-preparation branch must not contain active authority material: $path" }
           }
           Write-Host 'active_rc4_lock_present=false'
           Write-Host 'active_rc4_public_authority_present=false'
+
+      - name: Parse RC4 protected-release intake PowerShell
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = Join-Path $env:GITHUB_WORKSPACE 'scripts\ga\Invoke-PSMatrixWindowsAuthorityProtectedReleaseIntakeV2.ps1'
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
+          if (@($errors).Count -ne 0) {
+              $detail = @($errors | ForEach-Object { $_.Message }) -join '; '
+              throw "RC4 protected-release intake PowerShell parse failed: $detail"
+          }
+          Write-Host 'rc4_protected_release_intake_powershell_parse=PASS'
 
       - name: Compile RC4 release-control Python
         shell: pwsh
@@ -135,14 +150,17 @@ jobs:
               scripts/ga/build_windows_authority_release_lock_draft.py `
               scripts/ga/promote_windows_authority_rc4_release_lock.py `
               scripts/ga/sign_windows_authority_release_candidate.py `
+              scripts/ga/import_windows_authority_protected_release.py `
               tests/test_windows_authority_release_candidate_builder.py `
               tests/test_windows_authority_rc4_authority_rotation.py `
               tests/test_windows_authority_rc4_authority_rotation_runtime.py `
-              tests/test_windows_authority_rc4_lock_promotion_signing.py
+              tests/test_windows_authority_rc4_lock_promotion_signing.py `
+              tests/test_windows_authority_protected_release_import.py `
+              tests/test_windows_authority_rc4_protected_release_intake.py
           if ($LASTEXITCODE -ne 0) { throw 'RC4 release-control Python compile failed.' }
           Write-Host 'rc4_python_compile=PASS'
 
-      - name: Run RC4 authority rotation, promotion, and signer runtime contracts
+      - name: Run RC4 authority, signing, importer, and intake contracts
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -150,23 +168,22 @@ jobs:
               tests.test_windows_authority_release_candidate_builder `
               tests.test_windows_authority_rc4_authority_rotation `
               tests.test_windows_authority_rc4_authority_rotation_runtime `
-              tests.test_windows_authority_rc4_lock_promotion_signing
-          if ($LASTEXITCODE -ne 0) { throw 'RC4 authority/promotion/signing contract runtime tests failed.' }
+              tests.test_windows_authority_rc4_lock_promotion_signing `
+              tests.test_windows_authority_protected_release_import `
+              tests.test_windows_authority_rc4_protected_release_intake
+          if ($LASTEXITCODE -ne 0) { throw 'RC4 authority/signing/import/intake contract tests failed.' }
           Write-Host 'rc4_authority_rotation_contracts=PASS'
           Write-Host 'rc4_authority_rotation_runtime=PASS'
           Write-Host 'rc4_lock_promotion_contract=PASS'
           Write-Host 'rc4_protected_signer_runtime=PASS'
+          Write-Host 'rc4_protected_release_import_contract=PASS'
+          Write-Host 'rc4_protected_release_intake_contract=PASS'
 
       - name: Enforce no tracked private authority material
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $markers = @(
-              '-----BEGIN PRIVATE KEY-----',
-              '-----BEGIN RSA PRIVATE KEY-----',
-              '-----BEGIN EC PRIVATE KEY-----',
-              '-----BEGIN OPENSSH PRIVATE KEY-----'
-          )
+          $markers = @('-----BEGIN PRIVATE KEY-----','-----BEGIN RSA PRIVATE KEY-----','-----BEGIN EC PRIVATE KEY-----','-----BEGIN OPENSSH PRIVATE KEY-----')
           $tracked = @(git ls-files)
           if ($LASTEXITCODE -ne 0 -or $tracked.Count -eq 0) { throw 'Unable to enumerate tracked repository files.' }
           foreach ($relative in $tracked) {
@@ -177,9 +194,7 @@ jobs:
               try { $text = [System.IO.File]::ReadAllText($file.FullName) } catch { continue }
               foreach ($marker in $markers) {
                   $pattern = '(?m)^' + [regex]::Escape($marker) + '\r?$'
-                  if ([regex]::IsMatch($text, $pattern)) {
-                      throw "Tracked private-key PEM material detected: $relative"
-                  }
+                  if ([regex]::IsMatch($text, $pattern)) { throw "Tracked private-key PEM material detected: $relative" }
               }
           }
           Write-Host "repository_private_authority_absence=PASS tracked_files=$($tracked.Count)"
@@ -194,5 +209,6 @@ jobs:
           Write-Host 'active_rc4_lock_written=false'
           Write-Host 'release_artifacts_signed=false'
           Write-Host 'production_inputs_mutated=false'
+          Write-Host 'protected_release_intake_mutated=false'
           Write-Host 'authoritative=false'
           Write-Host 'ga_eligible=false'
