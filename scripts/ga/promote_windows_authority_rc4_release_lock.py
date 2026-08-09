@@ -77,16 +77,20 @@ def promote(
     review_root: Path,
     output_root: Path,
     candidate_commit: str,
+    promotion_control_head: str,
     review_run_id: str,
     reviewed_draft_sha256: str,
     reviewed_public_key_sha256: str,
 ) -> dict[str, Any]:
     candidate_commit = candidate_commit.strip().lower()
+    promotion_control_head = promotion_control_head.strip().lower()
     review_run_id = review_run_id.strip()
     reviewed_draft_sha256 = reviewed_draft_sha256.strip().lower()
     reviewed_public_key_sha256 = reviewed_public_key_sha256.strip().lower()
     if not _SHA40.fullmatch(candidate_commit):
         raise RuntimeError("candidate_commit must be a full 40-character lowercase Git SHA")
+    if not _SHA40.fullmatch(promotion_control_head):
+        raise RuntimeError("promotion_control_head must be a full 40-character lowercase Git SHA")
     if not _RUN_ID.fullmatch(review_run_id):
         raise RuntimeError("review_run_id must contain only decimal digits")
     if not _SHA256.fullmatch(reviewed_draft_sha256):
@@ -205,6 +209,7 @@ def promote(
         "review_artifact": f"psmatrix-{_VERSION}-release-lock-review",
         "reviewed_draft_sha256": reviewed_draft_sha256,
         "reviewed_public_key_sha256": reviewed_public_key_sha256,
+        "promotion_control_head": promotion_control_head,
         "human_review_bound": True,
         "promotion_candidate_only": True,
         "repository_commit_required": True,
@@ -229,6 +234,7 @@ def promote(
         "status": "READY_FOR_EXACT_REPOSITORY_COMMIT",
         "version": _VERSION,
         "candidate_commit": candidate_commit,
+        "promotion_control_head": promotion_control_head,
         "review_run_id": review_run_id,
         "reviewed_draft_sha256": reviewed_draft_sha256,
         "reviewed_public_key_sha256": reviewed_public_key_sha256,
@@ -264,6 +270,7 @@ def main() -> int:
     parser.add_argument("--review-root", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--candidate-commit", required=True)
+    parser.add_argument("--promotion-control-head", required=True)
     parser.add_argument("--review-run-id", required=True)
     parser.add_argument("--reviewed-draft-sha256", required=True)
     parser.add_argument("--reviewed-public-key-sha256", required=True)
@@ -272,6 +279,7 @@ def main() -> int:
         review_root=args.review_root,
         output_root=args.output_root,
         candidate_commit=args.candidate_commit,
+        promotion_control_head=args.promotion_control_head,
         review_run_id=args.review_run_id,
         reviewed_draft_sha256=args.reviewed_draft_sha256,
         reviewed_public_key_sha256=args.reviewed_public_key_sha256,
