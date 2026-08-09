@@ -88,13 +88,14 @@ jobs:
           chmod 0600 "$PSMATRIX_RC4_KEY_ROOT/release.private.pem"
           echo 'private_key_materialized_in_runner_temp=true'
 
-      - name: Enroll new candidate authority without signing release artifacts
+      - name: Enroll new candidate authority against frozen RC3 lock
         shell: bash
         run: |
           set -euo pipefail
           python scripts/ga/enroll_windows_authority_release_authority.py \
             --private-key "$PSMATRIX_RC4_KEY_ROOT/release.private.pem" \
             --previous-public-key release-assets/2.0.0rc2/psmatrix-2.0.0rc2-release-public.pem \
+            --previous-release-lock ga-packs/03-authoritative-windows/rc3-release-lock.json \
             --output-root "$PSMATRIX_RC4_ENROLLMENT" \
             --version 2.0.0rc4 \
             --candidate-commit "$CANDIDATE_COMMIT" \
@@ -108,7 +109,7 @@ jobs:
           shred -u "$PSMATRIX_RC4_KEY_ROOT/release.private.pem" 2>/dev/null || rm -f "$PSMATRIX_RC4_KEY_ROOT/release.private.pem"
           rmdir "$PSMATRIX_RC4_KEY_ROOT" 2>/dev/null || true
 
-      - name: Enforce private-key-free enrollment artifact
+      - name: Enforce private-key-free frozen-lock-bound enrollment artifact
         shell: bash
         run: |
           set -euo pipefail
@@ -137,11 +138,21 @@ jobs:
               raise SystemExit('RC4 authority enrollment candidate binding mismatch')
           if report.get('rotation_reason') != 'lost_previous_private_authority':
               raise SystemExit('RC4 authority enrollment rotation reason mismatch')
+          previous_lock = report.get('previous_release_lock') or {}
+          if previous_lock.get('version') != '2.0.0rc3':
+              raise SystemExit('RC4 authority enrollment previous lock version mismatch')
+          if previous_lock.get('release_commit') != '34e87c60885001f8dd11744b8bf194a59e51bd1f':
+              raise SystemExit('RC4 authority enrollment previous lock commit mismatch')
+          if previous_lock.get('public_key_sha256') != 'ebe3041f5e24b3d9fc21d50a3a33585e399ae505271fdf8900a0b49750188b83':
+              raise SystemExit('RC4 authority enrollment previous lock public-key digest mismatch')
+          if previous_lock.get('release_authority_rotation_allowed') is not False:
+              raise SystemExit('RC4 authority enrollment previous lock rotation boundary mismatch')
           if report.get('private_key_published') is not False or report.get('release_artifacts_signed') is not False:
               raise SystemExit('RC4 authority enrollment violated private/signing boundary')
           public_files = sorted(root.glob('*.pem'))
           if len(public_files) != 1:
               raise SystemExit(f'expected exactly one public PEM, found {len(public_files)}')
+          print('frozen_rc3_authority_binding=PASS')
           print('private_key_free_rc4_authority_enrollment=PASS')
           PY
 
