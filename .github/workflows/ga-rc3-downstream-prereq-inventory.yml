@@ -1,0 +1,118 @@
+name: ga-rc3-downstream-prereq-inventory
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/ga-rc3-downstream-prereq-inventory.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  inventory:
+    name: Inventory RC3 downstream prerequisites without mutation
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 15
+    environment: production-ga-windows-lab
+    env:
+      CONFIGURED_GA_ROOT: ${{ vars.PSMATRIX_WINDOWS_GA_ROOT }}
+      WPS40_PASSWORD: ${{ secrets.PSMATRIX_WPS40_ADMIN_PASSWORD }}
+      WPS50_PASSWORD: ${{ secrets.PSMATRIX_WPS50_ADMIN_PASSWORD }}
+      WPS51_PASSWORD: ${{ secrets.PSMATRIX_WPS51_ADMIN_PASSWORD }}
+
+    steps:
+      - name: Inspect protected controller state
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version 2.0
+
+          if ($env:RUNNER_NAME -ne 'NAVEAX' -or $env:RUNNER_OS -ne 'Windows') {
+              throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS"
+          }
+
+          $canonical = 'C:\ProgramData\PSMatrix\ProductionGA'
+          $legacy = 'C:\PSMatrix-Windows-GA'
+          $configured = [string]$env:CONFIGURED_GA_ROOT
+          $configuredPresent = -not [string]::IsNullOrWhiteSpace($configured)
+          $configuredCanonical = $false
+          if ($configuredPresent) {
+              try {
+                  $configuredCanonical = [System.IO.Path]::GetFullPath($configured).Equals(
+                      [System.IO.Path]::GetFullPath($canonical),
+                      [System.StringComparison]::OrdinalIgnoreCase
+                  )
+              }
+              catch { $configuredCanonical = $false }
+          }
+
+          Write-Host "ga_root_variable_present=$configuredPresent"
+          Write-Host "ga_root_variable_is_canonical=$configuredCanonical"
+          Write-Host "canonical_root_present=$(Test-Path -LiteralPath $canonical -PathType Container)"
+          Write-Host "legacy_root_present=$(Test-Path -LiteralPath $legacy -PathType Container)"
+
+          foreach ($name in @('WPS40_PASSWORD','WPS50_PASSWORD','WPS51_PASSWORD')) {
+              $present = -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))
+              Write-Host "secret_${name}_present=$present"
+          }
+
+          foreach ($pair in @(
+              @{ Label='release_root'; Path=(Join-Path $canonical 'media\release\2.0.0rc3') },
+              @{ Label='external_media_root'; Path=(Join-Path $canonical 'media\external') },
+              @{ Label='protected_intake'; Path=(Join-Path $canonical 'windows-authority-protected-release-intake.json') },
+              @{ Label='reviewed_selection'; Path=(Join-Path $canonical 'config\windows-authority-media-selection.json') },
+              @{ Label='selection_input'; Path=(Join-Path $canonical 'media\windows-lab-media-selection.json') },
+              @{ Label='selection_template'; Path=(Join-Path $canonical 'media\windows-lab-media-selection.example.json') },
+              @{ Label='provisioning_profile'; Path=(Join-Path $canonical 'config\windows-lab-provisioning-profile.json') },
+              @{ Label='provisioning_profile_template'; Path=(Join-Path $canonical 'config\windows-lab-provisioning-profile.example.json') },
+              @{ Label='provisioning_manifest'; Path=(Join-Path $canonical 'config\windows-lab-media.json') }
+          )) {
+              Write-Host "$($pair.Label)_present=$(Test-Path -LiteralPath $pair.Path)"
+          }
+
+          $mediaRoots = @(
+              (Join-Path $canonical 'media\external'),
+              (Join-Path $legacy 'media')
+          ) | Where-Object { Test-Path -LiteralPath $_ -PathType Container } | Select-Object -Unique
+          $mediaRoots = @($mediaRoots)
+          $mediaFiles = @()
+          foreach ($root in $mediaRoots) {
+              $mediaFiles += @(Get-ChildItem -LiteralPath $root -Recurse -Depth 6 -File -ErrorAction SilentlyContinue | Where-Object {
+                  $_.Extension.ToLowerInvariant() -in @('.iso','.msu','.cab','.exe','.msi','.zip')
+              })
+          }
+          $mediaFiles = @($mediaFiles | Sort-Object FullName -Unique)
+          Write-Host "media_roots_present=$($mediaRoots.Count)"
+          Write-Host "media_candidate_file_count=$($mediaFiles.Count)"
+          foreach ($ext in @('.iso','.msu','.cab','.exe','.msi','.zip')) {
+              Write-Host "media_ext_$($ext.TrimStart('.'))_count=$(@($mediaFiles | Where-Object { $_.Extension.ToLowerInvariant() -eq $ext }).Count)"
+          }
+          $names = @($mediaFiles | ForEach-Object { $_.Name.ToLowerInvariant() })
+          Write-Host "candidate_windows_server_2012r2=$([bool](@($names | Where-Object { $_ -match '2012.*r2|server.*2012' }).Count))"
+          Write-Host "candidate_windows_server_2016=$([bool](@($names | Where-Object { $_ -match 'server.*2016|2016.*server' }).Count))"
+          Write-Host "candidate_wmf50=$([bool](@($names | Where-Object { $_ -match 'wmf.*5|win.*management.*framework.*5|kb3134758|kb3094174' }).Count))"
+          Write-Host "candidate_python_x64=$([bool](@($names | Where-Object { $_ -match 'python.*amd64|python.*x64' }).Count))"
+
+          $vmNames = @(
+              'PSMatrix-Windows-PowerShell-4.0',
+              'PSMatrix-Windows-PowerShell-5.0',
+              'PSMatrix-Windows-PowerShell-5.1'
+          )
+          $vmCount = 0
+          $checkpointCount = 0
+          foreach ($vmName in $vmNames) {
+              $vm = Get-VM -Name $vmName -ErrorAction SilentlyContinue
+              $exists = $null -ne $vm
+              Write-Host "vm_$($vmName.Split('-')[-1])_present=$exists"
+              if ($exists) {
+                  $vmCount += 1
+                  $snapshot = @(Get-VMSnapshot -VM $vm -Name 'psmatrix-clean' -ErrorAction SilentlyContinue)
+                  $hasCheckpoint = $snapshot.Count -gt 0
+                  Write-Host "vm_$($vmName.Split('-')[-1])_clean_checkpoint=$hasCheckpoint"
+                  if ($hasCheckpoint) { $checkpointCount += 1 }
+              }
+          }
+          Write-Host "canonical_vm_count=$vmCount"
+          Write-Host "psmatrix_clean_checkpoint_count=$checkpointCount"
+          Write-Host 'inventory_mutation=false'
