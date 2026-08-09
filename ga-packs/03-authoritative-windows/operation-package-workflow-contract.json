@@ -13,7 +13,10 @@
     "psmatrix-hyperv"
   ],
   "prerequisites": {
+    "reviewed_release_lock_pack": "03-authoritative-windows",
     "protected_release_intake_status": "RELEASE_CLOSURE_READY",
+    "protected_release_intake_media_manifest_materialized": false,
+    "protected_release_intake_operation_package_rebuilt": false,
     "canonical_release_authority_status": "READY",
     "reviewed_selection_kind": "psmatrix.windows-authority-media-selection-materialization",
     "reviewed_selection_complete": true,
@@ -33,6 +36,14 @@
     "builder_revalidates_selection_sha256": true,
     "builder_revalidates_profile_sha256": true,
     "operation_package_binding_validator_required": true,
+    "workflow_recomputes_provisioning_manifest_sha256": true,
+    "workflow_recomputes_selection_sha256": true,
+    "workflow_recomputes_profile_sha256": true,
+    "workflow_recomputes_materialization_report_sha256": true,
+    "workflow_recomputes_canonical_inventory_sha256": true,
+    "workflow_requires_profile_under_ga_root": true,
+    "workflow_revalidates_metadata_provisioning_binding": true,
+    "workflow_revalidates_release_binding_against_disk": true,
     "binding_status_required": "PASS",
     "ready_for_release_artifact_recovery_required": true,
     "run_attempt_scoped_output": true,
@@ -41,6 +52,7 @@
   "output": {
     "package_status": "READY_FOR_WINDOWS_HOST",
     "provisioning_manifest_binding_required": true,
+    "provisioning_manifest_handoff_validation": "PASS",
     "production_ga_gate": "INCOMPLETE",
     "authoritative_campaign_executed": false,
     "authoritative": false,
