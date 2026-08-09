@@ -53,7 +53,7 @@ jobs:
               if ($LASTEXITCODE -ne 0) { throw 'Unable to normalize locked public key.' }
               $lockedSha = (Get-FileHash -LiteralPath $lockedDer -Algorithm SHA256).Hash.ToLowerInvariant()
 
-              $home = [Environment]::GetFolderPath('UserProfile')
+              $userHome = [Environment]::GetFolderPath('UserProfile')
               $historyFiles = @()
               foreach ($dir in @(
                   (Join-Path $env:APPDATA 'Microsoft\Windows\PowerShell\PSReadLine'),
@@ -63,7 +63,7 @@ jobs:
                       $historyFiles += @(Get-ChildItem -LiteralPath $dir -File -Filter '*history*.txt' -ErrorAction SilentlyContinue)
                   }
               }
-              foreach ($candidate in @((Join-Path $home '.bash_history'), (Join-Path $home '.zsh_history'))) {
+              foreach ($candidate in @((Join-Path $userHome '.bash_history'), (Join-Path $userHome '.zsh_history'))) {
                   if (Test-Path -LiteralPath $candidate -PathType Leaf) { $historyFiles += Get-Item -LiteralPath $candidate }
               }
 
@@ -85,13 +85,13 @@ jobs:
               }
 
               $roots = @(
-                  (Join-Path $home 'Downloads'),
-                  (Join-Path $home 'Desktop'),
-                  (Join-Path $home 'Documents'),
+                  (Join-Path $userHome 'Downloads'),
+                  (Join-Path $userHome 'Desktop'),
+                  (Join-Path $userHome 'Documents'),
                   (Join-Path $env:LOCALAPPDATA 'Temp'),
                   'C:\PSMatrix-Windows-GA',
                   'C:\ProgramData\PSMatrix',
-                  (Join-Path $home 'Downloads\bugbounty-nxb150-validation\actions-runner\_work\_temp')
+                  (Join-Path $userHome 'Downloads\bugbounty-nxb150-validation\actions-runner\_work\_temp')
               ) | Where-Object { Test-Path -LiteralPath $_ -PathType Container } | Select-Object -Unique
 
               $candidatePaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -141,7 +141,8 @@ jobs:
                   $match = $matches[0]
                   $meta = Get-Item -LiteralPath $match
                   Write-Host 'release_key_recovery=UNIQUE_MATCH'
-                  Write-Host "match_location_class=$((if ($match.StartsWith($home,[System.StringComparison]::OrdinalIgnoreCase)) {'USER_PROFILE'} elseif ($match.StartsWith('C:\ProgramData',[System.StringComparison]::OrdinalIgnoreCase)) {'PROGRAM_DATA'} else {'OTHER_BOUNDED_ROOT'}))"
+                  $locationClass = if ($match.StartsWith($userHome,[System.StringComparison]::OrdinalIgnoreCase)) {'USER_PROFILE'} elseif ($match.StartsWith('C:\ProgramData',[System.StringComparison]::OrdinalIgnoreCase)) {'PROGRAM_DATA'} else {'OTHER_BOUNDED_ROOT'}
+                  Write-Host "match_location_class=$locationClass"
                   Write-Host "match_last_write_utc=$($meta.LastWriteTimeUtc.ToString('o'))"
                   Write-Host 'match_path_disclosed=false'
               }
