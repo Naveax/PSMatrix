@@ -42,11 +42,16 @@ def _blob_from_bytes(value: bytes) -> tuple[_DataBlob, Any]:
     return _DataBlob(len(value), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_ubyte))), buffer
 
 
+def _local_free(kernel32: Any, pointer: Any) -> None:
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    kernel32.LocalFree(ctypes.cast(pointer, ctypes.c_void_p))
+
+
 def _dpapi_protect(value: bytes) -> bytes:
     if os.name != "nt":
         raise GateError("Windows DPAPI is unavailable on this platform")
     input_blob, input_buffer = _blob_from_bytes(value)
-    del input_buffer  # lifetime remains attached to input_blob for this call scope
     output_blob = _DataBlob()
     crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -69,6 +74,8 @@ def _dpapi_protect(value: bytes) -> bytes:
         _CRYPTPROTECT_UI_FORBIDDEN,
         ctypes.byref(output_blob),
     )
+    # Keep the input backing buffer alive until CryptProtectData has returned.
+    _ = input_buffer
     if not result:
         code = ctypes.get_last_error()
         raise GateError(f"Windows DPAPI protection failed: {code}")
@@ -76,14 +83,13 @@ def _dpapi_protect(value: bytes) -> bytes:
         return ctypes.string_at(output_blob.pbData, output_blob.cbData)
     finally:
         if output_blob.pbData:
-            kernel32.LocalFree(output_blob.pbData)
+            _local_free(kernel32, output_blob.pbData)
 
 
 def _dpapi_unprotect(value: bytes) -> bytes:
     if os.name != "nt":
         raise GateError("Windows DPAPI is unavailable on this platform")
     input_blob, input_buffer = _blob_from_bytes(value)
-    del input_buffer
     output_blob = _DataBlob()
     crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -106,6 +112,7 @@ def _dpapi_unprotect(value: bytes) -> bytes:
         _CRYPTPROTECT_UI_FORBIDDEN,
         ctypes.byref(output_blob),
     )
+    _ = input_buffer
     if not result:
         code = ctypes.get_last_error()
         raise GateError(f"Windows DPAPI unprotection failed: {code}")
@@ -113,7 +120,7 @@ def _dpapi_unprotect(value: bytes) -> bytes:
         return ctypes.string_at(output_blob.pbData, output_blob.cbData)
     finally:
         if output_blob.pbData:
-            kernel32.LocalFree(output_blob.pbData)
+            _local_free(kernel32, output_blob.pbData)
 
 
 def _encode_key_for_storage(key: bytes) -> bytes:
