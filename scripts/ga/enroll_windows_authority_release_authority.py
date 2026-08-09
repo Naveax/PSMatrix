@@ -16,11 +16,13 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from psmatrix import __version__
 from psmatrix.signing import public_key_id, sign_bytes, verify_bytes
 from psmatrix.util import atomic_write_json
 
 
 _RC = re.compile(r"^2\.0\.0rc[0-9]+$")
+_SHA40 = re.compile(r"^[0-9a-f]{40}$")
 _ALLOWED_REASON = "lost_previous_private_authority"
 _PRIVATE_MARKERS = (
     b"-----BEGIN PRIVATE KEY-----",
@@ -115,10 +117,16 @@ def enroll(
     previous_public_key: Path,
     output_root: Path,
     version: str,
+    candidate_commit: str,
     rotation_reason: str,
 ) -> dict[str, Any]:
     if not _RC.fullmatch(version):
         raise RuntimeError(f"Release authority enrollment requires a 2.0.0rcN version, got {version!r}")
+    if version != __version__:
+        raise RuntimeError(f"Candidate version mismatch: requested {version}, package {__version__}")
+    candidate_commit = candidate_commit.strip().lower()
+    if not _SHA40.fullmatch(candidate_commit):
+        raise RuntimeError("candidate_commit must be a full 40-character lowercase Git SHA")
     if rotation_reason != _ALLOWED_REASON:
         raise RuntimeError(f"Unsupported release-authority rotation reason: {rotation_reason!r}")
 
@@ -134,11 +142,12 @@ def enroll(
     previous_key_id = public_key_id(previous_public_key)
     new_key_id = public_key_id(public_key)
     if new_key_id == previous_key_id:
-        raise RuntimeError("RC4 rotation must not silently reuse the previous release authority")
+        raise RuntimeError("New-candidate rotation must not silently reuse the previous release authority")
 
     challenge = (
         "PSMatrix release authority enrollment v1\n"
         f"version={version}\n"
+        f"candidate_commit={candidate_commit}\n"
         f"rotation_reason={rotation_reason}\n"
     ).encode("utf-8")
     signature = sign_bytes(challenge, private_key)
@@ -152,6 +161,7 @@ def enroll(
         "kind": "psmatrix.windows-authority-release-authority-enrollment",
         "status": "READY_FOR_PUBLIC_AUTHORITY_REVIEW",
         "version": version,
+        "candidate_commit": candidate_commit,
         "rotation_reason": rotation_reason,
         "previous_authority": {
             "public_key_sha256": _sha256(previous_public_key),
@@ -189,6 +199,7 @@ def main() -> int:
     parser.add_argument("--previous-public-key", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--version", required=True)
+    parser.add_argument("--candidate-commit", required=True)
     parser.add_argument("--rotation-reason", required=True, choices=[_ALLOWED_REASON])
     args = parser.parse_args()
     report = enroll(
@@ -196,6 +207,7 @@ def main() -> int:
         previous_public_key=args.previous_public_key,
         output_root=args.output_root,
         version=args.version,
+        candidate_commit=args.candidate_commit,
         rotation_reason=args.rotation_reason,
     )
     print(json.dumps(report, indent=2, sort_keys=True))
