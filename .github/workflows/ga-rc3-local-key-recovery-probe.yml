@@ -1,0 +1,110 @@
+name: ga-rc3-local-key-recovery-probe
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/ga-rc3-local-key-recovery-probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Probe bounded local RC3 release-key recovery
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out current controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Find matching private key without disclosing it
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version 2.0
+
+          $lockPath = Join-Path $env:GITHUB_WORKSPACE 'ga-packs\03-authoritative-windows\rc3-release-lock.json'
+          $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+          if ([string]$lock.version -ne '2.0.0rc3' -or [string]$lock.release_commit -ne '34e87c60885001f8dd11744b8bf194a59e51bd1f') {
+              throw 'RC3 release lock identity mismatch.'
+          }
+          $lockedPublicPath = Join-Path $env:GITHUB_WORKSPACE ([string]$lock.release_public_key.path)
+          $lockedPem = Get-Content -LiteralPath $lockedPublicPath -Raw
+          $lockedRsa = [System.Security.Cryptography.RSA]::Create()
+          try {
+              $lockedRsa.ImportFromPem($lockedPem)
+              $lockedDer = $lockedRsa.ExportSubjectPublicKeyInfo()
+              $lockedSha = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData($lockedDer)).ToLowerInvariant()
+          }
+          finally {
+              $lockedRsa.Dispose()
+          }
+
+          $roots = @(
+              'C:\PSMatrix-Windows-GA',
+              'C:\Users\navea\Downloads\PSMatrix-Windows-Authority'
+          )
+          $presentRoots = @($roots | Where-Object { Test-Path -LiteralPath $_ -PathType Container })
+          $candidateCount = 0
+          $matching = @()
+
+          foreach ($root in $presentRoots) {
+              $files = @(Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue | Where-Object {
+                  $_.Length -gt 0 -and $_.Length -le 131072 -and (
+                      $_.Extension -in @('.pem','.key') -or $_.Name -match '(?i)private|release.*key|sign.*key'
+                  )
+              })
+              foreach ($file in $files) {
+                  try {
+                      $text = Get-Content -LiteralPath $file.FullName -Raw -ErrorAction Stop
+                      if ($text -notmatch '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----') { continue }
+                      $candidateCount += 1
+                      $rsa = [System.Security.Cryptography.RSA]::Create()
+                      try {
+                          $rsa.ImportFromPem($text)
+                          $der = $rsa.ExportSubjectPublicKeyInfo()
+                          $sha = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData($der)).ToLowerInvariant()
+                          if ($sha -eq $lockedSha) {
+                              $matching += $file.FullName
+                          }
+                      }
+                      finally {
+                          $rsa.Dispose()
+                      }
+                  }
+                  catch {
+                      continue
+                  }
+              }
+          }
+
+          Write-Host "bounded_roots_present=$($presentRoots.Count)"
+          Write-Host "private_key_candidates=$candidateCount"
+          Write-Host "matching_rc3_release_private_keys=$($matching.Count)"
+          if ($matching.Count -eq 1) {
+              Write-Host 'local_release_key_recovery=UNIQUE_MATCH'
+              "PSMATRIX_LOCAL_RC3_KEY_MATCH=$($matching[0])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+          elseif ($matching.Count -eq 0) {
+              Write-Host 'local_release_key_recovery=NO_MATCH'
+              exit 30
+          }
+          else {
+              Write-Host 'local_release_key_recovery=AMBIGUOUS'
+              exit 31
+          }
+
+      - name: Verify matched key path remains local only
+        if: success()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_LOCAL_RC3_KEY_MATCH)) { throw 'Unique local key match was not retained in job environment.' }
+          if (-not (Test-Path -LiteralPath $env:PSMATRIX_LOCAL_RC3_KEY_MATCH -PathType Leaf)) { throw 'Matched local key disappeared.' }
+          Write-Host 'matched_key_path_uploaded=false'
+          Write-Host 'matched_key_material_uploaded=false'
