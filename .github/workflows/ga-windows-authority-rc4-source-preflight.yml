@@ -93,7 +93,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'RC4 authority-rotation contract tests failed.' }
           Write-Host 'rc4_authority_rotation_contracts=PASS'
 
-      - name: Enforce no private authority in repository changes
+      - name: Enforce no tracked private authority material
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -103,28 +103,27 @@ jobs:
               '-----BEGIN EC PRIVATE KEY-----',
               '-----BEGIN OPENSSH PRIVATE KEY-----'
           )
-          $scanRoots = @(
-              '.github\workflows\ga-windows-authority-rc4-source-preflight.yml',
-              '.github\workflows\ga-windows-authority-rc4-release-authority-enrollment.yml',
-              '.github\workflows\ga-windows-authority-rc4-staging-candidate-selfhosted.yml',
-              '.github\workflows\ga-windows-authority-rc4-release-lock-review.yml',
-              'scripts\ga\enroll_windows_authority_release_authority.py',
-              'scripts\ga\build_windows_authority_release_lock_draft.py'
-          )
-          foreach ($relative in $scanRoots) {
+          $tracked = @(git ls-files)
+          if ($LASTEXITCODE -ne 0 -or $tracked.Count -eq 0) { throw 'Unable to enumerate tracked repository files.' }
+          foreach ($relative in $tracked) {
               $path = Join-Path $env:GITHUB_WORKSPACE $relative
-              $text = Get-Content -LiteralPath $path -Raw
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+              $file = Get-Item -LiteralPath $path
+              if ($file.Length -gt 1048576) { continue }
+              try {
+                  $text = [System.IO.File]::ReadAllText($file.FullName)
+              }
+              catch {
+                  continue
+              }
               foreach ($marker in $markers) {
-                  if ($text.Contains($marker) -and $relative -notlike '*.py') {
-                      # Workflow/source scanners intentionally contain marker strings only as detection constants.
-                      continue
+                  $pattern = '(?m)^' + [regex]::Escape($marker) + '\r?$'
+                  if ([regex]::IsMatch($text, $pattern)) {
+                      throw "Tracked private-key PEM material detected: $relative"
                   }
               }
           }
-          if (Test-Path -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'release.private.pem')) {
-              throw 'Private release key unexpectedly exists at repository root.'
-          }
-          Write-Host 'repository_private_authority_absence=PASS'
+          Write-Host "repository_private_authority_absence=PASS tracked_files=$($tracked.Count)"
 
       - name: Emit RC4 source-preflight summary
         shell: pwsh
