@@ -1,0 +1,82 @@
+name: ops-rc4-runner-gh-auth-probe
+
+on:
+  pull_request:
+    branches:
+      - release/2.0.0rc4-operator-bootstrap
+    paths:
+      - ".github/workflows/ops-rc4-runner-gh-auth-probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Probe NAVEAX gh environment-admin readiness without values
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 10
+    steps:
+      - name: Probe gh authentication and environment metadata access
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version 2.0
+          if ($env:RUNNER_NAME -ne 'NAVEAX' -or $env:RUNNER_OS -ne 'Windows') {
+              throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS"
+          }
+          $gh = (Get-Command gh.exe -ErrorAction SilentlyContinue).Source
+          if ([string]::IsNullOrWhiteSpace($gh)) {
+              $fallback = Join-Path $env:ProgramFiles 'GitHub CLI\gh.exe'
+              if (Test-Path -LiteralPath $fallback -PathType Leaf) { $gh = $fallback }
+          }
+          if ([string]::IsNullOrWhiteSpace($gh)) {
+              Write-Host 'gh_present=false'
+              exit 20
+          }
+          Write-Host 'gh_present=true'
+          & $gh auth status --hostname github.com 2>&1 | ForEach-Object {
+              $line = [string]$_
+              if ($line -notmatch '(?i)token|oauth|scope') { Write-Host $line }
+          }
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host 'gh_authenticated=false'
+              exit 21
+          }
+          Write-Host 'gh_authenticated=true'
+
+          $repo = (& $gh repo view Naveax/PSMatrix --json nameWithOwner --jq '.nameWithOwner').Trim()
+          if ($LASTEXITCODE -ne 0 -or $repo -ne 'Naveax/PSMatrix') {
+              Write-Host 'repo_access=false'
+              exit 22
+          }
+          Write-Host 'repo_access=true'
+
+          $releaseNames = @(& $gh secret list --repo Naveax/PSMatrix --env production-ga-release-signing --json name --jq '.[].name')
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host 'release_environment_metadata_access=false'
+              exit 23
+          }
+          Write-Host 'release_environment_metadata_access=true'
+          Write-Host "release_private_key_secret_present=$([bool]($releaseNames -contains 'PSMATRIX_RELEASE_PRIVATE_KEY'))"
+
+          $labNames = @(& $gh secret list --repo Naveax/PSMatrix --env production-ga-windows-lab --json name --jq '.[].name')
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host 'windows_lab_environment_metadata_access=false'
+              exit 24
+          }
+          Write-Host 'windows_lab_environment_metadata_access=true'
+          foreach ($name in @('PSMATRIX_WPS40_ADMIN_PASSWORD','PSMATRIX_WPS50_ADMIN_PASSWORD','PSMATRIX_WPS51_ADMIN_PASSWORD')) {
+              Write-Host "$($name.ToLowerInvariant())_present=$([bool]($labNames -contains $name))"
+          }
+
+          $gaRoot = & $gh variable get PSMATRIX_WINDOWS_GA_ROOT --repo Naveax/PSMatrix --env production-ga-windows-lab --json value --jq '.value' 2>$null
+          if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$gaRoot)) {
+              Write-Host 'windows_ga_root_variable_present=true'
+              Write-Host "windows_ga_root_is_canonical=$([bool](([string]$gaRoot).Trim() -eq 'C:\ProgramData\PSMatrix\ProductionGA'))"
+          }
+          else {
+              Write-Host 'windows_ga_root_variable_present=false'
+              Write-Host 'windows_ga_root_is_canonical=false'
+          }
+          Write-Host 'secret_values_read=false'
+          Write-Host 'mutation=false'
