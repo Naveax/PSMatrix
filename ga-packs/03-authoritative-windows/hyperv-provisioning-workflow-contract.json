@@ -1,0 +1,83 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-authority-hyperv-provisioning-workflow-contract",
+  "pack": "03-authoritative-windows",
+  "release_version": "2.0.0rc3",
+  "release_commit": "34e87c60885001f8dd11744b8bf194a59e51bd1f",
+  "workflow": "production-ga-windows-authority-provision-selfhosted",
+  "protected_environment": "production-ga-windows-lab",
+  "required_runner_labels": [
+    "self-hosted",
+    "Windows",
+    "X64",
+    "psmatrix-hyperv"
+  ],
+  "dispatch": {
+    "manual_only": true,
+    "release_commit_required": true,
+    "operation_run_id_required": true,
+    "operation_run_attempt_required": true,
+    "provision_timeout_bounded": true
+  },
+  "protected_secrets": {
+    "required": [
+      "PSMATRIX_WPS40_ADMIN_PASSWORD",
+      "PSMATRIX_WPS50_ADMIN_PASSWORD",
+      "PSMATRIX_WPS51_ADMIN_PASSWORD"
+    ],
+    "forbidden": [
+      "PSMATRIX_WINDOWS_LAB_PRIVATE_KEY",
+      "PSMATRIX_WINDOWS_LAB_PUBLIC_KEY",
+      "PSMATRIX_RELEASE_PRIVATE_KEY"
+    ]
+  },
+  "product_identity": {
+    "dual_checkout_required": true,
+    "current_control_checkout_required": true,
+    "exact_rc3_product_checkout_required": true,
+    "reviewed_release_lock_required": true,
+    "verified_release_public_key_required": true,
+    "exact_signed_rc3_wheel_required": true,
+    "wheel_install_mode": "offline-no-index-no-deps"
+  },
+  "prerequisites": {
+    "provisioning_manifest_kind": "psmatrix.windows-lab-media",
+    "exact_runtime_count": 3,
+    "hyper_v_generation": 2,
+    "clean_checkpoint_name": "psmatrix-clean",
+    "materialization_status": "PASS",
+    "product_loader_validation": "PASS",
+    "provisioning_manifest_sha256_must_match_materialization": true,
+    "operation_package_status": "READY_FOR_WINDOWS_HOST",
+    "operation_package_binding_status": "PASS",
+    "operation_package_must_match_current_provisioning_manifest_sha256": true,
+    "stale_rc2_operation_package_used": false
+  },
+  "execution": {
+    "product_lab_plan_required": true,
+    "product_lab_provision_required": true,
+    "exact_release_source_passed_to_provisioner": true,
+    "protected_hyperv_endpoint_required": true,
+    "protected_detailed_plan_and_report_only": true,
+    "canonical_vm_set_reverified_with_hyper_v": true,
+    "exact_vm_count": 3,
+    "exact_clean_checkpoint_count": 3
+  },
+  "success": {
+    "status": "VM_SET_PROVISIONED_OS_MEASUREMENT_PENDING",
+    "actual_os_identity_measured": false,
+    "endpoint_manifests_written": false,
+    "image_manifests_written": false,
+    "creates_virtual_machines": true,
+    "creates_checkpoints": true,
+    "runs_authoritative_campaign": false,
+    "authoritative": false,
+    "ga_eligible": false
+  },
+  "artifact_policy": {
+    "protected_detailed_plan_uploaded": false,
+    "protected_detailed_report_uploaded": false,
+    "media_or_secret_bundle_uploaded": false,
+    "sanitized_status_only": true
+  }
+}
