@@ -45,6 +45,38 @@ class SandboxTests(unittest.TestCase):
                     network="none",
                 )
 
+    def test_non_linux_auto_fallback_never_requires_posix_preexec(self):
+        capabilities = SandboxCapabilities(
+            platform="windows",
+            landlock_abi=0,
+            seccomp_filter=False,
+            privilege_drop=False,
+            namespaces=False,
+            chroot=False,
+            notes=("Strong local sandbox is implemented only on Linux",),
+        )
+        with tempfile.TemporaryDirectory() as temp, patch(
+            "psmatrix.sandbox.detect_capabilities", return_value=capabilities
+        ):
+            root = Path(temp)
+            executable = root / "pwsh.exe"
+            executable.write_text("", encoding="utf-8")
+            plan = build_plan(
+                mode="auto",
+                workspace=root,
+                executable=executable,
+                harness_paths=(),
+                env={"PATH": os.environ.get("PATH", "")},
+                limits=SandboxLimits(),
+                network="none",
+            )
+            self.assertEqual(plan.backend, "guarded-copy")
+            self.assertEqual(plan.network, "host")
+            self.assertIsNone(plan.drop_uid)
+            self.assertIsNone(plan.drop_gid)
+            self.assertIsNone(make_preexec(plan))
+            self.assertFalse(plan.capabilities.strong)
+
     @unittest.skipUnless(platform.system() == "Linux", "Linux-only sandbox")
     def test_guarded_backend_drops_root_and_blocks_ip_sockets(self):
         capabilities = detect_capabilities()
