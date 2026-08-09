@@ -53,6 +53,7 @@ jobs:
               $value = [Environment]::GetEnvironmentVariable($name)
               if ($value -cnotmatch '^[0-9]+$') { throw "$name must contain only decimal digits." }
           }
+          if ($env:ENROLLMENT_RUN_ID -eq $env:STAGING_RUN_ID) { throw 'Enrollment and staging run IDs must be distinct.' }
 
       - name: Check out exact RC4 candidate controls
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -148,11 +149,13 @@ jobs:
             --enrollment-root (Join-Path $env:GITHUB_WORKSPACE 'enrollment') `
             --previous-public-key (Join-Path $env:GITHUB_WORKSPACE 'candidate\release-assets\2.0.0rc2\psmatrix-2.0.0rc2-release-public.pem') `
             --output-root $output `
-            --candidate-commit $env:CANDIDATE_COMMIT
+            --candidate-commit $env:CANDIDATE_COMMIT `
+            --enrollment-run-id $env:ENROLLMENT_RUN_ID `
+            --staging-run-id $env:STAGING_RUN_ID
           if ($LASTEXITCODE -ne 0) { throw 'RC4 release-lock review bundle build failed.' }
           "PSMATRIX_RC4_LOCK_REVIEW=$output" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Enforce review-only lock boundary
+      - name: Enforce review-only lock boundary and provenance
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -167,6 +170,17 @@ jobs:
           if ([string]$draft.review_state -ne 'DRAFT_REQUIRES_HUMAN_REVIEW') { throw 'RC4 lock draft is not explicitly review-only.' }
           if ([bool]$draft.active_lock_written -or [bool]$draft.release_artifacts_signed -or [bool]$draft.authoritative -or [bool]$draft.ga_eligible) { throw 'RC4 lock draft improperly claims active/signing/authority state.' }
           if ([string]$review.status -ne 'READY_FOR_HUMAN_REVIEW' -or [bool]$review.active_lock_written -or [bool]$review.release_artifacts_signed) { throw 'RC4 lock review report boundary mismatch.' }
+
+          foreach ($value in @($draft,$review)) {
+              if ([string]$value.source_runs.control_head -ne $env:CANDIDATE_COMMIT) { throw 'RC4 source-run control-head provenance mismatch.' }
+              if ([string]$value.source_runs.authority_enrollment.run_id -ne $env:ENROLLMENT_RUN_ID) { throw 'RC4 enrollment run-ID provenance mismatch.' }
+              if ([string]$value.source_runs.authority_enrollment.workflow -ne 'production-ga-windows-authority-rc4-release-authority-enrollment') { throw 'RC4 enrollment workflow provenance mismatch.' }
+              if ([string]$value.source_runs.authority_enrollment.artifact -ne 'psmatrix-2.0.0rc4-release-authority-enrollment') { throw 'RC4 enrollment artifact provenance mismatch.' }
+              if ([string]$value.source_runs.unsigned_staging.run_id -ne $env:STAGING_RUN_ID) { throw 'RC4 staging run-ID provenance mismatch.' }
+              if ([string]$value.source_runs.unsigned_staging.workflow -ne 'production-ga-windows-authority-rc4-staging-candidate-selfhosted') { throw 'RC4 staging workflow provenance mismatch.' }
+              if ([string]$value.source_runs.unsigned_staging.artifact -ne 'windows-authority-rc4-unlocked-staging-candidate') { throw 'RC4 staging artifact provenance mismatch.' }
+          }
+
           $activeLock = Join-Path $env:PSMATRIX_RC4_LOCK_REVIEW 'rc4-release-lock.json'
           if (Test-Path -LiteralPath $activeLock) { throw 'Review workflow must not materialize an active rc4-release-lock.json.' }
           $privateMarkers = @('-----BEGIN PRIVATE KEY-----','-----BEGIN RSA PRIVATE KEY-----','-----BEGIN EC PRIVATE KEY-----','-----BEGIN OPENSSH PRIVATE KEY-----')
@@ -176,6 +190,7 @@ jobs:
                   if ($text.Contains($marker)) { throw "Private-key material found in RC4 lock review bundle: $($file.Name)" }
               }
           }
+          Write-Host 'rc4_source_run_provenance=PASS'
           Write-Host 'rc4_release_lock_review_bundle=PASS'
           Write-Host 'active_lock_written=false'
           Write-Host 'release_artifacts_signed=false'
