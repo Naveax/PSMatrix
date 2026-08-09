@@ -17,6 +17,7 @@ on:
       - "src/psmatrix/__init__.py"
       - "tests/test_windows_authority_release_candidate_builder.py"
       - "tests/test_windows_authority_rc4_authority_rotation.py"
+      - "tests/test_windows_authority_rc4_authority_rotation_runtime.py"
 
 concurrency:
   group: production-ga-windows-authority-rc4-source-preflight-${{ github.ref }}
@@ -79,19 +80,22 @@ jobs:
               scripts/ga/build_windows_authority_release_candidate.py `
               scripts/ga/build_windows_authority_release_lock_draft.py `
               tests/test_windows_authority_release_candidate_builder.py `
-              tests/test_windows_authority_rc4_authority_rotation.py
+              tests/test_windows_authority_rc4_authority_rotation.py `
+              tests/test_windows_authority_rc4_authority_rotation_runtime.py
           if ($LASTEXITCODE -ne 0) { throw 'RC4 release-control Python compile failed.' }
           Write-Host 'rc4_python_compile=PASS'
 
-      - name: Run RC4 authority-rotation contracts
+      - name: Run RC4 authority-rotation contracts and runtime smoke
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           & python -m unittest -v `
               tests.test_windows_authority_release_candidate_builder `
-              tests.test_windows_authority_rc4_authority_rotation
-          if ($LASTEXITCODE -ne 0) { throw 'RC4 authority-rotation contract tests failed.' }
+              tests.test_windows_authority_rc4_authority_rotation `
+              tests.test_windows_authority_rc4_authority_rotation_runtime
+          if ($LASTEXITCODE -ne 0) { throw 'RC4 authority-rotation contract/runtime tests failed.' }
           Write-Host 'rc4_authority_rotation_contracts=PASS'
+          Write-Host 'rc4_authority_rotation_runtime=PASS'
 
       - name: Enforce no tracked private authority material
         shell: pwsh
