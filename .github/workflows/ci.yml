@@ -19,7 +19,7 @@ jobs:
     name: Trusted self-hosted source and core gate
     if: >-
       github.event_name != 'pull_request' ||
-      (github.event.pull_request.head.repo.full_name == github.repository && github.actor == 'NaveAX')
+      (github.event.pull_request.head.repo.full_name == github.repository && github.actor == 'Naveax')
     runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
     timeout-minutes: 45
     env:
