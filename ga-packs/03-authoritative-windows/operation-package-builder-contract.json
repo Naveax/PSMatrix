@@ -7,12 +7,21 @@
   "input_requirements": {
     "protected_release_intake_status": "RELEASE_CLOSURE_READY",
     "canonical_release_authority_status": "READY",
-    "media_manifest_complete": true,
-    "media_manifest_ready_for_hyper_v_provisioning": true,
+    "selection_materialization_kind": "psmatrix.windows-authority-media-selection-materialization",
+    "selection_materialization_complete": true,
+    "provisioning_manifest_kind": "psmatrix.windows-lab-media",
+    "provisioning_manifest_complete": true,
+    "provisioning_manifest_ready_for_hyper_v_provisioning": true,
+    "provisioning_materialization_status": "PASS",
+    "provisioning_product_loader_validation": "PASS",
+    "operation_package_handoff_validation": "PASS",
     "signed_release_manifest_reverified": true,
     "signed_release_artifacts_must_equal_reviewed_lock": true,
     "canonical_manifest_sha256_must_match_disk": true,
-    "media_manifest_inventory_sha256_must_match_disk": true
+    "selection_inventory_sha256_must_match_disk": true,
+    "provisioning_manifest_sha256_must_match_materialization_report": true,
+    "selection_sha256_must_match_materialization_report": true,
+    "profile_sha256_must_match_materialization_report": true
   },
   "release_binding": {
     "release_commit": true,
@@ -22,6 +31,10 @@
     "windows_certification_kit_sha256": true,
     "windows_provisioning_kit_sha256": true,
     "windows_lab_media_sha256": true,
+    "windows_authority_media_selection_sha256": true,
+    "provisioning_profile_sha256": true,
+    "provisioning_materialization_report_sha256": true,
+    "canonical_inventory_sha256": true,
     "canonical_binding_sha256": true
   },
   "package": {
@@ -35,6 +48,7 @@
     "embeds_signed_release_manifest": true,
     "embeds_public_release_verification_material": true,
     "embeds_windows_lab_media_manifest": true,
+    "embeds_sanitized_provisioning_binding": true,
     "embeds_controller_contracts": true,
     "credential_bundle_contents_included": false,
     "worker_signing_bundle_contents_included": false,
@@ -45,6 +59,8 @@
     "downloads_files": false,
     "extracts_existing_operation_package": false,
     "reads_historical_rc2_operation_package": false,
+    "opens_credential_bundle": false,
+    "opens_worker_signing_bundle": false,
     "creates_virtual_machines": false,
     "creates_checkpoints": false,
     "restores_snapshots": false,
