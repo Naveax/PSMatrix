@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import tarfile
 import tempfile
@@ -104,11 +105,14 @@ class RuntimeCacheFallbackTests(unittest.TestCase):
             self.assertTrue(installation.executable.is_file())
             if os.name != "nt":
                 self.assertTrue(os.access(installation.executable, os.X_OK))
-            metadata = (installation.root / ".psmatrix-runtime.json").read_text(
-                encoding="utf-8"
+            metadata = json.loads(
+                (installation.root / ".psmatrix-runtime.json").read_text(
+                    encoding="utf-8"
+                )
             )
-            self.assertIn(str(manifest.resolve()), metadata)
-            self.assertIn('"detected_version": "7.6.4"', metadata)
+            self.assertEqual(metadata["hash_source"], str(manifest.resolve()))
+            self.assertEqual(metadata["detected_version"], "7.6.4")
+            self.assertEqual(metadata["sha256"], digest)
 
     def test_hash_parser_uses_cached_file_when_refresh_fails(self):
         from psmatrix.models import RuntimeSpec
