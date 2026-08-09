@@ -1,0 +1,125 @@
+name: ga-rc3-execution-pr-once
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/ga-rc3-execution-pr-once.yml"
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  execute:
+    name: Execute protected RC3 chain until first fail-closed boundary
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_COMMIT: 34e87c60885001f8dd11744b8bf194a59e51bd1f
+      STAGING_RUN_ID: "31189374564"
+      STAGING_CONTROL_HEAD: af4cef4a959941d6e35dc0b6ae88b183f35eadbb
+
+    steps:
+      - name: Dispatch conditional RC3 production chain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version 2.0
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') {
+              throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS"
+          }
+          $gaRoot = 'C:\ProgramData\PSMatrix\ProductionGA'
+          if (-not (Test-Path -LiteralPath $gaRoot -PathType Container)) {
+              throw 'Canonical GA root is missing.'
+          }
+          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) { throw 'GITHUB_TOKEN unavailable.' }
+
+          $headers = @{
+              Accept = 'application/vnd.github+json'
+              Authorization = "Bearer $env:GH_TOKEN"
+              'X-GitHub-Api-Version' = '2026-03-10'
+              'User-Agent' = 'psmatrix-rc3-pr-orchestrator'
+          }
+          $base = 'https://api.github.com/repos/Naveax/PSMatrix'
+
+          function Invoke-Gh {
+              param([string]$Method,[string]$Path,[hashtable]$Body)
+              $p = @{ Method=$Method; Uri="$base/$Path"; Headers=$headers; TimeoutSec=30 }
+              if ($null -ne $Body) { $p.ContentType='application/json'; $p.Body=($Body|ConvertTo-Json -Depth 12 -Compress) }
+              Invoke-RestMethod @p
+          }
+
+          function Dispatch-Wait {
+              param([string]$Workflow,[hashtable]$Inputs,[int]$TimeoutSeconds=240)
+              Write-Host "dispatch=$Workflow"
+              $r = Invoke-Gh 'POST' "actions/workflows/$Workflow/dispatches" @{ref='main';inputs=$Inputs}
+              $id = [int64]$r.workflow_run_id
+              if ($id -le 0) { throw "No workflow_run_id returned for $Workflow" }
+              Write-Host "run_id=$id"
+              $deadline=(Get-Date).AddSeconds($TimeoutSeconds)
+              do {
+                  Start-Sleep -Seconds 2
+                  $run=Invoke-Gh 'GET' "actions/runs/$id" $null
+                  if ([string]$run.status -eq 'completed') { return $run }
+              } while ((Get-Date) -lt $deadline)
+              throw "Timeout waiting for $Workflow run $id"
+          }
+
+          function Stop-Chain {
+              param([string]$Stage,$Run)
+              $jobs=Invoke-Gh 'GET' "actions/runs/$($Run.id)/jobs?per_page=100" $null
+              $steps=0
+              foreach($j in @($jobs.jobs)){$steps+=@($j.steps).Count}
+              Write-Host "chain_stop_stage=$Stage"
+              Write-Host "chain_stop_run_id=$($Run.id)"
+              Write-Host "chain_stop_conclusion=$($Run.conclusion)"
+              Write-Host "chain_stop_jobs=$(@($jobs.jobs).Count)"
+              Write-Host "chain_stop_steps=$steps"
+          }
+
+          $signing=Dispatch-Wait 'ga-windows-authority-release-sign-from-staging.yml' @{
+              release_commit=$env:RELEASE_COMMIT
+              staging_run_id=$env:STAGING_RUN_ID
+              staging_control_head=$env:STAGING_CONTROL_HEAD
+          }
+          Write-Host "signing_run_id=$($signing.id) conclusion=$($signing.conclusion) head=$($signing.head_sha)"
+          if([string]$signing.conclusion -ne 'success'){Stop-Chain 'signing' $signing; exit 20}
+
+          $intake=Dispatch-Wait 'ga-windows-authority-release-intake-selfhosted.yml' @{
+              release_commit=$env:RELEASE_COMMIT
+              signing_run_id=[string]$signing.id
+              signing_control_head=[string]$signing.head_sha
+          }
+          Write-Host "intake_run_id=$($intake.id) conclusion=$($intake.conclusion)"
+          if([string]$intake.conclusion -ne 'success'){Stop-Chain 'intake' $intake; exit 21}
+
+          $media=Dispatch-Wait 'ga-windows-authority-media-readiness-selfhosted.yml' @{
+              release_commit=$env:RELEASE_COMMIT
+              inspect_iso_images='true'
+          }
+          Write-Host "media_run_id=$($media.id) conclusion=$($media.conclusion)"
+          if([string]$media.conclusion -ne 'success'){Stop-Chain 'media-readiness' $media; exit 22}
+
+          $manifest=Dispatch-Wait 'ga-windows-authority-provisioning-manifest-selfhosted.yml' @{
+              release_commit=$env:RELEASE_COMMIT
+          }
+          Write-Host "manifest_run_id=$($manifest.id) conclusion=$($manifest.conclusion)"
+          if([string]$manifest.conclusion -ne 'success'){Stop-Chain 'provisioning-manifest' $manifest; exit 23}
+
+          $operation=Dispatch-Wait 'ga-windows-authority-operation-package-selfhosted.yml' @{
+              release_commit=$env:RELEASE_COMMIT
+          }
+          Write-Host "operation_run_id=$($operation.id) attempt=$($operation.run_attempt) conclusion=$($operation.conclusion)"
+          if([string]$operation.conclusion -ne 'success'){Stop-Chain 'operation-package' $operation; exit 24}
+
+          $provision=Dispatch-Wait 'ga-windows-authority-provision-selfhosted.yml' @{
+              release_commit=$env:RELEASE_COMMIT
+              operation_run_id=[string]$operation.id
+              operation_run_attempt=[string]$operation.run_attempt
+              provision_timeout_seconds='7200'
+          } 900
+          Write-Host "provision_run_id=$($provision.id) conclusion=$($provision.conclusion)"
+          if([string]$provision.conclusion -ne 'success'){Stop-Chain 'hyperv-provision' $provision; exit 25}
+          Write-Host 'rc3_steps_3_through_8=PASS'
