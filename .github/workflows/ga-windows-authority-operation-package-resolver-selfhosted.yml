@@ -24,7 +24,6 @@ jobs:
     timeout-minutes: 10
     environment: production-ga-windows-lab
     env:
-      PSMATRIX_WINDOWS_GA_ROOT: ${{ vars.PSMATRIX_WINDOWS_GA_ROOT }}
       RELEASE_COMMIT: 34e87c60885001f8dd11744b8bf194a59e51bd1f
 
     steps:
@@ -55,7 +54,7 @@ jobs:
           }
 
           if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_WINDOWS_GA_ROOT)) {
-              throw 'PSMATRIX_WINDOWS_GA_ROOT is missing from production-ga-windows-lab.'
+              throw 'PSMATRIX_WINDOWS_GA_ROOT is missing from runner environment.'
           }
           if (-not [System.IO.Path]::IsPathRooted($env:PSMATRIX_WINDOWS_GA_ROOT)) {
               throw 'PSMATRIX_WINDOWS_GA_ROOT must be absolute.'
