@@ -1,0 +1,38 @@
+name: ci-selfhosted-scheduler-diagnostic
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-selfhosted-scheduler-diagnostic-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  scheduler-diagnostic:
+    name: Verify self-hosted Actions scheduler
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.head.repo.full_name == github.repository && github.actor == 'Naveax')
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 5
+    steps:
+      - name: Prove runner assignment without repository execution
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows') {
+              throw "Expected Windows self-hosted runner; got $env:RUNNER_OS"
+          }
+          if ($env:RUNNER_NAME -ne 'NAVEAX') {
+              throw "Expected NAVEAX runner; got $env:RUNNER_NAME"
+          }
+          Write-Host "scheduler_diagnostic=PASS"
+          Write-Host "runner_name=$env:RUNNER_NAME"
+          Write-Host "runner_os=$env:RUNNER_OS"
+          Write-Host "repository=$env:GITHUB_REPOSITORY"
+          Write-Host "run_id=$env:GITHUB_RUN_ID"
+          Write-Host "run_attempt=$env:GITHUB_RUN_ATTEMPT"
