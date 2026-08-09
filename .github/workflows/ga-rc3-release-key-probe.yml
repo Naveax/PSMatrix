@@ -1,0 +1,68 @@
+name: ga-rc3-release-key-probe
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/ga-rc3-release-key-probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Verify prior protected release key matches current RC3 authority
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production-ga-final-release
+    env:
+      OLD_RELEASE_PRIVATE_KEY: ${{ secrets.PSMATRIX_FINAL_GA_PRIVATE_KEY }}
+      OLD_RELEASE_PUBLIC_KEY: ${{ secrets.PSMATRIX_FINAL_GA_PUBLIC_KEY }}
+
+    steps:
+      - name: Check out current RC3 controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Compare prior protected authority to current RC3 lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "${OLD_RELEASE_PRIVATE_KEY:-}" ]] || { echo 'prior_private_key_present=false'; exit 20; }
+          echo 'prior_private_key_present=true'
+          if [[ -n "${OLD_RELEASE_PUBLIC_KEY:-}" ]]; then
+            echo 'prior_public_key_secret_present=true'
+          else
+            echo 'prior_public_key_secret_present=false'
+          fi
+          tmp="${RUNNER_TEMP}/psmatrix-rc3-key-probe"
+          rm -rf "$tmp"
+          install -d -m 0700 "$tmp"
+          trap 'shred -u "$tmp/prior.private.pem" 2>/dev/null || rm -f "$tmp/prior.private.pem"; rm -rf "$tmp"' EXIT
+          printf '%s\n' "$OLD_RELEASE_PRIVATE_KEY" > "$tmp/prior.private.pem"
+          chmod 0600 "$tmp/prior.private.pem"
+
+          python - <<'PY' > "$tmp/locked-path.txt"
+          import json
+          from pathlib import Path
+          lock = json.loads(Path('ga-packs/03-authoritative-windows/rc3-release-lock.json').read_text(encoding='utf-8'))
+          assert lock['version'] == '2.0.0rc3'
+          assert lock['release_commit'] == '34e87c60885001f8dd11744b8bf194a59e51bd1f'
+          print(lock['release_public_key']['path'])
+          PY
+          locked="$(cat "$tmp/locked-path.txt")"
+          [[ -f "$locked" ]] || { echo 'locked_public_key_missing=true'; exit 21; }
+
+          openssl pkey -in "$tmp/prior.private.pem" -pubout -out "$tmp/derived.public.pem" >/dev/null 2>&1
+          openssl pkey -pubin -in "$tmp/derived.public.pem" -outform DER -out "$tmp/derived.public.der" >/dev/null 2>&1
+          openssl pkey -pubin -in "$locked" -outform DER -out "$tmp/locked.public.der" >/dev/null 2>&1
+          derived_sha="$(sha256sum "$tmp/derived.public.der" | awk '{print $1}')"
+          locked_sha="$(sha256sum "$tmp/locked.public.der" | awk '{print $1}')"
+          if [[ "$derived_sha" != "$locked_sha" ]]; then
+            echo 'prior_private_key_matches_rc3_lock=false'
+            exit 22
+          fi
+          echo 'prior_private_key_matches_rc3_lock=true'
+          echo "matched_public_der_sha256=$locked_sha"
