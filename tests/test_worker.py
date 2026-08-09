@@ -1,4 +1,3 @@
-import hashlib
 import json
 import os
 import subprocess
@@ -6,7 +5,9 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from psmatrix.pki import create_ca, issue_certificate
 from psmatrix.signing import TrustStore, generate_ed25519_keypair
 from psmatrix.remote_protocol import create_job_request
 from psmatrix.remote_worker import (
@@ -22,12 +23,6 @@ from psmatrix.remote_worker import (
 )
 
 
-def run(args, cwd):
-    subprocess.run(args, cwd=cwd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-
-
-
-
 def real_pwsh() -> Path:
     configured = os.environ.get("PSMATRIX_TEST_PWSH")
     candidates = [
@@ -39,14 +34,38 @@ def real_pwsh() -> Path:
             return candidate.resolve()
     return Path("/nonexistent/psmatrix-test-pwsh")
 
-def certificates(root: Path):
-    run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", "ca.key", "-out", "ca.pem", "-days", "1", "-subj", "/CN=PSMatrix Test CA", "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign"], root)
-    (root / "server.ext").write_text("subjectAltName=DNS:localhost\nextendedKeyUsage=serverAuth\n", encoding="utf-8")
-    run(["openssl", "req", "-newkey", "rsa:2048", "-nodes", "-keyout", "server.key", "-out", "server.csr", "-subj", "/CN=localhost"], root)
-    run(["openssl", "x509", "-req", "-in", "server.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial", "-out", "server.pem", "-days", "1", "-extfile", "server.ext"], root)
-    (root / "client.ext").write_text("extendedKeyUsage=clientAuth\n", encoding="utf-8")
-    run(["openssl", "req", "-newkey", "rsa:2048", "-nodes", "-keyout", "client.key", "-out", "client.csr", "-subj", "/CN=controller-a"], root)
-    run(["openssl", "x509", "-req", "-in", "client.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial", "-out", "client.pem", "-days", "1", "-extfile", "client.ext"], root)
+
+def certificates(root: Path) -> None:
+    """Create worker TLS material through the product PKI implementation."""
+    ca = create_ca(root / "tls-ca", common_name="PSMatrix Test CA", days=30)
+    ca_certificate = Path(ca["certificate"])
+    ca_private_key = Path(ca["private_key"])
+    server = issue_certificate(
+        ca_certificate,
+        ca_private_key,
+        root / "tls-server",
+        common_name="localhost",
+        role="server",
+        dns_names=["localhost"],
+        days=7,
+    )
+    client = issue_certificate(
+        ca_certificate,
+        ca_private_key,
+        root / "tls-client",
+        common_name="controller-a",
+        role="client",
+        days=7,
+    )
+    material = {
+        root / "ca.pem": ca_certificate,
+        root / "server.pem": Path(server["certificate"]),
+        root / "server.key": Path(server["private_key"]),
+        root / "client.pem": Path(client["certificate"]),
+        root / "client.key": Path(client["private_key"]),
+    }
+    for destination, source in material.items():
+        destination.write_bytes(source.read_bytes())
 
 
 class WorkerTests(unittest.TestCase):
@@ -59,25 +78,42 @@ class WorkerTests(unittest.TestCase):
             source.write_text("'ok'", encoding="utf-8")
             archive = create_source_archive(project, [source])
             self.assertGreater(len(archive), 10)
+
             reserved = project / "CON.ps1"
             reserved.write_text("'bad'", encoding="utf-8")
             with self.assertRaises(WorkerError):
                 create_source_archive(project, [reserved])
+
             upper = project / "Case.ps1"
             lower = project / "case.ps1"
             upper.write_text("'upper'", encoding="utf-8")
             lower.write_text("'lower'", encoding="utf-8")
-            with self.assertRaises(WorkerError):
-                create_source_archive(project, [upper, lower])
+            # A case-insensitive filesystem has already collapsed these into
+            # one physical file, so there are not two archive entries to
+            # reject. On a case-sensitive filesystem the archive layer must
+            # reject the Windows-ambiguous pair.
+            try:
+                same_physical_file = os.path.samefile(upper, lower)
+            except OSError:
+                same_physical_file = False
+            if not same_physical_file:
+                with self.assertRaises(WorkerError):
+                    create_source_archive(project, [upper, lower])
+
             outside = root / "outside.ps1"
             outside.write_text("'bad'", encoding="utf-8")
             with self.assertRaises(WorkerError):
                 create_source_archive(project, [outside])
+
             if hasattr(os, "symlink"):
                 link = project / "link.ps1"
-                link.symlink_to(source)
-                with self.assertRaises(WorkerError):
-                    create_source_archive(project, [link])
+                try:
+                    link.symlink_to(source)
+                except (OSError, NotImplementedError):
+                    pass
+                else:
+                    with self.assertRaises(WorkerError):
+                        create_source_archive(project, [link])
 
     def test_mtls_signed_job_roundtrip(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -96,10 +132,19 @@ class WorkerTests(unittest.TestCase):
                 controller_certificate_sha256=certificate_sha256(root / "client.pem"),
                 workspace_root=workspace, powershell_executable="unused", expected_version="5.1", reset_required=False,
             )
+
             def execute(request, artifact):
                 self.assertGreater(len(artifact), 10)
-                return ({"schema": 1, "status": "PASS", "worker_id": "worker-a", "targets": [{"status": "PASS"}]}, {"required": False, "before": {"passed": True}, "after": {"passed": True}})
-            service = WorkerService(config, execute, lambda: {"worker_id": "worker-a", "runtime_id": "windows-powershell-5.1", "authoritative": True})
+                return (
+                    {"schema": 1, "status": "PASS", "worker_id": "worker-a", "targets": [{"status": "PASS"}]},
+                    {"required": False, "before": {"passed": True}, "after": {"passed": True}},
+                )
+
+            service = WorkerService(
+                config,
+                execute,
+                lambda: {"worker_id": "worker-a", "runtime_id": "windows-powershell-5.1", "authoritative": True},
+            )
             server = build_worker_server(service)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
@@ -115,7 +160,14 @@ class WorkerTests(unittest.TestCase):
                 expected_runtime_id="windows-powershell-5.1",
             )
             try:
-                result = submit_remote_job(endpoint, root=project, files=[source], entrypoint=source, options={}, timeout=30)
+                result = submit_remote_job(
+                    endpoint,
+                    root=project,
+                    files=[source],
+                    entrypoint=source,
+                    options={},
+                    timeout=30,
+                )
                 self.assertTrue(result["valid"])
                 self.assertEqual(result["report"]["status"], "PASS")
             finally:
@@ -140,10 +192,19 @@ class WorkerTests(unittest.TestCase):
                 workspace_root=root / "workspace", powershell_executable="unused", expected_version="5.1", reset_required=False,
             )
             calls = []
+
             def execute(request, artifact):
                 calls.append(request["job_id"])
-                return ({"schema": 1, "status": "PASS", "worker_id": "worker-a", "targets": []}, {"required": False, "before": {"passed": True}, "after": {"passed": True}})
-            service = WorkerService(config, execute, lambda: {"worker_id": "worker-a", "runtime_id": "windows-powershell-5.1", "authoritative": True})
+                return (
+                    {"schema": 1, "status": "PASS", "worker_id": "worker-a", "targets": []},
+                    {"required": False, "before": {"passed": True}, "after": {"passed": True}},
+                )
+
+            service = WorkerService(
+                config,
+                execute,
+                lambda: {"worker_id": "worker-a", "runtime_id": "windows-powershell-5.1", "authoritative": True},
+            )
             project = root / "project"
             project.mkdir()
             source = project / "tool.ps1"
@@ -186,54 +247,67 @@ class WorkerTests(unittest.TestCase):
             ):
                 (secrets / name).write_bytes(source.read_bytes())
             endpoint_path = config_dir / "endpoint.json"
-            endpoint_path.write_text(json.dumps({
-                "schema": 1,
-                "url": "https://localhost:9443",
-                "worker_id": "windows-powershell-5.1-a",
-                "runtime_id": "windows-powershell-5.1",
-                "controller_id": "controller-a",
-                "tls": {
-                    "certificate": "../secrets/client.pem",
-                    "private_key": "../secrets/client.key",
-                    "server_ca": "../secrets/ca.pem"
-                },
-                "controller_signing": {
-                    "private_key": "../secrets/controller-private.pem",
-                    "public_key": "../secrets/controller-public.pem"
-                },
-                "worker_signing": {"identity": "windows-powershell-5.1-a"}
-            }), encoding="utf-8")
+            endpoint_path.write_text(
+                json.dumps({
+                    "schema": 1,
+                    "url": "https://localhost:9443",
+                    "worker_id": "windows-powershell-5.1-a",
+                    "runtime_id": "windows-powershell-5.1",
+                    "controller_id": "controller-a",
+                    "tls": {
+                        "certificate": "../secrets/client.pem",
+                        "private_key": "../secrets/client.key",
+                        "server_ca": "../secrets/ca.pem",
+                    },
+                    "controller_signing": {
+                        "private_key": "../secrets/controller-private.pem",
+                        "public_key": "../secrets/controller-public.pem",
+                    },
+                    "worker_signing": {"identity": "windows-powershell-5.1-a"},
+                }),
+                encoding="utf-8",
+            )
             endpoint = RemoteEndpoint.load(endpoint_path, trust_home=trust_home)
             self.assertEqual(endpoint.worker_signing_public_key, trusted.public_key)
             self.assertEqual(endpoint.expected_server_certificate_sha256, trusted.certificate_sha256)
             self.assertEqual(endpoint.expected_runtime_id, "windows-powershell-5.1")
 
-
     def test_core_worker_probe_uses_exact_windows_core_runtime_id(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            executable = root / "pwsh-core"
-            executable.write_text("""#!/usr/bin/env python3
-import json
-print(json.dumps({
-    'version': '7.6.4', 'edition': 'Core', 'platform': 'Windows_NT',
-    'is_windows': True, 'is64bit': True, 'commands': {}, 'providers': [], 'modules': []
-}))
-""", encoding="utf-8")
-            executable.chmod(0o755)
-            from psmatrix.remote_worker import probe_windows_powershell
-            capability = probe_windows_powershell(str(executable), "7.6.4")
-            self.assertEqual(capability["runtime_id"], "powershell-7.6.4-windows-x64")
-            self.assertTrue(capability["authoritative"])
+        payload = json.dumps({
+            "version": "7.6.4",
+            "edition": "Core",
+            "platform": "Windows_NT",
+            "is_windows": True,
+            "is64bit": True,
+            "commands": {},
+            "providers": [],
+            "modules": [],
+        })
+        completed = subprocess.CompletedProcess(
+            ["pwsh-core"], 0, stdout=payload + "\n", stderr=""
+        )
+        from psmatrix.remote_worker import probe_windows_powershell
+
+        with patch(
+            "psmatrix.remote_worker._run_process_tree",
+            return_value=completed,
+        ) as process_probe:
+            capability = probe_windows_powershell("pwsh-core", "7.6.4")
+        process_probe.assert_called_once()
+        self.assertEqual(capability["runtime_id"], "powershell-7.6.4-windows-x64")
+        self.assertTrue(capability["authoritative"])
 
     def test_non_windows_probe_is_not_authoritative(self):
         pwsh = real_pwsh()
         if not pwsh.is_file():
             self.skipTest("real PowerShell 7.6.4 runtime unavailable")
         from psmatrix.remote_worker import probe_windows_powershell
+
         with self.assertRaises(WorkerError):
             probe_windows_powershell(str(pwsh), "7.6.4")
-        capability = probe_windows_powershell(str(pwsh), "7.6.4", require_windows=False)
+        capability = probe_windows_powershell(
+            str(pwsh), "7.6.4", require_windows=False
+        )
         self.assertFalse(capability["authoritative"])
 
     def test_snapshot_reset_is_fail_closed_and_harness_runs_with_real_pwsh_when_available(self):
@@ -245,7 +319,10 @@ print(json.dumps({
             project = root / "project"
             project.mkdir()
             source = project / "tool.ps1"
-            source.write_text("param([string]$Name)\nSet-Content -LiteralPath output.txt -Value $Name\nWrite-Warning 'warn'\n", encoding="utf-8")
+            source.write_text(
+                "param([string]$Name)\nSet-Content -LiteralPath output.txt -Value $Name\nWrite-Warning 'warn'\n",
+                encoding="utf-8",
+            )
             archive = create_source_archive(project, [source])
             base = dict(
                 worker_id="worker-local", host="127.0.0.1", port=0,
@@ -255,25 +332,44 @@ print(json.dumps({
                 workspace_root=root / "workspace", powershell_executable=str(pwsh), expected_version="7.6.4",
                 allow_non_windows_for_testing=True,
             )
-            missing_reset = WindowsJobExecutor(WorkerConfig(**base, reset_required=True), Path("src/psmatrix/windows_worker.ps1"))
-            report, reset = missing_reset({"job_id": "00000000-0000-0000-0000-000000000001", "entrypoint": "tool.ps1", "options": {}}, archive)
+            missing_reset = WindowsJobExecutor(
+                WorkerConfig(**base, reset_required=True),
+                Path("src/psmatrix/windows_worker.ps1"),
+            )
+            report, reset = missing_reset(
+                {
+                    "job_id": "00000000-0000-0000-0000-000000000001",
+                    "entrypoint": "tool.ps1",
+                    "options": {},
+                },
+                archive,
+            )
             self.assertEqual(report["status"], "FAIL_RESET")
             self.assertFalse(reset["before"]["passed"])
 
             configured_values = dict(base)
             configured_values["workspace_root"] = root / "workspace2"
             configured = WindowsJobExecutor(
-                WorkerConfig(**configured_values, reset_required=True, reset_before=("bash", "-lc", "true"), reset_after=("bash", "-lc", "true")),
+                WorkerConfig(
+                    **configured_values,
+                    reset_required=True,
+                    reset_before=("bash", "-lc", "true"),
+                    reset_after=("bash", "-lc", "true"),
+                ),
                 Path("src/psmatrix/windows_worker.ps1"),
             )
-            report, reset = configured({
-                "job_id": "00000000-0000-0000-0000-000000000002", "entrypoint": "tool.ps1",
-                "options": {
-                    "parameters": {"Name": "verified"},
-                    "verification": [{"kind": "file_exists", "path": "output.txt"}],
-                    "timeout_seconds": 60,
+            report, reset = configured(
+                {
+                    "job_id": "00000000-0000-0000-0000-000000000002",
+                    "entrypoint": "tool.ps1",
+                    "options": {
+                        "parameters": {"Name": "verified"},
+                        "verification": [{"kind": "file_exists", "path": "output.txt"}],
+                        "timeout_seconds": 60,
+                    },
                 },
-            }, archive)
+                archive,
+            )
             self.assertEqual(report["status"], "PASS", report)
             self.assertTrue(reset["before"]["passed"] and reset["after"]["passed"])
             target = report["targets"][0]
