@@ -249,3 +249,4 @@ jobs:
               throw 'Expected at least one missing required canonical target before worker provisioning.'
           }
           Write-Host 'complete_matrix_contract=PASS'
+          exit 0
