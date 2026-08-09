@@ -15,6 +15,7 @@ on:
       - ".github/workflows/ga-windows-authority-rc4-release-sign-from-lock.yml"
       - ".github/workflows/ga-windows-authority-rc4-release-intake-selfhosted.yml"
       - ".github/workflows/ga-windows-authority-rc4-media-readiness-selfhosted.yml"
+      - ".github/workflows/ga-windows-authority-rc4-provisioning-manifest-selfhosted.yml"
       - "scripts/ga/enroll_windows_authority_release_authority.py"
       - "scripts/ga/build_windows_authority_release_candidate.py"
       - "scripts/ga/build_windows_authority_release_lock_draft.py"
@@ -23,8 +24,12 @@ on:
       - "scripts/ga/import_windows_authority_protected_release.py"
       - "scripts/ga/Invoke-PSMatrixWindowsAuthorityProtectedReleaseIntakeV2.ps1"
       - "scripts/ga/New-PSMatrixWindowsAuthorityMediaManifest.ps1"
+      - "scripts/ga/New-PSMatrixWindowsAuthorityProvisioningManifest.ps1"
+      - "scripts/ga/build_windows_authority_provisioning_manifest.py"
       - "ga-packs/03-authoritative-windows/rc3-release-lock.json"
       - "ga-packs/03-authoritative-windows/rc4-release-lock.json"
+      - "ga-packs/03-authoritative-windows/provisioning-manifest-contract.json"
+      - "ga-packs/03-authoritative-windows/rc4-provisioning-manifest-contract.json"
       - "release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem"
       - "pyproject.toml"
       - "src/psmatrix/__init__.py"
@@ -35,6 +40,8 @@ on:
       - "tests/test_windows_authority_protected_release_import.py"
       - "tests/test_windows_authority_rc4_protected_release_intake.py"
       - "tests/test_windows_authority_rc4_media_readiness.py"
+      - "tests/test_windows_authority_provisioning_manifest_workflow.py"
+      - "tests/test_windows_authority_rc4_provisioning_manifest.py"
   pull_request:
     branches:
       - main
@@ -48,6 +55,7 @@ on:
       - ".github/workflows/ga-windows-authority-rc4-release-sign-from-lock.yml"
       - ".github/workflows/ga-windows-authority-rc4-release-intake-selfhosted.yml"
       - ".github/workflows/ga-windows-authority-rc4-media-readiness-selfhosted.yml"
+      - ".github/workflows/ga-windows-authority-rc4-provisioning-manifest-selfhosted.yml"
       - "scripts/ga/enroll_windows_authority_release_authority.py"
       - "scripts/ga/build_windows_authority_release_candidate.py"
       - "scripts/ga/build_windows_authority_release_lock_draft.py"
@@ -56,8 +64,12 @@ on:
       - "scripts/ga/import_windows_authority_protected_release.py"
       - "scripts/ga/Invoke-PSMatrixWindowsAuthorityProtectedReleaseIntakeV2.ps1"
       - "scripts/ga/New-PSMatrixWindowsAuthorityMediaManifest.ps1"
+      - "scripts/ga/New-PSMatrixWindowsAuthorityProvisioningManifest.ps1"
+      - "scripts/ga/build_windows_authority_provisioning_manifest.py"
       - "ga-packs/03-authoritative-windows/rc3-release-lock.json"
       - "ga-packs/03-authoritative-windows/rc4-release-lock.json"
+      - "ga-packs/03-authoritative-windows/provisioning-manifest-contract.json"
+      - "ga-packs/03-authoritative-windows/rc4-provisioning-manifest-contract.json"
       - "release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem"
       - "pyproject.toml"
       - "src/psmatrix/__init__.py"
@@ -68,6 +80,8 @@ on:
       - "tests/test_windows_authority_protected_release_import.py"
       - "tests/test_windows_authority_rc4_protected_release_intake.py"
       - "tests/test_windows_authority_rc4_media_readiness.py"
+      - "tests/test_windows_authority_provisioning_manifest_workflow.py"
+      - "tests/test_windows_authority_rc4_provisioning_manifest.py"
 
 concurrency:
   group: production-ga-windows-authority-rc4-source-preflight-${{ github.event.pull_request.head.ref || github.ref }}
@@ -81,7 +95,7 @@ jobs:
     name: RC4 release-authority rotation source contract
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
-    timeout-minutes: 20
+    timeout-minutes: 25
     permissions:
       contents: read
     env:
@@ -128,15 +142,20 @@ jobs:
           Write-Host 'active_rc4_lock_present=false'
           Write-Host 'active_rc4_public_authority_present=false'
 
-      - name: Parse RC4 protected-release intake PowerShell
+      - name: Parse RC4 PowerShell control surfaces
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $path = Join-Path $env:GITHUB_WORKSPACE 'scripts\ga\Invoke-PSMatrixWindowsAuthorityProtectedReleaseIntakeV2.ps1'
-          $tokens = $null; $errors = $null
-          [void][System.Management.Automation.Language.Parser]::ParseFile($path,[ref]$tokens,[ref]$errors)
-          if (@($errors).Count -ne 0) { throw ('RC4 protected-release intake PowerShell parse failed: ' + (@($errors | ForEach-Object { $_.Message }) -join '; ')) }
-          Write-Host 'rc4_protected_release_intake_powershell_parse=PASS'
+          foreach ($relative in @(
+              'scripts\ga\Invoke-PSMatrixWindowsAuthorityProtectedReleaseIntakeV2.ps1',
+              'scripts\ga\New-PSMatrixWindowsAuthorityProvisioningManifest.ps1'
+          )) {
+              $path = Join-Path $env:GITHUB_WORKSPACE $relative
+              $tokens = $null; $errors = $null
+              [void][System.Management.Automation.Language.Parser]::ParseFile($path,[ref]$tokens,[ref]$errors)
+              if (@($errors).Count -ne 0) { throw ("RC4 PowerShell parse failed for $relative: " + (@($errors | ForEach-Object { $_.Message }) -join '; ')) }
+          }
+          Write-Host 'rc4_powershell_controls_parse=PASS'
 
       - name: Compile RC4 release-control Python
         shell: pwsh
@@ -149,17 +168,20 @@ jobs:
               scripts/ga/promote_windows_authority_rc4_release_lock.py `
               scripts/ga/sign_windows_authority_release_candidate.py `
               scripts/ga/import_windows_authority_protected_release.py `
+              scripts/ga/build_windows_authority_provisioning_manifest.py `
               tests/test_windows_authority_release_candidate_builder.py `
               tests/test_windows_authority_rc4_authority_rotation.py `
               tests/test_windows_authority_rc4_authority_rotation_runtime.py `
               tests/test_windows_authority_rc4_lock_promotion_signing.py `
               tests/test_windows_authority_protected_release_import.py `
               tests/test_windows_authority_rc4_protected_release_intake.py `
-              tests/test_windows_authority_rc4_media_readiness.py
+              tests/test_windows_authority_rc4_media_readiness.py `
+              tests/test_windows_authority_provisioning_manifest_workflow.py `
+              tests/test_windows_authority_rc4_provisioning_manifest.py
           if ($LASTEXITCODE -ne 0) { throw 'RC4 release-control Python compile failed.' }
           Write-Host 'rc4_python_compile=PASS'
 
-      - name: Run RC4 authority, signing, intake, and media readiness contracts
+      - name: Run RC4 authority through provisioning-manifest contracts
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -170,8 +192,10 @@ jobs:
               tests.test_windows_authority_rc4_lock_promotion_signing `
               tests.test_windows_authority_protected_release_import `
               tests.test_windows_authority_rc4_protected_release_intake `
-              tests.test_windows_authority_rc4_media_readiness
-          if ($LASTEXITCODE -ne 0) { throw 'RC4 authority/signing/intake/media-readiness contract tests failed.' }
+              tests.test_windows_authority_rc4_media_readiness `
+              tests.test_windows_authority_provisioning_manifest_workflow `
+              tests.test_windows_authority_rc4_provisioning_manifest
+          if ($LASTEXITCODE -ne 0) { throw 'RC4 authority-through-provisioning-manifest contract tests failed.' }
           Write-Host 'rc4_authority_rotation_contracts=PASS'
           Write-Host 'rc4_authority_rotation_runtime=PASS'
           Write-Host 'rc4_lock_promotion_contract=PASS'
@@ -179,6 +203,8 @@ jobs:
           Write-Host 'rc4_protected_release_import_contract=PASS'
           Write-Host 'rc4_protected_release_intake_contract=PASS'
           Write-Host 'rc4_media_readiness_contract=PASS'
+          Write-Host 'historical_rc3_provisioning_contract=PASS'
+          Write-Host 'rc4_provisioning_manifest_contract=PASS'
 
       - name: Enforce no tracked private authority material
         shell: pwsh
@@ -205,6 +231,7 @@ jobs:
           Write-Host "validated_exact_rc4_head=$env:EXPECTED_HEAD"
           Write-Host 'rc4_candidate=2.0.0rc4'
           Write-Host 'rc3_lock_mutated=false'
+          Write-Host 'historical_rc3_provisioning_contract_mutated=false'
           Write-Host 'private_key_generated=false'
           Write-Host 'active_rc4_lock_written=false'
           Write-Host 'release_artifacts_signed=false'
@@ -212,6 +239,7 @@ jobs:
           Write-Host 'protected_release_intake_mutated=false'
           Write-Host 'media_manifest_materialized=false'
           Write-Host 'provisioning_manifest_materialized=false'
+          Write-Host 'operation_package_built=false'
           Write-Host 'hyper_v_state_mutated=false'
           Write-Host 'authoritative=false'
           Write-Host 'ga_eligible=false'
