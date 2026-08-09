@@ -20,9 +20,25 @@ on:
       - "tests/test_windows_authority_release_candidate_builder.py"
       - "tests/test_windows_authority_rc4_authority_rotation.py"
       - "tests/test_windows_authority_rc4_authority_rotation_runtime.py"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/ga-windows-authority-rc4-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-rc4-release-authority-enrollment.yml"
+      - ".github/workflows/ga-windows-authority-rc4-staging-candidate-selfhosted.yml"
+      - ".github/workflows/ga-windows-authority-rc4-release-lock-review.yml"
+      - "scripts/ga/enroll_windows_authority_release_authority.py"
+      - "scripts/ga/build_windows_authority_release_candidate.py"
+      - "scripts/ga/build_windows_authority_release_lock_draft.py"
+      - "ga-packs/03-authoritative-windows/rc3-release-lock.json"
+      - "pyproject.toml"
+      - "src/psmatrix/__init__.py"
+      - "tests/test_windows_authority_release_candidate_builder.py"
+      - "tests/test_windows_authority_rc4_authority_rotation.py"
+      - "tests/test_windows_authority_rc4_authority_rotation_runtime.py"
 
 concurrency:
-  group: production-ga-windows-authority-rc4-source-preflight-${{ github.ref }}
+  group: production-ga-windows-authority-rc4-source-preflight-${{ github.event.pull_request.head.ref || github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -31,12 +47,14 @@ permissions:
 jobs:
   rc4-source-preflight:
     name: RC4 release-authority rotation source contract
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
     timeout-minutes: 15
     permissions:
       contents: read
     env:
       PYTHONPATH: ${{ github.workspace }}\src
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
 
     steps:
       - name: Verify trusted runner assignment
@@ -51,6 +69,7 @@ jobs:
       - name: Check out exact source revision
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
           persist-credentials: false
 
@@ -58,9 +77,10 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          if ($env:EXPECTED_HEAD -cnotmatch '^[0-9a-f]{40}$') { throw 'Expected RC4 source head is not a full lowercase Git SHA.' }
           $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
-          if ($LASTEXITCODE -ne 0 -or $head -cnotmatch '^[0-9a-f]{40}$' -or $head -ne $env:GITHUB_SHA.ToLowerInvariant()) {
-              throw 'RC4 source-preflight checkout is not the exact GITHUB_SHA.'
+          if ($LASTEXITCODE -ne 0 -or $head -cnotmatch '^[0-9a-f]{40}$' -or $head -ne $env:EXPECTED_HEAD.ToLowerInvariant()) {
+              throw "RC4 source-preflight checkout is not the exact expected branch head: actual=$head expected=$env:EXPECTED_HEAD"
           }
           if (-not [string]::IsNullOrWhiteSpace((git status --porcelain))) {
               throw 'RC4 source-preflight checkout is dirty.'
@@ -71,6 +91,7 @@ jobs:
               throw "Expected exact RC4 package identity; project=$project package=$package"
           }
           Write-Host "rc4_source_head=$head"
+          Write-Host "rc4_event_sha=$env:GITHUB_SHA"
           Write-Host 'rc4_version_identity=PASS'
 
       - name: Compile RC4 release-control Python
@@ -134,6 +155,7 @@ jobs:
       - name: Emit RC4 source-preflight summary
         shell: pwsh
         run: |
+          Write-Host "validated_exact_rc4_head=$env:EXPECTED_HEAD"
           Write-Host 'rc4_candidate=2.0.0rc4'
           Write-Host 'rc3_lock_mutated=false'
           Write-Host 'private_key_generated=false'
