@@ -203,14 +203,14 @@ jobs:
           New-Item -ItemType Directory -Path $root -Force | Out-Null
           $spec = Join-Path $root 'psmatrix.full.json'
           $plan = Join-Path $root 'plan.json'
-          $home = Join-Path $root 'home'
+          $psmatrixHome = Join-Path $root 'home'
 
           & python -m psmatrix.cli full init --output $spec
           if ($LASTEXITCODE -ne 0) {
               throw "full init failed: $LASTEXITCODE"
           }
 
-          & python -m psmatrix.cli --home $home full plan --spec $spec --output $plan
+          & python -m psmatrix.cli --home $psmatrixHome full plan --spec $spec --output $plan
           $planExit = $LASTEXITCODE
           if (-not (Test-Path -LiteralPath $plan -PathType Leaf)) {
               throw 'full plan did not materialize plan.json'
