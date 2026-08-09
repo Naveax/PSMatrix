@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "psmatrix"
-version = "2.0.0rc3"
+version = "2.0.0rc4"
 description = "Bash-native multi-runtime PowerShell execution and verification laboratory"
 requires-python = ">=3.11"
 license = { text = "MIT" }
