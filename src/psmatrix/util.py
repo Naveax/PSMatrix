@@ -37,7 +37,6 @@ def atomic_write_json(path: Path, value: Any) -> None:
         tmp.unlink(missing_ok=True)
 
 
-
 def atomic_write_text(path: Path, value: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -65,20 +64,47 @@ def atomic_write_bytes(path: Path, value: bytes) -> None:
     finally:
         tmp.unlink(missing_ok=True)
 
+
 def read_json(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
 
 
+def _lock_windows(handle: Any) -> None:
+    import msvcrt
+
+    handle.seek(0, os.SEEK_END)
+    if handle.tell() == 0:
+        handle.write(b"\0")
+        handle.flush()
+        os.fsync(handle.fileno())
+    handle.seek(0)
+    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+
+
+def _unlock_windows(handle: Any) -> None:
+    import msvcrt
+
+    handle.seek(0)
+    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+
+
 @contextmanager
 def exclusive_lock(path: Path) -> Iterator[None]:
-    """Cross-process advisory lock for POSIX Bash environments."""
-    import fcntl
-
+    """Cross-process advisory lock on POSIX and Windows."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+b") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        if os.name == "nt":
+            _lock_windows(handle)
+            try:
+                yield
+            finally:
+                _unlock_windows(handle)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
