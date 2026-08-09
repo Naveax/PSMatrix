@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_commit:
-        description: Exact reviewed PSMatrix 2.0.0rc4 candidate commit
+        description: Exact reviewed PSMatrix 2.0.0rc4 candidate commit; must equal this control head
         required: true
         type: string
 
@@ -32,6 +32,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) { throw 'RUNNER_TEMP is unavailable.' }
           if ($env:RELEASE_COMMIT -cnotmatch '^[0-9a-f]{40}$') { throw 'release_commit must contain exactly 40 lowercase hexadecimal characters.' }
+          if ($env:RELEASE_COMMIT -ne $env:GITHUB_SHA.ToLowerInvariant()) { throw "release_commit must equal exact workflow control head $($env:GITHUB_SHA.ToLowerInvariant())." }
           $stage = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-authority-rc4-staging-candidate'
           $venv = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-authority-rc4-build-venv'
           "PSMATRIX_RC4_STAGE=$stage" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
