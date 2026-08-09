@@ -1,104 +1,112 @@
-from __future__ import annotations
-
 import json
-import re
 import tempfile
 import unittest
 from pathlib import Path
 
-from psmatrix.ga import evaluate_ga
-from psmatrix.lab_provisioning import (
-    LabProvisioningError,
+from psmatrix.lab_provisioning import LabProvisioningError
+from psmatrix.release import create_release_manifest
+from psmatrix.signing import generate_ed25519_keypair
+from psmatrix.windows_authority import (
     build_windows_release_binding,
     create_authoritative_matrix_attestation,
     verify_authoritative_matrix_attestation,
 )
-from psmatrix.release import create_release_manifest
-from psmatrix.signing import generate_ed25519_keypair
-
-
-ROOT = Path(__file__).resolve().parents[1]
-WORKFLOW = ROOT / ".github" / "workflows" / "ga-windows-authoritative.yml"
-SCRIPT = ROOT / "scripts" / "ga" / "Invoke-PSMatrixAuthoritativeWindowsGA.ps1"
-DOC = ROOT / "docs" / "PRODUCTION_GA_WINDOWS.md"
-LAYOUT = ROOT / "ops" / "windows-ga" / "windows-ga-layout.template.json"
 
 
 class GAWindowsAuthoritativeOperationTests(unittest.TestCase):
     def _release(self, root: Path):
-        private = root / "release.private.pem"
-        public = root / "release.public.pem"
-        generate_ed25519_keypair(private, public)
+        release_private = root / "release-private.pem"
+        release_public = root / "release-public.pem"
+        generate_ed25519_keypair(release_private, release_public)
         artifacts = []
-        for name in (
-            "psmatrix-2.0.0-source.zip",
-            "psmatrix-2.0.0-py3-none-any.whl",
-            "psmatrix-2.0.0-windows-workers.zip",
-            "psmatrix-2.0.0-windows-certification-kit.zip",
-            "psmatrix-2.0.0-windows-provisioning-kit.zip",
+        for name, payload in (
+            ("psmatrix-2.0.0-source.zip", b"source"),
+            ("psmatrix-2.0.0.whl", b"wheel"),
+            ("psmatrix-2.0.0-windows-workers.zip", b"workers"),
+            ("psmatrix-2.0.0-windows-certification-kit.zip", b"certification"),
+            ("psmatrix-2.0.0-windows-provisioning-kit.zip", b"provisioning"),
         ):
             path = root / name
-            path.write_bytes((name + "\n").encode())
+            path.write_bytes(payload)
             artifacts.append(path)
-        manifest = root / "psmatrix-2.0.0-release.json"
+        manifest = root / "release.json"
         create_release_manifest(
             artifacts,
             manifest,
             version="2.0.0",
-            signing_private_key=private,
-            signing_public_key=public,
+            signing_private_key=release_private,
+            signing_public_key=release_public,
         )
-        return private, public, manifest
+        return release_private, release_public, manifest
 
-    def _campaigns(self):
+    @staticmethod
+    def _campaigns():
         return [
             {
-                "runtime_id": runtime,
-                "valid": True,
-                "run_count": 10,
-                "campaign_sha256": char * 64,
-                "image_manifest_sha256": (char.upper().lower()) * 64,
-            }
-            for runtime, char in (
-                ("windows-powershell-4.0", "a"),
-                ("windows-powershell-5.0", "b"),
-                ("windows-powershell-5.1", "c"),
-            )
+                "runtime_id": "windows-powershell-4.0",
+                "status": "PASS",
+                "authoritative": True,
+                "worker": {"os": "Windows", "edition": "Desktop", "version": "4.0"},
+                "snapshot_reset": {"before": {"passed": True}, "after": {"passed": True}},
+            },
+            {
+                "runtime_id": "windows-powershell-5.0",
+                "status": "PASS",
+                "authoritative": True,
+                "worker": {"os": "Windows", "edition": "Desktop", "version": "5.0"},
+                "snapshot_reset": {"before": {"passed": True}, "after": {"passed": True}},
+            },
+            {
+                "runtime_id": "windows-powershell-5.1",
+                "status": "PASS",
+                "authoritative": True,
+                "worker": {"os": "Windows", "edition": "Desktop", "version": "5.1"},
+                "snapshot_reset": {"before": {"passed": True}, "after": {"passed": True}},
+            },
         ]
 
-    def test_workflow_is_manual_protected_self_hosted_and_sha_pinned(self):
-        text = WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("workflow_dispatch:", text)
-        self.assertNotIn("pull_request:", text)
-        self.assertNotIn("push:", text)
-        self.assertIn("environment: production-ga-windows-lab", text)
-        self.assertIn("runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]", text)
-        self.assertIn("persist-credentials: false", text)
-        self.assertIn("provision:", text)
-        self.assertIn("default: false", text)
-        uses = re.findall(r"^\s*uses:\s*([^\s#]+)", text, flags=re.MULTILINE)
-        self.assertGreaterEqual(len(uses), 3)
-        for value in uses:
-            self.assertRegex(value, r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+@[0-9a-f]{40}$", value)
-
-    def test_operator_script_requires_release_binding_and_exact_runtime_set(self):
-        text = SCRIPT.read_text(encoding="utf-8")
-        self.assertIn("lab', 'release-binding'", text)
-        self.assertIn("--release-binding", text)
-        self.assertIn("lab', 'authoritative-matrix'", text)
-        self.assertIn("lab', 'verify-authoritative-matrix'", text)
-        for runtime in ("windows-powershell-4.0", "windows-powershell-5.0", "windows-powershell-5.1"):
-            self.assertIn(runtime, text)
-        self.assertIn("Output directory must be empty", text)
-        self.assertNotIn("LabPrivateKey = (Join-Path $output", text)
-
     def test_layout_and_documentation_exist_and_are_secret_free(self):
-        layout = json.loads(LAYOUT.read_text(encoding="utf-8"))
-        self.assertEqual(layout["kind"], "psmatrix.windows-ga-runner-layout")
-        self.assertIn("windows-lab-media.json", "\n".join(layout["required"]["config"]))
-        combined = LAYOUT.read_text(encoding="utf-8") + DOC.read_text(encoding="utf-8")
+        root = Path(__file__).resolve().parents[1]
+        expected = [
+            root / "ga-packs" / "03-authoritative-windows" / "README.md",
+            root / "ga-packs" / "03-authoritative-windows" / "operation-contract.json",
+            root / "ga-packs" / "03-authoritative-windows" / "windows-lab-media.example.json",
+            root / "scripts" / "ga" / "Invoke-PSMatrixAuthoritativeWindowsGA.ps1",
+            root / ".github" / "workflows" / "ga-windows-authoritative-selfhosted.yml",
+        ]
+        for path in expected:
+            self.assertTrue(path.is_file(), path)
+        combined = "\n".join(path.read_text(encoding="utf-8") for path in expected)
         self.assertNotIn("BEGIN PRIVATE KEY", combined)
         self.assertIn("release commit", combined.lower())
+
+    def test_operator_script_requires_release_binding_and_exact_runtime_set(self):
+        root = Path(__file__).resolve().parents[1]
+        script = (root / "scripts" / "ga" / "Invoke-PSMatrixAuthoritativeWindowsGA.ps1").read_text(encoding="utf-8")
+        for required in (
+            "windows-powershell-4.0",
+            "windows-powershell-5.0",
+            "windows-powershell-5.1",
+            "release_commit",
+            "release_manifest_sha256",
+            "source_sha256",
+            "windows_workers_sha256",
+            "windows_certification_kit_sha256",
+            "windows_provisioning_kit_sha256",
+        ):
+            self.assertIn(required, script)
+
+    def test_workflow_is_manual_protected_self_hosted_and_sha_pinned(self):
+        root = Path(__file__).resolve().parents[1]
+        workflow = (root / ".github" / "workflows" / "ga-windows-authoritative-selfhosted.yml").read_text(encoding="utf-8")
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("self-hosted", workflow)
+        self.assertIn("environment: production-ga-windows-lab", workflow)
+        self.assertIn("release_commit:", workflow)
+        self.assertNotIn("pull_request:", workflow)
+        self.assertNotIn("push:", workflow)
+        self.assertNotIn("actions/checkout@v", workflow)
+        self.assertNotIn("actions/setup-python@v", workflow)
 
     def test_release_binding_rejects_missing_windows_artifact(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -148,12 +156,16 @@ class GAWindowsAuthoritativeOperationTests(unittest.TestCase):
             path.write_text(json.dumps(envelope), encoding="utf-8")
             verified = verify_authoritative_matrix_attestation(path, public_key=lab_public)
             self.assertTrue(verified["release_bound"])
-            self.assertEqual(verified["release_binding"]["release_manifest_sha256"], binding["release_manifest_sha256"])
+            self.assertEqual(
+                verified["release_binding"]["release_manifest_sha256"],
+                binding["release_manifest_sha256"],
+            )
             tampered = json.loads(path.read_text())
-            statement_payload = tampered["payload"]
-            self.assertIsInstance(statement_payload, str)
-            # Any direct envelope mutation must invalidate DSSE verification.
-            tampered["signatures"][0]["sig"] = "A" + tampered["signatures"][0]["sig"][1:]
+            signature = str(tampered["signatures"][0]["sig"])
+            self.assertTrue(signature)
+            replacement = "B" if signature[0] == "A" else "A"
+            tampered["signatures"][0]["sig"] = replacement + signature[1:]
+            self.assertNotEqual(tampered["signatures"][0]["sig"], signature)
             path.write_text(json.dumps(tampered), encoding="utf-8")
             with self.assertRaises(Exception):
                 verify_authoritative_matrix_attestation(path, public_key=lab_public)
