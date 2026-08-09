@@ -19,6 +19,7 @@ from psmatrix.util import atomic_write_json
 
 
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
+_RUN_ID = re.compile(r"^[0-9]+$")
 _VERSION = "2.0.0rc4"
 _PACK = "03-authoritative-windows"
 _ROTATION_REASON = "lost_previous_private_authority"
@@ -103,10 +104,20 @@ def build(
     previous_public_key: Path,
     output_root: Path,
     candidate_commit: str,
+    enrollment_run_id: str,
+    staging_run_id: str,
 ) -> dict[str, Any]:
     candidate_commit = candidate_commit.strip().lower()
     if not _SHA40.fullmatch(candidate_commit):
         raise RuntimeError("candidate_commit must be a full 40-character lowercase Git SHA")
+    enrollment_run_id = enrollment_run_id.strip()
+    staging_run_id = staging_run_id.strip()
+    if not _RUN_ID.fullmatch(enrollment_run_id):
+        raise RuntimeError("enrollment_run_id must contain only decimal digits")
+    if not _RUN_ID.fullmatch(staging_run_id):
+        raise RuntimeError("staging_run_id must contain only decimal digits")
+    if enrollment_run_id == staging_run_id:
+        raise RuntimeError("Enrollment and staging provenance must come from distinct workflow runs")
 
     staging = _require_root(staging_root, "staging_root")
     enrollment = _require_root(enrollment_root, "enrollment_root")
@@ -220,6 +231,20 @@ def build(
     if _sha256(asset_output) != proposed_sha:
         raise RuntimeError("RC4 public authority copy verification failed")
 
+    source_runs = {
+        "control_head": candidate_commit,
+        "authority_enrollment": {
+            "run_id": enrollment_run_id,
+            "workflow": "production-ga-windows-authority-rc4-release-authority-enrollment",
+            "artifact": f"psmatrix-{_VERSION}-release-authority-enrollment",
+        },
+        "unsigned_staging": {
+            "run_id": staging_run_id,
+            "workflow": "production-ga-windows-authority-rc4-staging-candidate-selfhosted",
+            "artifact": "windows-authority-rc4-unlocked-staging-candidate",
+        },
+    }
+
     lock = {
         "schema": 1,
         "kind": "psmatrix.windows-authority-release-staging-lock",
@@ -232,6 +257,7 @@ def build(
             "sha256": proposed_sha,
         },
         "artifacts": normalized_artifacts,
+        "source_runs": source_runs,
         "review_evidence": {
             "builder_status": "READY_FOR_PROTECTED_SIGNING",
             "artifact_count": 6,
@@ -275,6 +301,7 @@ def build(
         "status": "READY_FOR_HUMAN_REVIEW",
         "version": _VERSION,
         "candidate_commit": candidate_commit,
+        "source_runs": source_runs,
         "lock_draft": lock_path.name,
         "public_authority_path": asset_relative.as_posix(),
         "private_key_material_absent": True,
@@ -283,6 +310,7 @@ def build(
         "next_required": [
             "Independently review the RC4 artifact hashes and reproducibility evidence.",
             "Independently review the RC4 public authority fingerprint and explicit lost-key rotation reason.",
+            "Confirm the recorded enrollment and staging run IDs both executed successfully from the exact candidate control head.",
             "Only after review, commit the public key and promote this review draft to ga-packs/03-authoritative-windows/rc4-release-lock.json.",
             "Do not sign RC4 release artifacts until the promoted lock is merged and revalidated.",
         ],
@@ -299,6 +327,8 @@ def main() -> int:
     parser.add_argument("--previous-public-key", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--candidate-commit", required=True)
+    parser.add_argument("--enrollment-run-id", required=True)
+    parser.add_argument("--staging-run-id", required=True)
     args = parser.parse_args()
     result = build(
         staging_root=args.staging_root,
@@ -306,6 +336,8 @@ def main() -> int:
         previous_public_key=args.previous_public_key,
         output_root=args.output_root,
         candidate_commit=args.candidate_commit,
+        enrollment_run_id=args.enrollment_run_id,
+        staging_run_id=args.staging_run_id,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
