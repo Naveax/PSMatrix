@@ -1,0 +1,293 @@
+name: production-ga-windows-authority-rc4-provisioning-manifest-selfhosted
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_commit:
+        description: Exact reviewed RC4 release source commit frozen by the active lock
+        required: true
+        type: string
+      control_head:
+        description: Exact repository commit containing the active RC4 lock and provisioning controls
+        required: true
+        type: string
+
+concurrency:
+  group: production-ga-windows-authority-rc4-provisioning-manifest-selfhosted
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  provisioning-manifest:
+    name: Materialize exact RC4 Windows lab provisioning manifest
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 30
+    environment: production-ga-windows-lab
+    permissions:
+      contents: read
+    env:
+      PSMATRIX_WINDOWS_GA_ROOT: ${{ vars.PSMATRIX_WINDOWS_GA_ROOT }}
+      RELEASE_COMMIT: ${{ inputs.release_commit }}
+      CONTROL_HEAD: ${{ inputs.control_head }}
+
+    steps:
+      - name: Initialize fail-closed RC4 provisioning-manifest workspace
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') { throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS" }
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_WINDOWS_GA_ROOT)) { throw 'PSMATRIX_WINDOWS_GA_ROOT is missing from production-ga-windows-lab.' }
+          if (-not [System.IO.Path]::IsPathRooted($env:PSMATRIX_WINDOWS_GA_ROOT)) { throw 'PSMATRIX_WINDOWS_GA_ROOT must be an absolute path.' }
+          $gaRoot = [System.IO.Path]::GetFullPath($env:PSMATRIX_WINDOWS_GA_ROOT)
+          if (-not (Test-Path -LiteralPath $gaRoot -PathType Container)) { throw "PSMATRIX_WINDOWS_GA_ROOT does not exist: $gaRoot" }
+          foreach ($item in @(@{Name='release_commit';Value=$env:RELEASE_COMMIT},@{Name='control_head';Value=$env:CONTROL_HEAD})) {
+              if ([string]$item.Value -cnotmatch '^[0-9a-f]{40}$') { throw "$($item.Name) must contain exactly 40 lowercase hexadecimal characters." }
+          }
+          if ($env:CONTROL_HEAD -ne $env:GITHUB_SHA.ToLowerInvariant()) { throw 'control_head must equal the exact workflow control head.' }
+
+          $evidence = Join-Path $env:RUNNER_TEMP 'psmatrix-rc4-provisioning-manifest-evidence'
+          if (Test-Path -LiteralPath $evidence) { Remove-Item -LiteralPath $evidence -Recurse -Force }
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          "PSMATRIX_PROVISIONING_MANIFEST_EVIDENCE=$evidence" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          foreach ($pair in @(
+              @{Name='PSMATRIX_PROVISIONING_SELECTION';Path=(Join-Path $gaRoot 'config\windows-authority-media-selection.json')},
+              @{Name='PSMATRIX_PROVISIONING_PROFILE';Path=(Join-Path $gaRoot 'config\windows-lab-provisioning-profile.json')},
+              @{Name='PSMATRIX_PROVISIONING_PROFILE_TEMPLATE';Path=(Join-Path $gaRoot 'config\windows-lab-provisioning-profile.example.json')},
+              @{Name='PSMATRIX_PROVISIONING_MANIFEST';Path=(Join-Path $gaRoot 'config\windows-lab-media.json')},
+              @{Name='PSMATRIX_PROVISIONING_REPORT';Path=(Join-Path $gaRoot 'windows-authority-provisioning-manifest-materialization.json')}
+          )) {
+              "$($pair.Name)=$($pair.Path)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+
+      - name: Check out exact RC4 provisioning controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.control_head }}
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out exact reviewed RC4 product source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.release_commit }}
+          path: release-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up controller Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Verify exact RC4 control, active lock, intake and reviewed selection
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $controlRoot = Join-Path $env:GITHUB_WORKSPACE 'control'
+          $productRoot = Join-Path $env:GITHUB_WORKSPACE 'release-source'
+          $controlHead = (git -C $controlRoot rev-parse HEAD).Trim().ToLowerInvariant()
+          $productHead = (git -C $productRoot rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($controlHead -ne $env:CONTROL_HEAD -or $productHead -ne $env:RELEASE_COMMIT) { throw 'RC4 provisioning checkout head closure mismatch.' }
+          if (-not [string]::IsNullOrWhiteSpace((git -C $controlRoot status --porcelain)) -or -not [string]::IsNullOrWhiteSpace((git -C $productRoot status --porcelain))) { throw 'RC4 provisioning checkout is dirty.' }
+
+          $lockPath = Join-Path $controlRoot 'ga-packs\03-authoritative-windows\rc4-release-lock.json'
+          $publicPath = Join-Path $controlRoot 'release-assets\2.0.0rc4\psmatrix-2.0.0rc4-release-public.pem'
+          $contractPath = Join-Path $controlRoot 'ga-packs\03-authoritative-windows\rc4-provisioning-manifest-contract.json'
+          foreach ($path in @($lockPath,$publicPath,$contractPath)) { if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required RC4 provisioning control material is missing: $path" } }
+          $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+          if ([string]$lock.version -ne '2.0.0rc4' -or [string]$lock.release_commit -ne $env:RELEASE_COMMIT) { throw 'Current RC4 release lock does not match release_commit.' }
+          if ((Get-FileHash -LiteralPath $publicPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne [string]$lock.release_public_key.sha256) { throw 'Current RC4 public authority differs from active lock.' }
+          $rotation = $lock.authority_rotation
+          if ([string]$rotation.reason -ne 'lost_previous_private_authority' -or [bool]$rotation.existing_candidate_mutated -ne $false -or [bool]$rotation.new_candidate -ne $true -or [bool]$rotation.review_required -ne $true) { throw 'Current RC4 authority-rotation review metadata mismatch.' }
+
+          $intakePath = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'windows-authority-protected-release-intake.json'
+          if (-not (Test-Path -LiteralPath $intakePath -PathType Leaf)) { throw 'Protected RC4 intake report is missing.' }
+          $intake = Get-Content -LiteralPath $intakePath -Raw | ConvertFrom-Json
+          if ([int]$intake.schema -ne 2 -or [string]$intake.status -ne 'RELEASE_CLOSURE_READY' -or [string]$intake.version -ne '2.0.0rc4' -or [string]$intake.release_commit -ne $env:RELEASE_COMMIT) { throw 'Protected RC4 intake is not release-closure-ready for this release.' }
+          if ([bool]$intake.release_authority_rotation_reviewed -ne $true -or [string]$intake.release_authority_rotation_reason -ne 'lost_previous_private_authority' -or [bool]$intake.release_authority_rotated_during_signing -ne $false) { throw 'Protected RC4 intake authority-rotation closure mismatch.' }
+          if ([bool]$intake.stale_rc2_operation_package_used -ne $false -or [bool]$intake.media_manifest_materialized -ne $false -or [bool]$intake.operation_package_rebuilt -ne $false) { throw 'Protected RC4 intake downstream/stale-material boundary mismatch.' }
+          if ([bool]$intake.authoritative -or [bool]$intake.ga_eligible) { throw 'Protected RC4 intake improperly claims authority or GA eligibility.' }
+
+          if (-not (Test-Path -LiteralPath $env:PSMATRIX_PROVISIONING_SELECTION -PathType Leaf)) { throw 'Reviewed RC4 media selection materialization is missing.' }
+          $selection = Get-Content -LiteralPath $env:PSMATRIX_PROVISIONING_SELECTION -Raw | ConvertFrom-Json
+          if ([int]$selection.schema -ne 1 -or [string]$selection.kind -ne 'psmatrix.windows-authority-media-selection-materialization' -or [string]$selection.pack -ne '03-authoritative-windows') { throw 'Reviewed RC4 media selection identity mismatch.' }
+          if ([string]$selection.release_version -ne '2.0.0rc4' -or [bool]$selection.complete -ne $true) { throw 'Reviewed RC4 media selection is incomplete.' }
+          if ([bool]$selection.ready_for_provisioning_manifest_materialization -ne $true -or [bool]$selection.provisioning_manifest_materialized -ne $false -or [bool]$selection.ready_for_hyper_v_provisioning -ne $false) { throw 'Reviewed RC4 media selection provisioning boundary mismatch.' }
+          if ([bool]$selection.authoritative -or [bool]$selection.ga_eligible) { throw 'Reviewed RC4 media selection improperly claims authority or GA eligibility.' }
+
+          "PSMATRIX_PROVISIONING_CONTROL_ROOT=$controlRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_PROVISIONING_PRODUCT_ROOT=$productRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_PROVISIONING_CONTRACT=$contractPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host 'rc4_provisioning_prerequisites=PASS'
+
+      - name: Require operator-reviewed RC4 provisioning profile
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Test-Path -LiteralPath $env:PSMATRIX_PROVISIONING_PROFILE -PathType Leaf) { exit 0 }
+          $env:PSMATRIX_BUILDER = Join-Path $env:PSMATRIX_PROVISIONING_CONTROL_ROOT 'scripts\ga\build_windows_authority_provisioning_manifest.py'
+          $env:PSMATRIX_PROFILE_TEMPLATE = $env:PSMATRIX_PROVISIONING_PROFILE_TEMPLATE
+          @'
+          import importlib.util
+          import os
+          from pathlib import Path
+          path = Path(os.environ['PSMATRIX_BUILDER'])
+          spec = importlib.util.spec_from_file_location('psmatrix_provisioning_builder_template', path)
+          if spec is None or spec.loader is None:
+              raise SystemExit('unable to load provisioning builder for template generation')
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          module.atomic_json(Path(os.environ['PSMATRIX_PROFILE_TEMPLATE']), module.profile_template(os.environ['RELEASE_COMMIT']))
+          print('rc4_provisioning_profile_template_written=true')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to materialize provisioning profile template.' }
+          throw "Provisioning profile is missing. Review $env:PSMATRIX_PROVISIONING_PROFILE_TEMPLATE and save it as $env:PSMATRIX_PROVISIONING_PROFILE."
+
+      - name: Materialize product-loader-valid RC4 provisioning manifest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & "$env:PSMATRIX_PROVISIONING_CONTROL_ROOT\scripts\ga\New-PSMatrixWindowsAuthorityProvisioningManifest.ps1" `
+              -SourceRoot $env:PSMATRIX_PROVISIONING_CONTROL_ROOT `
+              -ProductSourceRoot $env:PSMATRIX_PROVISIONING_PRODUCT_ROOT `
+              -GaRoot $env:PSMATRIX_WINDOWS_GA_ROOT `
+              -ReleaseCommit $env:RELEASE_COMMIT `
+              -ContractPath $env:PSMATRIX_PROVISIONING_CONTRACT `
+              -SelectionManifestPath $env:PSMATRIX_PROVISIONING_SELECTION `
+              -ProfilePath $env:PSMATRIX_PROVISIONING_PROFILE `
+              -OutputPath $env:PSMATRIX_PROVISIONING_MANIFEST `
+              -ProfileTemplatePath $env:PSMATRIX_PROVISIONING_PROFILE_TEMPLATE `
+              -ReportPath $env:PSMATRIX_PROVISIONING_REPORT `
+              -RequireComplete
+
+      - name: Normalize operation-package handoff metadata and revalidate final RC4 bytes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $manifest = Get-Content -LiteralPath $env:PSMATRIX_PROVISIONING_MANIFEST -Raw | ConvertFrom-Json
+          if ([int]$manifest.schema -ne 1 -or [string]$manifest.kind -ne 'psmatrix.windows-lab-media') { throw 'RC4 provisioning manifest identity is invalid before normalization.' }
+          foreach ($entry in ([ordered]@{
+              release_version = '2.0.0rc4'
+              release_commit = $env:RELEASE_COMMIT
+              complete = $true
+              ready_for_hyper_v_provisioning = $true
+              actual_os_identity_measured = $false
+              authoritative = $false
+              ga_eligible = $false
+          }).GetEnumerator()) {
+              if ($null -eq $manifest.PSObject.Properties[$entry.Key]) { $manifest | Add-Member -NotePropertyName $entry.Key -NotePropertyValue $entry.Value }
+              else { $manifest.($entry.Key) = $entry.Value }
+          }
+          [System.IO.File]::WriteAllText($env:PSMATRIX_PROVISIONING_MANIFEST,(($manifest | ConvertTo-Json -Depth 24)+[Environment]::NewLine),[System.Text.UTF8Encoding]::new($false))
+
+          $env:PSMATRIX_FINAL_MANIFEST = $env:PSMATRIX_PROVISIONING_MANIFEST
+          $env:PSMATRIX_PRODUCT_SRC = Join-Path $env:PSMATRIX_PROVISIONING_PRODUCT_ROOT 'src'
+          @'
+          import os
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, os.environ['PSMATRIX_PRODUCT_SRC'])
+          from psmatrix.lab_provisioning import WindowsLabManifest
+          value = WindowsLabManifest.load(Path(os.environ['PSMATRIX_FINAL_MANIFEST']))
+          expected = {'windows-powershell-4.0','windows-powershell-5.0','windows-powershell-5.1'}
+          if len(value.images) != 3 or {item.runtime_id for item in value.images} != expected:
+              raise SystemExit('exact RC4 product loader did not resolve the exact three runtime images')
+          print('final_rc4_product_loader_validation=PASS')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Exact RC4 product loader rejected normalized provisioning manifest.' }
+
+          $manifestSha = (Get-FileHash -LiteralPath $env:PSMATRIX_PROVISIONING_MANIFEST -Algorithm SHA256).Hash.ToLowerInvariant()
+          $report = Get-Content -LiteralPath $env:PSMATRIX_PROVISIONING_REPORT -Raw | ConvertFrom-Json
+          if ([int]$report.schema -ne 1 -or [string]$report.kind -ne 'psmatrix.windows-authority-provisioning-manifest-materialization') { throw 'RC4 provisioning report identity mismatch.' }
+          if ([string]$report.status -ne 'PASS' -or [string]$report.release_version -ne '2.0.0rc4' -or [string]$report.release_commit -ne $env:RELEASE_COMMIT -or [string]$report.product_loader_validation -ne 'PASS') { throw 'RC4 provisioning report is not exact PASS material.' }
+          if ([string]$report.contract_path -ne $env:PSMATRIX_PROVISIONING_CONTRACT) { throw 'RC4 provisioning report contract path mismatch.' }
+          $report.manifest_sha256 = $manifestSha
+          if ($null -eq $report.PSObject.Properties['operation_package_handoff_validation']) { $report | Add-Member -NotePropertyName operation_package_handoff_validation -NotePropertyValue 'PASS' }
+          else { $report.operation_package_handoff_validation = 'PASS' }
+          [System.IO.File]::WriteAllText($env:PSMATRIX_PROVISIONING_REPORT,(($report | ConvertTo-Json -Depth 16)+[Environment]::NewLine),[System.Text.UTF8Encoding]::new($false))
+          "PSMATRIX_PROVISIONING_MANIFEST_SHA=$manifestSha" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Enforce RC4 provisioning-manifest closure and emit non-secret status
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $manifest = Get-Content -LiteralPath $env:PSMATRIX_PROVISIONING_MANIFEST -Raw | ConvertFrom-Json
+          $report = Get-Content -LiteralPath $env:PSMATRIX_PROVISIONING_REPORT -Raw | ConvertFrom-Json
+          if ([string]$manifest.kind -ne 'psmatrix.windows-lab-media' -or [string]$manifest.release_version -ne '2.0.0rc4' -or [string]$manifest.release_commit -ne $env:RELEASE_COMMIT) { throw 'Final RC4 provisioning manifest release identity mismatch.' }
+          if ([bool]$manifest.complete -ne $true -or [bool]$manifest.ready_for_hyper_v_provisioning -ne $true) { throw 'Final RC4 provisioning manifest is not ready for Hyper-V provisioning.' }
+          if ([bool]$manifest.actual_os_identity_measured -ne $false -or [bool]$manifest.authoritative -ne $false -or [bool]$manifest.ga_eligible -ne $false) { throw 'Final RC4 provisioning manifest improperly claims measured identity/authority/GA eligibility.' }
+          $runtimeIds = @($manifest.images | ForEach-Object { [string]$_.runtime_id } | Sort-Object -Unique)
+          $expected = @('windows-powershell-4.0','windows-powershell-5.0','windows-powershell-5.1')
+          if ($runtimeIds.Count -ne 3 -or (Compare-Object -ReferenceObject $expected -DifferenceObject $runtimeIds).Count -ne 0) { throw 'Final RC4 provisioning manifest runtime set is not exact.' }
+          foreach ($image in @($manifest.images)) {
+              if ([int]$image.generation -ne 2) { throw "Provisioning image is not generation 2: $($image.runtime_id)" }
+              if ([string]$image.checkpoint_name -ne 'psmatrix-clean') { throw "Provisioning checkpoint name is not psmatrix-clean: $($image.runtime_id)" }
+          }
+          $actualSha = (Get-FileHash -LiteralPath $env:PSMATRIX_PROVISIONING_MANIFEST -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualSha -ne [string]$report.manifest_sha256 -or $actualSha -ne $env:PSMATRIX_PROVISIONING_MANIFEST_SHA) { throw 'RC4 provisioning report/current manifest SHA-256 closure mismatch.' }
+          if ([string]$report.operation_package_handoff_validation -ne 'PASS') { throw 'RC4 provisioning report is not operation-package-handoff-valid.' }
+          if ([bool]$report.creates_virtual_machines -or [bool]$report.creates_checkpoints -or [bool]$report.authoritative -or [bool]$report.ga_eligible) { throw 'RC4 provisioning materialization report violated no-VM/authority boundary.' }
+
+          $summary = [ordered]@{
+              schema = 1
+              kind = 'psmatrix.windows-authority-rc4-provisioning-manifest-workflow-status'
+              status = 'READY_FOR_OPERATION_PACKAGE'
+              release_version = '2.0.0rc4'
+              release_commit = $env:RELEASE_COMMIT
+              control_head = $env:CONTROL_HEAD
+              provisioning_manifest_sha256 = $actualSha
+              selection_manifest_sha256 = [string]$report.selection_manifest_sha256
+              provisioning_profile_sha256 = [string]$report.profile_sha256
+              provisioning_contract = 'ga-packs/03-authoritative-windows/rc4-provisioning-manifest-contract.json'
+              product_loader_validation = 'PASS'
+              operation_package_handoff_validation = 'PASS'
+              exact_runtime_count = 3
+              hyper_v_generation = 2
+              clean_checkpoint_name = 'psmatrix-clean'
+              complete = $true
+              ready_for_hyper_v_provisioning = $true
+              actual_os_identity_measured = $false
+              creates_virtual_machines = $false
+              creates_checkpoints = $false
+              opens_secret_bundles = $false
+              reads_private_key_contents = $false
+              authoritative = $false
+              ga_eligible = $false
+          }
+          [System.IO.File]::WriteAllText((Join-Path $env:PSMATRIX_PROVISIONING_MANIFEST_EVIDENCE 'provisioning-manifest-status.json'),(($summary | ConvertTo-Json -Depth 12)+[Environment]::NewLine),[System.Text.UTF8Encoding]::new($false))
+          Write-Host 'rc4_provisioning_manifest=READY_FOR_OPERATION_PACKAGE'
+
+      - name: Record fail-closed RC4 provisioning-manifest failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_PROVISIONING_MANIFEST_EVIDENCE)) { exit 0 }
+          $failure = [ordered]@{
+              schema = 1
+              kind = 'psmatrix.windows-authority-rc4-provisioning-manifest-workflow-status'
+              status = 'FAIL'
+              release_version = '2.0.0rc4'
+              release_commit = $env:RELEASE_COMMIT
+              control_head = $env:CONTROL_HEAD
+              complete = $false
+              ready_for_hyper_v_provisioning = $false
+              actual_os_identity_measured = $false
+              creates_virtual_machines = $false
+              creates_checkpoints = $false
+              authoritative = $false
+              ga_eligible = $false
+          }
+          [System.IO.File]::WriteAllText((Join-Path $env:PSMATRIX_PROVISIONING_MANIFEST_EVIDENCE 'provisioning-manifest-failure.json'),(($failure | ConvertTo-Json -Depth 8)+[Environment]::NewLine),[System.Text.UTF8Encoding]::new($false))
+
+      - name: Upload non-secret RC4 provisioning-manifest evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-authority-rc4-provisioning-manifest-status
+          path: ${{ env.PSMATRIX_PROVISIONING_MANIFEST_EVIDENCE }}
+          if-no-files-found: error
+          retention-days: 30
