@@ -5,7 +5,10 @@
   "release_version": "2.0.0rc3",
   "release_commit": "34e87c60885001f8dd11744b8bf194a59e51bd1f",
   "input_requirements": {
+    "reviewed_release_lock_pack": "03-authoritative-windows",
     "protected_release_intake_status": "RELEASE_CLOSURE_READY",
+    "protected_release_intake_media_manifest_materialized": false,
+    "protected_release_intake_operation_package_rebuilt": false,
     "canonical_release_authority_status": "READY",
     "selection_materialization_kind": "psmatrix.windows-authority-media-selection-materialization",
     "selection_materialization_complete": true,
@@ -48,6 +51,7 @@
     "embeds_signed_release_manifest": true,
     "embeds_public_release_verification_material": true,
     "embeds_windows_lab_media_manifest": true,
+    "embeds_media_manifest_contract": true,
     "embeds_sanitized_provisioning_binding": true,
     "embeds_controller_contracts": true,
     "credential_bundle_contents_included": false,
