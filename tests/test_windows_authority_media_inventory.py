@@ -102,7 +102,7 @@ class WindowsAuthorityMediaInventoryTests(unittest.TestCase):
         self.assertFalse(value["safety"]["authoritative"])
         self.assertFalse(value["safety"]["ga_eligible"])
 
-    def test_selection_materializer_is_fail_closed_and_contract_driven(self) -> None:
+    def test_selection_materializer_is_fail_closed_and_never_claims_hyper_v_readiness(self) -> None:
         text = MANIFEST_SCRIPT.read_text(encoding="utf-8")
         for required in (
             "Write-Utf8NoBomAtomic",
@@ -110,10 +110,16 @@ class WindowsAuthorityMediaInventoryTests(unittest.TestCase):
             "$contract.manifest_kind",
             "inventory_sha256",
             "windows-lab-media-selection.example.json",
+            "config\\windows-authority-media-selection.json",
             "Selected source archive is not listed in the signed release manifest.",
             "ISO image index",
-            "if ($readyForMediaManifest)",
+            "if ($readyForSelectionMaterialization)",
             "final_manifest_written = $finalManifestWritten",
+            "ready_for_selection_materialization = $readyForSelectionMaterialization",
+            "ready_for_provisioning_manifest_materialization = $true",
+            "provisioning_manifest_materialized = $false",
+            "ready_for_hyper_v_provisioning = $false",
+            "psmatrix.windows-lab-media from this exact reviewed selection",
             "creates_virtual_machines = $false",
             "creates_checkpoints = $false",
             "opens_secret_bundles = $false",
@@ -134,6 +140,8 @@ class WindowsAuthorityMediaInventoryTests(unittest.TestCase):
             "New-VHD",
             "Expand-Archive",
             "Invoke-Expression",
+            "ready_for_hyper_v_provisioning = $true",
+            "Invoke the Hyper-V provisioning phase only with this exact manifest",
             "authoritative = $true",
             "ga_eligible = $true",
         ):
