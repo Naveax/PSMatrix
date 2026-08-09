@@ -11,6 +11,7 @@ INIT = ROOT / "src" / "psmatrix" / "__init__.py"
 RC3_LOCK = ROOT / "ga-packs" / "03-authoritative-windows" / "rc3-release-lock.json"
 ENROLL_SCRIPT = ROOT / "scripts" / "ga" / "enroll_windows_authority_release_authority.py"
 LOCK_DRAFT_SCRIPT = ROOT / "scripts" / "ga" / "build_windows_authority_release_lock_draft.py"
+SOURCE_PREFLIGHT = ROOT / ".github" / "workflows" / "ga-windows-authority-rc4-source-preflight.yml"
 ENROLL_WORKFLOW = ROOT / ".github" / "workflows" / "ga-windows-authority-rc4-release-authority-enrollment.yml"
 STAGING_WORKFLOW = ROOT / ".github" / "workflows" / "ga-windows-authority-rc4-staging-candidate-selfhosted.yml"
 LOCK_REVIEW_WORKFLOW = ROOT / ".github" / "workflows" / "ga-windows-authority-rc4-release-lock-review.yml"
@@ -71,11 +72,41 @@ class WindowsAuthorityRC4AuthorityRotationTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertNotIn(value, text)
 
+    def test_rc4_source_preflight_tracks_every_rotation_control_and_scans_tracked_pem_material(self) -> None:
+        text = SOURCE_PREFLIGHT.read_text(encoding="utf-8")
+        required = (
+            "production-ga-windows-authority-rc4-source-preflight",
+            "runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]",
+            ".github/workflows/ga-windows-authority-rc4-release-authority-enrollment.yml",
+            ".github/workflows/ga-windows-authority-rc4-staging-candidate-selfhosted.yml",
+            ".github/workflows/ga-windows-authority-rc4-release-lock-review.yml",
+            "scripts/ga/enroll_windows_authority_release_authority.py",
+            "scripts/ga/build_windows_authority_release_candidate.py",
+            "scripts/ga/build_windows_authority_release_lock_draft.py",
+            "tests/test_windows_authority_release_candidate_builder.py",
+            "tests/test_windows_authority_rc4_authority_rotation.py",
+            "python -m py_compile",
+            "tests.test_windows_authority_rc4_authority_rotation",
+            "git ls-files",
+            "Tracked private-key PEM material detected",
+            "repository_private_authority_absence=PASS",
+            "rc3_lock_mutated=false",
+            "private_key_generated=false",
+            "active_rc4_lock_written=false",
+            "release_artifacts_signed=false",
+        )
+        for value in required:
+            with self.subTest(value=value):
+                self.assertIn(value, text)
+        self.assertNotIn("secrets.", text)
+        self.assertNotIn("production-ga-release-signing", text)
+
     def test_protected_enrollment_workflow_limits_private_key_to_one_step(self) -> None:
         text = ENROLL_WORKFLOW.read_text(encoding="utf-8")
         required = (
             "environment: production-ga-release-signing",
             "runs-on: ubuntu-latest",
+            "candidate_commit must equal exact workflow control head",
             "Materialize protected private key only in hosted temp",
             "RELEASE_PRIVATE_KEY: ${{ secrets.PSMATRIX_RELEASE_PRIVATE_KEY }}",
             "Remove protected private key",
@@ -107,6 +138,7 @@ class WindowsAuthorityRC4AuthorityRotationTests(unittest.TestCase):
         required = (
             "runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]",
             "Expected NAVEAX Windows runner",
+            "release_commit must equal exact workflow control head",
             "2.0.0rc4",
             "build_windows_authority_release_candidate.py",
             "Expected exactly six RC4 release artifacts",
