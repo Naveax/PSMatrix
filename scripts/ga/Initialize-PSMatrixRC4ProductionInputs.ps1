@@ -234,6 +234,7 @@ $report = [ordered]@{
         github_secret_present = $false
         private_key_logged = $false
         private_key_in_repository = $false
+        plaintext_private_key_file_created = $false
         plaintext_private_key_retained = $false
         escrow_present = (Test-Path -LiteralPath $releaseEscrowPath -PathType Leaf)
         public_key_present = (Test-Path -LiteralPath $releasePublicPath -PathType Leaf)
@@ -260,29 +261,29 @@ if ($ProvisionReleaseAuthority) {
         throw "Release-authority escrow already exists: $releaseEscrowPath. Use -RestoreReleaseAuthorityFromEscrow or explicitly allow replacement."
     }
 
-    $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('psmatrix-rc4-authority-' + [Guid]::NewGuid().ToString('N'))
-    [System.IO.Directory]::CreateDirectory($tempRoot) | Out-Null
-    $privatePath = Join-Path $tempRoot 'release.private.pem'
-    $publicPath = Join-Path $tempRoot 'release.public.pem'
+    $privateLines = @(& $OpenSsl genpkey -algorithm ED25519 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $privateLines.Count -eq 0) {
+        throw 'OpenSSL failed to generate the RC4 Ed25519 release authority.'
+    }
+    $privatePem = (($privateLines -join "`n").TrimEnd() + "`n")
+    $privateLines = @()
+    if ($privatePem -notmatch '(?m)^-----BEGIN PRIVATE KEY-----\r?$') {
+        throw 'Generated RC4 release authority is not an unencrypted PKCS#8 PEM private key.'
+    }
+    $privateBytes = [System.Text.Encoding]::UTF8.GetBytes($privatePem)
     try {
-        & $OpenSsl genpkey -algorithm ED25519 -out $privatePath 2>$null
-        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $privatePath -PathType Leaf)) {
-            throw 'OpenSSL failed to generate the RC4 Ed25519 release authority.'
-        }
-        & $OpenSsl pkey -in $privatePath -pubout -out $publicPath 2>$null
-        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $publicPath -PathType Leaf)) {
+        $publicLines = @($privatePem | & $OpenSsl pkey -pubout 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $publicLines.Count -eq 0) {
             throw 'OpenSSL failed to derive the RC4 release public key.'
         }
+        $publicPem = (($publicLines -join "`n").TrimEnd() + "`n")
+        if ($publicPem -notmatch '(?m)^-----BEGIN PUBLIC KEY-----\r?$') {
+            throw 'Derived RC4 release authority is not SubjectPublicKeyInfo PEM.'
+        }
 
-        $privateBytes = [System.IO.File]::ReadAllBytes($privatePath)
-        try {
-            Protect-BytesCurrentUser -Bytes $privateBytes -Purpose 'release-authority-private-key' -Destination $releaseEscrowPath
-            Copy-Item -LiteralPath $publicPath -Destination $releasePublicPath -Force
-            Set-EnvironmentSecretFromBytes -Environment $ReleaseEnvironment -Name $releaseSecretName -Bytes $privateBytes
-        }
-        finally {
-            [System.Array]::Clear($privateBytes, 0, $privateBytes.Length)
-        }
+        Protect-BytesCurrentUser -Bytes $privateBytes -Purpose 'release-authority-private-key' -Destination $releaseEscrowPath
+        Write-Utf8NoBom -Path $releasePublicPath -Content $publicPem
+        Set-EnvironmentSecretFromBytes -Environment $ReleaseEnvironment -Name $releaseSecretName -Bytes $privateBytes
 
         $report.release_authority.generated = $true
         $report.release_authority.escrow_present = $true
@@ -290,15 +291,13 @@ if ($ProvisionReleaseAuthority) {
         $report.release_authority.public_key_sha256 = (Get-FileHash -LiteralPath $releasePublicPath -Algorithm SHA256).Hash.ToLowerInvariant()
     }
     finally {
-        if (Test-Path -LiteralPath $privatePath -PathType Leaf) {
-            Remove-Item -LiteralPath $privatePath -Force -ErrorAction SilentlyContinue
-        }
-        if (Test-Path -LiteralPath $tempRoot -PathType Container) {
-            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
-        }
+        [System.Array]::Clear($privateBytes, 0, $privateBytes.Length)
+        $privatePem = $null
+        $publicPem = $null
+        $publicLines = @()
     }
 }
-elseif ($RestoreReleaseAuthorityFromEscrow) {
+elif ($RestoreReleaseAuthorityFromEscrow) {
     $privateBytes = Unprotect-BytesCurrentUser -Source $releaseEscrowPath -Purpose 'release-authority-private-key'
     try {
         Set-EnvironmentSecretFromBytes -Environment $ReleaseEnvironment -Name $releaseSecretName -Bytes $privateBytes
@@ -360,6 +359,7 @@ if ($ProvisionWindowsLab) {
             }
             finally {
                 [System.Array]::Clear($saved, 0, $saved.Length)
+                $savedJson = $null
             }
         }
         catch {
@@ -407,8 +407,6 @@ if ($ProvisionWindowsLab) {
 }
 
 $report.release_authority.plaintext_private_key_retained = $false
-$reportPathParent = [System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath($reportPath))
-[System.IO.Directory]::CreateDirectory($reportPathParent) | Out-Null
 Write-Utf8NoBom -Path $reportPath -Content (($report | ConvertTo-Json -Depth 12) + [Environment]::NewLine)
 
 Write-Host 'PSMatrix RC4 production-input bootstrap: PASS'
