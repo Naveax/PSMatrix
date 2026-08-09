@@ -15,13 +15,23 @@
   "prerequisites": {
     "protected_release_intake_status": "RELEASE_CLOSURE_READY",
     "canonical_release_authority_status": "READY",
-    "media_manifest_complete": true,
-    "media_manifest_ready_for_hyper_v_provisioning": true
+    "reviewed_selection_kind": "psmatrix.windows-authority-media-selection-materialization",
+    "reviewed_selection_complete": true,
+    "provisioning_manifest_kind": "psmatrix.windows-lab-media",
+    "provisioning_manifest_complete": true,
+    "provisioning_manifest_ready_for_hyper_v_provisioning": true,
+    "provisioning_materialization_status": "PASS",
+    "product_loader_validation": "PASS",
+    "operation_package_handoff_validation": "PASS"
   },
   "execution": {
     "primary_build_required": true,
     "independent_rebuild_required": true,
     "byte_determinism_required": true,
+    "builder_revalidates_selection_inventory_binding": true,
+    "builder_revalidates_provisioning_manifest_sha256": true,
+    "builder_revalidates_selection_sha256": true,
+    "builder_revalidates_profile_sha256": true,
     "operation_package_binding_validator_required": true,
     "binding_status_required": "PASS",
     "ready_for_release_artifact_recovery_required": true,
@@ -30,6 +40,7 @@
   },
   "output": {
     "package_status": "READY_FOR_WINDOWS_HOST",
+    "provisioning_manifest_binding_required": true,
     "production_ga_gate": "INCOMPLETE",
     "authoritative_campaign_executed": false,
     "authoritative": false,
