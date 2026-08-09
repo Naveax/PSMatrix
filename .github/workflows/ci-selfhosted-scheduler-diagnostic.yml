@@ -1,11 +1,10 @@
 name: ci-selfhosted-scheduler-diagnostic
 
 on:
-  pull_request:
   workflow_dispatch:
 
 concurrency:
-  group: ci-selfhosted-scheduler-diagnostic-${{ github.ref }}
+  group: ci-selfhosted-scheduler-diagnostic
   cancel-in-progress: true
 
 permissions:
@@ -14,9 +13,6 @@ permissions:
 jobs:
   scheduler-diagnostic:
     name: Verify self-hosted Actions scheduler
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.pull_request.head.repo.full_name == github.repository && github.actor == 'Naveax')
     runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
     timeout-minutes: 5
     steps:
