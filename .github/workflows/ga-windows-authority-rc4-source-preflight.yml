@@ -14,14 +14,18 @@ on:
       - "scripts/ga/enroll_windows_authority_release_authority.py"
       - "scripts/ga/build_windows_authority_release_candidate.py"
       - "scripts/ga/build_windows_authority_release_lock_draft.py"
+      - "scripts/ga/Initialize-PSMatrixRC4ProductionInputs.ps1"
       - "ga-packs/03-authoritative-windows/rc3-release-lock.json"
       - "pyproject.toml"
       - "src/psmatrix/__init__.py"
       - "tests/test_windows_authority_release_candidate_builder.py"
       - "tests/test_windows_authority_rc4_authority_rotation.py"
       - "tests/test_windows_authority_rc4_authority_rotation_runtime.py"
+      - "tests/test_windows_authority_rc4_operator_bootstrap.py"
   pull_request:
-    branches: [main]
+    branches:
+      - main
+      - "release/**"
     paths:
       - ".github/workflows/ga-windows-authority-rc4-source-preflight.yml"
       - ".github/workflows/ga-windows-authority-rc4-release-authority-enrollment.yml"
@@ -30,12 +34,14 @@ on:
       - "scripts/ga/enroll_windows_authority_release_authority.py"
       - "scripts/ga/build_windows_authority_release_candidate.py"
       - "scripts/ga/build_windows_authority_release_lock_draft.py"
+      - "scripts/ga/Initialize-PSMatrixRC4ProductionInputs.ps1"
       - "ga-packs/03-authoritative-windows/rc3-release-lock.json"
       - "pyproject.toml"
       - "src/psmatrix/__init__.py"
       - "tests/test_windows_authority_release_candidate_builder.py"
       - "tests/test_windows_authority_rc4_authority_rotation.py"
       - "tests/test_windows_authority_rc4_authority_rotation_runtime.py"
+      - "tests/test_windows_authority_rc4_operator_bootstrap.py"
 
 concurrency:
   group: production-ga-windows-authority-rc4-source-preflight-${{ github.event.pull_request.head.ref || github.ref }}
@@ -94,6 +100,20 @@ jobs:
           Write-Host "rc4_event_sha=$env:GITHUB_SHA"
           Write-Host 'rc4_version_identity=PASS'
 
+      - name: Parse RC4 production-input bootstrap
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = Join-Path $env:GITHUB_WORKSPACE 'scripts\ga\Initialize-PSMatrixRC4ProductionInputs.ps1'
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
+          if (@($errors).Count -ne 0) {
+              $detail = @($errors | ForEach-Object { $_.Message }) -join '; '
+              throw "RC4 production-input bootstrap parse failed: $detail"
+          }
+          Write-Host 'rc4_operator_bootstrap_parse=PASS'
+
       - name: Compile RC4 release-control Python
         shell: pwsh
         run: |
@@ -104,7 +124,8 @@ jobs:
               scripts/ga/build_windows_authority_release_lock_draft.py `
               tests/test_windows_authority_release_candidate_builder.py `
               tests/test_windows_authority_rc4_authority_rotation.py `
-              tests/test_windows_authority_rc4_authority_rotation_runtime.py
+              tests/test_windows_authority_rc4_authority_rotation_runtime.py `
+              tests/test_windows_authority_rc4_operator_bootstrap.py
           if ($LASTEXITCODE -ne 0) { throw 'RC4 release-control Python compile failed.' }
           Write-Host 'rc4_python_compile=PASS'
 
@@ -115,10 +136,12 @@ jobs:
           & python -m unittest -v `
               tests.test_windows_authority_release_candidate_builder `
               tests.test_windows_authority_rc4_authority_rotation `
-              tests.test_windows_authority_rc4_authority_rotation_runtime
+              tests.test_windows_authority_rc4_authority_rotation_runtime `
+              tests.test_windows_authority_rc4_operator_bootstrap
           if ($LASTEXITCODE -ne 0) { throw 'RC4 authority-rotation contract/runtime tests failed.' }
           Write-Host 'rc4_authority_rotation_contracts=PASS'
           Write-Host 'rc4_authority_rotation_runtime=PASS'
+          Write-Host 'rc4_operator_bootstrap_contract=PASS'
 
       - name: Enforce no tracked private authority material
         shell: pwsh
@@ -159,6 +182,7 @@ jobs:
           Write-Host 'rc4_candidate=2.0.0rc4'
           Write-Host 'rc3_lock_mutated=false'
           Write-Host 'private_key_generated=false'
+          Write-Host 'production_inputs_mutated=false'
           Write-Host 'active_rc4_lock_written=false'
           Write-Host 'release_artifacts_signed=false'
           Write-Host 'authoritative=false'
