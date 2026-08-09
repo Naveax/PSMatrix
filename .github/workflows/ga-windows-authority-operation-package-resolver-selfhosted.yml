@@ -53,21 +53,79 @@ jobs:
               return (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
           }
 
+          function Test-GaRootCandidate {
+              param([Parameter(Mandatory = $true)][string]$Candidate)
+              if (-not (Test-Path -LiteralPath $Candidate -PathType Container)) {
+                  return $false
+              }
+              $requiredFiles = @(
+                  'windows-authority-protected-release-intake.json',
+                  'windows-authority-media-inventory.canonical.json',
+                  'windows-authority-provisioning-manifest-materialization.json',
+                  'config\windows-lab-media.json',
+                  'config\windows-authority-media-selection.json'
+              )
+              foreach ($relative in $requiredFiles) {
+                  if (-not (Test-Path -LiteralPath (Join-Path $Candidate $relative) -PathType Leaf)) {
+                      return $false
+                  }
+              }
+              if (-not (Test-Path -LiteralPath (Join-Path $Candidate 'media\release\2.0.0rc3') -PathType Container)) {
+                  return $false
+              }
+              return $true
+          }
+
           $gaRootSource = 'runner-environment'
           $gaRootValue = [string]$env:PSMATRIX_WINDOWS_GA_ROOT
           if ([string]::IsNullOrWhiteSpace($gaRootValue)) {
               if ([string]::IsNullOrWhiteSpace($env:ProgramData)) {
-                  throw 'ProgramData is unavailable; canonical GA layout root cannot be resolved.'
+                  throw 'ProgramData is unavailable; Windows GA state cannot be resolved.'
               }
-              $gaRootSource = 'canonical-layout-default'
-              $gaRootValue = Join-Path $env:ProgramData 'PSMatrix\ProductionGA'
+              $canonicalDefault = Join-Path $env:ProgramData 'PSMatrix\ProductionGA'
+              if (Test-GaRootCandidate -Candidate $canonicalDefault) {
+                  $gaRootSource = 'canonical-layout-default'
+                  $gaRootValue = $canonicalDefault
+              }
+              else {
+                  $gaRootSource = 'bounded-marker-discovery'
+                  $searchBases = @(
+                      (Join-Path $env:ProgramData 'PSMatrix'),
+                      (Join-Path $env:USERPROFILE 'Downloads'),
+                      (Join-Path $env:USERPROFILE 'Documents'),
+                      (Join-Path $env:LOCALAPPDATA 'PSMatrix')
+                  ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+                  $candidates = @()
+                  foreach ($base in $searchBases) {
+                      if (-not (Test-Path -LiteralPath $base -PathType Container)) {
+                          continue
+                      }
+                      $markers = @(
+                          Get-ChildItem -LiteralPath $base -File `
+                              -Filter 'windows-authority-provisioning-manifest-materialization.json' `
+                              -Recurse -Depth 6 -ErrorAction SilentlyContinue
+                      )
+                      foreach ($marker in $markers) {
+                          $candidate = [System.IO.Path]::GetFullPath($marker.Directory.FullName)
+                          if (Test-GaRootCandidate -Candidate $candidate) {
+                              $candidates += $candidate
+                          }
+                      }
+                  }
+                  $candidates = @($candidates | Sort-Object -Unique)
+                  Write-Host "bounded_ga_root_candidate_count=$($candidates.Count)"
+                  if ($candidates.Count -ne 1) {
+                      throw "Expected exactly one bounded RC3 GA state root; found $($candidates.Count)."
+                  }
+                  $gaRootValue = $candidates[0]
+              }
           }
           if (-not [System.IO.Path]::IsPathRooted($gaRootValue)) {
               throw 'Resolved Windows GA root must be absolute.'
           }
           $gaRoot = [System.IO.Path]::GetFullPath($gaRootValue)
-          if (-not (Test-Path -LiteralPath $gaRoot -PathType Container)) {
-              throw "Resolved Windows GA root does not exist (source=$gaRootSource)."
+          if (-not (Test-GaRootCandidate -Candidate $gaRoot)) {
+              throw "Resolved Windows GA root does not satisfy the exact RC3 marker contract (source=$gaRootSource)."
           }
           Write-Host "ga_root_source=$gaRootSource"
 
@@ -75,11 +133,6 @@ jobs:
           $selectionPath = Join-Path $gaRoot 'config\windows-authority-media-selection.json'
           $materializationPath = Join-Path $gaRoot 'windows-authority-provisioning-manifest-materialization.json'
           $canonicalPath = Join-Path $gaRoot 'windows-authority-media-inventory.canonical.json'
-          foreach ($path in @($mediaPath, $selectionPath, $materializationPath, $canonicalPath)) {
-              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-                  throw "A required current RC3 binding input is missing (source=$gaRootSource)."
-              }
-          }
 
           $media = Get-Content -LiteralPath $mediaPath -Raw | ConvertFrom-Json
           $selection = Get-Content -LiteralPath $selectionPath -Raw | ConvertFrom-Json
