@@ -37,7 +37,8 @@ jobs:
               throw 'Locked public key bytes do not match release lock.'
           }
 
-          $openssl = (Get-Command openssl.exe -ErrorAction SilentlyContinue).Source
+          $opensslCommand = Get-Command openssl.exe -ErrorAction SilentlyContinue
+          $openssl = if ($null -ne $opensslCommand) { $opensslCommand.Source } else { $null }
           if ([string]::IsNullOrWhiteSpace($openssl)) {
               $fallback = 'C:\Program Files\Git\usr\bin\openssl.exe'
               if (Test-Path -LiteralPath $fallback -PathType Leaf) { $openssl = $fallback }
@@ -54,7 +55,11 @@ jobs:
               $lockedSha = (Get-FileHash -LiteralPath $lockedDer -Algorithm SHA256).Hash.ToLowerInvariant()
 
               $currentHome = [Environment]::GetFolderPath('UserProfile')
-              $profileRoots = @($currentHome, 'C:\Users\umut') | Where-Object { Test-Path -LiteralPath $_ -PathType Container } | Select-Object -Unique
+              $profileRoots = @(
+                  @($currentHome, 'C:\Users\umut') |
+                      Where-Object { Test-Path -LiteralPath $_ -PathType Container } |
+                      Select-Object -Unique
+              )
 
               $historyFiles = @()
               foreach ($profileRoot in $profileRoots) {
@@ -67,7 +72,7 @@ jobs:
                       }
                   }
                   foreach ($candidate in @((Join-Path $profileRoot '.bash_history'), (Join-Path $profileRoot '.zsh_history'))) {
-                      if (Test-Path -LiteralPath $candidate -PathType Leaf) { $historyFiles += Get-Item -LiteralPath $candidate }
+                      if (Test-Path -LiteralPath $candidate -PathType Leaf) { $historyFiles += @(Get-Item -LiteralPath $candidate) }
                   }
               }
               $historyFiles = @($historyFiles | Sort-Object FullName -Unique)
@@ -80,8 +85,7 @@ jobs:
                           if ($line -match '(?i)PSMATRIX_RELEASE_PRIVATE_KEY|release\.private|release-private|genpkey|ed25519|secret\s+set|release authority') {
                               $historyKeywordHits += 1
                               foreach ($m in [regex]::Matches($line, '(?i)([A-Z]:\\[^"''`|<>;]+)')) {
-                                  $value = $m.Groups[1].Value.Trim()
-                                  [void]$historyAbsolutePaths.Add($value)
+                                  [void]$historyAbsolutePaths.Add($m.Groups[1].Value.Trim())
                               }
                           }
                       }
@@ -89,10 +93,7 @@ jobs:
                   catch { }
               }
 
-              $roots = @(
-                  'C:\PSMatrix-Windows-GA',
-                  'C:\ProgramData\PSMatrix'
-              )
+              $roots = @('C:\PSMatrix-Windows-GA', 'C:\ProgramData\PSMatrix')
               foreach ($profileRoot in $profileRoots) {
                   $roots += @(
                       (Join-Path $profileRoot 'Downloads'),
@@ -126,8 +127,7 @@ jobs:
               $index = 0
               foreach ($path in $candidatePaths) {
                   try {
-                      $bytes = [System.IO.File]::ReadAllBytes($path)
-                      $text = [System.Text.Encoding]::UTF8.GetString($bytes)
+                      $text = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($path))
                       if ($text -notmatch '-----BEGIN .*PRIVATE KEY-----') { continue }
                       $pemPrivateCandidates += 1
                       $index += 1
@@ -135,22 +135,23 @@ jobs:
                       & $openssl pkey -in $path -pubout -outform DER -out $derived 2>$null
                       if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $derived -PathType Leaf)) { continue }
                       $sha = (Get-FileHash -LiteralPath $derived -Algorithm SHA256).Hash.ToLowerInvariant()
-                      if ($sha -eq $lockedSha) { $matches += $path }
+                      if ($sha -eq $lockedSha) { $matches += @($path) }
                   }
                   catch { }
               }
+              $matches = @($matches)
 
-              Write-Host "profile_roots_checked=$($profileRoots.Count)"
-              Write-Host "legacy_umut_profile_present=$([bool]($profileRoots -contains 'C:\Users\umut'))"
-              Write-Host "history_files_checked=$($historyFiles.Count)"
+              Write-Host "profile_roots_checked=$(@($profileRoots).Count)"
+              Write-Host "legacy_umut_profile_present=$([bool](@($profileRoots) -contains 'C:\Users\umut'))"
+              Write-Host "history_files_checked=$(@($historyFiles).Count)"
               Write-Host "history_keyword_hits=$historyKeywordHits"
               Write-Host "history_absolute_paths_discovered=$($historyAbsolutePaths.Count)"
-              Write-Host "bounded_search_roots=$($roots.Count)"
+              Write-Host "bounded_search_roots=$(@($roots).Count)"
               Write-Host "candidate_files_checked=$($candidatePaths.Count)"
               Write-Host "pem_private_candidates=$pemPrivateCandidates"
-              Write-Host "matching_locked_release_keys=$($matches.Count)"
+              Write-Host "matching_locked_release_keys=$(@($matches).Count)"
 
-              if ($matches.Count -eq 1) {
+              if (@($matches).Count -eq 1) {
                   $match = $matches[0]
                   $meta = Get-Item -LiteralPath $match
                   Write-Host 'release_key_recovery=UNIQUE_MATCH'
@@ -159,7 +160,7 @@ jobs:
                   Write-Host "match_last_write_utc=$($meta.LastWriteTimeUtc.ToString('o'))"
                   Write-Host 'match_path_disclosed=false'
               }
-              elseif ($matches.Count -eq 0) {
+              elseif (@($matches).Count -eq 0) {
                   Write-Host 'release_key_recovery=NO_MATCH'
                   exit 40
               }
