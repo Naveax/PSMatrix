@@ -43,8 +43,8 @@ on:
       - "tests/test_windows_authority_operation_package_workflow.py"
 
 concurrency:
-  group: production-ga-windows-authority-provisioning-handoff-source-preflight-${{ github.ref }}
-  cancel-in-progress: false
+  group: production-ga-windows-authority-provisioning-handoff-source-preflight-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
