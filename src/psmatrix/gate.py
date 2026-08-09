@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import hmac
 import json
@@ -13,10 +14,19 @@ from .repair import resolve_project_file
 from .util import atomic_write_bytes, atomic_write_json, read_json, sha256_file, utc_now_iso
 
 _GATE_SCHEMA = 1
+_WINDOWS_DPAPI_PREFIX = b"PSMATRIX-DPAPI-HMAC-V1\x00"
+_CRYPTPROTECT_UI_FORBIDDEN = 0x1
 
 
 class GateError(PSMatrixError):
     """Raised when a delivery gate receipt is invalid or stale."""
+
+
+class _DataBlob(ctypes.Structure):
+    _fields_ = [
+        ("cbData", ctypes.c_uint32),
+        ("pbData", ctypes.POINTER(ctypes.c_ubyte)),
+    ]
 
 
 def _canonical_bytes(value: Any) -> bytes:
@@ -27,22 +37,129 @@ def _key_path(home: Path) -> Path:
     return home.resolve() / "gate" / "hmac.key"
 
 
+def _blob_from_bytes(value: bytes) -> tuple[_DataBlob, Any]:
+    buffer = (ctypes.c_ubyte * len(value)).from_buffer_copy(value)
+    return _DataBlob(len(value), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_ubyte))), buffer
+
+
+def _dpapi_protect(value: bytes) -> bytes:
+    if os.name != "nt":
+        raise GateError("Windows DPAPI is unavailable on this platform")
+    input_blob, input_buffer = _blob_from_bytes(value)
+    del input_buffer  # lifetime remains attached to input_blob for this call scope
+    output_blob = _DataBlob()
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    crypt32.CryptProtectData.argtypes = [
+        ctypes.POINTER(_DataBlob),
+        ctypes.c_wchar_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.POINTER(_DataBlob),
+    ]
+    crypt32.CryptProtectData.restype = ctypes.c_int
+    result = crypt32.CryptProtectData(
+        ctypes.byref(input_blob),
+        "PSMatrix delivery gate HMAC key",
+        None,
+        None,
+        None,
+        _CRYPTPROTECT_UI_FORBIDDEN,
+        ctypes.byref(output_blob),
+    )
+    if not result:
+        code = ctypes.get_last_error()
+        raise GateError(f"Windows DPAPI protection failed: {code}")
+    try:
+        return ctypes.string_at(output_blob.pbData, output_blob.cbData)
+    finally:
+        if output_blob.pbData:
+            kernel32.LocalFree(output_blob.pbData)
+
+
+def _dpapi_unprotect(value: bytes) -> bytes:
+    if os.name != "nt":
+        raise GateError("Windows DPAPI is unavailable on this platform")
+    input_blob, input_buffer = _blob_from_bytes(value)
+    del input_buffer
+    output_blob = _DataBlob()
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    crypt32.CryptUnprotectData.argtypes = [
+        ctypes.POINTER(_DataBlob),
+        ctypes.POINTER(ctypes.c_wchar_p),
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.POINTER(_DataBlob),
+    ]
+    crypt32.CryptUnprotectData.restype = ctypes.c_int
+    result = crypt32.CryptUnprotectData(
+        ctypes.byref(input_blob),
+        None,
+        None,
+        None,
+        None,
+        _CRYPTPROTECT_UI_FORBIDDEN,
+        ctypes.byref(output_blob),
+    )
+    if not result:
+        code = ctypes.get_last_error()
+        raise GateError(f"Windows DPAPI unprotection failed: {code}")
+    try:
+        return ctypes.string_at(output_blob.pbData, output_blob.cbData)
+    finally:
+        if output_blob.pbData:
+            kernel32.LocalFree(output_blob.pbData)
+
+
+def _encode_key_for_storage(key: bytes) -> bytes:
+    if len(key) != 32:
+        raise GateError("Delivery gate key has an invalid length")
+    if os.name == "nt":
+        return _WINDOWS_DPAPI_PREFIX + _dpapi_protect(key)
+    return key
+
+
+def _decode_key_from_storage(path: Path, stored: bytes) -> bytes:
+    if os.name == "nt":
+        if not stored.startswith(_WINDOWS_DPAPI_PREFIX):
+            raise GateError(
+                "Delivery gate key is not protected with Windows CurrentUser DPAPI"
+            )
+        key = _dpapi_unprotect(stored[len(_WINDOWS_DPAPI_PREFIX) :])
+        if len(key) != 32:
+            raise GateError("Delivery gate key has an invalid length")
+        return key
+
+    if len(stored) != 32:
+        raise GateError("Delivery gate key has an invalid length")
+    if path.stat().st_mode & 0o077:
+        raise GateError("Delivery gate key permissions are too broad")
+    return stored
+
+
 def _load_key(home: Path, *, create: bool) -> bytes:
     path = _key_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_file():
-        key = path.read_bytes()
-        if len(key) != 32:
-            raise GateError("Delivery gate key has an invalid length")
-        if path.stat().st_mode & 0o077:
-            raise GateError("Delivery gate key permissions are too broad")
-        return key
+        return _decode_key_from_storage(path, path.read_bytes())
     if not create:
         raise GateError("Delivery gate key is missing")
     key = secrets.token_bytes(32)
-    atomic_write_bytes(path, key)
-    os.chmod(path, 0o600)
-    return key
+    atomic_write_bytes(path, _encode_key_for_storage(key))
+    if os.name != "nt":
+        os.chmod(path, 0o600)
+    # Read the persisted representation back through the platform security
+    # boundary before accepting it. This proves DPAPI/permissions and disk bytes
+    # are usable for subsequent receipt verification.
+    persisted = _decode_key_from_storage(path, path.read_bytes())
+    if not hmac.compare_digest(key, persisted):
+        raise GateError("Delivery gate key persistence verification failed")
+    return persisted
 
 
 def create_gate_receipt(
