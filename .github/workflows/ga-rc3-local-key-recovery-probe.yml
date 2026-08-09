@@ -34,69 +34,75 @@ jobs:
               throw 'RC3 release lock identity mismatch.'
           }
           $lockedPublicPath = Join-Path $env:GITHUB_WORKSPACE ([string]$lock.release_public_key.path)
-          $lockedPem = Get-Content -LiteralPath $lockedPublicPath -Raw
-          $lockedRsa = [System.Security.Cryptography.RSA]::Create()
+          if (-not (Test-Path -LiteralPath $lockedPublicPath -PathType Leaf)) { throw 'Locked RC3 public key is missing.' }
+
+          $openssl = $null
+          $command = Get-Command openssl.exe -ErrorAction SilentlyContinue
+          if ($null -ne $command) { $openssl = $command.Source }
+          if ([string]::IsNullOrWhiteSpace($openssl)) {
+              $gitOpenSsl = 'C:\Program Files\Git\usr\bin\openssl.exe'
+              if (Test-Path -LiteralPath $gitOpenSsl -PathType Leaf) { $openssl = $gitOpenSsl }
+          }
+          if ([string]::IsNullOrWhiteSpace($openssl)) { throw 'OpenSSL is unavailable on NAVEAX.' }
+
+          $tempRoot = Join-Path $env:RUNNER_TEMP 'psmatrix-local-key-probe'
+          if (Test-Path -LiteralPath $tempRoot) { Remove-Item -LiteralPath $tempRoot -Recurse -Force }
+          New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
           try {
-              $lockedRsa.ImportFromPem($lockedPem)
-              $lockedDer = $lockedRsa.ExportSubjectPublicKeyInfo()
-              $lockedSha = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData($lockedDer)).ToLowerInvariant()
-          }
-          finally {
-              $lockedRsa.Dispose()
-          }
+              $lockedDer = Join-Path $tempRoot 'locked-public.der'
+              & $openssl pkey -pubin -in $lockedPublicPath -outform DER -out $lockedDer 2>$null
+              if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $lockedDer -PathType Leaf)) {
+                  throw 'OpenSSL could not normalize the locked RC3 public key.'
+              }
+              $lockedSha = (Get-FileHash -LiteralPath $lockedDer -Algorithm SHA256).Hash.ToLowerInvariant()
 
-          $roots = @(
-              'C:\PSMatrix-Windows-GA',
-              'C:\Users\navea\Downloads\PSMatrix-Windows-Authority'
-          )
-          $presentRoots = @($roots | Where-Object { Test-Path -LiteralPath $_ -PathType Container })
-          $candidateCount = 0
-          $matching = @()
+              $roots = @(
+                  'C:\PSMatrix-Windows-GA',
+                  'C:\Users\navea\Downloads\PSMatrix-Windows-Authority'
+              )
+              $presentRoots = @($roots | Where-Object { Test-Path -LiteralPath $_ -PathType Container })
+              $candidateCount = 0
+              $matching = @()
 
-          foreach ($root in $presentRoots) {
-              $files = @(Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue | Where-Object {
-                  $_.Length -gt 0 -and $_.Length -le 131072 -and (
-                      $_.Extension -in @('.pem','.key') -or $_.Name -match '(?i)private|release.*key|sign.*key'
-                  )
-              })
-              foreach ($file in $files) {
-                  try {
-                      $text = Get-Content -LiteralPath $file.FullName -Raw -ErrorAction Stop
-                      if ($text -notmatch '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----') { continue }
-                      $candidateCount += 1
-                      $rsa = [System.Security.Cryptography.RSA]::Create()
+              foreach ($root in $presentRoots) {
+                  $files = @(Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue | Where-Object {
+                      $_.Length -gt 0 -and $_.Length -le 131072 -and (
+                          $_.Extension -in @('.pem','.key') -or $_.Name -match '(?i)private|release.*key|sign.*key'
+                      )
+                  })
+                  foreach ($file in $files) {
                       try {
-                          $rsa.ImportFromPem($text)
-                          $der = $rsa.ExportSubjectPublicKeyInfo()
-                          $sha = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData($der)).ToLowerInvariant()
-                          if ($sha -eq $lockedSha) {
-                              $matching += $file.FullName
-                          }
+                          $text = Get-Content -LiteralPath $file.FullName -Raw -ErrorAction Stop
+                          if ($text -notmatch '-----BEGIN .*PRIVATE KEY-----') { continue }
+                          $candidateCount += 1
+                          $derived = Join-Path $tempRoot ('candidate-' + $candidateCount + '.der')
+                          & $openssl pkey -in $file.FullName -pubout -outform DER -out $derived 2>$null
+                          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $derived -PathType Leaf)) { continue }
+                          $sha = (Get-FileHash -LiteralPath $derived -Algorithm SHA256).Hash.ToLowerInvariant()
+                          if ($sha -eq $lockedSha) { $matching += $file.FullName }
                       }
-                      finally {
-                          $rsa.Dispose()
-                      }
-                  }
-                  catch {
-                      continue
+                      catch { continue }
                   }
               }
-          }
 
-          Write-Host "bounded_roots_present=$($presentRoots.Count)"
-          Write-Host "private_key_candidates=$candidateCount"
-          Write-Host "matching_rc3_release_private_keys=$($matching.Count)"
-          if ($matching.Count -eq 1) {
-              Write-Host 'local_release_key_recovery=UNIQUE_MATCH'
-              "PSMATRIX_LOCAL_RC3_KEY_MATCH=$($matching[0])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+              Write-Host "bounded_roots_present=$($presentRoots.Count)"
+              Write-Host "private_key_candidates=$candidateCount"
+              Write-Host "matching_rc3_release_private_keys=$($matching.Count)"
+              if ($matching.Count -eq 1) {
+                  Write-Host 'local_release_key_recovery=UNIQUE_MATCH'
+                  "PSMATRIX_LOCAL_RC3_KEY_MATCH=$($matching[0])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+              }
+              elseif ($matching.Count -eq 0) {
+                  Write-Host 'local_release_key_recovery=NO_MATCH'
+                  exit 30
+              }
+              else {
+                  Write-Host 'local_release_key_recovery=AMBIGUOUS'
+                  exit 31
+              }
           }
-          elseif ($matching.Count -eq 0) {
-              Write-Host 'local_release_key_recovery=NO_MATCH'
-              exit 30
-          }
-          else {
-              Write-Host 'local_release_key_recovery=AMBIGUOUS'
-              exit 31
+          finally {
+              if (Test-Path -LiteralPath $tempRoot) { Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue }
           }
 
       - name: Verify matched key path remains local only
