@@ -1,0 +1,159 @@
+name: ga-rc3-key-origin-recovery
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/ga-rc3-key-origin-recovery.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    name: Recover original RC3 release authority origin without disclosure
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out current controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Search shell history and bounded local storage
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version 2.0
+
+          $lock = Get-Content -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'ga-packs\03-authoritative-windows\rc3-release-lock.json') -Raw | ConvertFrom-Json
+          if ([string]$lock.version -ne '2.0.0rc3' -or [string]$lock.release_commit -ne '34e87c60885001f8dd11744b8bf194a59e51bd1f') {
+              throw 'Unexpected RC3 release lock identity.'
+          }
+          $publicPath = Join-Path $env:GITHUB_WORKSPACE ([string]$lock.release_public_key.path)
+          if ((Get-FileHash -LiteralPath $publicPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne ([string]$lock.release_public_key.sha256).ToLowerInvariant()) {
+              throw 'Locked public key bytes do not match release lock.'
+          }
+
+          $openssl = (Get-Command openssl.exe -ErrorAction SilentlyContinue).Source
+          if ([string]::IsNullOrWhiteSpace($openssl)) {
+              $fallback = 'C:\Program Files\Git\usr\bin\openssl.exe'
+              if (Test-Path -LiteralPath $fallback -PathType Leaf) { $openssl = $fallback }
+          }
+          if ([string]::IsNullOrWhiteSpace($openssl)) { throw 'OpenSSL unavailable.' }
+
+          $scratch = Join-Path $env:RUNNER_TEMP 'psmatrix-key-origin-recovery'
+          if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force }
+          New-Item -ItemType Directory -Path $scratch -Force | Out-Null
+          try {
+              $lockedDer = Join-Path $scratch 'locked.der'
+              & $openssl pkey -pubin -in $publicPath -outform DER -out $lockedDer 2>$null
+              if ($LASTEXITCODE -ne 0) { throw 'Unable to normalize locked public key.' }
+              $lockedSha = (Get-FileHash -LiteralPath $lockedDer -Algorithm SHA256).Hash.ToLowerInvariant()
+
+              $home = [Environment]::GetFolderPath('UserProfile')
+              $historyFiles = @()
+              foreach ($dir in @(
+                  (Join-Path $env:APPDATA 'Microsoft\Windows\PowerShell\PSReadLine'),
+                  (Join-Path $env:APPDATA 'Microsoft\PowerShell\PSReadLine')
+              )) {
+                  if (Test-Path -LiteralPath $dir -PathType Container) {
+                      $historyFiles += @(Get-ChildItem -LiteralPath $dir -File -Filter '*history*.txt' -ErrorAction SilentlyContinue)
+                  }
+              }
+              foreach ($candidate in @((Join-Path $home '.bash_history'), (Join-Path $home '.zsh_history'))) {
+                  if (Test-Path -LiteralPath $candidate -PathType Leaf) { $historyFiles += Get-Item -LiteralPath $candidate }
+              }
+
+              $historyKeywordHits = 0
+              $historyAbsolutePaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+              foreach ($history in $historyFiles) {
+                  try {
+                      foreach ($line in [System.IO.File]::ReadLines($history.FullName)) {
+                          if ($line -match '(?i)PSMATRIX_RELEASE_PRIVATE_KEY|release\.private|release-private|genpkey|ed25519|secret\s+set|release authority') {
+                              $historyKeywordHits += 1
+                              foreach ($m in [regex]::Matches($line, '(?i)([A-Z]:\\[^"''`|<>;]+)')) {
+                                  $value = $m.Groups[1].Value.Trim()
+                                  [void]$historyAbsolutePaths.Add($value)
+                              }
+                          }
+                      }
+                  }
+                  catch { }
+              }
+
+              $roots = @(
+                  (Join-Path $home 'Downloads'),
+                  (Join-Path $home 'Desktop'),
+                  (Join-Path $home 'Documents'),
+                  (Join-Path $env:LOCALAPPDATA 'Temp'),
+                  'C:\PSMatrix-Windows-GA',
+                  'C:\ProgramData\PSMatrix',
+                  (Join-Path $home 'Downloads\bugbounty-nxb150-validation\actions-runner\_work\_temp')
+              ) | Where-Object { Test-Path -LiteralPath $_ -PathType Container } | Select-Object -Unique
+
+              $candidatePaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+              foreach ($path in $historyAbsolutePaths) {
+                  if (Test-Path -LiteralPath $path -PathType Leaf) { [void]$candidatePaths.Add((Get-Item -LiteralPath $path).FullName) }
+              }
+              foreach ($root in $roots) {
+                  try {
+                      foreach ($file in Get-ChildItem -LiteralPath $root -Recurse -Depth 8 -File -ErrorAction SilentlyContinue) {
+                          if ($file.Length -le 0 -or $file.Length -gt 262144) { continue }
+                          if ($file.Extension -in @('.pem','.key','.txt','.bak','.old') -or $file.Name -match '(?i)psmatrix|release|private|authority|sign.*key|key.*sign') {
+                              [void]$candidatePaths.Add($file.FullName)
+                          }
+                      }
+                  }
+                  catch { }
+              }
+
+              $pemPrivateCandidates = 0
+              $matches = @()
+              $index = 0
+              foreach ($path in $candidatePaths) {
+                  try {
+                      $bytes = [System.IO.File]::ReadAllBytes($path)
+                      $text = [System.Text.Encoding]::UTF8.GetString($bytes)
+                      if ($text -notmatch '-----BEGIN .*PRIVATE KEY-----') { continue }
+                      $pemPrivateCandidates += 1
+                      $index += 1
+                      $derived = Join-Path $scratch ("derived-$index.der")
+                      & $openssl pkey -in $path -pubout -outform DER -out $derived 2>$null
+                      if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $derived -PathType Leaf)) { continue }
+                      $sha = (Get-FileHash -LiteralPath $derived -Algorithm SHA256).Hash.ToLowerInvariant()
+                      if ($sha -eq $lockedSha) { $matches += $path }
+                  }
+                  catch { }
+              }
+
+              Write-Host "history_files_checked=$($historyFiles.Count)"
+              Write-Host "history_keyword_hits=$historyKeywordHits"
+              Write-Host "history_existing_absolute_paths=$($historyAbsolutePaths.Count)"
+              Write-Host "bounded_search_roots=$($roots.Count)"
+              Write-Host "candidate_files_checked=$($candidatePaths.Count)"
+              Write-Host "pem_private_candidates=$pemPrivateCandidates"
+              Write-Host "matching_locked_release_keys=$($matches.Count)"
+
+              if ($matches.Count -eq 1) {
+                  $match = $matches[0]
+                  $meta = Get-Item -LiteralPath $match
+                  Write-Host 'release_key_recovery=UNIQUE_MATCH'
+                  Write-Host "match_location_class=$((if ($match.StartsWith($home,[System.StringComparison]::OrdinalIgnoreCase)) {'USER_PROFILE'} elseif ($match.StartsWith('C:\ProgramData',[System.StringComparison]::OrdinalIgnoreCase)) {'PROGRAM_DATA'} else {'OTHER_BOUNDED_ROOT'}))"
+                  Write-Host "match_last_write_utc=$($meta.LastWriteTimeUtc.ToString('o'))"
+                  Write-Host 'match_path_disclosed=false'
+              }
+              elseif ($matches.Count -eq 0) {
+                  Write-Host 'release_key_recovery=NO_MATCH'
+                  exit 40
+              }
+              else {
+                  Write-Host 'release_key_recovery=AMBIGUOUS'
+                  exit 41
+              }
+          }
+          finally {
+              if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue }
+          }
