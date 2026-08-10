@@ -7,7 +7,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILDER = ROOT / "scripts" / "ga" / "build_windows_authority_rc4_candidate_closure.py"
-WORKFLOW = ROOT / ".github" / "workflows" / "ga-windows-authority-rc4-candidate-closure-selfhosted.yml"
+LEGACY_WORKFLOW = ROOT / ".github" / "workflows" / "ga-windows-authority-rc4-candidate-closure-selfhosted.yml"
+WORKFLOW = ROOT / ".github" / "workflows" / "ga-windows-authority-rc4-candidate-closure-hardened-selfhosted.yml"
 CONTRACT = ROOT / "ga-packs" / "03-authoritative-windows" / "rc4-candidate-closure-workflow-contract.json"
 GA_EVALUATOR = ROOT / "src" / "psmatrix" / "ga.py"
 PREFLIGHT = ROOT / ".github" / "workflows" / "ga-windows-authority-rc4-candidate-closure-source-preflight.yml"
@@ -135,6 +136,11 @@ class WindowsAuthorityRC4CandidateClosureTests(unittest.TestCase):
         self.assertNotIn('"ga_eligible": True', text)
 
     def test_workflow_uses_only_lab_public_key_and_never_invokes_final_evaluator(self) -> None:
+        legacy = LEGACY_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("name: legacy-rc4-candidate-closure-source-contract-sentinel", legacy)
+        self.assertIn("if: ${{ false }}", legacy)
+        self.assertIn("intentionally disabled", legacy)
+
         text = WORKFLOW.read_text(encoding="utf-8")
         required = (
             "name: production-ga-windows-authority-rc4-candidate-closure-selfhosted",
@@ -143,7 +149,7 @@ class WindowsAuthorityRC4CandidateClosureTests(unittest.TestCase):
             "provisioning\\2.0.0rc4\\run-{0}-attempt-{1}",
             "measurement\\2.0.0rc4\\run-{0}-attempt-{1}",
             "campaign\\2.0.0rc4\\run-{0}-attempt-{1}",
-            "build_windows_authority_rc4_candidate_closure.py",
+            "build_windows_authority_rc4_candidate_closure_hardened.py",
             "secrets.PSMATRIX_WINDOWS_LAB_PUBLIC_KEY",
             "AUTHORITATIVE_RC4_EVIDENCE_READY_FINAL_RELEASE_PENDING",
             "final_ga_evaluator_invoked -ne $false",
