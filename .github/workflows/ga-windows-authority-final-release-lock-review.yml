@@ -1,0 +1,226 @@
+name: production-ga-windows-authority-final-release-lock-review
+
+on:
+  workflow_dispatch:
+    inputs:
+      final_candidate_commit:
+        description: Exact frozen PSMatrix 2.0.0 final release source commit
+        required: true
+        type: string
+      rc4_enrollment_run_id:
+        description: Successful protected RC4 authority-enrollment workflow run ID
+        required: true
+        type: string
+      staging_run_id:
+        description: Successful unsigned final 2.0.0 staging workflow run ID
+        required: true
+        type: string
+
+concurrency:
+  group: production-ga-windows-authority-final-release-lock-review
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-final-lock-review:
+    name: Build private-key-free final 2.0.0 release lock review bundle
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    env:
+      FINAL_CANDIDATE_COMMIT: ${{ inputs.final_candidate_commit }}
+      RC4_ENROLLMENT_RUN_ID: ${{ inputs.rc4_enrollment_run_id }}
+      STAGING_RUN_ID: ${{ inputs.staging_run_id }}
+
+    steps:
+      - name: Validate final lock-review dispatch identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') {
+              throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS"
+          }
+          if ($env:FINAL_CANDIDATE_COMMIT -cnotmatch '^[0-9a-f]{40}$') { throw 'final_candidate_commit must be 40 lowercase hex characters.' }
+          foreach ($name in @('RC4_ENROLLMENT_RUN_ID','STAGING_RUN_ID')) {
+              $value = [Environment]::GetEnvironmentVariable($name)
+              if ($value -cnotmatch '^[0-9]+$') { throw "$name must contain only decimal digits." }
+          }
+          if ($env:RC4_ENROLLMENT_RUN_ID -eq $env:STAGING_RUN_ID) { throw 'RC4 enrollment and final staging run IDs must be distinct.' }
+
+      - name: Check out exact lock-review controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out exact frozen final release source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.final_candidate_commit }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify control and frozen final source boundaries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $control = Join-Path $env:GITHUB_WORKSPACE 'control'
+          $candidate = Join-Path $env:GITHUB_WORKSPACE 'candidate'
+          $controlHead = (git -C $control rev-parse HEAD).Trim().ToLowerInvariant()
+          $candidateHead = (git -C $candidate rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($controlHead -ne $env:GITHUB_SHA.ToLowerInvariant()) { throw 'Lock-review control checkout is not exact GITHUB_SHA.' }
+          if ($candidateHead -ne $env:FINAL_CANDIDATE_COMMIT) { throw 'Final candidate checkout mismatch.' }
+          if (-not [string]::IsNullOrWhiteSpace((git -C $control status --porcelain))) { throw 'Lock-review control checkout is dirty.' }
+          if (-not [string]::IsNullOrWhiteSpace((git -C $candidate status --porcelain))) { throw 'Final candidate checkout is dirty.' }
+          $contract = Get-Content (Join-Path $control 'ga-packs\03-authoritative-windows\final-release-lock-signing-control-contract.json') -Raw | ConvertFrom-Json
+          if ([string]$contract.final_release_commit -ne $env:FINAL_CANDIDATE_COMMIT) { throw 'Dispatch final candidate differs from frozen control contract.' }
+          if ([string]$contract.version -ne '2.0.0') { throw 'Final lock/signing contract version mismatch.' }
+          $project = (python -c "import tomllib,pathlib;print(tomllib.loads(pathlib.Path(r'$candidate\pyproject.toml').read_text(encoding='utf-8'))['project']['version'])").Trim()
+          if ($project -ne '2.0.0') { throw "Frozen final candidate version mismatch: $project" }
+          foreach ($path in @(
+              (Join-Path $control 'ga-packs\03-authoritative-windows\final-release-lock.json'),
+              (Join-Path $control 'release-assets\2.0.0\psmatrix-2.0.0-release-public.pem')
+          )) {
+              if (Test-Path -LiteralPath $path -PathType Leaf) { throw "Lock-review preparation control already contains active final authority material: $path" }
+          }
+          Write-Host "lock_review_control_head=$controlHead"
+          Write-Host "final_candidate_commit=$candidateHead"
+
+      - name: Validate RC4 authority and final staging run provenance before download
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import json
+          import os
+          import pathlib
+          import urllib.request
+
+          control = pathlib.Path('control').resolve()
+          contract = json.loads((control / 'ga-packs/03-authoritative-windows/final-release-lock-signing-control-contract.json').read_text(encoding='utf-8'))
+          repo = 'Naveax/PSMatrix'
+          token = os.environ['GH_TOKEN']
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {token}',
+              'X-GitHub-Api-Version': '2026-03-10',
+              'User-Agent': 'psmatrix-final-release-lock-review',
+          }
+          def fetch(path):
+              req = urllib.request.Request(f'https://api.github.com/repos/{repo}/{path}', headers=headers)
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  return json.load(response)
+          expected = (
+              (
+                  os.environ['RC4_ENROLLMENT_RUN_ID'],
+                  contract['rc4_authority_continuity']['workflow'],
+                  contract['rc4_authority_continuity']['artifact'],
+                  contract['rc4_authority_continuity']['enrollment_control_head'],
+              ),
+              (
+                  os.environ['STAGING_RUN_ID'],
+                  contract['final_staging']['workflow'],
+                  contract['final_staging']['artifact'],
+                  contract['final_release_commit'],
+              ),
+          )
+          for run_id, workflow_name, artifact_name, expected_head in expected:
+              run = fetch(f'actions/runs/{run_id}')
+              if run.get('name') != workflow_name:
+                  raise SystemExit(f'unexpected workflow for run {run_id}: {run.get("name")!r}')
+              if run.get('event') != 'workflow_dispatch':
+                  raise SystemExit(f'run {run_id} is not workflow_dispatch')
+              if run.get('status') != 'completed' or run.get('conclusion') != 'success':
+                  raise SystemExit(f'run {run_id} is not completed successfully')
+              if (run.get('head_sha') or '').lower() != expected_head:
+                  raise SystemExit(f'run {run_id} exact head mismatch')
+              artifacts = fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts', [])
+              matches = [item for item in artifacts if item.get('name') == artifact_name and not item.get('expired')]
+              if len(matches) != 1:
+                  raise SystemExit(f'expected exactly one non-expired {artifact_name!r} artifact for run {run_id}; found {len(matches)}')
+              print(f'upstream_run_provenance=PASS run_id={run_id} head={expected_head} artifact_id={matches[0].get("id")}')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Final lock-review upstream provenance validation failed.' }
+
+      - name: Download reviewed RC4 public authority enrollment
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0rc4-release-authority-enrollment
+          path: rc4-enrollment
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.rc4_enrollment_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Download exact unsigned final staging candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-authority-final-unlocked-staging-candidate
+          path: final-staging
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.staging_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Build review-only final release lock draft
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:RUNNER_TEMP 'psmatrix-2.0.0-final-release-lock-review'
+          if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
+          & python `
+            (Join-Path $env:GITHUB_WORKSPACE 'control\scripts\ga\build_windows_authority_final_release_lock_draft.py') `
+            --staging-root (Join-Path $env:GITHUB_WORKSPACE 'final-staging') `
+            --rc4-enrollment-root (Join-Path $env:GITHUB_WORKSPACE 'rc4-enrollment') `
+            --output-root $output `
+            --final-candidate-commit $env:FINAL_CANDIDATE_COMMIT `
+            --rc4-enrollment-run-id $env:RC4_ENROLLMENT_RUN_ID `
+            --staging-run-id $env:STAGING_RUN_ID
+          if ($LASTEXITCODE -ne 0) { throw 'Final release-lock review bundle build failed.' }
+          "PSMATRIX_FINAL_LOCK_REVIEW=$output" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Enforce final review-only lock and authority-continuity boundary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $draftPath = Join-Path $env:PSMATRIX_FINAL_LOCK_REVIEW 'final-release-lock.review-draft.json'
+          $reviewPath = Join-Path $env:PSMATRIX_FINAL_LOCK_REVIEW 'final-release-lock-review.json'
+          $publicPath = Join-Path $env:PSMATRIX_FINAL_LOCK_REVIEW 'release-assets\2.0.0\psmatrix-2.0.0-release-public.pem'
+          foreach ($path in @($draftPath,$reviewPath,$publicPath)) {
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Final lock-review output missing: $path" }
+          }
+          $draft = Get-Content $draftPath -Raw | ConvertFrom-Json
+          $review = Get-Content $reviewPath -Raw | ConvertFrom-Json
+          if ([string]$draft.kind -ne 'psmatrix.windows-authority-final-release-staging-lock' -or [string]$draft.version -ne '2.0.0' -or [string]$draft.release_commit -ne $env:FINAL_CANDIDATE_COMMIT) { throw 'Final lock draft identity mismatch.' }
+          if ([string]$draft.review_state -ne 'DRAFT_REQUIRES_HUMAN_REVIEW') { throw 'Final lock draft is not review-only.' }
+          if ([bool]$draft.authority_continuity.authority_reused_for_final_release -ne $true -or [bool]$draft.authority_continuity.authority_rotated_during_final_release -ne $false) { throw 'Final authority-continuity boundary mismatch.' }
+          if ([string]$review.status -ne 'READY_FOR_HUMAN_REVIEW') { throw 'Final review report status mismatch.' }
+          foreach ($value in @($draft,$review)) {
+              foreach ($field in @('active_lock_written','release_artifacts_signed','final_windows_evidence_rebound','final_ga_evaluator_invoked','authoritative','ga_eligible')) {
+                  if ([bool]$value.$field) { throw "Final review-only boundary field is true: $field" }
+              }
+          }
+          if ([string]$draft.source_runs.rc4_authority_enrollment.run_id -ne $env:RC4_ENROLLMENT_RUN_ID -or [string]$draft.source_runs.unsigned_final_staging.run_id -ne $env:STAGING_RUN_ID) { throw 'Final lock source-run ID provenance mismatch.' }
+          $activeLock = Join-Path $env:PSMATRIX_FINAL_LOCK_REVIEW 'ga-packs\03-authoritative-windows\final-release-lock.json'
+          if (Test-Path -LiteralPath $activeLock) { throw 'Final lock review must not materialize an active final-release-lock.json.' }
+          Write-Host 'final_lock_review_bundle=PASS'
+          Write-Host 'final_authority_continuity_review=PASS'
+          Write-Host 'active_final_lock_written=false'
+          Write-Host 'release_artifacts_signed=false'
+          Write-Host 'final_ga_evaluator_invoked=false'
+          Write-Host 'ga_eligible=false'
+
+      - name: Upload final release lock review bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-2.0.0-final-release-lock-review
+          path: ${{ env.PSMATRIX_FINAL_LOCK_REVIEW }}
+          if-no-files-found: error
+          retention-days: 30
