@@ -87,6 +87,12 @@ jobs:
           $expectedPaths = @('PSMATRIX_FULL_MATRIX_ENDPOINT_ROOT','PSMATRIX_FULL_MATRIX_HOME') | Sort-Object
           if (@(Compare-Object -ReferenceObject $expectedPaths -DifferenceObject $fullPaths).Count -ne 0) { throw 'Full-matrix readiness path-variable contract mismatch.' }
 
+          $publicAuth = @($environments | Where-Object { [string]$_.name -eq 'production-ga-public-auth-probe' })
+          if ($publicAuth.Count -ne 1) { throw 'Public-auth readiness environment cardinality mismatch.' }
+          $actualPublicAuthVars = @($publicAuth[0].required_vars | ForEach-Object { [string]$_ })
+          $expectedPublicAuthVars = @('PSMATRIX_OAUTH_ENDPOINT','PSMATRIX_OAUTH_DISCOVERY_URL','PSMATRIX_OAUTH_EXPECTED_ISSUER','PSMATRIX_MTLS_ENDPOINT','PSMATRIX_MTLS_FINGERPRINT_HEADER')
+          if (@(Compare-Object -ReferenceObject ($expectedPublicAuthVars | Sort-Object) -DifferenceObject ($actualPublicAuthVars | Sort-Object)).Count -ne 0) { throw 'Public-auth readiness variables differ from required live-probe variables.' }
+
           $changed = @((git diff --name-only "$env:PRODUCER_SOURCE_ANCHOR..$head") | ForEach-Object { $_.Trim().Replace('\','/') } | Where-Object { $_ } | Sort-Object -Unique)
           $allowed = @($contract.control_source.changed_path_allowlist | ForEach-Object { ([string]$_).Replace('\','/') } | Sort-Object -Unique)
           $delta = @(Compare-Object -ReferenceObject $allowed -DifferenceObject $changed)
@@ -98,15 +104,24 @@ jobs:
           $workflow = Get-Content '.github\workflows\ga-final-production-readiness.yml' -Raw
           if (-not $workflow.Contains('name: production-ga-final-production-readiness')) { throw 'Production-readiness workflow identity mismatch.' }
           foreach ($environment in $environments) {
-              $needle = "environment: $([string]$environment.name)"
-              if ($workflow.Split($needle).Count -ne 2) { throw "Production-readiness workflow must reference environment exactly once: $($environment.name)" }
+              $environmentName = [string]$environment.name
+              $needle = "environment: $environmentName"
+              if ($workflow.Split($needle).Count -ne 2) { throw "Production-readiness workflow must reference environment exactly once: $environmentName" }
+
+              $producerPath = [string]$environment.producer_workflow_path
+              if ([string]::IsNullOrWhiteSpace($producerPath) -or -not (Test-Path -LiteralPath $producerPath -PathType Leaf)) { throw "Production-readiness producer source is missing: $environmentName / $producerPath" }
+              $producerText = Get-Content -LiteralPath $producerPath -Raw
+              if (-not $producerText.Contains($needle)) { throw "Production-readiness producer source does not bind expected environment: $environmentName / $producerPath" }
+
               foreach ($secret in @($environment.required_secrets)) {
                   $reference = '${{ secrets.' + [string]$secret + ' }}'
                   if ($workflow.Split($reference).Count -ne 2) { throw "Production-readiness secret reference count mismatch: $secret" }
+                  if (-not $producerText.Contains($reference)) { throw "Production-readiness secret is not grounded in producer source: $environmentName / $secret / $producerPath" }
               }
               foreach ($var in @($environment.required_vars)) {
                   $reference = '${{ vars.' + [string]$var + ' }}'
                   if ($workflow.Split($reference).Count -ne 2) { throw "Production-readiness variable reference count mismatch: $var" }
+                  if (-not $producerText.Contains($reference)) { throw "Production-readiness variable is not grounded in producer source: $environmentName / $var / $producerPath" }
               }
           }
           foreach ($forbidden in @('toJSON(secrets)','toJson(secrets)','hashlib.sha256(os.environ','len(os.environ','"value":os.environ','"sha256":','"length":','echo $CHECK_SECRET_','Write-Host $env:CHECK_SECRET_')) {
@@ -132,6 +147,7 @@ jobs:
           Write-Host "validated_exact_production_readiness_head=$head"
           Write-Host 'production_readiness_control_changed_paths=5'
           Write-Host 'runtime_source_changes=0'
+          Write-Host 'readiness_producer_source_crosscheck=PASS environments=12'
           Write-Host 'evaluator_producer_sources_present=11'
           Write-Host 'evaluator_producer_sources_required=11'
 
@@ -190,6 +206,7 @@ jobs:
           Write-Host "validated_exact_production_readiness_head=$env:EXPECTED_HEAD"
           Write-Host 'evaluator_producer_sources_present=11'
           Write-Host 'evaluator_producer_sources_required=11'
+          Write-Host 'readiness_producer_source_crosscheck=PASS environments=12'
           Write-Host 'readiness_workflow_executed=false'
           Write-Host 'environment_receipts_observed=false'
           Write-Host 'all_environments_ready=false'
