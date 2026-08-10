@@ -37,7 +37,8 @@ _PRIVATE_MARKERS = (
     b"-----BEGIN OPENSSH PRIVATE KEY-----",
     b"-----BEGIN ED25519 PRIVATE KEY-----",
 )
-_ABSOLUTE_PATH_RE = re.compile(r"(?:[A-Za-z]:\\\\|/(?:home|tmp|Users|var|opt)/)")
+_ABSOLUTE_PATH_RE = re.compile(r"(?:[A-Za-z]:\\|/(?:home|tmp|Users|var|opt)/)")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _normalized_endpoint(value: str) -> str:
@@ -53,10 +54,15 @@ def _normalized_endpoint(value: str) -> str:
     if host in {"localhost", "localhost.localdomain"} or host.endswith(".local"):
         raise ExternalOTLPProbeError("external OTLP endpoint cannot be local")
     port = parsed.port or 443
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
     path = parsed.path.rstrip("/")
     if not path.endswith("/v1/metrics"):
         path += "/v1/metrics"
-    netloc = host if port == 443 else f"{host}:{port}"
+    display_host = f"[{host}]" if literal is not None and literal.version == 6 else host
+    netloc = display_host if port == 443 else f"{display_host}:{port}"
     return urlunsplit(("https", netloc, path, "", ""))
 
 
@@ -159,7 +165,7 @@ def _release_binding(release_dir: Path, release_commit: str) -> dict[str, str]:
         raise ExternalOTLPProbeError(f"expected exactly one final wheel in signed release; found {len(wheels)}")
     wheel = wheels[0]
     digest = str(wheel.get("sha256") or "").lower()
-    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+    if _SHA256_RE.fullmatch(digest) is None:
         raise ExternalOTLPProbeError("signed final wheel digest is invalid")
     commit = release_commit.lower()
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
@@ -185,6 +191,22 @@ def _safe_report_scan(report_path: Path, secret_values: list[str]) -> None:
     text = raw.decode("utf-8")
     if _ABSOLUTE_PATH_RE.search(text):
         raise ExternalOTLPProbeError("external OTLP live report contains an absolute local path")
+
+
+def _validate_report_addresses(values: Any) -> list[str]:
+    if not isinstance(values, list) or not values:
+        raise ExternalOTLPProbeError("external OTLP live report resolved-address set is missing")
+    result: list[str] = []
+    for raw in values:
+        text = str(raw)
+        try:
+            address = ipaddress.ip_address(text)
+        except ValueError as exc:
+            raise ExternalOTLPProbeError("external OTLP live report contains an invalid resolved address") from exc
+        if not address.is_global:
+            raise ExternalOTLPProbeError("external OTLP live report contains a non-public resolved address")
+        result.append(text)
+    return result
 
 
 def run_probe(
@@ -266,8 +288,24 @@ def build_proof_result(*, report_path: Path, output: Path) -> dict[str, Any]:
     otlp = report.get("otlp") if isinstance(report.get("otlp"), dict) else {}
     if release.get("version") != "2.0.0" or not re.fullmatch(r"[0-9a-f]{40}", str(release.get("commit") or "")):
         raise ExternalOTLPProbeError("external OTLP report release binding is invalid")
+    for field in ("manifest_sha256", "wheel_sha256", "release_public_key_sha256"):
+        if _SHA256_RE.fullmatch(str(release.get(field) or "").lower()) is None:
+            raise ExternalOTLPProbeError(f"external OTLP report release digest is invalid: {field}")
+    endpoint = _normalized_endpoint(str(otlp.get("endpoint") or ""))
+    if endpoint != otlp.get("endpoint"):
+        raise ExternalOTLPProbeError("external OTLP live report endpoint is not canonical")
+    addresses = _validate_report_addresses(otlp.get("resolved_addresses"))
+    certificate = str(otlp.get("server_certificate_sha256") or "").lower()
+    if _SHA256_RE.fullmatch(certificate) is None:
+        raise ExternalOTLPProbeError("external OTLP live report server certificate digest is invalid")
+    status_code = int(otlp.get("status_code") or 0)
+    unauthenticated_status = int(otlp.get("unauthenticated_status_code") or 0)
     if otlp.get("request_path") != "/v1/metrics" or int(otlp.get("successful_exports") or 0) < 2:
         raise ExternalOTLPProbeError("external OTLP live report does not contain the required bounded exports")
+    if not 200 <= status_code < 300:
+        raise ExternalOTLPProbeError("external OTLP live report status is not 2xx")
+    if unauthenticated_status not in {401, 403}:
+        raise ExternalOTLPProbeError("external OTLP live report unauthenticated status is not 401/403")
     required = (
         "external_probe", "public_dns", "public_tls", "collector_external",
         "authenticated_tls", "unauthenticated_request_rejected",
@@ -276,14 +314,14 @@ def build_proof_result(*, report_path: Path, output: Path) -> dict[str, Any]:
         raise ExternalOTLPProbeError("external OTLP live report is missing a required PASS observation")
     live_sha = sha256_file(report_path.resolve())
     assertions = {
-        "endpoint": otlp.get("endpoint"),
-        "resolved_addresses": otlp.get("resolved_addresses"),
+        "endpoint": endpoint,
+        "resolved_addresses": addresses,
         "external_probe": True,
         "public_dns": True,
         "public_tls": True,
         "collector_external": True,
         "request_path": "/v1/metrics",
-        "status_code": int(otlp.get("status_code") or 0),
+        "status_code": status_code,
         "authenticated_tls": True,
         "unauthenticated_request_rejected": True,
         "successful_exports": int(otlp.get("successful_exports") or 0),
@@ -296,7 +334,7 @@ def build_proof_result(*, report_path: Path, output: Path) -> dict[str, Any]:
         "expected_version": release.get("version"),
         "release_manifest_sha256": release.get("manifest_sha256"),
         "release_wheel_sha256": release.get("wheel_sha256"),
-        "server_certificate_sha256": otlp.get("server_certificate_sha256"),
+        "server_certificate_sha256": certificate,
     }
     result = {
         "schema": 1,
