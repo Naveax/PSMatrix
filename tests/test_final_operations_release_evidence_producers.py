@@ -28,6 +28,44 @@ def _load_probe():
     return module
 
 
+def _otlp_report() -> dict:
+    return {
+        "schema": 1,
+        "kind": "psmatrix.external-otlp-live-report",
+        "status": "PASS",
+        "observed_at": "2026-08-10T11:30:00+00:00",
+        "release_signing_run_id": "123456",
+        "release": {
+            "version": "2.0.0",
+            "commit": FINAL_COMMIT,
+            "manifest_sha256": "a" * 64,
+            "wheel_name": "psmatrix-2.0.0-py3-none-any.whl",
+            "wheel_sha256": "b" * 64,
+            "release_public_key_sha256": "c" * 64,
+        },
+        "otlp": {
+            "endpoint": "https://8.8.8.8/v1/metrics",
+            "resolved_addresses": ["8.8.8.8"],
+            "server_certificate_sha256": "d" * 64,
+            "request_path": "/v1/metrics",
+            "status_code": 202,
+            "authenticated_status_codes": [202, 202],
+            "unauthenticated_status_code": 401,
+            "successful_exports": 2,
+            "external_probe": True,
+            "public_dns": True,
+            "public_tls": True,
+            "collector_external": True,
+            "authenticated_tls": True,
+            "unauthenticated_request_rejected": True,
+        },
+        "secrets_in_report": False,
+        "private_keys_in_report": False,
+        "metrics_payload_in_report": False,
+        "absolute_paths_in_report": False,
+    }
+
+
 class FinalOperationsReleaseEvidenceProducerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -95,46 +133,16 @@ class FinalOperationsReleaseEvidenceProducerTests(unittest.TestCase):
             self.probe._normalized_endpoint("https://8.8.8.8/otel"),
             "https://8.8.8.8/otel/v1/metrics",
         )
+        self.assertEqual(
+            self.probe._normalized_endpoint("https://[2606:4700:4700::1111]/otel"),
+            "https://[2606:4700:4700::1111]/otel/v1/metrics",
+        )
 
     def test_otlp_live_report_builds_exact_ga_proof_result(self) -> None:
         with tempfile.TemporaryDirectory(prefix="psmatrix-final-otlp-proof-") as temp:
             root = Path(temp)
             report = root / "external-otlp-live-report.json"
-            value = {
-                "schema": 1,
-                "kind": "psmatrix.external-otlp-live-report",
-                "status": "PASS",
-                "observed_at": "2026-08-10T11:30:00+00:00",
-                "release_signing_run_id": "123456",
-                "release": {
-                    "version": "2.0.0",
-                    "commit": FINAL_COMMIT,
-                    "manifest_sha256": "a" * 64,
-                    "wheel_name": "psmatrix-2.0.0-py3-none-any.whl",
-                    "wheel_sha256": "b" * 64,
-                    "release_public_key_sha256": "c" * 64,
-                },
-                "otlp": {
-                    "endpoint": "https://8.8.8.8/v1/metrics",
-                    "resolved_addresses": ["8.8.8.8"],
-                    "server_certificate_sha256": "d" * 64,
-                    "request_path": "/v1/metrics",
-                    "status_code": 202,
-                    "authenticated_status_codes": [202, 202],
-                    "unauthenticated_status_code": 401,
-                    "successful_exports": 2,
-                    "external_probe": True,
-                    "public_dns": True,
-                    "public_tls": True,
-                    "collector_external": True,
-                    "authenticated_tls": True,
-                    "unauthenticated_request_rejected": True,
-                },
-                "secrets_in_report": False,
-                "private_keys_in_report": False,
-                "metrics_payload_in_report": False,
-                "absolute_paths_in_report": False,
-            }
+            value = _otlp_report()
             report.write_text(json.dumps(value), encoding="utf-8")
             output = root / "external-otlp-result.json"
             result = self.probe.build_proof_result(report_path=report, output=output)
@@ -148,6 +156,34 @@ class FinalOperationsReleaseEvidenceProducerTests(unittest.TestCase):
             self.assertEqual(assertions["status_code"], 202)
             self.assertEqual(assertions["successful_exports"], 2)
             self.assertEqual(assertions["release_commit"], FINAL_COMMIT)
+
+    def test_otlp_proof_result_rejects_tampered_transport_observations(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="psmatrix-final-otlp-tamper-") as temp:
+            root = Path(temp)
+            report = root / "external-otlp-live-report.json"
+            output = root / "result.json"
+            for mutation in ("status", "unauth", "private-address", "bad-cert"):
+                value = _otlp_report()
+                if mutation == "status":
+                    value["otlp"]["status_code"] = 500
+                elif mutation == "unauth":
+                    value["otlp"]["unauthenticated_status_code"] = 200
+                elif mutation == "private-address":
+                    value["otlp"]["resolved_addresses"] = ["127.0.0.1"]
+                else:
+                    value["otlp"]["server_certificate_sha256"] = "not-a-sha"
+                report.write_text(json.dumps(value), encoding="utf-8")
+                with self.subTest(mutation=mutation), self.assertRaises(self.probe.ExternalOTLPProbeError):
+                    self.probe.build_proof_result(report_path=report, output=output)
+
+    def test_otlp_report_scan_rejects_single_backslash_windows_and_posix_paths(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="psmatrix-final-otlp-leak-") as temp:
+            root = Path(temp)
+            report = root / "report.json"
+            for leaked in (r"C:\Users\navea\secret.txt", "/tmp/psmatrix-secret.txt"):
+                report.write_text(json.dumps({"leak": leaked}), encoding="utf-8")
+                with self.subTest(leaked=leaked), self.assertRaises(self.probe.ExternalOTLPProbeError):
+                    self.probe._safe_report_scan(report, [])
 
     def test_key_rotation_runtime_drill_roundtrip_uses_supplied_release_authority(self) -> None:
         with tempfile.TemporaryDirectory(prefix="psmatrix-final-key-rotation-") as temp:
@@ -174,6 +210,8 @@ class FinalOperationsReleaseEvidenceProducerTests(unittest.TestCase):
             "ssl.create_default_context()",
             "address.is_global",
             "external OTLP collector must reject the same request without credentials using 401/403",
+            "external OTLP live report status is not 2xx",
+            "external OTLP live report unauthenticated status is not 401/403",
             '"metrics_payload_in_report": False',
             '"secrets_in_report": False',
             '"artifacts": [{"name": "external-otlp-live-report.json", "sha256": live_sha}]',
