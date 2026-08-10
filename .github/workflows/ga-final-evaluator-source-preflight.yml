@@ -76,7 +76,7 @@ jobs:
           $contractGates = @($contract.required_gates | ForEach-Object { [string]$_ })
           if ($runtimeGates.Count -ne 11 -or $contractGates.Count -ne 11) { throw 'Final GA evaluator must contain exactly eleven required gates.' }
           for ($i = 0; $i -lt 11; $i++) {
-              if ($runtimeGates[$i] -ne $contractGates[$i]) { throw "Final GA gate order mismatch at index $i: $($runtimeGates[$i]) / $($contractGates[$i])" }
+              if ($runtimeGates[$i] -ne $contractGates[$i]) { throw "Final GA gate order mismatch at index ${i}: $($runtimeGates[$i]) / $($contractGates[$i])" }
           }
           $sourceGateNames = @($contract.evidence_sources.PSObject.Properties.Name)
           for ($i = 0; $i -lt 11; $i++) {
