@@ -4,7 +4,6 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - main
       - "release/**"
     paths:
       - ".github/workflows/ga-windows-authority-rc4-candidate-closure-source-preflight.yml"
@@ -16,7 +15,6 @@ on:
       - "src/psmatrix/lab_provisioning.py"
   pull_request:
     branches:
-      - main
       - "release/**"
     paths:
       - ".github/workflows/ga-windows-authority-rc4-candidate-closure-source-preflight.yml"
