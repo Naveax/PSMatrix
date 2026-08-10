@@ -4,7 +4,6 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - main
       - "release/**"
     paths:
       - ".github/workflows/ga-windows-authority-rc4-source-preflight.yml"
@@ -59,7 +58,6 @@ on:
       - "tests/test_windows_authority_rc4_certification_campaign.py"
   pull_request:
     branches:
-      - main
       - "release/**"
     paths:
       - ".github/workflows/ga-windows-authority-rc4-source-preflight.yml"
