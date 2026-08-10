@@ -12,6 +12,12 @@ EXECUTION = ROOT / "ga-packs" / "03-authoritative-windows" / "final-execution-co
 LOCK_CONTROL = ROOT / "ga-packs" / "03-authoritative-windows" / "final-release-lock-signing-control-contract.json"
 REVIEW_WORKFLOW = ROOT / ".github" / "workflows" / "ga-windows-authority-final-release-lock-review.yml"
 PROMOTION_WORKFLOW = ROOT / ".github" / "workflows" / "ga-windows-authority-final-release-lock-promotion.yml"
+LEGACY_PHASE_PREFLIGHTS = [
+    ".github/workflows/ga-windows-authority-provisioning-handoff-source-preflight.yml",
+    ".github/workflows/ga-windows-authority-rc4-source-preflight.yml",
+    ".github/workflows/ga-windows-authority-rc4-candidate-closure-source-preflight.yml",
+    ".github/workflows/ga-windows-authority-rc4-candidate-closure-hardening-source-preflight.yml",
+]
 
 
 def _validator_module():
@@ -61,6 +67,15 @@ class FinalProductionBootstrapContractTests(unittest.TestCase):
             text = (ROOT / relative).read_text(encoding="utf-8")
             self.assertIn("workflow_dispatch:", text, relative)
 
+    def test_legacy_phase_preflights_are_release_scoped_not_main_scoped(self) -> None:
+        self.assertEqual(self.contract["legacy_phase_preflight_paths"], LEGACY_PHASE_PREFLIGHTS)
+        self.assertEqual(len(LEGACY_PHASE_PREFLIGHTS), 4)
+        for relative in LEGACY_PHASE_PREFLIGHTS:
+            text = (ROOT / relative).read_text(encoding="utf-8")
+            trigger = text.split("\nconcurrency:", 1)[0]
+            self.assertIn("release/**", trigger, relative)
+            self.assertNotIn("main", trigger, relative)
+
     def test_bootstrap_is_inserted_between_readiness_and_signed_release(self) -> None:
         self.assertEqual(
             self.contract["execution_insertion_point"],
@@ -87,6 +102,7 @@ class FinalProductionBootstrapContractTests(unittest.TestCase):
         for key in (
             "default_branch_publication_required_before_any_production_dispatch",
             "all_required_dispatch_workflow_paths_must_exist_on_default_branch",
+            "legacy_phase_preflights_must_not_trigger_default_branch",
             "readiness_source_preflight_success_required",
             "production_readiness_pass_required_before_lock_bootstrap",
             "review_and_promotion_runs_must_share_exact_control_head",
@@ -136,7 +152,10 @@ class FinalProductionBootstrapContractTests(unittest.TestCase):
         result = self.validator.validate(ROOT)
         self.assertEqual(result["status"], "PASS")
         self.assertEqual(result["required_dispatch_workflow_paths"], 19)
+        self.assertEqual(result["legacy_phase_preflights"], 4)
+        self.assertEqual(result["legacy_phase_preflight_default_branch_triggers"], 0)
         self.assertEqual(result["bootstrap_stages"], 10)
+        self.assertEqual(result["control_source_paths"], 8)
         self.assertIsNone(result["default_branch_registration"])
         self.assertFalse(result["default_branch_dispatch_surface_ready"])
         self.assertFalse(result["production_readiness_executed"])
@@ -159,18 +178,23 @@ class FinalProductionBootstrapContractTests(unittest.TestCase):
             with self.assertRaises(self.validator.ProductionBootstrapError):
                 self.validator.validate(ROOT, require_default_branch_registration=True)
 
-    def test_source_layer_is_exact_four_paths_and_cannot_claim_production(self) -> None:
+    def test_source_layer_is_exact_eight_paths_and_cannot_claim_production(self) -> None:
         source = self.contract["control_source"]
         self.assertIs(source["runtime_source_changes_allowed"], False)
         self.assertEqual(
             set(source["changed_path_allowlist"]),
             {
                 ".github/workflows/ga-final-production-bootstrap-source-preflight.yml",
+                ".github/workflows/ga-windows-authority-provisioning-handoff-source-preflight.yml",
+                ".github/workflows/ga-windows-authority-rc4-source-preflight.yml",
+                ".github/workflows/ga-windows-authority-rc4-candidate-closure-source-preflight.yml",
+                ".github/workflows/ga-windows-authority-rc4-candidate-closure-hardening-source-preflight.yml",
                 "ga-packs/03-authoritative-windows/final-production-bootstrap-contract.json",
                 "scripts/ga/validate_final_production_bootstrap.py",
                 "tests/test_final_production_bootstrap_contract.py",
             },
         )
+        self.assertEqual(len(source["changed_path_allowlist"]), 8)
         for key, value in self.contract["preparation_state"].items():
             self.assertIs(value, False, key)
 
