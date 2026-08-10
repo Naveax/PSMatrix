@@ -288,7 +288,7 @@ class FinalProductionReadinessControlTests(unittest.TestCase):
         self.assertNotIn("tests/test_final-production-readiness-controls.py", text)
         self.assertNotIn("'${{ secrets.", text)
         self.assertNotIn("'${{ vars.", text)
-        self.assertIn("[char]36", text)
+        self.assertIn("dollar=chr(36)", text)
 
 
 if __name__ == "__main__":
