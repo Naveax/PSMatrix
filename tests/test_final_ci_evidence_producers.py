@@ -60,6 +60,8 @@ class FinalCIEvidenceProducerTests(unittest.TestCase):
         self.assertFalse(matrix["nonempty_allowance_manifest_allowed"])
         self.assertEqual(matrix["endpoint_environment"], "production-ga-full-matrix")
         self.assertEqual(matrix["endpoint_root_variable"], "PSMATRIX_FULL_MATRIX_ENDPOINT_ROOT")
+        self.assertEqual(matrix["home_variable"], "PSMATRIX_FULL_MATRIX_HOME")
+        self.assertFalse(matrix["ambient_default_home_allowed"])
         authority = value["ci_authority"]
         self.assertEqual(authority["environment"], "production-ga-ci-signing")
         self.assertEqual(authority["private_key_secret"], "PSMATRIX_GA_CI_PRIVATE_KEY")
@@ -191,6 +193,9 @@ class FinalCIEvidenceProducerTests(unittest.TestCase):
             "name: production-ga-final-full-runtime-matrix",
             "environment: production-ga-full-matrix",
             "PSMATRIX_FULL_MATRIX_ENDPOINT_ROOT",
+            "PSMATRIX_HOME: ${{ vars.PSMATRIX_FULL_MATRIX_HOME }}",
+            "PSMATRIX_FULL_MATRIX_HOME is missing from production-ga-full-matrix.",
+            "full_matrix_home=$env:PSMATRIX_HOME",
             "shutil.copytree(source, destination, symlinks=False)",
             "full-matrix endpoint bundle contains a symlink",
             "endpoint_bundle_copy=PASS method=shutil.copytree symlinks=false",
@@ -234,8 +239,10 @@ class FinalCIEvidenceProducerTests(unittest.TestCase):
             "runtime_source_changes=0",
             "evaluator_producer_sources_present=4",
             "evaluator_producer_sources_required=11",
+            "full_matrix_ambient_default_home_allowed=false",
             "validation_producer_executed=false",
             "full_matrix_producer_executed=false",
+            "full_matrix_runtime_trust_home_provisioned=UNVERIFIED_EXTERNAL",
             "ci_private_key_read=false",
             "ga_eligible=false",
         ):
