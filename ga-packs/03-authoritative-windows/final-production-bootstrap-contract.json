@@ -58,6 +58,7 @@
   "requirements": {
     "default_branch_publication_required_before_any_production_dispatch": true,
     "all_required_dispatch_workflow_paths_must_exist_on_default_branch": true,
+    "post_publication_default_branch_registration_gate_required": true,
     "legacy_phase_preflights_must_not_trigger_default_branch": true,
     "main_ci_must_defer_rc4_runtime_modules_on_non_rc4_source": true,
     "readiness_source_preflight_success_required": true,
