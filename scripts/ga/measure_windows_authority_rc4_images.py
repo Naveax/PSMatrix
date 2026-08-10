@@ -237,8 +237,7 @@ def measure(
         raise RuntimeError("Windows lab manifest does not contain the exact three runtime set")
     hosts = _host_rows(host_path)
     fixture_pack = load_fixture_pack(_fixture_root(source))
-    fixture_caps = {str(item) for item in fixture_pack["manifest"].get("capabilities", [])}
-    required_caps = set(_REQUIRED_CAPABILITIES) | fixture_caps
+    required_caps = set(_REQUIRED_CAPABILITIES)
     identity_script = source / "src" / "psmatrix" / "windows" / "collect-image-identity.ps1"
     if not identity_script.is_file():
         raise RuntimeError("Exact product image-identity collector is missing")
