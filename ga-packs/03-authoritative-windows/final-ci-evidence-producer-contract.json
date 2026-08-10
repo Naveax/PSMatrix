@@ -39,6 +39,8 @@
     "nonempty_allowance_manifest_allowed": false,
     "endpoint_environment": "production-ga-full-matrix",
     "endpoint_root_variable": "PSMATRIX_FULL_MATRIX_ENDPOINT_ROOT",
+    "home_variable": "PSMATRIX_FULL_MATRIX_HOME",
+    "ambient_default_home_allowed": false,
     "probe": "scripts/ga/full_matrix_probe.ps1"
   },
   "ci_authority": {
