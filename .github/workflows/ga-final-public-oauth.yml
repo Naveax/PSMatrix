@@ -194,10 +194,13 @@ jobs:
 
           root=Path(os.environ['PSMATRIX_OAUTH_SIGNED'])
           verified=verify_ga_proof(read_json(root/'public-oauth.dsse.json'),expected_type='public-oauth',public_key=root/'deployment-public.pem')
-          assertions=verified.get('assertions') or {}
-          artifacts=verified.get('artifacts') or []
+          result=verified.get('result')
+          if not isinstance(result, dict):
+              raise SystemExit('verified OAuth proof result payload is missing')
+          assertions=result.get('assertions') if isinstance(result.get('assertions'), dict) else {}
+          artifacts=result.get('artifacts') if isinstance(result.get('artifacts'), list) else []
           live_sha=sha256_file(root/'public-auth-live-report.json')
-          if verified.get('valid') is not True or len(artifacts)!=1 or artifacts[0].get('sha256')!=live_sha:
+          if verified.get('valid') is not True or len(artifacts)!=1 or artifacts[0].get('name')!='public-auth-live-report.json' or artifacts[0].get('sha256')!=live_sha:
               raise SystemExit('signed OAuth proof did not verify the exact shared live-report subject')
           required=('external_probe','public_dns','public_tls','oauth_external','discovery_verified','audience_verified','scope_verified','token_expiry_verified','missing_token_rejected','wrong_audience_rejected','missing_scope_rejected','replay_protection_verified','rate_limiting_verified','release_commit_bound')
           if any(assertions.get(name) is not True for name in required):
