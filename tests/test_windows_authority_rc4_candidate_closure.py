@@ -166,11 +166,13 @@ class WindowsAuthorityRC4CandidateClosureTests(unittest.TestCase):
 
     def test_final_product_ga_evaluator_still_requires_final_2_0_0(self) -> None:
         text = GA_EVALUATOR.read_text(encoding="utf-8")
-        self.assertIn('if release_version != "2.0.0":', text)
-        self.assertIn('reason="release version is not 2.0.0"', text)
-        self.assertIn('release_bound = bool(evidence.get("release_bound"))', text)
-        self.assertIn('if not release_bound:', text)
-        self.assertIn('if not bool(evidence.get("verified", False)):', text)
+        self.assertIn('_GA_VERSION = "2.0.0"', text)
+        self.assertIn('if result.get("valid") is not True or result.get("version") != _GA_VERSION:', text)
+        self.assertIn('raise GAGateError("Signed release is not the final 2.0.0 release")', text)
+        self.assertIn('if value.get("version") != _GA_VERSION:', text)
+        self.assertIn('raise GAGateError("GA policy must target version 2.0.0")', text)
+        self.assertIn('if result.get("release_bound") is not True or binding is None:', text)
+        self.assertIn('raise GAGateError("Authoritative Windows matrix is not bound to the signed release")', text)
 
     def test_source_preflight_tracks_rc4_candidate_closure_chain(self) -> None:
         text = PREFLIGHT.read_text(encoding="utf-8")
