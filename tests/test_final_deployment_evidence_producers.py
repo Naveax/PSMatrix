@@ -4,7 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from psmatrix.ga import default_ga_policy
+from psmatrix.ga import create_ga_proof, default_ga_policy, verify_ga_proof
+from psmatrix.signing import generate_ed25519_keypair
 from psmatrix.util import sha256_file
 
 
@@ -112,7 +113,7 @@ class FinalDeploymentEvidenceProducerTests(unittest.TestCase):
                 "schema": 1,
                 "kind": "psmatrix.public-auth-live-report",
                 "status": "PASS",
-                "observed_at": "2026-08-10T12:00:00+00:00",
+                "observed_at": "2026-08-10T11:00:00+00:00",
                 "release_signing_run_id": "123456",
                 "release": {
                     "version": "2.0.0",
@@ -173,6 +174,29 @@ class FinalDeploymentEvidenceProducerTests(unittest.TestCase):
             ):
                 self.assertEqual(oauth["assertions"][key], expected)
                 self.assertEqual(mtls["assertions"][key], expected)
+
+    def test_verify_ga_proof_runtime_result_shape_is_nested(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="psmatrix-ga-proof-shape-") as temp:
+            root = Path(temp)
+            private = root / "deployment.private.pem"
+            public = root / "deployment.public.pem"
+            generate_ed25519_keypair(private, public)
+            result = {
+                "schema": 1,
+                "kind": "psmatrix.ga-proof-result",
+                "proof_type": "public-oauth",
+                "status": "PASS",
+                "observed_at": "2026-08-10T11:00:00+00:00",
+                "assertions": {"sentinel": True},
+                "artifacts": [],
+            }
+            envelope = create_ga_proof(result, private_key=private, public_key=public)
+            verified = verify_ga_proof(envelope, public_key=public, expected_type="public-oauth")
+            self.assertEqual(set(verified), {"valid", "key_ids", "result"})
+            self.assertTrue(verified["valid"])
+            self.assertEqual(verified["result"], result)
+            self.assertNotIn("assertions", verified)
+            self.assertNotIn("artifacts", verified)
 
     def test_probe_source_is_bounded_and_never_serializes_probe_secrets(self) -> None:
         text = PROBE.read_text(encoding="utf-8")
@@ -247,6 +271,11 @@ class FinalDeploymentEvidenceProducerTests(unittest.TestCase):
                 self.assertIn("PSMATRIX_GA_DEPLOYMENT_PUBLIC_KEY", text)
                 self.assertIn("ga proof-create", text)
                 self.assertIn("ga proof-verify", text)
+                self.assertIn("result=verified.get('result')", text)
+                self.assertIn("assertions=result.get('assertions')", text)
+                self.assertIn("artifacts=result.get('artifacts')", text)
+                self.assertNotIn("assertions=verified.get('assertions')", text)
+                self.assertNotIn("artifacts=verified.get('artifacts')", text)
                 self.assertIn(artifact, text)
                 self.assertEqual(text.count("secrets.PSMATRIX_GA_DEPLOYMENT_PRIVATE_KEY"), 1)
                 pre_secret = text.index("Validate live report and frozen final-signing provenance before deployment-key access")
