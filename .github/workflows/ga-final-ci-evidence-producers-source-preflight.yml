@@ -1,0 +1,210 @@
+name: production-ga-final-ci-evidence-producers-source-preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["final/2.0.0-ci-evidence-producers"]
+    paths:
+      - ".github/workflows/ga-final-ci-evidence-producers-source-preflight.yml"
+      - ".github/workflows/ga-final-full-runtime-matrix.yml"
+      - ".github/workflows/ga-final-validation-summary.yml"
+      - "ga-packs/03-authoritative-windows/final-ci-evidence-producer-contract.json"
+      - "scripts/ga/build_final_validation_summary.py"
+      - "scripts/ga/full_matrix_probe.ps1"
+      - "tests/test_final_ci_evidence_producers.py"
+  pull_request:
+    branches: ["final/2.0.0-ga-evaluator-controls-anchor"]
+    paths:
+      - ".github/workflows/ga-final-ci-evidence-producers-source-preflight.yml"
+      - ".github/workflows/ga-final-full-runtime-matrix.yml"
+      - ".github/workflows/ga-final-validation-summary.yml"
+      - "ga-packs/03-authoritative-windows/final-ci-evidence-producer-contract.json"
+      - "scripts/ga/build_final_validation_summary.py"
+      - "scripts/ga/full_matrix_probe.ps1"
+      - "tests/test_final_ci_evidence_producers.py"
+
+concurrency:
+  group: production-ga-final-ci-evidence-producers-source-preflight-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  final-ci-producer-source-preflight:
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 50
+    permissions:
+      contents: read
+    env:
+      PYTHONPATH: ${{ github.workspace }}\src
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+      EVALUATOR_ANCHOR: c5d4e14b36b84bddb7145762bbc4e4f1fe9a35f3
+      FINAL_RELEASE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
+
+    steps:
+      - name: Verify trusted NAVEAX source runner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') {
+              throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS"
+          }
+          Write-Host 'final_ci_producer_source_runner=PASS'
+
+      - name: Check out exact CI producer control source with full history
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact seven-path control closure and evaluator producer count
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($env:EXPECTED_HEAD -cnotmatch '^[0-9a-f]{40}$' -or $head -ne $env:EXPECTED_HEAD.ToLowerInvariant()) { throw "Exact CI producer head mismatch: $head / $env:EXPECTED_HEAD" }
+          if (-not [string]::IsNullOrWhiteSpace((git status --porcelain))) { throw 'CI producer source checkout is dirty.' }
+          foreach ($sha in @($env:EVALUATOR_ANCHOR,$env:FINAL_RELEASE_COMMIT)) {
+              git cat-file -e "$sha^{commit}"
+              if ($LASTEXITCODE -ne 0) { throw "Frozen source commit is unavailable: $sha" }
+          }
+          git merge-base --is-ancestor $env:EVALUATOR_ANCHOR $head
+          if ($LASTEXITCODE -ne 0) { throw 'Evaluator control anchor is not an ancestor of CI producer controls.' }
+
+          $contract = Get-Content 'ga-packs\03-authoritative-windows\final-ci-evidence-producer-contract.json' -Raw | ConvertFrom-Json
+          if ([int]$contract.schema -ne 1 -or [string]$contract.kind -ne 'psmatrix.final-ci-evidence-producer-contract') { throw 'Final CI producer contract identity mismatch.' }
+          if ([string]$contract.version -ne '2.0.0' -or [string]$contract.final_release_commit -ne $env:FINAL_RELEASE_COMMIT -or [string]$contract.evaluator_anchor -ne $env:EVALUATOR_ANCHOR) { throw 'Final CI producer frozen source identity mismatch.' }
+          if ([bool]$contract.control_source.runtime_source_changes_allowed) { throw 'Final CI producer control layer must not permit runtime source changes.' }
+          if ([string]$contract.ci_authority.environment -ne 'production-ga-ci-signing' -or [bool]$contract.ci_authority.private_key_allowed_on_persistent_self_hosted_runner) { throw 'Final CI authority isolation contract mismatch.' }
+          if ([string]$contract.full_runtime_matrix.endpoint_environment -ne 'production-ga-full-matrix' -or [string]$contract.full_runtime_matrix.endpoint_root_variable -ne 'PSMATRIX_FULL_MATRIX_ENDPOINT_ROOT') { throw 'Full-matrix endpoint prerequisite contract mismatch.' }
+
+          $changed = @((git diff --name-only "$env:EVALUATOR_ANCHOR..$head") | ForEach-Object { $_.Trim().Replace('\','/') } | Where-Object { $_ } | Sort-Object -Unique)
+          $allowed = @($contract.control_source.changed_path_allowlist | ForEach-Object { ([string]$_).Replace('\','/') } | Sort-Object -Unique)
+          $delta = @(Compare-Object -ReferenceObject $allowed -DifferenceObject $changed)
+          if ($delta.Count -ne 0) { throw "Final CI producer changed-path closure mismatch: $($delta | Out-String)" }
+          if ($changed.Count -ne 7) { throw "Expected exactly seven CI producer control changed paths; observed $($changed.Count)." }
+          $runtime = @($changed | Where-Object { $_ -like 'src/psmatrix/*' })
+          if ($runtime.Count -ne 0) { throw "CI producer controls modified runtime source: $($runtime -join ',')" }
+
+          $evaluator = Get-Content 'ga-packs\03-authoritative-windows\final-ga-evaluator-control-contract.json' -Raw | ConvertFrom-Json
+          $gateNames = @($evaluator.required_gates | ForEach-Object { [string]$_ })
+          if ($gateNames.Count -ne 11) { throw 'Evaluator no longer has exactly eleven required gates.' }
+          $present = 0
+          $missing = @()
+          foreach ($gate in $gateNames) {
+              $entry = $evaluator.evidence_sources.$gate
+              $path = [string]$entry.workflow_path
+              if (Test-Path -LiteralPath $path -PathType Leaf) {
+                  $text = Get-Content -LiteralPath $path -Raw
+                  if (-not $text.Contains("name: $([string]$entry.workflow)")) { throw "Producer workflow identity mismatch: $gate / $path" }
+                  $present++
+              } else {
+                  $missing += $gate
+              }
+          }
+          if ($present -ne 4) { throw "This CI producer layer must expose exactly four of eleven producer workflow sources; observed $present." }
+          if ($missing.Count -ne 7) { throw "This CI producer layer must leave exactly seven producer sources pending; observed $($missing.Count)." }
+          if (-not (Test-Path -LiteralPath '.github\workflows\ga-final-validation-summary.yml' -PathType Leaf) -or -not (Test-Path -LiteralPath '.github\workflows\ga-final-full-runtime-matrix.yml' -PathType Leaf)) { throw 'Final CI producer workflow source is missing.' }
+          Write-Host "validated_exact_ci_producer_head=$head"
+          Write-Host 'ci_producer_control_changed_paths=7'
+          Write-Host 'runtime_source_changes=0'
+          Write-Host "evaluator_producer_sources_present=$present"
+          Write-Host 'evaluator_producer_sources_required=11'
+          Write-Host "evaluator_producer_sources_pending=$($missing -join ',')"
+
+      - name: Compile final CI producer controls
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m py_compile `
+            scripts/ga/build_final_validation_summary.py `
+            tests/test_final_ci_evidence_producers.py
+          if ($LASTEXITCODE -ne 0) { throw 'Final CI producer Python compile failed.' }
+          Write-Host 'final_ci_producer_compile=PASS'
+
+      - name: Parse bounded full-matrix PowerShell probe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = (Resolve-Path 'scripts\ga\full_matrix_probe.ps1').Path
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile($path,[ref]$tokens,[ref]$errors) | Out-Null
+          if ($errors.Count -ne 0) {
+              $errors | ForEach-Object { Write-Error $_.Message }
+              throw 'Final full-matrix probe PowerShell parse failed.'
+          }
+          Write-Host 'final_full_matrix_probe_parse=PASS'
+
+      - name: Run final CI producer and inherited evaluator contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m unittest -v `
+            tests.test_final_ci_evidence_producers `
+            tests.test_final_ga_evaluator_controls `
+            tests.test_windows_authority_final_windows_evidence_rebind
+          if ($LASTEXITCODE -ne 0) { throw 'Final CI producer source contract suite failed.' }
+          Write-Host 'final_ci_producer_source_contract=PASS'
+
+      - name: Parse production producer CLI surfaces without executing evidence
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m psmatrix.cli full test --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Full test CLI parse failed.' }
+          python -m psmatrix.cli full release-binding --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Full release-binding CLI parse failed.' }
+          python -m psmatrix.cli full attest --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Full attest CLI parse failed.' }
+          python -m psmatrix.cli ga artifact-sign --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'GA artifact-sign CLI parse failed.' }
+          Write-Host 'final_ci_producer_cli_parse=PASS'
+
+      - name: Scan every tracked source byte for exact PEM private-authority headers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import subprocess
+          from pathlib import Path
+          markers = {
+              b"-----BEGIN PRIVATE KEY-----",
+              b"-----BEGIN RSA PRIVATE KEY-----",
+              b"-----BEGIN EC PRIVATE KEY-----",
+              b"-----BEGIN OPENSSH PRIVATE KEY-----",
+              b"-----BEGIN ED25519 PRIVATE KEY-----",
+          }
+          root = Path.cwd().resolve()
+          tracked = [line for line in subprocess.check_output(["git", "ls-files"], text=True).splitlines() if line]
+          scanned = 0
+          total = 0
+          for relative in tracked:
+              path = root / relative
+              if not path.is_file():
+                  continue
+              scanned += 1
+              with path.open("rb") as handle:
+                  for raw_line in handle:
+                      total += len(raw_line)
+                      if raw_line.rstrip(b"\r\n").strip() in markers:
+                          raise SystemExit(f"tracked private-key PEM material detected: {relative}")
+          print(f"repository_private_authority_absence=PASS tracked_files={scanned} tracked_bytes={total} size_limit_applied=false")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Tracked-source private authority scan failed.' }
+
+      - name: Emit final CI producer preparation summary
+        shell: pwsh
+        run: |
+          Write-Host "validated_exact_ci_producer_head=$env:EXPECTED_HEAD"
+          Write-Host 'evaluator_producer_sources_present=4'
+          Write-Host 'evaluator_producer_sources_required=11'
+          Write-Host 'validation_producer_executed=false'
+          Write-Host 'full_matrix_producer_executed=false'
+          Write-Host 'ci_authority_provisioned=UNVERIFIED_EXTERNAL'
+          Write-Host 'full_matrix_endpoint_bundle_provisioned=UNVERIFIED_EXTERNAL'
+          Write-Host 'ci_private_key_read=false'
+          Write-Host 'final_ga_evaluator_invoked=false'
+          Write-Host 'ga_eligible=false'
