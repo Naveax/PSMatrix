@@ -152,6 +152,9 @@ class FinalProductionReadinessControlTests(unittest.TestCase):
 
     def test_workflow_references_every_contract_environment_secret_and_var_exactly_once(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("on:\n  workflow_dispatch:", text)
+        self.assertNotIn("\n  push:", text)
+        self.assertNotIn("\n  pull_request:", text)
         for environment in self.contract["environments"]:
             self.assertEqual(text.count(f"environment: {environment['name']}"), 1, environment["name"])
             for secret in environment.get("required_secrets") or []:
