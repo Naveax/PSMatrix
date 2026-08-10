@@ -282,6 +282,14 @@ class FinalProductionReadinessControlTests(unittest.TestCase):
         self.assertIn("producer_workflow_path", text)
         self.assertIn("Production-readiness producer source is missing", text)
 
+    def test_source_preflight_registration_safety_is_frozen(self) -> None:
+        text = PREFLIGHT.read_text(encoding="utf-8")
+        self.assertEqual(text.count("tests/test_final_production_readiness_controls.py"), 2)
+        self.assertNotIn("tests/test_final-production-readiness-controls.py", text)
+        self.assertNotIn("'${{ secrets.", text)
+        self.assertNotIn("'${{ vars.", text)
+        self.assertIn("[char]36", text)
+
 
 if __name__ == "__main__":
     unittest.main()
