@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = ROOT / "pyproject.toml"
 INIT = ROOT / "src" / "psmatrix" / "__init__.py"
 RC3_LOCK = ROOT / "ga-packs" / "03-authoritative-windows" / "rc3-release-lock.json"
+FINAL_CONTRACT = ROOT / "ga-packs" / "03-authoritative-windows" / "final-release-source-promotion-contract.json"
 ENROLL_SCRIPT = ROOT / "scripts" / "ga" / "enroll_windows_authority_release_authority.py"
 LOCK_DRAFT_SCRIPT = ROOT / "scripts" / "ga" / "build_windows_authority_release_lock_draft.py"
 SOURCE_PREFLIGHT = ROOT / ".github" / "workflows" / "ga-windows-authority-rc4-source-preflight.yml"
@@ -23,8 +24,9 @@ class WindowsAuthorityRC4AuthorityRotationTests(unittest.TestCase):
         init_text = INIT.read_text(encoding="utf-8")
         match = re.search(r'^__version__\s*=\s*"([^"]+)"', init_text, re.MULTILINE)
         self.assertIsNotNone(match)
-        self.assertEqual(project["project"]["version"], "2.0.0rc4")
-        self.assertEqual(match.group(1), "2.0.0rc4")
+        expected_current = "2.0.0" if FINAL_CONTRACT.is_file() else "2.0.0rc4"
+        self.assertEqual(project["project"]["version"], expected_current)
+        self.assertEqual(match.group(1), expected_current)
 
         lock = json.loads(RC3_LOCK.read_text(encoding="utf-8"))
         self.assertEqual(lock["version"], "2.0.0rc3")
