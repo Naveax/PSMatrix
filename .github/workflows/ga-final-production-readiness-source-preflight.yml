@@ -25,6 +25,7 @@ concurrency:
 
 permissions:
   contents: read
+  statuses: write
 
 jobs:
   production-readiness-source-preflight:
@@ -32,11 +33,13 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
+      statuses: write
     env:
       PYTHONPATH: ${{ github.workspace }}\src
       EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
       PRODUCER_SOURCE_ANCHOR: 89372d9432433237abdf677900093b399c4d0868
       FINAL_RELEASE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
+      STATUS_CONTEXT: production-readiness/source-preflight
 
     steps:
       - name: Verify trusted NAVEAX source runner
@@ -45,6 +48,27 @@ jobs:
           $ErrorActionPreference = 'Stop'
           if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') { throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS" }
           Write-Host 'production_readiness_source_runner=PASS'
+
+      - name: Publish pending exact-head source-preflight status
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $headers = @{
+              Accept = 'application/vnd.github+json'
+              Authorization = "Bearer $env:GH_TOKEN"
+              'X-GitHub-Api-Version' = '2026-03-10'
+              'User-Agent' = 'psmatrix-production-readiness-preflight'
+          }
+          $body = @{
+              state = 'pending'
+              target_url = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+              description = 'NAVEAX exact-head source preflight running'
+              context = $env:STATUS_CONTEXT
+          } | ConvertTo-Json -Compress
+          Invoke-RestMethod -Method Post -Uri "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/statuses/$env:EXPECTED_HEAD" -Headers $headers -ContentType 'application/json' -Body $body | Out-Null
+          Write-Host "production_readiness_commit_status=PENDING context=$env:STATUS_CONTEXT"
 
       - name: Check out exact production-readiness control source with full history
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -214,3 +238,47 @@ jobs:
           Write-Host 'production_evaluator_ready=false'
           Write-Host 'final_ga_evaluator_invoked=false'
           Write-Host 'ga_eligible=false'
+
+      - name: Publish failed exact-head source-preflight status
+        if: ${{ failure() }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $headers = @{
+              Accept = 'application/vnd.github+json'
+              Authorization = "Bearer $env:GH_TOKEN"
+              'X-GitHub-Api-Version' = '2026-03-10'
+              'User-Agent' = 'psmatrix-production-readiness-preflight'
+          }
+          $body = @{
+              state = 'failure'
+              target_url = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+              description = 'NAVEAX exact-head source preflight failed'
+              context = $env:STATUS_CONTEXT
+          } | ConvertTo-Json -Compress
+          Invoke-RestMethod -Method Post -Uri "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/statuses/$env:EXPECTED_HEAD" -Headers $headers -ContentType 'application/json' -Body $body | Out-Null
+          Write-Host "production_readiness_commit_status=FAILURE context=$env:STATUS_CONTEXT"
+
+      - name: Publish successful exact-head source-preflight status
+        if: ${{ success() }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $headers = @{
+              Accept = 'application/vnd.github+json'
+              Authorization = "Bearer $env:GH_TOKEN"
+              'X-GitHub-Api-Version' = '2026-03-10'
+              'User-Agent' = 'psmatrix-production-readiness-preflight'
+          }
+          $body = @{
+              state = 'success'
+              target_url = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+              description = 'NAVEAX exact-head source preflight passed'
+              context = $env:STATUS_CONTEXT
+          } | ConvertTo-Json -Compress
+          Invoke-RestMethod -Method Post -Uri "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/statuses/$env:EXPECTED_HEAD" -Headers $headers -ContentType 'application/json' -Body $body | Out-Null
+          Write-Host "production_readiness_commit_status=SUCCESS context=$env:STATUS_CONTEXT"
