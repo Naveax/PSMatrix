@@ -1,0 +1,161 @@
+name: production-ga-windows-authority-rc4-candidate-closure-hardening-source-preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - "release/**"
+    paths:
+      - ".github/workflows/ga-windows-authority-rc4-candidate-closure-hardening-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-rc4-candidate-closure-hardened-selfhosted.yml"
+      - "scripts/ga/scan_private_key_material_streaming.py"
+      - "scripts/ga/build_windows_authority_rc4_candidate_closure_hardened.py"
+      - "ga-packs/03-authoritative-windows/rc4-candidate-closure-hardening-workflow-contract.json"
+      - "tests/test_windows_authority_rc4_candidate_closure_hardening.py"
+  pull_request:
+    branches:
+      - main
+      - "release/**"
+    paths:
+      - ".github/workflows/ga-windows-authority-rc4-candidate-closure-hardening-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-rc4-candidate-closure-hardened-selfhosted.yml"
+      - "scripts/ga/scan_private_key_material_streaming.py"
+      - "scripts/ga/build_windows_authority_rc4_candidate_closure_hardened.py"
+      - "ga-packs/03-authoritative-windows/rc4-candidate-closure-hardening-workflow-contract.json"
+      - "tests/test_windows_authority_rc4_candidate_closure_hardening.py"
+
+concurrency:
+  group: production-ga-windows-authority-rc4-candidate-closure-hardening-source-preflight-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  hardening-source-preflight:
+    name: RC4 candidate closure complete-streaming hardening contract
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    env:
+      PYTHONPATH: ${{ github.workspace }}\src
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+
+    steps:
+      - name: Verify exact trusted hardening source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') { throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS" }
+          Write-Host 'rc4_closure_hardening_runner=PASS'
+
+      - name: Check out exact hardening source revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify clean RC4 identity and preparation boundary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($env:EXPECTED_HEAD -cnotmatch '^[0-9a-f]{40}$' -or $head -ne $env:EXPECTED_HEAD.ToLowerInvariant()) { throw "Hardening source checkout is not exact: actual=$head expected=$env:EXPECTED_HEAD" }
+          if (-not [string]::IsNullOrWhiteSpace((git status --porcelain))) { throw 'Hardening source checkout is dirty.' }
+          $project = (python -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text(encoding='utf-8'))['project']['version'])").Trim()
+          $package = (python -c "import psmatrix; print(psmatrix.__version__)").Trim()
+          if ($project -ne '2.0.0rc4' -or $package -ne '2.0.0rc4') { throw "Expected RC4 package identity; project=$project package=$package" }
+          foreach ($path in @('ga-packs\03-authoritative-windows\rc4-release-lock.json','release-assets\2.0.0rc4\psmatrix-2.0.0rc4-release-public.pem')) {
+              if (Test-Path -LiteralPath (Join-Path $env:GITHUB_WORKSPACE $path) -PathType Leaf) { throw "Preparation branch must not contain active RC4 authority material: $path" }
+          }
+          Write-Host "validated_exact_rc4_head=$head"
+
+      - name: Compile complete-streaming closure hardening controls
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & python -m py_compile `
+              scripts/ga/scan_private_key_material_streaming.py `
+              scripts/ga/build_windows_authority_rc4_candidate_closure_hardened.py `
+              tests/test_windows_authority_rc4_candidate_closure_hardening.py
+          if ($LASTEXITCODE -ne 0) { throw 'RC4 closure hardening Python compile failed.' }
+          Write-Host 'rc4_closure_hardening_compile=PASS'
+
+      - name: Run RC4 authority through certification baseline contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & python -m unittest -v `
+              tests.test_windows_authority_release_candidate_builder `
+              tests.test_windows_authority_rc4_authority_rotation `
+              tests.test_windows_authority_rc4_authority_rotation_runtime `
+              tests.test_windows_authority_rc4_lock_promotion_signing `
+              tests.test_windows_authority_protected_release_import `
+              tests.test_windows_authority_rc4_protected_release_intake `
+              tests.test_windows_authority_rc4_media_readiness `
+              tests.test_windows_authority_provisioning_manifest_workflow `
+              tests.test_windows_authority_rc4_provisioning_manifest `
+              tests.test_windows_authority_rc4_operation_package `
+              tests.test_windows_authority_rc4_hyperv_provisioning `
+              tests.test_windows_authority_rc4_image_identity_measurement `
+              tests.test_windows_authority_rc4_certification_campaign
+          if ($LASTEXITCODE -ne 0) { throw 'RC4 baseline contract suite failed before closure hardening.' }
+          Write-Host 'rc4_baseline_through_certification=PASS'
+
+      - name: Run selected base candidate-closure invariants
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & python -m unittest -v `
+              tests.test_windows_authority_rc4_candidate_closure.WindowsAuthorityRC4CandidateClosureTests.test_contract_freezes_authoritative_but_final_release_pending_state `
+              tests.test_windows_authority_rc4_candidate_closure.WindowsAuthorityRC4CandidateClosureTests.test_operation_and_campaign_release_binding_comparison_is_field_exact `
+              tests.test_windows_authority_rc4_candidate_closure.WindowsAuthorityRC4CandidateClosureTests.test_active_rc4_lock_is_checkout_bound_reviewed_and_commit_bound `
+              tests.test_windows_authority_rc4_candidate_closure.WindowsAuthorityRC4CandidateClosureTests.test_builder_cross_binds_every_major_provenance_layer `
+              tests.test_windows_authority_rc4_candidate_closure.WindowsAuthorityRC4CandidateClosureTests.test_final_product_ga_evaluator_still_requires_final_2_0_0
+          if ($LASTEXITCODE -ne 0) { throw 'Base RC4 candidate-closure invariants failed.' }
+          Write-Host 'rc4_base_candidate_closure_invariants=PASS'
+
+      - name: Run complete-streaming RC4 closure hardening runtime contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & python -m unittest -v tests.test_windows_authority_rc4_candidate_closure_hardening
+          if ($LASTEXITCODE -ne 0) { throw 'RC4 complete-streaming closure hardening tests failed.' }
+          Write-Host 'rc4_candidate_closure_hardening_contract=PASS'
+          Write-Host 'large_file_private_key_marker_detection=PASS'
+          Write-Host 'streaming_scan_size_limit_applied=false'
+
+      - name: Enforce no tracked private authority material
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $markers = @('-----BEGIN PRIVATE KEY-----','-----BEGIN RSA PRIVATE KEY-----','-----BEGIN EC PRIVATE KEY-----','-----BEGIN OPENSSH PRIVATE KEY-----','-----BEGIN ED25519 PRIVATE KEY-----')
+          $tracked = @(git ls-files)
+          if ($LASTEXITCODE -ne 0 -or $tracked.Count -eq 0) { throw 'Unable to enumerate tracked repository files.' }
+          foreach ($relative in $tracked) {
+              $path = Join-Path $env:GITHUB_WORKSPACE $relative
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+              $file = Get-Item -LiteralPath $path
+              if ($file.Length -gt 1048576) { continue }
+              try { $text = [System.IO.File]::ReadAllText($file.FullName) } catch { continue }
+              foreach ($marker in $markers) {
+                  if ([regex]::IsMatch($text,'(?m)^'+[regex]::Escape($marker)+'\r?$')) { throw "Tracked private-key PEM material detected: $relative" }
+              }
+          }
+          Write-Host "repository_private_authority_absence=PASS tracked_files=$($tracked.Count)"
+
+      - name: Emit hardening source-preflight summary
+        shell: pwsh
+        run: |
+          Write-Host "validated_exact_rc4_head=$env:EXPECTED_HEAD"
+          Write-Host 'production_candidate_closure_executed=false'
+          Write-Host 'campaign_evidence_scanned=false'
+          Write-Host 'production_inputs_mutated=false'
+          Write-Host 'workers_contacted=false'
+          Write-Host 'final_ga_evaluator_invoked=false'
+          Write-Host 'authoritative=false'
+          Write-Host 'ga_eligible=false'
