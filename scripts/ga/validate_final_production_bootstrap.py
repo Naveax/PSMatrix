@@ -16,6 +16,7 @@ EXPECTED_READINESS_SOURCE_HEAD = "18eb9a7eed6fef807e709ce4377fd2709429066d"
 EXPECTED_PRODUCER_ANCHOR = "89372d9432433237abdf677900093b399c4d0868"
 EXPECTED_FINAL_RELEASE_COMMIT = "02cef95d40cf524ce00f9d917188343dc49e6f2c"
 EXPECTED_DEFAULT_BRANCH = "main"
+EXPECTED_CI_PATH = ".github/workflows/ci.yml"
 EXPECTED_DISPATCH_PATHS = [
     ".github/workflows/ga-final-production-readiness.yml",
     ".github/workflows/ga-windows-authority-rc4-release-authority-enrollment.yml",
@@ -44,6 +45,7 @@ EXPECTED_LEGACY_PHASE_PREFLIGHTS = [
     ".github/workflows/ga-windows-authority-rc4-candidate-closure-hardening-source-preflight.yml",
 ]
 EXPECTED_CONTROL_PATHS = {
+    EXPECTED_CI_PATH,
     ".github/workflows/ga-final-production-bootstrap-source-preflight.yml",
     *EXPECTED_LEGACY_PHASE_PREFLIGHTS,
     "ga-packs/03-authoritative-windows/final-production-bootstrap-contract.json",
@@ -117,6 +119,23 @@ def _legacy_phase_trigger_hygiene(root: Path, relative: str) -> None:
         raise ProductionBootstrapError(f"legacy phase preflight is not scoped to release branches: {relative}")
     if "main" in trigger:
         raise ProductionBootstrapError(f"legacy phase preflight still targets default branch main: {relative}")
+
+
+def _main_ci_phase_hygiene(root: Path) -> None:
+    path = (root / EXPECTED_CI_PATH).resolve()
+    if not path.is_file() or path.is_symlink():
+        raise ProductionBootstrapError("main CI workflow source is missing or unsafe")
+    text = path.read_text(encoding="utf-8")
+    required = (
+        "branches: [main]",
+        "$packageVersion -ne '2.0.0rc4' -and $file.Name -like 'test_windows_authority_rc4_*.py'",
+        "deferred_to_rc4_release_preflight=",
+        "if ($packageVersion -eq '2.0.0' -and $releaseCandidateDeferred.Count -lt 1)",
+        "release_candidate_runtime_policy=rc4-modules-deferred-on-non-rc4-source",
+    )
+    for marker in required:
+        if marker not in text:
+            raise ProductionBootstrapError(f"main CI release-phase hygiene marker is missing: {marker}")
 
 
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -212,6 +231,7 @@ def validate(
         raise ProductionBootstrapError("legacy phase preflight set is not exact 4/4")
     for relative in EXPECTED_LEGACY_PHASE_PREFLIGHTS:
         _legacy_phase_trigger_hygiene(root, relative)
+    _main_ci_phase_hygiene(root)
 
     execution_paths = [str(item.get("path") or "") for item in execution.get("execution_sequence") or [] if isinstance(item, dict)]
     if len(execution_paths) != 15 or not set(execution_paths).issubset(set(EXPECTED_DISPATCH_PATHS)):
@@ -244,6 +264,7 @@ def validate(
         "default_branch_publication_required_before_any_production_dispatch",
         "all_required_dispatch_workflow_paths_must_exist_on_default_branch",
         "legacy_phase_preflights_must_not_trigger_default_branch",
+        "main_ci_must_defer_rc4_runtime_modules_on_non_rc4_source",
         "readiness_source_preflight_success_required",
         "production_readiness_pass_required_before_lock_bootstrap",
         "review_and_promotion_runs_must_share_exact_control_head",
@@ -275,7 +296,7 @@ def validate(
 
     source_control = contract.get("control_source") or {}
     if source_control.get("runtime_source_changes_allowed") is not False or set(source_control.get("changed_path_allowlist") or []) != EXPECTED_CONTROL_PATHS:
-        raise ProductionBootstrapError("production bootstrap source boundary is not exact eight paths / zero runtime")
+        raise ProductionBootstrapError("production bootstrap source boundary is not exact nine paths / zero runtime")
 
     registration = None
     if inspect_default_branch or require_default_branch_registration:
@@ -295,8 +316,9 @@ def validate(
         "required_dispatch_workflow_paths": 19,
         "legacy_phase_preflights": 4,
         "legacy_phase_preflight_default_branch_triggers": 0,
+        "main_ci_rc4_phase_hygiene": True,
         "bootstrap_stages": 10,
-        "control_source_paths": 8,
+        "control_source_paths": 9,
         "default_branch": EXPECTED_DEFAULT_BRANCH,
         "default_branch_registration": registration,
         "default_branch_dispatch_surface_ready": bool(registration and registration["ready"]),
