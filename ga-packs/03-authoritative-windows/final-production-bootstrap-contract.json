@@ -37,6 +37,12 @@
     ".github/workflows/ga-final-vulnerability-scan.yml",
     ".github/workflows/ga-final-evaluator.yml"
   ],
+  "legacy_phase_preflight_paths": [
+    ".github/workflows/ga-windows-authority-provisioning-handoff-source-preflight.yml",
+    ".github/workflows/ga-windows-authority-rc4-source-preflight.yml",
+    ".github/workflows/ga-windows-authority-rc4-candidate-closure-source-preflight.yml",
+    ".github/workflows/ga-windows-authority-rc4-candidate-closure-hardening-source-preflight.yml"
+  ],
   "bootstrap_sequence": [
     {"step": 1, "id": "default-branch-publication", "kind": "repository_condition"},
     {"step": 2, "id": "readiness-source-preflight", "kind": "source_gate"},
@@ -52,6 +58,7 @@
   "requirements": {
     "default_branch_publication_required_before_any_production_dispatch": true,
     "all_required_dispatch_workflow_paths_must_exist_on_default_branch": true,
+    "legacy_phase_preflights_must_not_trigger_default_branch": true,
     "readiness_source_preflight_success_required": true,
     "production_readiness_pass_required_before_lock_bootstrap": true,
     "review_and_promotion_runs_must_share_exact_control_head": true,
@@ -72,6 +79,10 @@
     "runtime_source_changes_allowed": false,
     "changed_path_allowlist": [
       ".github/workflows/ga-final-production-bootstrap-source-preflight.yml",
+      ".github/workflows/ga-windows-authority-provisioning-handoff-source-preflight.yml",
+      ".github/workflows/ga-windows-authority-rc4-source-preflight.yml",
+      ".github/workflows/ga-windows-authority-rc4-candidate-closure-source-preflight.yml",
+      ".github/workflows/ga-windows-authority-rc4-candidate-closure-hardening-source-preflight.yml",
       "ga-packs/03-authoritative-windows/final-production-bootstrap-contract.json",
       "scripts/ga/validate_final_production_bootstrap.py",
       "tests/test_final_production_bootstrap_contract.py"
