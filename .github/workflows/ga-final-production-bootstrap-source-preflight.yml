@@ -6,6 +6,10 @@ on:
     branches: ["final/2.0.0-production-bootstrap-controls"]
     paths:
       - ".github/workflows/ga-final-production-bootstrap-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-provisioning-handoff-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-rc4-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-rc4-candidate-closure-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-rc4-candidate-closure-hardening-source-preflight.yml"
       - "ga-packs/03-authoritative-windows/final-production-bootstrap-contract.json"
       - "scripts/ga/validate_final_production_bootstrap.py"
       - "tests/test_final_production_bootstrap_contract.py"
@@ -13,6 +17,10 @@ on:
     branches: ["final/2.0.0-execution-control-integration-v4"]
     paths:
       - ".github/workflows/ga-final-production-bootstrap-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-provisioning-handoff-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-rc4-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-rc4-candidate-closure-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-rc4-candidate-closure-hardening-source-preflight.yml"
       - "ga-packs/03-authoritative-windows/final-production-bootstrap-contract.json"
       - "scripts/ga/validate_final_production_bootstrap.py"
       - "tests/test_final_production_bootstrap_contract.py"
@@ -55,7 +63,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Verify exact four-path bootstrap source closure and ancestry
+      - name: Verify exact eight-path bootstrap source closure and ancestry
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -84,14 +92,16 @@ jobs:
           if (@(Compare-Object -ReferenceObject $allowed -DifferenceObject $changed).Count -ne 0) {
               throw "Production bootstrap changed-path closure mismatch. changed=$($changed -join ',')"
           }
-          if ($changed.Count -ne 4) { throw "Expected exactly four production bootstrap paths; observed $($changed.Count)." }
+          if ($changed.Count -ne 8) { throw "Expected exactly eight production bootstrap paths; observed $($changed.Count)." }
           if (@($changed | Where-Object { $_ -like 'src/psmatrix/*' }).Count -ne 0) { throw 'Production bootstrap layer modified runtime source.' }
           if (@($contract.required_dispatch_workflow_paths).Count -ne 19) { throw 'Production bootstrap dispatch registration set is not exact 19.' }
+          if (@($contract.legacy_phase_preflight_paths).Count -ne 4) { throw 'Legacy phase preflight set is not exact four.' }
           if (@($contract.bootstrap_sequence).Count -ne 10) { throw 'Production bootstrap sequence is not exact ten stages.' }
           Write-Host "validated_exact_production_bootstrap_head=$head"
-          Write-Host 'production_bootstrap_changed_paths=4'
+          Write-Host 'production_bootstrap_changed_paths=8'
           Write-Host 'runtime_source_changes=0'
           Write-Host 'required_dispatch_workflow_paths=19'
+          Write-Host 'legacy_phase_preflights=4'
           Write-Host 'bootstrap_stages=10'
 
       - name: Compile production bootstrap controls
@@ -113,6 +123,8 @@ jobs:
           Write-Host "default_branch_dispatch_paths_present=$($value.default_branch_registration.present)"
           Write-Host "default_branch_dispatch_paths_required=$($value.default_branch_registration.required)"
           Write-Host "default_branch_dispatch_surface_ready=$($value.default_branch_dispatch_surface_ready.ToString().ToLowerInvariant())"
+          Write-Host "legacy_phase_preflights=$($value.legacy_phase_preflights)"
+          Write-Host "legacy_phase_preflight_default_branch_triggers=$($value.legacy_phase_preflight_default_branch_triggers)"
           Write-Host 'final_production_bootstrap_validator=PASS'
 
       - name: Run bootstrap and inherited final control suites
@@ -159,7 +171,10 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "validated_exact_production_bootstrap_head=$env:EXPECTED_HEAD"
+          Write-Host 'production_bootstrap_changed_paths=8'
           Write-Host 'required_dispatch_workflow_paths=19'
+          Write-Host 'legacy_phase_preflights=4'
+          Write-Host 'legacy_phase_preflight_default_branch_triggers=0'
           Write-Host 'bootstrap_stages=10'
           Write-Host 'default_branch=main'
           Write-Host 'default_branch_publication_required=true'
