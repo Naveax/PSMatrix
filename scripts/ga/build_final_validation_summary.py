@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import argparse
-import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import tomllib
-import unittest
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +31,32 @@ _RELEASE_ARTIFACTS = {
 }
 _DEFERRED_MODULES = ("test_integration.py",)
 _OCI_TARGET = "tests.test_oci.OciRuntimeTests.test_image_reference_validation"
+_CHILD_CODE = r'''
+import io
+import json
+import sys
+import unittest
+
+target = sys.argv[1]
+suite = unittest.defaultTestLoader.loadTestsFromName(target)
+count = suite.countTestCases()
+if count <= 0:
+    print(json.dumps({"target": target, "tests": 0, "failures": 1, "errors": 0, "skipped": 0, "unexpected_successes": 0, "successful": False, "transcript": "no tests loaded"}, sort_keys=True))
+    raise SystemExit(0)
+stream = io.StringIO()
+result = unittest.TextTestRunner(stream=stream, verbosity=2, failfast=False).run(suite)
+payload = {
+    "target": target,
+    "tests": int(result.testsRun),
+    "failures": len(result.failures),
+    "errors": len(result.errors),
+    "skipped": len(result.skipped),
+    "unexpected_successes": len(result.unexpectedSuccesses),
+    "successful": bool(result.wasSuccessful()),
+    "transcript": stream.getvalue()[-32768:],
+}
+print(json.dumps(payload, sort_keys=True))
+'''
 
 
 class FinalValidationError(RuntimeError):
@@ -83,29 +107,6 @@ def _require_final_source(source_root: Path) -> Path:
     return source
 
 
-def _child_test(target: str) -> int:
-    loader = unittest.defaultTestLoader
-    suite = loader.loadTestsFromName(target)
-    count = suite.countTestCases()
-    if count <= 0:
-        print(json.dumps({"target": target, "tests": 0, "failed": 1, "error": "no tests loaded"}))
-        return 2
-    stream = io.StringIO()
-    result = unittest.TextTestRunner(stream=stream, verbosity=2, failfast=False).run(suite)
-    payload = {
-        "target": target,
-        "tests": int(result.testsRun),
-        "failures": len(result.failures),
-        "errors": len(result.errors),
-        "skipped": len(result.skipped),
-        "unexpected_successes": len(result.unexpectedSuccesses),
-        "successful": bool(result.wasSuccessful()),
-        "transcript": stream.getvalue()[-32768:],
-    }
-    print(json.dumps(payload, sort_keys=True))
-    return 0
-
-
 def _test_targets(repo_root: Path) -> tuple[list[str], list[str]]:
     tests = repo_root / "tests"
     if not tests.is_dir():
@@ -125,18 +126,15 @@ def _test_targets(repo_root: Path) -> tuple[list[str], list[str]]:
     return targets, deferred
 
 
-def run_suite(output: Path) -> dict[str, Any]:
-    targets, deferred = _test_targets(ROOT)
+def run_suite(repo_root: Path, output: Path) -> dict[str, Any]:
+    repo = _require_final_source(repo_root)
+    targets, deferred = _test_targets(repo)
     rows: list[dict[str, Any]] = []
     total = failures = errors = skipped = unexpected = 0
     env = os.environ.copy()
-    env["PYTHONPATH"] = str(SRC) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    env["PYTHONPATH"] = str(repo / "src") + os.pathsep + str(repo)
     for target in targets:
-        completed = _run(
-            [sys.executable, str(Path(__file__).resolve()), "_run-one", "--target", target],
-            cwd=ROOT,
-            env=env,
-        )
+        completed = _run([sys.executable, "-c", _CHILD_CODE, target], cwd=repo, env=env)
         if completed.returncode != 0:
             raise FinalValidationError(
                 f"Validation child process failed before producing a result: {target}; "
@@ -170,6 +168,8 @@ def run_suite(output: Path) -> dict[str, Any]:
         "schema": 1,
         "kind": "psmatrix.final-validation-suite",
         "status": "PASS",
+        "source_commit": _FINAL_COMMIT,
+        "source_root": str(repo),
         "executed_modules": targets,
         "deferred_modules": deferred,
         "automated_tests": {
@@ -286,8 +286,8 @@ def build_summary(*, source_root: Path, signed_root: Path, rebuilt_root: Path, t
             raise FinalValidationError(f"Signed final release status boundary mismatch: {field}")
 
     tests = _json(test_report)
-    if tests.get("status") != "PASS":
-        raise FinalValidationError("Final validation test suite status is not PASS")
+    if tests.get("status") != "PASS" or tests.get("source_commit") != _FINAL_COMMIT:
+        raise FinalValidationError("Final validation test suite status/source binding mismatch")
     accounting = tests.get("automated_tests") if isinstance(tests.get("automated_tests"), dict) else {}
     passed = int(accounting.get("passed") or 0)
     failed = int(accounting.get("failed") or 0)
@@ -305,12 +305,7 @@ def build_summary(*, source_root: Path, signed_root: Path, rebuilt_root: Path, t
         "status": "PASS",
         "git_commit": _FINAL_COMMIT,
         "validated_at": utc_now_iso(),
-        "automated_tests": {
-            "passed": passed,
-            "failed": 0,
-            "skipped": 0,
-            "total": total,
-        },
+        "automated_tests": {"passed": passed, "failed": 0, "skipped": 0, "total": total},
         "reproducibility": reproducibility,
         "offline_install_exit_code": int(offline["exit_code"]),
         "core_release_signature_valid": True,
@@ -334,9 +329,8 @@ def build_summary(*, source_root: Path, signed_root: Path, rebuilt_root: Path, t
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build the exact PSMatrix 2.0.0 final validation summary")
     sub = parser.add_subparsers(dest="command", required=True)
-    child = sub.add_parser("_run-one")
-    child.add_argument("--target", required=True)
     suite = sub.add_parser("test-suite")
+    suite.add_argument("--repo-root", type=Path, required=True)
     suite.add_argument("--output", type=Path, required=True)
     build = sub.add_parser("build-summary")
     build.add_argument("--source-root", type=Path, required=True)
@@ -345,10 +339,8 @@ def main() -> int:
     build.add_argument("--test-report", type=Path, required=True)
     build.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    if args.command == "_run-one":
-        return _child_test(args.target)
     if args.command == "test-suite":
-        print(json.dumps(run_suite(args.output), indent=2, sort_keys=True))
+        print(json.dumps(run_suite(args.repo_root, args.output), indent=2, sort_keys=True))
         return 0
     result = build_summary(
         source_root=args.source_root,
