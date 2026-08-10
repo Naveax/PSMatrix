@@ -1,0 +1,324 @@
+name: production-ga-windows-authority-rc4-operation-package-selfhosted
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_commit:
+        description: Exact reviewed RC4 release source commit frozen by the active lock
+        required: true
+        type: string
+      control_head:
+        description: Exact repository commit containing the active RC4 lock and operation controls
+        required: true
+        type: string
+
+concurrency:
+  group: production-ga-windows-authority-rc4-operation-package-selfhosted
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  operation-package:
+    name: Build and bind deterministic RC4 Windows operation package
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 35
+    environment: production-ga-windows-lab
+    permissions:
+      contents: read
+    env:
+      PSMATRIX_WINDOWS_GA_ROOT: ${{ vars.PSMATRIX_WINDOWS_GA_ROOT }}
+      RELEASE_COMMIT: ${{ inputs.release_commit }}
+      CONTROL_HEAD: ${{ inputs.control_head }}
+
+    steps:
+      - name: Initialize fail-closed RC4 operation-package workspace
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'psmatrix-rc4-operation-package-evidence'
+          $repro = Join-Path $env:RUNNER_TEMP 'psmatrix-rc4-operation-package-repro'
+          foreach ($path in @($evidence,$repro)) {
+              if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+              New-Item -ItemType Directory -Path $path -Force | Out-Null
+          }
+          "PSMATRIX_OPERATION_EVIDENCE=$evidence" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_OPERATION_REPRO=$repro" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') { throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS" }
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_WINDOWS_GA_ROOT)) { throw 'PSMATRIX_WINDOWS_GA_ROOT is missing from production-ga-windows-lab.' }
+          if (-not [System.IO.Path]::IsPathRooted($env:PSMATRIX_WINDOWS_GA_ROOT)) { throw 'PSMATRIX_WINDOWS_GA_ROOT must be an absolute path.' }
+          $gaRoot = [System.IO.Path]::GetFullPath($env:PSMATRIX_WINDOWS_GA_ROOT)
+          if (-not (Test-Path -LiteralPath $gaRoot -PathType Container)) { throw "PSMATRIX_WINDOWS_GA_ROOT does not exist: $gaRoot" }
+          foreach ($item in @(@{Name='release_commit';Value=$env:RELEASE_COMMIT},@{Name='control_head';Value=$env:CONTROL_HEAD})) {
+              if ([string]$item.Value -cnotmatch '^[0-9a-f]{40}$') { throw "$($item.Name) must contain exactly 40 lowercase hexadecimal characters." }
+          }
+          if ($env:CONTROL_HEAD -ne $env:GITHUB_SHA.ToLowerInvariant()) { throw 'control_head must equal the exact workflow control head.' }
+
+          $output = Join-Path $gaRoot ('operation\2.0.0rc4\run-{0}-attempt-{1}' -f $env:GITHUB_RUN_ID,$env:GITHUB_RUN_ATTEMPT)
+          if (Test-Path -LiteralPath $output) { throw "RC4 operation-package run output already exists; refusing to overwrite: $output" }
+          "PSMATRIX_OPERATION_OUTPUT=$output" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Check out exact RC4 operation controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.control_head }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up controller Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Verify exact RC4 control checkout and prerequisites
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $head -ne $env:CONTROL_HEAD) { throw 'RC4 operation-package checkout does not equal control_head.' }
+          if (-not [string]::IsNullOrWhiteSpace((git status --porcelain))) { throw 'RC4 operation-package checkout is dirty.' }
+
+          $lockPath = Join-Path $env:GITHUB_WORKSPACE 'ga-packs\03-authoritative-windows\rc4-release-lock.json'
+          $publicPath = Join-Path $env:GITHUB_WORKSPACE 'release-assets\2.0.0rc4\psmatrix-2.0.0rc4-release-public.pem'
+          foreach ($path in @($lockPath,$publicPath)) { if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Committed RC4 authority material is missing: $path" } }
+          $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+          if ([int]$lock.schema -ne 1 -or [string]$lock.kind -ne 'psmatrix.windows-authority-release-staging-lock' -or [string]$lock.pack -ne '03-authoritative-windows') { throw 'Current RC4 release lock identity mismatch.' }
+          if ([string]$lock.version -ne '2.0.0rc4' -or [string]$lock.release_commit -ne $env:RELEASE_COMMIT) { throw 'Current RC4 release lock does not match release_commit.' }
+          $rotation = $lock.authority_rotation
+          if ([string]$rotation.reason -ne 'lost_previous_private_authority' -or [bool]$rotation.existing_candidate_mutated -ne $false -or [bool]$rotation.new_candidate -ne $true -or [bool]$rotation.review_required -ne $true) { throw 'Current RC4 authority-rotation review metadata mismatch.' }
+          $publicSha = (Get-FileHash -LiteralPath $publicPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ([string]$lock.release_public_key.sha256 -ne $publicSha) { throw 'Current RC4 public authority differs from release lock.' }
+
+          $gaRoot = [System.IO.Path]::GetFullPath($env:PSMATRIX_WINDOWS_GA_ROOT)
+          $releaseRoot = Join-Path $gaRoot 'media\release\2.0.0rc4'
+          $releasePublic = Join-Path $releaseRoot 'psmatrix-2.0.0rc4-release-public.pem'
+          $intakePath = Join-Path $gaRoot 'windows-authority-protected-release-intake.json'
+          $canonicalPath = Join-Path $gaRoot 'windows-authority-media-inventory.canonical.json'
+          $selectionPath = Join-Path $gaRoot 'config\windows-authority-media-selection.json'
+          $mediaPath = Join-Path $gaRoot 'config\windows-lab-media.json'
+          $materializationPath = Join-Path $gaRoot 'windows-authority-provisioning-manifest-materialization.json'
+          foreach ($path in @($releaseRoot,$releasePublic,$intakePath,$canonicalPath,$selectionPath,$mediaPath,$materializationPath)) {
+              if (-not (Test-Path -LiteralPath $path)) { throw "Required RC4 operation-package prerequisite is missing: $path" }
+          }
+          $releasePublicSha = (Get-FileHash -LiteralPath $releasePublic -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($releasePublicSha -ne $publicSha) { throw 'Imported RC4 release public key differs from committed active authority.' }
+
+          $intake = Get-Content -LiteralPath $intakePath -Raw | ConvertFrom-Json
+          if ([int]$intake.schema -ne 2 -or [string]$intake.kind -ne 'psmatrix.windows-authority-protected-release-intake') { throw 'Protected RC4 intake report identity mismatch.' }
+          if ([string]$intake.status -ne 'RELEASE_CLOSURE_READY' -or [string]$intake.version -ne '2.0.0rc4' -or [string]$intake.release_commit -ne $env:RELEASE_COMMIT) { throw 'Protected RC4 intake readiness/version/commit mismatch.' }
+          if ([bool]$intake.ready_for_release_artifact_recovery -ne $true -or [bool]$intake.private_key_material_absent -ne $true) { throw 'Protected RC4 intake did not prove release closure/private-key absence.' }
+          if ([bool]$intake.release_authority_rotation_reviewed -ne $true -or [string]$intake.release_authority_rotation_reason -ne 'lost_previous_private_authority') { throw 'Protected RC4 intake did not preserve reviewed authority rotation.' }
+          if ([bool]$intake.release_authority_rotated -ne $false -or [bool]$intake.release_authority_rotated_during_signing -ne $false) { throw 'Protected RC4 intake reports an unsafe authority rotation event.' }
+          if ([bool]$intake.stale_rc2_operation_package_used -ne $false -or [bool]$intake.broad_downloads_search_used -ne $false) { throw 'Protected RC4 intake used stale/broad material.' }
+          if ([bool]$intake.media_manifest_materialized -ne $false -or [bool]$intake.operation_package_rebuilt -ne $false) { throw 'Protected RC4 intake contains stale downstream state.' }
+          if ([bool]$intake.authoritative -or [bool]$intake.ga_eligible) { throw 'Protected RC4 intake improperly claims authority or GA eligibility.' }
+
+          $canonical = Get-Content -LiteralPath $canonicalPath -Raw | ConvertFrom-Json
+          $selection = Get-Content -LiteralPath $selectionPath -Raw | ConvertFrom-Json
+          $media = Get-Content -LiteralPath $mediaPath -Raw | ConvertFrom-Json
+          $materialization = Get-Content -LiteralPath $materializationPath -Raw | ConvertFrom-Json
+          if ([string]$canonical.canonicalization.release_authority_status -ne 'READY' -or [string]$canonical.canonicalization.release_version -ne '2.0.0rc4') { throw 'Canonical RC4 release authority is not READY.' }
+          if ([string]$selection.kind -ne 'psmatrix.windows-authority-media-selection-materialization' -or [string]$selection.release_version -ne '2.0.0rc4' -or [bool]$selection.complete -ne $true) { throw 'Reviewed RC4 media selection is not complete.' }
+          if ([string]$media.kind -ne 'psmatrix.windows-lab-media' -or [string]$media.release_version -ne '2.0.0rc4' -or [string]$media.release_commit -ne $env:RELEASE_COMMIT -or [bool]$media.complete -ne $true -or [bool]$media.ready_for_hyper_v_provisioning -ne $true) { throw 'RC4 provisioning manifest is not ready for operation packaging.' }
+          if ([string]$materialization.status -ne 'PASS' -or [string]$materialization.release_version -ne '2.0.0rc4' -or [string]$materialization.release_commit -ne $env:RELEASE_COMMIT) { throw 'RC4 provisioning materialization report is not PASS.' }
+          if ([string]$materialization.product_loader_validation -ne 'PASS' -or [string]$materialization.operation_package_handoff_validation -ne 'PASS') { throw 'RC4 provisioning materialization handoff validation is not PASS.' }
+          foreach ($value in @($canonical,$selection,$media,$materialization)) { if ([bool]$value.authoritative -or [bool]$value.ga_eligible) { throw 'An RC4 prerequisite improperly claims authority or GA eligibility.' } }
+          Write-Host 'rc4_operation_package_prerequisites=PASS'
+
+      - name: Build primary deterministic RC4 operation package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & python "$env:GITHUB_WORKSPACE\scripts\ga\build_windows_authority_rc4_operation_package.py" `
+              --source-root "$env:GITHUB_WORKSPACE" `
+              --ga-root "$env:PSMATRIX_WINDOWS_GA_ROOT" `
+              --release-commit "$env:RELEASE_COMMIT" `
+              --release-lock "ga-packs\03-authoritative-windows\rc4-release-lock.json" `
+              --canonical-inventory "$env:PSMATRIX_WINDOWS_GA_ROOT\windows-authority-media-inventory.canonical.json" `
+              --media-manifest "$env:PSMATRIX_WINDOWS_GA_ROOT\config\windows-lab-media.json" `
+              --selection-manifest "$env:PSMATRIX_WINDOWS_GA_ROOT\config\windows-authority-media-selection.json" `
+              --provisioning-report "$env:PSMATRIX_WINDOWS_GA_ROOT\windows-authority-provisioning-manifest-materialization.json" `
+              --output-root "$env:PSMATRIX_OPERATION_OUTPUT"
+          if ($LASTEXITCODE -ne 0) { throw "RC4 operation-package build failed: $LASTEXITCODE" }
+
+      - name: Rebuild independently and enforce RC4 byte determinism
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & python "$env:GITHUB_WORKSPACE\scripts\ga\build_windows_authority_rc4_operation_package.py" `
+              --source-root "$env:GITHUB_WORKSPACE" `
+              --ga-root "$env:PSMATRIX_WINDOWS_GA_ROOT" `
+              --release-commit "$env:RELEASE_COMMIT" `
+              --release-lock "ga-packs\03-authoritative-windows\rc4-release-lock.json" `
+              --canonical-inventory "$env:PSMATRIX_WINDOWS_GA_ROOT\windows-authority-media-inventory.canonical.json" `
+              --media-manifest "$env:PSMATRIX_WINDOWS_GA_ROOT\config\windows-lab-media.json" `
+              --selection-manifest "$env:PSMATRIX_WINDOWS_GA_ROOT\config\windows-authority-media-selection.json" `
+              --provisioning-report "$env:PSMATRIX_WINDOWS_GA_ROOT\windows-authority-provisioning-manifest-materialization.json" `
+              --output-root "$env:PSMATRIX_OPERATION_REPRO"
+          if ($LASTEXITCODE -ne 0) { throw "Independent RC4 operation-package rebuild failed: $LASTEXITCODE" }
+          $name = 'psmatrix-2.0.0rc4-windows-authoritative-operation.zip'
+          $primary = Join-Path $env:PSMATRIX_OPERATION_OUTPUT $name
+          $repro = Join-Path $env:PSMATRIX_OPERATION_REPRO $name
+          $primaryItem = Get-Item -LiteralPath $primary -ErrorAction Stop
+          $reproItem = Get-Item -LiteralPath $repro -ErrorAction Stop
+          $primarySha = (Get-FileHash -LiteralPath $primary -Algorithm SHA256).Hash.ToLowerInvariant()
+          $reproSha = (Get-FileHash -LiteralPath $repro -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($primaryItem.Length -ne $reproItem.Length -or $primarySha -ne $reproSha) { throw 'Independent RC4 operation-package rebuild is not byte deterministic.' }
+          Write-Host "rc4_operation_package_deterministic_sha256=$primarySha"
+
+      - name: Verify RC4 operation package against canonical binding
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $metadata = Join-Path $env:PSMATRIX_OPERATION_OUTPUT 'psmatrix-2.0.0rc4-windows-authoritative-operation-package.json'
+          $report = Join-Path $env:PSMATRIX_OPERATION_OUTPUT 'windows-authority-operation-package-binding.json'
+          & "$env:GITHUB_WORKSPACE\scripts\ga\Test-PSMatrixWindowsAuthorityOperationPackageBinding.ps1" `
+              -SourceRoot $env:GITHUB_WORKSPACE `
+              -GaRoot $env:PSMATRIX_WINDOWS_GA_ROOT `
+              -CanonicalInventoryPath (Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'windows-authority-media-inventory.canonical.json') `
+              -OperationPackageMetadataPath $metadata `
+              -OutputPath $report
+          if ($LASTEXITCODE -ne 0) { throw 'RC4 operation-package binding validator failed to execute.' }
+
+      - name: Enforce RC4 operation-package closure and emit non-secret status
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gaRoot = [System.IO.Path]::GetFullPath($env:PSMATRIX_WINDOWS_GA_ROOT)
+          $metadataPath = Join-Path $env:PSMATRIX_OPERATION_OUTPUT 'psmatrix-2.0.0rc4-windows-authoritative-operation-package.json'
+          $bindingPath = Join-Path $env:PSMATRIX_OPERATION_OUTPUT 'windows-authority-operation-package-binding.json'
+          $lockPath = Join-Path $env:GITHUB_WORKSPACE 'ga-packs\03-authoritative-windows\rc4-release-lock.json'
+          $publicPath = Join-Path $env:GITHUB_WORKSPACE 'release-assets\2.0.0rc4\psmatrix-2.0.0rc4-release-public.pem'
+          $mediaPath = Join-Path $gaRoot 'config\windows-lab-media.json'
+          $selectionPath = Join-Path $gaRoot 'config\windows-authority-media-selection.json'
+          $materializationPath = Join-Path $gaRoot 'windows-authority-provisioning-manifest-materialization.json'
+          $canonicalPath = Join-Path $gaRoot 'windows-authority-media-inventory.canonical.json'
+          foreach ($path in @($metadataPath,$bindingPath,$lockPath,$publicPath,$mediaPath,$selectionPath,$materializationPath,$canonicalPath)) { if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Current RC4 operation closure input is missing: $path" } }
+
+          $metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
+          $binding = Get-Content -LiteralPath $bindingPath -Raw | ConvertFrom-Json
+          $materialization = Get-Content -LiteralPath $materializationPath -Raw | ConvertFrom-Json
+          if ([string]$metadata.kind -ne 'psmatrix.windows-authoritative-operation-package' -or [string]$metadata.status -ne 'READY_FOR_WINDOWS_HOST') { throw 'RC4 operation-package metadata identity/status mismatch.' }
+          if ([string]$metadata.release_version -ne '2.0.0rc4' -or [string]$metadata.release_commit -ne $env:RELEASE_COMMIT) { throw 'RC4 operation-package release binding mismatch.' }
+          if ([bool]$metadata.deterministic_zip -ne $true -or [string]$metadata.private_key_scan -ne 'PASS') { throw 'RC4 operation package did not preserve deterministic/private-key safety state.' }
+          if ([bool]$metadata.credential_bundle_contents_included -ne $false -or [bool]$metadata.worker_signing_bundle_contents_included -ne $false -or [bool]$metadata.release_private_key_included -ne $false -or [bool]$metadata.windows_lab_private_key_included -ne $false) { throw 'RC4 operation package contains protected material.' }
+          if ([bool]$metadata.downloads_files -ne $false -or [bool]$metadata.extracts_existing_operation_package -ne $false -or [bool]$metadata.stale_rc2_operation_package_used -ne $false) { throw 'RC4 operation package violated offline/non-reuse policy.' }
+          if ([bool]$metadata.authoritative_campaign_executed -ne $false -or [bool]$metadata.authoritative -ne $false -or [bool]$metadata.ga_eligible -ne $false) { throw 'RC4 operation package improperly claims execution, authority or GA eligibility.' }
+
+          $lockSha = (Get-FileHash -LiteralPath $lockPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $publicSha = (Get-FileHash -LiteralPath $publicPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ([string]$metadata.release_lock.sha256 -ne $lockSha -or [string]$metadata.release_lock.version -ne '2.0.0rc4' -or [string]$metadata.release_lock.release_commit -ne $env:RELEASE_COMMIT) { throw 'RC4 operation metadata active-lock binding is stale.' }
+          if ([bool]$metadata.release_lock.authority_rotation_reviewed -ne $true -or [string]$metadata.release_lock.authority_rotation_reason -ne 'lost_previous_private_authority' -or [bool]$metadata.release_lock.release_authority_rotated_during_signing -ne $false) { throw 'RC4 operation metadata authority-rotation binding is invalid.' }
+          $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+          if ([string]$lock.release_public_key.sha256 -ne $publicSha) { throw 'Committed RC4 public-key SHA no longer matches active lock.' }
+
+          if ([string]$materialization.status -ne 'PASS' -or [string]$materialization.release_commit -ne $env:RELEASE_COMMIT) { throw 'Provisioning materialization report is not the current PASS RC4 report.' }
+          if ([string]$materialization.product_loader_validation -ne 'PASS' -or [string]$materialization.operation_package_handoff_validation -ne 'PASS') { throw 'Provisioning materialization report did not pass product/handoff validation.' }
+          $profilePath = [System.IO.Path]::GetFullPath([string]$materialization.profile_path)
+          $gaPrefix = $gaRoot.TrimEnd('\') + '\'
+          if (-not $profilePath.StartsWith($gaPrefix,[System.StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $profilePath -PathType Leaf)) { throw 'Provisioning profile is missing or escapes the protected GA root.' }
+
+          $mediaSha = (Get-FileHash -LiteralPath $mediaPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $selectionSha = (Get-FileHash -LiteralPath $selectionPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $profileSha = (Get-FileHash -LiteralPath $profilePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $materializationSha = (Get-FileHash -LiteralPath $materializationPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $canonicalSha = (Get-FileHash -LiteralPath $canonicalPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $provisioning = $metadata.provisioning_manifest
+          if ([string]$provisioning.kind -ne 'psmatrix.windows-lab-media' -or [string]$provisioning.sha256 -ne $mediaSha -or [string]$provisioning.selection_sha256 -ne $selectionSha -or [string]$provisioning.profile_sha256 -ne $profileSha -or [string]$provisioning.materialization_report_sha256 -ne $materializationSha -or [string]$provisioning.canonical_inventory_sha256 -ne $canonicalSha) { throw 'RC4 operation metadata provisioning-manifest SHA closure is stale.' }
+          if ([string]$provisioning.product_loader_validation -ne 'PASS' -or [string]$provisioning.operation_package_handoff_validation -ne 'PASS') { throw 'RC4 operation metadata provisioning validation state is not PASS.' }
+          if ([string]$metadata.release_binding.windows_lab_media_sha256 -ne $mediaSha -or [string]$metadata.release_binding.windows_authority_media_selection_sha256 -ne $selectionSha -or [string]$metadata.release_binding.provisioning_profile_sha256 -ne $profileSha -or [string]$metadata.release_binding.provisioning_materialization_report_sha256 -ne $materializationSha -or [string]$metadata.release_binding.canonical_inventory_sha256 -ne $canonicalSha) { throw 'RC4 release binding differs from current disk state.' }
+
+          if ([string]$binding.status -ne 'PASS' -or [bool]$binding.ready_for_release_artifact_recovery -ne $true) { throw 'RC4 operation-package binding report is not PASS/recoverable.' }
+          if ([bool]$binding.operation_package.release_binding_valid -ne $true -or [bool]$binding.operation_package.release_manifest_matches_canonical -ne $true) { throw 'RC4 operation package release binding is not current.' }
+          if ([bool]$binding.operation_package.zip_sha256_matches_metadata -ne $true -or [bool]$binding.operation_package.zip_size_matches_metadata -ne $true -or [bool]$binding.operation_package.embedded_release_artifacts_match_binding -ne $true) { throw 'RC4 operation ZIP does not match metadata/release binding.' }
+          if ([bool]$binding.authoritative -ne $false -or [bool]$binding.ga_eligible -ne $false) { throw 'RC4 binding report improperly claims authority or GA eligibility.' }
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+          $zipPath = Join-Path $env:PSMATRIX_OPERATION_OUTPUT ([string]$metadata.artifact.name)
+          $archive = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+          try {
+              $lockEntries = @($archive.Entries | Where-Object { $_.FullName -eq 'controller/rc4-release-lock.json' })
+              if ($lockEntries.Count -ne 1) { throw 'RC4 operation ZIP does not contain exactly one active release-lock entry.' }
+              $stream = $lockEntries[0].Open(); $sha = [System.Security.Cryptography.SHA256]::Create()
+              try { $embeddedLockSha = ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-','').ToLowerInvariant() } finally { $sha.Dispose(); $stream.Dispose() }
+              if ($embeddedLockSha -ne $lockSha) { throw 'Embedded RC4 release lock differs from current active lock.' }
+          }
+          finally { $archive.Dispose() }
+
+          $summary = [ordered]@{
+              schema = 1
+              kind = 'psmatrix.windows-authority-operation-package-workflow-status'
+              status = 'READY_FOR_WINDOWS_HOST'
+              release_version = '2.0.0rc4'
+              release_commit = $env:RELEASE_COMMIT
+              control_head = $env:CONTROL_HEAD
+              operation_output = $env:PSMATRIX_OPERATION_OUTPUT
+              operation_zip_name = [string]$metadata.artifact.name
+              operation_zip_sha256 = [string]$metadata.artifact.sha256
+              operation_zip_size = [int64]$metadata.artifact.size
+              release_lock_sha256 = $lockSha
+              release_public_key_sha256 = $publicSha
+              release_binding_sha256 = [string]$metadata.release_binding.binding_sha256
+              release_manifest_sha256 = [string]$metadata.release_binding.release_manifest_sha256
+              windows_lab_media_sha256 = $mediaSha
+              windows_authority_media_selection_sha256 = $selectionSha
+              provisioning_profile_sha256 = $profileSha
+              provisioning_materialization_report_sha256 = $materializationSha
+              canonical_inventory_sha256 = $canonicalSha
+              authority_rotation_reviewed = $true
+              release_authority_rotated_during_signing = $false
+              provisioning_manifest_handoff_validation = 'PASS'
+              deterministic_rebuild = $true
+              private_key_scan = 'PASS'
+              stale_rc2_operation_package_used = $false
+              credential_bundle_contents_included = $false
+              worker_signing_bundle_contents_included = $false
+              authoritative_campaign_executed = $false
+              creates_virtual_machines = $false
+              creates_checkpoints = $false
+              authoritative = $false
+              ga_eligible = $false
+              next_required = @($metadata.next_required)
+          }
+          [System.IO.File]::WriteAllText((Join-Path $env:PSMATRIX_OPERATION_EVIDENCE 'operation-package-status.json'),(($summary | ConvertTo-Json -Depth 12)+[Environment]::NewLine),[System.Text.UTF8Encoding]::new($false))
+          Write-Host 'rc4_operation_package_closure=READY_FOR_WINDOWS_HOST'
+
+      - name: Remove independent RC4 rebuild copy
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if (-not [string]::IsNullOrWhiteSpace($env:PSMATRIX_OPERATION_REPRO) -and (Test-Path -LiteralPath $env:PSMATRIX_OPERATION_REPRO)) { Remove-Item -LiteralPath $env:PSMATRIX_OPERATION_REPRO -Recurse -Force -ErrorAction SilentlyContinue }
+
+      - name: Record fail-closed RC4 operation-package failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_OPERATION_EVIDENCE)) { exit 0 }
+          New-Item -ItemType Directory -Path $env:PSMATRIX_OPERATION_EVIDENCE -Force | Out-Null
+          $failure = [ordered]@{
+              schema = 1
+              kind = 'psmatrix.windows-authority-operation-package-workflow-status'
+              status = 'FAIL'
+              release_version = '2.0.0rc4'
+              release_commit = $env:RELEASE_COMMIT
+              control_head = $env:CONTROL_HEAD
+              stale_rc2_operation_package_used = $false
+              creates_virtual_machines = $false
+              creates_checkpoints = $false
+              authoritative = $false
+              ga_eligible = $false
+          }
+          [System.IO.File]::WriteAllText((Join-Path $env:PSMATRIX_OPERATION_EVIDENCE 'operation-package-failure.json'),(($failure | ConvertTo-Json -Depth 8)+[Environment]::NewLine),[System.Text.UTF8Encoding]::new($false))
+
+      - name: Upload non-secret RC4 operation-package audit evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-authority-rc4-operation-package
+          path: ${{ runner.temp }}/psmatrix-rc4-operation-package-evidence
+          if-no-files-found: error
+          retention-days: 30
