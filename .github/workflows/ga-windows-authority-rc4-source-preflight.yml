@@ -19,6 +19,7 @@ on:
       - ".github/workflows/ga-windows-authority-rc4-operation-package-selfhosted.yml"
       - ".github/workflows/ga-windows-authority-rc4-provision-selfhosted.yml"
       - ".github/workflows/ga-windows-authority-rc4-image-identity-measurement-selfhosted.yml"
+      - ".github/workflows/ga-windows-authority-rc4-certification-campaign-selfhosted.yml"
       - "scripts/ga/enroll_windows_authority_release_authority.py"
       - "scripts/ga/build_windows_authority_release_candidate.py"
       - "scripts/ga/build_windows_authority_release_lock_draft.py"
@@ -39,6 +40,7 @@ on:
       - "ga-packs/03-authoritative-windows/rc4-operation-package-workflow-contract.json"
       - "ga-packs/03-authoritative-windows/rc4-hyperv-provisioning-workflow-contract.json"
       - "ga-packs/03-authoritative-windows/rc4-image-identity-measurement-workflow-contract.json"
+      - "ga-packs/03-authoritative-windows/rc4-certification-campaign-workflow-contract.json"
       - "release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem"
       - "pyproject.toml"
       - "src/psmatrix/__init__.py"
@@ -54,6 +56,7 @@ on:
       - "tests/test_windows_authority_rc4_operation_package.py"
       - "tests/test_windows_authority_rc4_hyperv_provisioning.py"
       - "tests/test_windows_authority_rc4_image_identity_measurement.py"
+      - "tests/test_windows_authority_rc4_certification_campaign.py"
   pull_request:
     branches:
       - main
@@ -71,6 +74,7 @@ on:
       - ".github/workflows/ga-windows-authority-rc4-operation-package-selfhosted.yml"
       - ".github/workflows/ga-windows-authority-rc4-provision-selfhosted.yml"
       - ".github/workflows/ga-windows-authority-rc4-image-identity-measurement-selfhosted.yml"
+      - ".github/workflows/ga-windows-authority-rc4-certification-campaign-selfhosted.yml"
       - "scripts/ga/enroll_windows_authority_release_authority.py"
       - "scripts/ga/build_windows_authority_release_candidate.py"
       - "scripts/ga/build_windows_authority_release_lock_draft.py"
@@ -91,6 +95,7 @@ on:
       - "ga-packs/03-authoritative-windows/rc4-operation-package-workflow-contract.json"
       - "ga-packs/03-authoritative-windows/rc4-hyperv-provisioning-workflow-contract.json"
       - "ga-packs/03-authoritative-windows/rc4-image-identity-measurement-workflow-contract.json"
+      - "ga-packs/03-authoritative-windows/rc4-certification-campaign-workflow-contract.json"
       - "release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem"
       - "pyproject.toml"
       - "src/psmatrix/__init__.py"
@@ -106,6 +111,7 @@ on:
       - "tests/test_windows_authority_rc4_operation_package.py"
       - "tests/test_windows_authority_rc4_hyperv_provisioning.py"
       - "tests/test_windows_authority_rc4_image_identity_measurement.py"
+      - "tests/test_windows_authority_rc4_certification_campaign.py"
 
 concurrency:
   group: production-ga-windows-authority-rc4-source-preflight-${{ github.event.pull_request.head.ref || github.ref }}
@@ -206,7 +212,8 @@ jobs:
               tests/test_windows_authority_rc4_provisioning_manifest.py `
               tests/test_windows_authority_rc4_operation_package.py `
               tests/test_windows_authority_rc4_hyperv_provisioning.py `
-              tests/test_windows_authority_rc4_image_identity_measurement.py
+              tests/test_windows_authority_rc4_image_identity_measurement.py `
+              tests/test_windows_authority_rc4_certification_campaign.py
           if ($LASTEXITCODE -ne 0) { throw 'RC4 release-control Python compile failed.' }
           Write-Host 'rc4_python_compile=PASS'
 
@@ -226,7 +233,8 @@ jobs:
               tests.test_windows_authority_rc4_provisioning_manifest `
               tests.test_windows_authority_rc4_operation_package `
               tests.test_windows_authority_rc4_hyperv_provisioning `
-              tests.test_windows_authority_rc4_image_identity_measurement
+              tests.test_windows_authority_rc4_image_identity_measurement `
+              tests.test_windows_authority_rc4_certification_campaign
           if ($LASTEXITCODE -ne 0) { throw 'RC4 authority-through-provisioning-manifest contract tests failed.' }
           Write-Host 'rc4_authority_rotation_contracts=PASS'
           Write-Host 'rc4_authority_rotation_runtime=PASS'
@@ -240,6 +248,7 @@ jobs:
           Write-Host 'rc4_operation_package_contract=PASS'
           Write-Host 'rc4_hyperv_provisioning_contract=PASS'
           Write-Host 'rc4_image_identity_measurement_contract=PASS'
+          Write-Host 'rc4_certification_campaign_contract=PASS'
 
       - name: Enforce no tracked private authority material
         shell: pwsh
@@ -280,5 +289,6 @@ jobs:
           Write-Host 'hyper_v_state_mutated=false'
           Write-Host 'image_identity_measurement_executed=false'
           Write-Host 'real_image_manifests_written=false'
+          Write-Host 'certification_campaign_executed=false'
           Write-Host 'authoritative=false'
           Write-Host 'ga_eligible=false'
