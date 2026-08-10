@@ -1,0 +1,173 @@
+name: production-ga-windows-authority-final-release-lock-signing-source-preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["final/2.0.0-lock-signing-controls"]
+    paths:
+      - ".github/workflows/ga-windows-authority-final-release-lock-promotion.yml"
+      - ".github/workflows/ga-windows-authority-final-release-lock-review.yml"
+      - ".github/workflows/ga-windows-authority-final-release-lock-signing-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-final-release-sign-from-lock.yml"
+      - "ga-packs/03-authoritative-windows/final-release-lock-signing-control-contract.json"
+      - "scripts/ga/build_windows_authority_final_release_lock_draft.py"
+      - "scripts/ga/promote_windows_authority_final_release_lock.py"
+      - "scripts/ga/sign_windows_authority_final_release.py"
+      - "tests/test_windows_authority_final_release_lock_signing.py"
+  pull_request:
+    branches: ["final/2.0.0-release-candidate-anchor"]
+    paths:
+      - ".github/workflows/ga-windows-authority-final-release-lock-promotion.yml"
+      - ".github/workflows/ga-windows-authority-final-release-lock-review.yml"
+      - ".github/workflows/ga-windows-authority-final-release-lock-signing-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-final-release-sign-from-lock.yml"
+      - "ga-packs/03-authoritative-windows/final-release-lock-signing-control-contract.json"
+      - "scripts/ga/build_windows_authority_final_release_lock_draft.py"
+      - "scripts/ga/promote_windows_authority_final_release_lock.py"
+      - "scripts/ga/sign_windows_authority_final_release.py"
+      - "tests/test_windows_authority_final_release_lock_signing.py"
+
+concurrency:
+  group: production-ga-windows-authority-final-release-lock-signing-source-preflight-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  final-lock-signing-source-preflight:
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      PYTHONPATH: ${{ github.workspace }}\src
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+
+    steps:
+      - name: Verify trusted NAVEAX source runner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') {
+              throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS"
+          }
+          Write-Host 'final_lock_signing_runner=PASS'
+
+      - name: Check out exact lock/signing control source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact control head, frozen final source, and nine-path closure
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($env:EXPECTED_HEAD -cnotmatch '^[0-9a-f]{40}$' -or $head -ne $env:EXPECTED_HEAD.ToLowerInvariant()) {
+              throw "Exact lock/signing control head mismatch: $head / $env:EXPECTED_HEAD"
+          }
+          if (-not [string]::IsNullOrWhiteSpace((git status --porcelain))) { throw 'Lock/signing source checkout is dirty.' }
+          $contractPath = 'ga-packs\03-authoritative-windows\final-release-lock-signing-control-contract.json'
+          $contract = Get-Content $contractPath -Raw | ConvertFrom-Json
+          if ([int]$contract.schema -ne 1 -or [string]$contract.kind -ne 'psmatrix.windows-authority-final-release-lock-signing-control-contract') { throw 'Final lock/signing control contract identity mismatch.' }
+          if ([string]$contract.version -ne '2.0.0') { throw 'Final lock/signing control contract version mismatch.' }
+          $candidate = ([string]$contract.final_release_commit).ToLowerInvariant()
+          $rc4AuthorityHead = ([string]$contract.rc4_authority_continuity.enrollment_control_head).ToLowerInvariant()
+          foreach ($sha in @($candidate,$rc4AuthorityHead)) {
+              if ($sha -cnotmatch '^[0-9a-f]{40}$') { throw "Frozen control SHA is invalid: $sha" }
+              git cat-file -e "$sha^{commit}"
+              if ($LASTEXITCODE -ne 0) { throw "Frozen control commit is unavailable: $sha" }
+          }
+          git merge-base --is-ancestor $candidate $head
+          if ($LASTEXITCODE -ne 0) { throw 'Frozen final release candidate is not an ancestor of lock/signing controls.' }
+          $projectAtCandidate = (git show "$candidate`:pyproject.toml" | python -c "import sys,tomllib;print(tomllib.loads(sys.stdin.read())['project']['version'])").Trim()
+          if ($projectAtCandidate -ne '2.0.0') { throw "Frozen final source version mismatch: $projectAtCandidate" }
+          $rc4EnrollmentWorkflow = (git show "$rc4AuthorityHead`:.github/workflows/ga-windows-authority-rc4-release-authority-enrollment.yml") -join "`n"
+          if (-not $rc4EnrollmentWorkflow.Contains('name: production-ga-windows-authority-rc4-release-authority-enrollment')) { throw 'Frozen RC4 authority control head lacks the reviewed enrollment workflow.' }
+
+          $changed = @((git diff --name-only "$candidate..$head") | ForEach-Object { $_.Trim().Replace('\','/') } | Where-Object { $_ } | Sort-Object -Unique)
+          $allowed = @($contract.control_source.changed_path_allowlist | ForEach-Object { ([string]$_).Replace('\','/') } | Sort-Object -Unique)
+          $delta = @(Compare-Object -ReferenceObject $allowed -DifferenceObject $changed)
+          if ($delta.Count -ne 0) { throw "Final lock/signing changed-path closure mismatch: $($delta | Out-String)" }
+          if ([bool]$contract.control_source.runtime_source_changes_allowed) { throw 'Lock/signing controls must not permit runtime source changes.' }
+          $runtime = @($changed | Where-Object { $_ -like 'src/psmatrix/*' })
+          if ($runtime.Count -ne 0) { throw "Lock/signing controls modified runtime source: $($runtime -join ',')" }
+
+          foreach ($path in @('ga-packs\03-authoritative-windows\final-release-lock.json','release-assets\2.0.0\psmatrix-2.0.0-release-public.pem')) {
+              if (Test-Path -LiteralPath $path -PathType Leaf) { throw "Preparation source contains active final authority material: $path" }
+          }
+          Write-Host "validated_exact_lock_signing_head=$head"
+          Write-Host "frozen_final_release_commit=$candidate"
+          Write-Host "frozen_rc4_authority_control_head=$rc4AuthorityHead"
+          Write-Host "lock_signing_changed_paths=$($changed.Count)"
+          Write-Host 'runtime_source_changes=0'
+
+      - name: Compile final lock and signing controls
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m py_compile `
+            scripts/ga/build_windows_authority_final_release_lock_draft.py `
+            scripts/ga/promote_windows_authority_final_release_lock.py `
+            scripts/ga/sign_windows_authority_final_release.py `
+            tests/test_windows_authority_final_release_lock_signing.py
+          if ($LASTEXITCODE -ne 0) { throw 'Final lock/signing control compile failed.' }
+          Write-Host 'final_lock_signing_compile=PASS'
+
+      - name: Run final lock/signing and inherited release source contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m unittest -v `
+            tests.test_windows_authority_final_release_lock_signing `
+            tests.test_windows_authority_final_release_promotion `
+            tests.test_windows_authority_rc4_authority_rotation
+          if ($LASTEXITCODE -ne 0) { throw 'Final lock/signing source contract suite failed.' }
+          Write-Host 'final_lock_signing_source_contract=PASS'
+
+      - name: Scan every tracked source byte for exact PEM private-authority headers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import subprocess
+          from pathlib import Path
+          markers = {
+              b"-----BEGIN PRIVATE KEY-----",
+              b"-----BEGIN RSA PRIVATE KEY-----",
+              b"-----BEGIN EC PRIVATE KEY-----",
+              b"-----BEGIN OPENSSH PRIVATE KEY-----",
+              b"-----BEGIN ED25519 PRIVATE KEY-----",
+          }
+          root = Path.cwd().resolve()
+          tracked = [line for line in subprocess.check_output(["git", "ls-files"], text=True).splitlines() if line]
+          total = 0
+          scanned = 0
+          for relative in tracked:
+              path = root / relative
+              if not path.is_file():
+                  continue
+              scanned += 1
+              with path.open("rb") as handle:
+                  for raw_line in handle:
+                      total += len(raw_line)
+                      if raw_line.rstrip(b"\r\n").strip() in markers:
+                          raise SystemExit(f"tracked private-key PEM material detected: {relative}")
+          print(f"repository_private_authority_absence=PASS tracked_files={scanned} tracked_bytes={total} size_limit_applied=false")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Tracked-source private authority scan failed.' }
+
+      - name: Emit final lock/signing source-preflight summary
+        shell: pwsh
+        run: |
+          Write-Host "validated_exact_lock_signing_head=$env:EXPECTED_HEAD"
+          Write-Host 'active_final_lock_present=false'
+          Write-Host 'final_public_authority_present=false'
+          Write-Host 'final_release_artifacts_signed=false'
+          Write-Host 'final_windows_evidence_rebound=false'
+          Write-Host 'final_ga_evaluator_invoked=false'
+          Write-Host 'authoritative=false'
+          Write-Host 'ga_eligible=false'
