@@ -3,7 +3,7 @@ name: production-ga-final-production-bootstrap-source-preflight
 on:
   workflow_dispatch:
   push:
-    branches: ["final/2.0.0-production-bootstrap-controls"]
+    branches: ["final/2.0.0-production-bootstrap-controls", "main"]
     paths:
       - ".github/workflows/ci.yml"
       - ".github/workflows/ga-final-production-bootstrap-source-preflight.yml"
@@ -114,13 +114,19 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Production bootstrap Python compile failed.' }
           Write-Host 'final_production_bootstrap_compile=PASS'
 
-      - name: Validate source bootstrap mapping and inspect default branch registration
+      - name: Validate source bootstrap mapping and default branch registration
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          python scripts/ga/validate_final_production_bootstrap.py --repo-root . --inspect-default-branch --output "$env:RUNNER_TEMP\final-production-bootstrap-validation.json"
+          $output = "$env:RUNNER_TEMP\final-production-bootstrap-validation.json"
+          $args = @('scripts/ga/validate_final_production_bootstrap.py','--repo-root','.','--inspect-default-branch','--output',$output)
+          $postPublication = $env:GITHUB_EVENT_NAME -eq 'push' -and $env:GITHUB_REF -eq 'refs/heads/main'
+          if ($postPublication) {
+              $args += '--require-default-branch-registration'
+          }
+          & python @args
           if ($LASTEXITCODE -ne 0) { throw 'Final production bootstrap validator failed.' }
-          $value = Get-Content "$env:RUNNER_TEMP\final-production-bootstrap-validation.json" -Raw | ConvertFrom-Json
+          $value = Get-Content $output -Raw | ConvertFrom-Json
           Write-Host "default_branch=$($value.default_branch)"
           Write-Host "default_branch_dispatch_paths_present=$($value.default_branch_registration.present)"
           Write-Host "default_branch_dispatch_paths_required=$($value.default_branch_registration.required)"
@@ -128,6 +134,7 @@ jobs:
           Write-Host "legacy_phase_preflights=$($value.legacy_phase_preflights)"
           Write-Host "legacy_phase_preflight_default_branch_triggers=$($value.legacy_phase_preflight_default_branch_triggers)"
           Write-Host "main_ci_rc4_phase_hygiene=$($value.main_ci_rc4_phase_hygiene.ToString().ToLowerInvariant())"
+          Write-Host "post_publication_registration_enforced=$($postPublication.ToString().ToLowerInvariant())"
           Write-Host 'final_production_bootstrap_validator=PASS'
 
       - name: Run bootstrap and inherited final control suites
@@ -179,6 +186,7 @@ jobs:
           Write-Host 'legacy_phase_preflights=4'
           Write-Host 'legacy_phase_preflight_default_branch_triggers=0'
           Write-Host 'main_ci_rc4_phase_hygiene=true'
+          Write-Host 'post_publication_default_branch_registration_gate_required=true'
           Write-Host 'bootstrap_stages=10'
           Write-Host 'default_branch=main'
           Write-Host 'default_branch_publication_required=true'
