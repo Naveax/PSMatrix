@@ -29,6 +29,7 @@ jobs:
       RELEASE_SIGNING_RUN_ID: ${{ inputs.release_signing_run_id }}
       FINAL_RELEASE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
       FULL_MATRIX_ENDPOINT_ROOT: ${{ vars.PSMATRIX_FULL_MATRIX_ENDPOINT_ROOT }}
+      PSMATRIX_HOME: ${{ vars.PSMATRIX_FULL_MATRIX_HOME }}
 
     steps:
       - name: Validate trusted NAVEAX matrix dispatch identity
@@ -41,6 +42,9 @@ jobs:
           if ($env:RELEASE_SIGNING_RUN_ID -cnotmatch '^[0-9]+$') { throw 'release_signing_run_id must contain only decimal digits.' }
           if ([string]::IsNullOrWhiteSpace($env:FULL_MATRIX_ENDPOINT_ROOT)) { throw 'PSMATRIX_FULL_MATRIX_ENDPOINT_ROOT is missing from production-ga-full-matrix.' }
           if (-not (Test-Path -LiteralPath $env:FULL_MATRIX_ENDPOINT_ROOT -PathType Container)) { throw "Full-matrix endpoint root is missing: $env:FULL_MATRIX_ENDPOINT_ROOT" }
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_HOME)) { throw 'PSMATRIX_FULL_MATRIX_HOME is missing from production-ga-full-matrix.' }
+          if (-not (Test-Path -LiteralPath $env:PSMATRIX_HOME -PathType Container)) { throw "Dedicated full-matrix PSMatrix home is missing: $env:PSMATRIX_HOME" }
+          Write-Host "full_matrix_home=$env:PSMATRIX_HOME"
           Write-Host 'final_full_matrix_dispatch_identity=PASS'
 
       - name: Check out exact producer controls
@@ -63,6 +67,7 @@ jobs:
           if ([string]$contract.full_runtime_matrix.workflow -ne 'production-ga-final-full-runtime-matrix') { throw 'Full-matrix producer workflow identity mismatch.' }
           if ([int]$contract.full_runtime_matrix.canonical_target_count -ne 25 -or [int]$contract.full_runtime_matrix.remote_target_count -ne 13 -or [int]$contract.full_runtime_matrix.ready_target_count_required -ne 25) { throw 'Full-matrix canonical target contract mismatch.' }
           if ([string]$contract.full_runtime_matrix.differential_mode -ne 'strict') { throw 'Full-matrix contract is not strict differential.' }
+          if ([string]$contract.full_runtime_matrix.home_variable -ne 'PSMATRIX_FULL_MATRIX_HOME' -or [bool]$contract.full_runtime_matrix.ambient_default_home_allowed) { throw 'Full-matrix explicit home contract mismatch.' }
           Write-Host "full_matrix_control_head=$head"
 
       - name: Validate exact protected final-signing run before download
