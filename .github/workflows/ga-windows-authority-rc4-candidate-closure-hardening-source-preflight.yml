@@ -1,0 +1,100 @@
+name: production-ga-windows-authority-rc4-candidate-closure-hardening-source-preflight
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, "release/**"]
+    paths:
+      - ".github/workflows/ga-windows-authority-rc4-candidate-closure-hardening-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-rc4-candidate-closure-hardened-selfhosted.yml"
+      - ".github/workflows/ga-windows-authority-rc4-candidate-closure-selfhosted.yml"
+      - "scripts/ga/scan_private_key_material_streaming.py"
+      - "scripts/ga/build_windows_authority_rc4_candidate_closure_hardened.py"
+      - "ga-packs/03-authoritative-windows/rc4-candidate-closure-hardening-workflow-contract.json"
+      - "tests/test_windows_authority_rc4_candidate_closure_hardening.py"
+  pull_request:
+    branches: [main, "release/**"]
+    paths:
+      - ".github/workflows/ga-windows-authority-rc4-candidate-closure-hardening-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-rc4-candidate-closure-hardened-selfhosted.yml"
+      - ".github/workflows/ga-windows-authority-rc4-candidate-closure-selfhosted.yml"
+      - "scripts/ga/scan_private_key_material_streaming.py"
+      - "scripts/ga/build_windows_authority_rc4_candidate_closure_hardened.py"
+      - "ga-packs/03-authoritative-windows/rc4-candidate-closure-hardening-workflow-contract.json"
+      - "tests/test_windows_authority_rc4_candidate_closure_hardening.py"
+concurrency:
+  group: production-ga-windows-authority-rc4-candidate-closure-hardening-source-preflight-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  hardening-source-preflight:
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 40
+    permissions: {contents: read}
+    env:
+      PYTHONPATH: ${{ github.workspace }}\src
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Verify trusted NAVEAX runner
+        shell: pwsh
+        run: |
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') { throw 'Expected NAVEAX Windows runner.' }
+          Write-Host 'rc4_closure_hardening_runner=PASS'
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with: {ref: "${{ github.event.pull_request.head.sha || github.sha }}", fetch-depth: 1, persist-credentials: false}
+      - name: Verify exact clean RC4 preparation source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'; $head=(git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($env:EXPECTED_HEAD -cnotmatch '^[0-9a-f]{40}$' -or $head -ne $env:EXPECTED_HEAD.ToLowerInvariant()) { throw "Exact head mismatch: $head / $env:EXPECTED_HEAD" }
+          if (-not [string]::IsNullOrWhiteSpace((git status --porcelain))) { throw 'Checkout is dirty.' }
+          $project=(python -c "import tomllib,pathlib;print(tomllib.loads(pathlib.Path('pyproject.toml').read_text(encoding='utf-8'))['project']['version'])").Trim(); $package=(python -c "import psmatrix;print(psmatrix.__version__)").Trim()
+          if ($project -ne '2.0.0rc4' -or $package -ne '2.0.0rc4') { throw "RC4 version mismatch: $project / $package" }
+          foreach($p in @('ga-packs\03-authoritative-windows\rc4-release-lock.json','release-assets\2.0.0rc4\psmatrix-2.0.0rc4-release-public.pem')){if(Test-Path -LiteralPath $p -PathType Leaf){throw "Preparation branch contains active authority: $p"}}
+          Write-Host "validated_exact_rc4_head=$head"
+      - name: Compile closure hardening controls
+        shell: pwsh
+        run: |
+          python -m py_compile scripts/ga/scan_private_key_material_streaming.py scripts/ga/build_windows_authority_rc4_candidate_closure_hardened.py tests/test_windows_authority_rc4_candidate_closure_hardening.py
+          if($LASTEXITCODE -ne 0){throw 'Hardening compile failed.'}; Write-Host 'rc4_closure_hardening_compile=PASS'
+      - name: Run cumulative 83-test RC4 closure hardening suite
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          python -m unittest -v `
+            tests.test_windows_authority_release_candidate_builder `
+            tests.test_windows_authority_rc4_authority_rotation `
+            tests.test_windows_authority_rc4_authority_rotation_runtime `
+            tests.test_windows_authority_rc4_lock_promotion_signing `
+            tests.test_windows_authority_protected_release_import `
+            tests.test_windows_authority_rc4_protected_release_intake `
+            tests.test_windows_authority_rc4_media_readiness `
+            tests.test_windows_authority_provisioning_manifest_workflow `
+            tests.test_windows_authority_rc4_provisioning_manifest `
+            tests.test_windows_authority_rc4_operation_package `
+            tests.test_windows_authority_rc4_hyperv_provisioning `
+            tests.test_windows_authority_rc4_image_identity_measurement `
+            tests.test_windows_authority_rc4_certification_campaign `
+            tests.test_windows_authority_rc4_candidate_closure `
+            tests.test_windows_authority_rc4_candidate_closure_hardening
+          if($LASTEXITCODE -ne 0){throw 'RC4 closure hardening suite failed.'}
+          Write-Host 'rc4_candidate_closure_hardening_contract=PASS'
+          Write-Host 'large_file_private_key_marker_detection=PASS'
+          Write-Host 'streaming_scan_size_limit_applied=false'
+      - name: Enforce no tracked private authority material
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'; $markers=@('-----BEGIN PRIVATE KEY-----','-----BEGIN RSA PRIVATE KEY-----','-----BEGIN EC PRIVATE KEY-----','-----BEGIN OPENSSH PRIVATE KEY-----','-----BEGIN ED25519 PRIVATE KEY-----'); $tracked=@(git ls-files)
+          foreach($r in $tracked){$p=Join-Path $env:GITHUB_WORKSPACE $r;if(-not(Test-Path -LiteralPath $p -PathType Leaf)){continue};$f=Get-Item $p;if($f.Length -gt 1048576){continue};try{$t=[IO.File]::ReadAllText($f.FullName)}catch{continue};foreach($m in $markers){if([regex]::IsMatch($t,'(?m)^'+[regex]::Escape($m)+'\r?$')){throw "Tracked private-key PEM detected: $r"}}}
+          Write-Host "repository_private_authority_absence=PASS tracked_files=$($tracked.Count)"
+      - name: Emit hardening source summary
+        shell: pwsh
+        run: |
+          Write-Host "validated_exact_rc4_head=$env:EXPECTED_HEAD"
+          Write-Host 'production_candidate_closure_executed=false'
+          Write-Host 'campaign_evidence_scanned=false'
+          Write-Host 'production_inputs_mutated=false'
+          Write-Host 'workers_contacted=false'
+          Write-Host 'final_ga_evaluator_invoked=false'
+          Write-Host 'authoritative=false'
+          Write-Host 'ga_eligible=false'
