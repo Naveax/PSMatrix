@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-authority-rc4-candidate-closure-hardening-workflow-contract",
+  "pack": "03-authoritative-windows",
+  "release_version": "2.0.0rc4",
+  "workflow": "production-ga-windows-authority-rc4-candidate-closure-selfhosted",
+  "private_key_rescan": {
+    "streaming": true,
+    "all_files": true,
+    "all_bytes": true,
+    "size_limit_applied": false,
+    "chunk_boundary_marker_detection": true,
+    "pre_scan_required": true,
+    "post_scan_required": true,
+    "tree_must_remain_stable": true,
+    "tree_sha256_bound_to_hardened_closure": true,
+    "scan_report_sha256_bound_to_hardened_closure": true
+  },
+  "closure": {
+    "base_rc4_candidate_closure_required": true,
+    "base_closure_sha256_bound": true,
+    "base_closure_content_sha256_bound": true,
+    "status": "AUTHORITATIVE_RC4_EVIDENCE_READY_FINAL_RELEASE_PENDING",
+    "authoritative_windows": true,
+    "release_bound": true,
+    "final_release_required": true,
+    "final_release_version_required": "2.0.0",
+    "final_ga_evaluator_invoked": false,
+    "ga_eligible": false
+  },
+  "safety": {
+    "windows_lab_public_key_only": true,
+    "windows_lab_private_key_required": false,
+    "release_private_key_required": false,
+    "contacts_workers": false,
+    "reruns_certification_campaign": false,
+    "creates_virtual_machines": false,
+    "creates_checkpoints": false,
+    "invokes_final_ga_evaluator": false,
+    "ga_eligible": false
+  }
+}
