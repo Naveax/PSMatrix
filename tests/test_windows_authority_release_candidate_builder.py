@@ -9,6 +9,7 @@ PYPROJECT = ROOT / "pyproject.toml"
 INIT = ROOT / "src" / "psmatrix" / "__init__.py"
 BUILDER = ROOT / "scripts" / "ga" / "build_windows_authority_release_candidate.py"
 SOURCE_WORKFLOW = ROOT / ".github" / "workflows" / "ga-pack03-windows-source-preflight.yml"
+FINAL_CONTRACT = ROOT / "ga-packs" / "03-authoritative-windows" / "final-release-source-promotion-contract.json"
 
 
 class WindowsAuthorityReleaseCandidateBuilderTests(unittest.TestCase):
@@ -18,7 +19,8 @@ class WindowsAuthorityReleaseCandidateBuilderTests(unittest.TestCase):
         init_text = INIT.read_text(encoding="utf-8")
         match = re.search(r'^__version__\s*=\s*"([^"]+)"', init_text, re.MULTILINE)
         self.assertIsNotNone(match)
-        self.assertEqual(project_version, "2.0.0rc4")
+        expected = "2.0.0" if FINAL_CONTRACT.is_file() else "2.0.0rc4"
+        self.assertEqual(project_version, expected)
         self.assertEqual(match.group(1), project_version)
 
     def test_builder_is_deterministic_unsigned_and_fail_closed(self) -> None:
