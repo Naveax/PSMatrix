@@ -114,53 +114,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Production bootstrap Python compile failed.' }
           Write-Host 'final_production_bootstrap_compile=PASS'
 
-      - name: Resolve final vulnerability scanner wheel closure diagnostically
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $root = Join-Path $env:RUNNER_TEMP 'psmatrix-final-scanner-wheelhouse-diagnostic'
-          $wheelRoot = Join-Path $root 'wheels'
-          if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
-          New-Item -ItemType Directory -Path $wheelRoot -Force | Out-Null
-          & python -m pip download `
-            --disable-pip-version-check `
-            --only-binary=:all: `
-            --platform manylinux2014_x86_64 `
-            --implementation cp `
-            --python-version 3.12 `
-            --abi cp312 `
-            --dest $wheelRoot `
-            'pip-audit==2.10.1' `
-            'bandit==1.9.4'
-          if ($LASTEXITCODE -ne 0) { throw 'Production scanner dependency closure diagnostic resolution failed.' }
-          $env:PSMATRIX_SCANNER_WHEEL_ROOT = $wheelRoot
-          @'
-          import hashlib
-          import json
-          import os
-          from pathlib import Path
-          root = Path(os.environ['PSMATRIX_SCANNER_WHEEL_ROOT'])
-          entries = []
-          for path in sorted(root.iterdir(), key=lambda item: item.name.casefold()):
-              if not path.is_file():
-                  continue
-              data = path.read_bytes()
-              entries.append({
-                  'filename': path.name,
-                  'sha256': hashlib.sha256(data).hexdigest(),
-                  'size': len(data),
-              })
-          if len(entries) < 2:
-              raise SystemExit('scanner wheel closure diagnostic resolved an implausibly small set')
-          print('SCANNER_WHEELHOUSE_MANIFEST_BEGIN')
-          print(json.dumps({'schema': 1, 'target': 'cp312-manylinux2014_x86_64', 'wheels': entries}, indent=2, sort_keys=False))
-          print('SCANNER_WHEELHOUSE_MANIFEST_END')
-          print(f'scanner_wheelhouse_diagnostic=PASS wheels={len(entries)}')
-          '@ | python -
-          if ($LASTEXITCODE -ne 0) { throw 'Production scanner dependency closure diagnostic manifest failed.' }
-          Remove-Item Env:PSMATRIX_SCANNER_WHEEL_ROOT -ErrorAction SilentlyContinue
-          Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
-
       - name: Validate source bootstrap mapping and default branch registration
         shell: pwsh
         run: |
