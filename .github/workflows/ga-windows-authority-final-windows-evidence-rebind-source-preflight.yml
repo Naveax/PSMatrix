@@ -1,0 +1,165 @@
+name: production-ga-windows-authority-final-windows-evidence-rebind-source-preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["final/2.0.0-windows-evidence-rebind-controls"]
+    paths:
+      - ".github/workflows/ga-windows-authority-final-windows-evidence-rebind-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-final-windows-evidence-rebind.yml"
+      - "ga-packs/03-authoritative-windows/final-windows-evidence-rebind-control-contract.json"
+      - "scripts/ga/rebind_windows_authority_final_release.py"
+      - "tests/test_windows_authority_final_windows_evidence_rebind.py"
+  pull_request:
+    branches: ["final/2.0.0-lock-signing-controls-anchor"]
+    paths:
+      - ".github/workflows/ga-windows-authority-final-windows-evidence-rebind-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-final-windows-evidence-rebind.yml"
+      - "ga-packs/03-authoritative-windows/final-windows-evidence-rebind-control-contract.json"
+      - "scripts/ga/rebind_windows_authority_final_release.py"
+      - "tests/test_windows_authority_final_windows_evidence_rebind.py"
+
+concurrency:
+  group: production-ga-windows-authority-final-windows-evidence-rebind-source-preflight-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  final-windows-rebind-source-preflight:
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    env:
+      PYTHONPATH: ${{ github.workspace }}\src
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+      BASE_CONTROL_HEAD: d9bac9a8dc5cc920f6294bdc05b0c91b0f2bd0d5
+      RC4_RELEASE_COMMIT: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
+      FINAL_RELEASE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
+
+    steps:
+      - name: Verify trusted NAVEAX source runner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') {
+              throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS"
+          }
+          Write-Host 'final_windows_rebind_runner=PASS'
+
+      - name: Check out exact rebind control source with full history
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact five-path control-only source closure
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($env:EXPECTED_HEAD -cnotmatch '^[0-9a-f]{40}$' -or $head -ne $env:EXPECTED_HEAD.ToLowerInvariant()) { throw "Exact rebind control head mismatch: $head / $env:EXPECTED_HEAD" }
+          if (-not [string]::IsNullOrWhiteSpace((git status --porcelain))) { throw 'Rebind source checkout is dirty.' }
+          foreach ($sha in @($env:BASE_CONTROL_HEAD,$env:RC4_RELEASE_COMMIT,$env:FINAL_RELEASE_COMMIT)) {
+              git cat-file -e "$sha^{commit}"
+              if ($LASTEXITCODE -ne 0) { throw "Frozen source commit is unavailable: $sha" }
+          }
+          git merge-base --is-ancestor $env:BASE_CONTROL_HEAD $head
+          if ($LASTEXITCODE -ne 0) { throw 'Lock/signing control anchor is not an ancestor of rebind controls.' }
+          git merge-base --is-ancestor $env:RC4_RELEASE_COMMIT $env:FINAL_RELEASE_COMMIT
+          if ($LASTEXITCODE -ne 0) { throw 'RC4 release source is not an ancestor of final source.' }
+
+          $contract = Get-Content 'ga-packs\03-authoritative-windows\final-windows-evidence-rebind-control-contract.json' -Raw | ConvertFrom-Json
+          if ([int]$contract.schema -ne 1 -or [string]$contract.kind -ne 'psmatrix.windows-authority-final-windows-evidence-rebind-control-contract') { throw 'Final Windows rebind contract identity mismatch.' }
+          if ([string]$contract.rc4_release.release_commit -ne $env:RC4_RELEASE_COMMIT -or [string]$contract.final_release.release_commit -ne $env:FINAL_RELEASE_COMMIT) { throw 'Final Windows rebind frozen release commits mismatch.' }
+          if ([bool]$contract.control_source.runtime_source_changes_allowed) { throw 'Rebind control layer must not allow runtime source changes.' }
+
+          $changed = @((git diff --name-only "$env:BASE_CONTROL_HEAD..$head") | ForEach-Object { $_.Trim().Replace('\','/') } | Where-Object { $_ } | Sort-Object -Unique)
+          $allowed = @($contract.control_source.changed_path_allowlist | ForEach-Object { ([string]$_).Replace('\','/') } | Sort-Object -Unique)
+          $delta = @(Compare-Object -ReferenceObject $allowed -DifferenceObject $changed)
+          if ($delta.Count -ne 0) { throw "Final Windows rebind changed-path closure mismatch: $($delta | Out-String)" }
+          if ($changed.Count -ne 5) { throw "Expected exactly five rebind-control changed paths; observed $($changed.Count)." }
+          $runtime = @($changed | Where-Object { $_ -like 'src/psmatrix/*' })
+          if ($runtime.Count -ne 0) { throw "Rebind controls modified runtime source: $($runtime -join ',')" }
+
+          $rc4Runtime = @((git diff --name-only "$env:RC4_RELEASE_COMMIT..$env:FINAL_RELEASE_COMMIT" -- src/psmatrix) | ForEach-Object { $_.Trim().Replace('\','/') } | Where-Object { $_ })
+          if ($rc4Runtime.Count -ne 1 -or $rc4Runtime[0] -ne 'src/psmatrix/__init__.py') { throw "RC4/final runtime-source equivalence changed: $($rc4Runtime -join ',')" }
+          $fixtureChanges = @((git diff --name-only "$env:RC4_RELEASE_COMMIT..$env:FINAL_RELEASE_COMMIT" -- fixtures/windows-authoritative) | Where-Object { $_ })
+          if ($fixtureChanges.Count -ne 0) { throw "Authoritative fixture set changed between RC4 and final: $($fixtureChanges -join ',')" }
+
+          foreach ($path in @('ga-packs\03-authoritative-windows\final-release-lock.json','release-assets\2.0.0\psmatrix-2.0.0-release-public.pem')) {
+              if (Test-Path -LiteralPath $path -PathType Leaf) { throw "Rebind source-preparation branch contains active final authority material: $path" }
+          }
+          Write-Host "validated_exact_rebind_head=$head"
+          Write-Host 'rebind_control_changed_paths=5'
+          Write-Host 'runtime_source_changes=0'
+          Write-Host 'rc4_final_runtime_changed_paths=src/psmatrix/__init__.py'
+          Write-Host 'authoritative_fixture_changes=0'
+
+      - name: Compile final Windows rebind controls
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m py_compile `
+            scripts/ga/rebind_windows_authority_final_release.py `
+            tests/test_windows_authority_final_windows_evidence_rebind.py
+          if ($LASTEXITCODE -ne 0) { throw 'Final Windows rebind control compile failed.' }
+          Write-Host 'final_windows_rebind_compile=PASS'
+
+      - name: Run final Windows rebind source contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m unittest -v `
+            tests.test_windows_authority_final_windows_evidence_rebind `
+            tests.test_windows_authority_final_release_lock_signing `
+            tests.test_windows_authority_final_release_promotion
+          if ($LASTEXITCODE -ne 0) { throw 'Final Windows rebind source contract suite failed.' }
+          Write-Host 'final_windows_rebind_source_contract=PASS'
+
+      - name: Scan every tracked source byte for exact PEM private-authority headers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import subprocess
+          from pathlib import Path
+          markers = {
+              b"-----BEGIN PRIVATE KEY-----",
+              b"-----BEGIN RSA PRIVATE KEY-----",
+              b"-----BEGIN EC PRIVATE KEY-----",
+              b"-----BEGIN OPENSSH PRIVATE KEY-----",
+              b"-----BEGIN ED25519 PRIVATE KEY-----",
+          }
+          root = Path.cwd().resolve()
+          tracked = [line for line in subprocess.check_output(["git", "ls-files"], text=True).splitlines() if line]
+          total = 0
+          scanned = 0
+          for relative in tracked:
+              path = root / relative
+              if not path.is_file():
+                  continue
+              scanned += 1
+              with path.open("rb") as handle:
+                  for raw_line in handle:
+                      total += len(raw_line)
+                      if raw_line.rstrip(b"\r\n").strip() in markers:
+                          raise SystemExit(f"tracked private-key PEM material detected: {relative}")
+          print(f"repository_private_authority_absence=PASS tracked_files={scanned} tracked_bytes={total} size_limit_applied=false")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Tracked-source private authority scan failed.' }
+
+      - name: Emit final Windows rebind source-preflight summary
+        shell: pwsh
+        run: |
+          Write-Host "validated_exact_rebind_head=$env:EXPECTED_HEAD"
+          Write-Host 'production_rebind_executed=false'
+          Write-Host 'workers_contacted=false'
+          Write-Host 'campaign_rerun=false'
+          Write-Host 'virtual_machines_created_or_mutated=false'
+          Write-Host 'final_windows_evidence_rebound=false'
+          Write-Host 'final_ga_evaluator_invoked=false'
+          Write-Host 'ga_eligible=false'
