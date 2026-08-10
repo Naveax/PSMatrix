@@ -12,6 +12,7 @@ EXECUTION = ROOT / "ga-packs" / "03-authoritative-windows" / "final-execution-co
 LOCK_CONTROL = ROOT / "ga-packs" / "03-authoritative-windows" / "final-release-lock-signing-control-contract.json"
 REVIEW_WORKFLOW = ROOT / ".github" / "workflows" / "ga-windows-authority-final-release-lock-review.yml"
 PROMOTION_WORKFLOW = ROOT / ".github" / "workflows" / "ga-windows-authority-final-release-lock-promotion.yml"
+CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 LEGACY_PHASE_PREFLIGHTS = [
     ".github/workflows/ga-windows-authority-provisioning-handoff-source-preflight.yml",
     ".github/workflows/ga-windows-authority-rc4-source-preflight.yml",
@@ -76,6 +77,18 @@ class FinalProductionBootstrapContractTests(unittest.TestCase):
             self.assertIn("release/**", trigger, relative)
             self.assertNotIn("main", trigger, relative)
 
+    def test_main_ci_defers_rc4_runtime_modules_on_final_source(self) -> None:
+        text = CI_WORKFLOW.read_text(encoding="utf-8")
+        for marker in (
+            "branches: [main]",
+            "$packageVersion -ne '2.0.0rc4' -and $file.Name -like 'test_windows_authority_rc4_*.py'",
+            "deferred_to_rc4_release_preflight=",
+            "if ($packageVersion -eq '2.0.0' -and $releaseCandidateDeferred.Count -lt 1)",
+            "release_candidate_runtime_policy=rc4-modules-deferred-on-non-rc4-source",
+        ):
+            self.assertIn(marker, text)
+        self.assertIn("& python -m unittest $module -v", text)
+
     def test_bootstrap_is_inserted_between_readiness_and_signed_release(self) -> None:
         self.assertEqual(
             self.contract["execution_insertion_point"],
@@ -103,6 +116,7 @@ class FinalProductionBootstrapContractTests(unittest.TestCase):
             "default_branch_publication_required_before_any_production_dispatch",
             "all_required_dispatch_workflow_paths_must_exist_on_default_branch",
             "legacy_phase_preflights_must_not_trigger_default_branch",
+            "main_ci_must_defer_rc4_runtime_modules_on_non_rc4_source",
             "readiness_source_preflight_success_required",
             "production_readiness_pass_required_before_lock_bootstrap",
             "review_and_promotion_runs_must_share_exact_control_head",
@@ -154,8 +168,9 @@ class FinalProductionBootstrapContractTests(unittest.TestCase):
         self.assertEqual(result["required_dispatch_workflow_paths"], 19)
         self.assertEqual(result["legacy_phase_preflights"], 4)
         self.assertEqual(result["legacy_phase_preflight_default_branch_triggers"], 0)
+        self.assertTrue(result["main_ci_rc4_phase_hygiene"])
         self.assertEqual(result["bootstrap_stages"], 10)
-        self.assertEqual(result["control_source_paths"], 8)
+        self.assertEqual(result["control_source_paths"], 9)
         self.assertIsNone(result["default_branch_registration"])
         self.assertFalse(result["default_branch_dispatch_surface_ready"])
         self.assertFalse(result["production_readiness_executed"])
@@ -178,12 +193,13 @@ class FinalProductionBootstrapContractTests(unittest.TestCase):
             with self.assertRaises(self.validator.ProductionBootstrapError):
                 self.validator.validate(ROOT, require_default_branch_registration=True)
 
-    def test_source_layer_is_exact_eight_paths_and_cannot_claim_production(self) -> None:
+    def test_source_layer_is_exact_nine_paths_and_cannot_claim_production(self) -> None:
         source = self.contract["control_source"]
         self.assertIs(source["runtime_source_changes_allowed"], False)
         self.assertEqual(
             set(source["changed_path_allowlist"]),
             {
+                ".github/workflows/ci.yml",
                 ".github/workflows/ga-final-production-bootstrap-source-preflight.yml",
                 ".github/workflows/ga-windows-authority-provisioning-handoff-source-preflight.yml",
                 ".github/workflows/ga-windows-authority-rc4-source-preflight.yml",
@@ -194,7 +210,7 @@ class FinalProductionBootstrapContractTests(unittest.TestCase):
                 "tests/test_final_production_bootstrap_contract.py",
             },
         )
-        self.assertEqual(len(source["changed_path_allowlist"]), 8)
+        self.assertEqual(len(source["changed_path_allowlist"]), 9)
         for key, value in self.contract["preparation_state"].items():
             self.assertIs(value, False, key)
 
