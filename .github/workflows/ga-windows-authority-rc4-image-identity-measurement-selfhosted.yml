@@ -1,0 +1,415 @@
+name: production-ga-windows-authority-rc4-image-identity-measurement-selfhosted
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_commit:
+        description: Exact reviewed RC4 release source commit frozen by the active lock
+        required: true
+        type: string
+      control_head:
+        description: Exact repository commit containing the active RC4 lock and measurement controls
+        required: true
+        type: string
+      provisioning_run_id:
+        description: Successful protected RC4 Hyper-V provisioning workflow run ID
+        required: true
+        type: string
+      provisioning_run_attempt:
+        description: Successful protected RC4 Hyper-V provisioning workflow run attempt
+        required: true
+        default: "1"
+        type: string
+      measurement_timeout_seconds:
+        description: Per-worker identity measurement timeout, 30-3600 seconds
+        required: true
+        default: "1800"
+        type: string
+
+concurrency:
+  group: production-ga-windows-authority-rc4-image-identity-measurement-selfhosted
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  measure-images:
+    name: Measure exact RC4 Windows image identities
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 180
+    environment: production-ga-windows-lab
+    permissions:
+      contents: read
+    env:
+      PSMATRIX_WINDOWS_GA_ROOT: ${{ vars.PSMATRIX_WINDOWS_GA_ROOT }}
+      RELEASE_COMMIT: ${{ inputs.release_commit }}
+      CONTROL_HEAD: ${{ inputs.control_head }}
+      PROVISIONING_RUN_ID: ${{ inputs.provisioning_run_id }}
+      PROVISIONING_RUN_ATTEMPT: ${{ inputs.provisioning_run_attempt }}
+      MEASUREMENT_TIMEOUT_SECONDS: ${{ inputs.measurement_timeout_seconds }}
+
+    steps:
+      - name: Initialize fail-closed RC4 image-measurement workspace
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'psmatrix-rc4-image-measurement-evidence'
+          if (Test-Path -LiteralPath $evidence) { Remove-Item -LiteralPath $evidence -Recurse -Force }
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          "PSMATRIX_IMAGE_EVIDENCE=$evidence" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') { throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS" }
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_WINDOWS_GA_ROOT)) { throw 'PSMATRIX_WINDOWS_GA_ROOT is missing from production-ga-windows-lab.' }
+          if (-not [System.IO.Path]::IsPathRooted($env:PSMATRIX_WINDOWS_GA_ROOT)) { throw 'PSMATRIX_WINDOWS_GA_ROOT must be an absolute path.' }
+          $gaRoot = [System.IO.Path]::GetFullPath($env:PSMATRIX_WINDOWS_GA_ROOT)
+          if (-not (Test-Path -LiteralPath $gaRoot -PathType Container)) { throw "PSMATRIX_WINDOWS_GA_ROOT does not exist: $gaRoot" }
+          foreach ($item in @(@{Name='release_commit';Value=$env:RELEASE_COMMIT},@{Name='control_head';Value=$env:CONTROL_HEAD})) {
+              if ([string]$item.Value -cnotmatch '^[0-9a-f]{40}$') { throw "$($item.Name) must contain exactly 40 lowercase hexadecimal characters." }
+          }
+          if ($env:CONTROL_HEAD -ne $env:GITHUB_SHA.ToLowerInvariant()) { throw 'control_head must equal the exact workflow control head.' }
+          if ($env:PROVISIONING_RUN_ID -notmatch '^[1-9][0-9]*$' -or $env:PROVISIONING_RUN_ATTEMPT -notmatch '^[1-9][0-9]*$') { throw 'provisioning_run_id and provisioning_run_attempt must contain positive decimal integers.' }
+          $timeout = 0
+          if (-not [int]::TryParse($env:MEASUREMENT_TIMEOUT_SECONDS,[ref]$timeout) -or $timeout -lt 30 -or $timeout -gt 3600) { throw 'measurement_timeout_seconds must be an integer between 30 and 3600.' }
+
+          $provisionRoot = Join-Path $gaRoot ('provisioning\2.0.0rc4\run-{0}-attempt-{1}' -f $env:PROVISIONING_RUN_ID,$env:PROVISIONING_RUN_ATTEMPT)
+          $plan = Join-Path $provisionRoot 'windows-hyperv-provision-plan.json'
+          $provisionReport = Join-Path $provisionRoot 'windows-hyperv-provision-report.json'
+          $media = Join-Path $gaRoot 'config\windows-lab-media.json'
+          $trustHome = Join-Path $gaRoot 'trust-home'
+          $configRoot = Join-Path $gaRoot 'config'
+          $releaseRoot = Join-Path $gaRoot 'media\release\2.0.0rc4'
+          $wheel = Join-Path $releaseRoot 'psmatrix-2.0.0rc4-py3-none-any.whl'
+          $publicKey = Join-Path $releaseRoot 'psmatrix-2.0.0rc4-release-public.pem'
+          $measurementRoot = Join-Path $gaRoot ('measurement\2.0.0rc4\run-{0}-attempt-{1}' -f $env:GITHUB_RUN_ID,$env:GITHUB_RUN_ATTEMPT)
+          if (Test-Path -LiteralPath $measurementRoot) { throw "RC4 image-measurement output already exists; refusing to overwrite: $measurementRoot" }
+          New-Item -ItemType Directory -Path $measurementRoot -Force | Out-Null
+          foreach ($path in @($provisionRoot,$configRoot,$trustHome,$releaseRoot)) { if (-not (Test-Path -LiteralPath $path -PathType Container)) { throw "Required RC4 image-measurement directory is missing: $path" } }
+          foreach ($path in @($plan,$provisionReport,$media,$wheel,$publicKey)) { if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required RC4 image-measurement input is missing: $path" } }
+
+          "PSMATRIX_IMAGE_TIMEOUT=$timeout" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_IMAGE_GA_ROOT=$gaRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_IMAGE_PROVISION_ROOT=$provisionRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_IMAGE_PLAN=$plan" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_IMAGE_PROVISION_REPORT=$provisionReport" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_IMAGE_MEDIA=$media" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_IMAGE_TRUST_HOME=$trustHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_IMAGE_CONFIG_ROOT=$configRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_IMAGE_RELEASE_ROOT=$releaseRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_IMAGE_WHEEL=$wheel" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_IMAGE_PUBLIC_KEY=$publicKey" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_IMAGE_RUN_ROOT=$measurementRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_IMAGE_HOST_IDENTITY=$(Join-Path $measurementRoot 'hyperv-identity-input.json')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_IMAGE_REPORT=$(Join-Path $measurementRoot 'windows-authority-image-identity-measurement.json')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Check out exact RC4 measurement controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.control_head }}
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out exact RC4 product source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.release_commit }}
+          path: release-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up controller Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Validate exact RC4 source, active lock and signed wheel
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $controlRoot = Join-Path $env:GITHUB_WORKSPACE 'control'
+          $releaseSource = Join-Path $env:GITHUB_WORKSPACE 'release-source'
+          $controlHead = (git -C $controlRoot rev-parse HEAD).Trim().ToLowerInvariant()
+          $releaseHead = (git -C $releaseSource rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($controlHead -ne $env:CONTROL_HEAD) { throw 'Exact RC4 image-measurement control checkout mismatch.' }
+          if ($releaseHead -ne $env:RELEASE_COMMIT) { throw 'Exact RC4 product source checkout mismatch.' }
+          if (-not [string]::IsNullOrWhiteSpace((git -C $controlRoot status --porcelain))) { throw 'RC4 measurement control checkout is dirty.' }
+          if (-not [string]::IsNullOrWhiteSpace((git -C $releaseSource status --porcelain))) { throw 'Exact RC4 product source checkout is dirty.' }
+
+          $lockPath = Join-Path $controlRoot 'ga-packs\03-authoritative-windows\rc4-release-lock.json'
+          $committedPublic = Join-Path $controlRoot 'release-assets\2.0.0rc4\psmatrix-2.0.0rc4-release-public.pem'
+          foreach ($path in @($lockPath,$committedPublic)) { if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Committed RC4 authority input is missing: $path" } }
+          $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+          if ([int]$lock.schema -ne 1 -or [string]$lock.kind -ne 'psmatrix.windows-authority-release-staging-lock' -or [string]$lock.pack -ne '03-authoritative-windows') { throw 'RC4 active release lock identity is invalid.' }
+          if ([string]$lock.version -ne '2.0.0rc4' -or [string]$lock.release_commit -ne $env:RELEASE_COMMIT) { throw 'RC4 active release lock does not match requested release commit.' }
+          $rotation = $lock.authority_rotation
+          if ([string]$rotation.reason -ne 'lost_previous_private_authority' -or [bool]$rotation.existing_candidate_mutated -ne $false -or [bool]$rotation.new_candidate -ne $true -or [bool]$rotation.review_required -ne $true) { throw 'RC4 reviewed authority-rotation metadata mismatch.' }
+          $lockSha = (Get-FileHash -LiteralPath $lockPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $committedPublicSha = (Get-FileHash -LiteralPath $committedPublic -Algorithm SHA256).Hash.ToLowerInvariant()
+          $releasePublicSha = (Get-FileHash -LiteralPath $env:PSMATRIX_IMAGE_PUBLIC_KEY -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($committedPublicSha -ne [string]$lock.release_public_key.sha256 -or $releasePublicSha -ne $committedPublicSha) { throw 'RC4 release public key does not match active lock and imported release.' }
+          $wheelRows = @($lock.artifacts | Where-Object { [string]$_.name -eq 'psmatrix-2.0.0rc4-py3-none-any.whl' })
+          if ($wheelRows.Count -ne 1) { throw 'RC4 wheel is not uniquely locked.' }
+          $wheelSha = (Get-FileHash -LiteralPath $env:PSMATRIX_IMAGE_WHEEL -Algorithm SHA256).Hash.ToLowerInvariant()
+          $wheelSize = [int64](Get-Item -LiteralPath $env:PSMATRIX_IMAGE_WHEEL).Length
+          if ($wheelSha -ne [string]$wheelRows[0].sha256 -or $wheelSize -ne [int64]$wheelRows[0].size) { throw 'Protected RC4 wheel does not match active lock.' }
+          "PSMATRIX_IMAGE_CONTROL_ROOT=$controlRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_IMAGE_RELEASE_SOURCE=$releaseSource" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_IMAGE_LOCK_SHA=$lockSha" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "active_rc4_release_lock_sha256=$lockSha"
+
+      - name: Validate protected provisioning run and recapture current Hyper-V identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module Hyper-V -ErrorAction Stop
+          $media = Get-Content -LiteralPath $env:PSMATRIX_IMAGE_MEDIA -Raw | ConvertFrom-Json
+          $plan = Get-Content -LiteralPath $env:PSMATRIX_IMAGE_PLAN -Raw | ConvertFrom-Json
+          $report = Get-Content -LiteralPath $env:PSMATRIX_IMAGE_PROVISION_REPORT -Raw | ConvertFrom-Json
+          if ([int]$media.schema -ne 1 -or [string]$media.kind -ne 'psmatrix.windows-lab-media' -or [string]$media.release_version -ne '2.0.0rc4' -or [string]$media.release_commit -ne $env:RELEASE_COMMIT) { throw 'Current RC4 media manifest identity/release binding is invalid.' }
+          if ([bool]$media.complete -ne $true -or [bool]$media.ready_for_hyper_v_provisioning -ne $true) { throw 'Current RC4 media manifest is not complete/Hyper-V ready.' }
+          $mediaSha = (Get-FileHash -LiteralPath $env:PSMATRIX_IMAGE_MEDIA -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ([int]$plan.schema -ne 1 -or [string]$plan.kind -ne 'psmatrix.windows-hyperv-provision-plan') { throw 'Protected RC4 provisioning plan identity is invalid.' }
+          if ([string]$plan.source_manifest.sha256 -ne $mediaSha) { throw 'Protected RC4 provisioning plan is not bound to the current media manifest.' }
+          if ([string]$report.status -ne 'PASS') { throw 'Protected RC4 provisioning report is not PASS.' }
+          if ([string]$report.provision.kind -ne 'psmatrix.windows-hyperv-provision-result' -or [string]$report.provision.status -ne 'PASS') { throw 'Protected RC4 Hyper-V provision result identity/status is invalid.' }
+          if ([bool]$report.health.valid -ne $true) { throw 'Protected RC4 Hyper-V host health was not valid during provisioning.' }
+
+          $expected = @('windows-powershell-4.0','windows-powershell-5.0','windows-powershell-5.1')
+          $reportImages = @($report.provision.images)
+          $reportRuntimes = @($reportImages | ForEach-Object { [string]$_.runtime_id } | Sort-Object -Unique)
+          if ($reportImages.Count -ne 3 -or $reportRuntimes.Count -ne 3 -or (Compare-Object -ReferenceObject $expected -DifferenceObject $reportRuntimes).Count -ne 0) { throw 'Protected RC4 provisioning report does not contain the exact three runtime results.' }
+          foreach ($row in $reportImages) {
+              if ([string]$row.status -ne 'PASS' -or [bool]$row.checkpoint_created -ne $true -or [bool]$row.artifact_hashes_verified -ne $true) { throw "Protected RC4 provisioning result is incomplete for $($row.runtime_id)." }
+          }
+
+          $rows = @()
+          foreach ($image in @($media.images)) {
+              $runtime = [string]$image.runtime_id
+              $vmName = [string]$image.image_id
+              if ($expected -notcontains $runtime) { throw "Unexpected runtime in RC4 media manifest: $runtime" }
+              $provisioned = @($reportImages | Where-Object { [string]$_.runtime_id -eq $runtime -and [string]$_.image_id -eq $vmName })
+              if ($provisioned.Count -ne 1) { throw "Provisioning report does not uniquely bind $runtime to $vmName." }
+              $vms = @(Get-VM -Name $vmName -ErrorAction SilentlyContinue)
+              if ($vms.Count -ne 1) { throw "Expected exactly one current Hyper-V VM $vmName for $runtime; found $($vms.Count)." }
+              $vm = $vms[0]
+              if ([int]$vm.Generation -ne 2) { throw "Current Hyper-V VM is not generation 2: $vmName" }
+              if ([string]$vm.State -ne 'Running') { throw "Current Hyper-V VM is not running for endpoint measurement: $vmName state=$($vm.State)" }
+              $snapshots = @(Get-VMSnapshot -VM $vm -ErrorAction Stop | Where-Object { $_.Name -eq 'psmatrix-clean' })
+              if ($snapshots.Count -ne 1) { throw "Expected exactly one current psmatrix-clean checkpoint for $vmName; found $($snapshots.Count)." }
+              $rows += [ordered]@{
+                  runtime_id = $runtime
+                  image_id = $vmName
+                  worker_id = [string]$image.worker_id
+                  generation = [int]$vm.Generation
+                  vm_id = $vm.VMId.ToString()
+                  checkpoint_name = 'psmatrix-clean'
+                  snapshot_id = $snapshots[0].Id.ToString()
+                  vm_state = [string]$vm.State
+              }
+          }
+          if ($rows.Count -ne 3) { throw 'Current Hyper-V identity recapture did not produce exactly three rows.' }
+          $hostIdentity = [ordered]@{
+              schema = 1
+              kind = 'psmatrix.windows-authority-hyperv-identity-input'
+              release_version = '2.0.0rc4'
+              release_commit = $env:RELEASE_COMMIT
+              provisioning_run_id = [int64]$env:PROVISIONING_RUN_ID
+              provisioning_run_attempt = [int]$env:PROVISIONING_RUN_ATTEMPT
+              media_manifest_sha256 = $mediaSha
+              runtimes = @($rows | Sort-Object runtime_id)
+              authoritative = $false
+              ga_eligible = $false
+          }
+          [System.IO.File]::WriteAllText($env:PSMATRIX_IMAGE_HOST_IDENTITY,(($hostIdentity | ConvertTo-Json -Depth 12)+[Environment]::NewLine),[System.Text.UTF8Encoding]::new($false))
+          "PSMATRIX_IMAGE_MEDIA_SHA=$mediaSha" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host 'rc4_hyperv_identity_recapture=PASS'
+
+      - name: Preflight real endpoint manifests and protected credential paths
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gaRoot = [System.IO.Path]::GetFullPath($env:PSMATRIX_IMAGE_GA_ROOT).TrimEnd('\')
+          $gaPrefix = $gaRoot + '\'
+          foreach ($runtime in @('windows-powershell-4.0','windows-powershell-5.0','windows-powershell-5.1')) {
+              $endpointPath = Join-Path $env:PSMATRIX_IMAGE_CONFIG_ROOT ($runtime + '-endpoint.json')
+              if (-not (Test-Path -LiteralPath $endpointPath -PathType Leaf)) {
+                  $example = Join-Path $env:PSMATRIX_IMAGE_CONFIG_ROOT ($runtime + '-endpoint.example.json')
+                  throw "Real endpoint manifest is missing for $runtime; template-only files are not accepted. Example path: $example"
+              }
+              $endpoint = Get-Content -LiteralPath $endpointPath -Raw | ConvertFrom-Json
+              if ([bool]$endpoint.template_only -eq $true -or [string]$endpoint.kind -eq 'psmatrix.remote-endpoint-template') { throw "Endpoint manifest is still a template for $runtime." }
+              if ([string]$endpoint.runtime_id -ne $runtime) { throw "Endpoint runtime_id mismatch for $runtime." }
+              if ([string]::IsNullOrWhiteSpace([string]$endpoint.worker_id) -or [string]::IsNullOrWhiteSpace([string]$endpoint.url) -or -not ([string]$endpoint.url).StartsWith('https://')) { throw "Endpoint identity/HTTPS URL is incomplete for $runtime." }
+
+              $base = Split-Path -Parent $endpointPath
+              $paths = @(
+                  [string]$endpoint.tls.certificate,
+                  [string]$endpoint.tls.private_key,
+                  [string]$endpoint.tls.server_ca,
+                  [string]$endpoint.controller_signing.private_key,
+                  [string]$endpoint.controller_signing.public_key
+              )
+              if ($endpoint.worker_signing -and -not [string]::IsNullOrWhiteSpace([string]$endpoint.worker_signing.public_key)) { $paths += [string]$endpoint.worker_signing.public_key }
+              foreach ($raw in $paths) {
+                  if ([string]::IsNullOrWhiteSpace($raw)) { throw "Endpoint credential path is missing for $runtime." }
+                  $resolved = if ([System.IO.Path]::IsPathRooted($raw)) { [System.IO.Path]::GetFullPath($raw) } else { [System.IO.Path]::GetFullPath((Join-Path $base $raw)) }
+                  if (-not ($resolved.Equals($gaRoot,[System.StringComparison]::OrdinalIgnoreCase) -or $resolved.StartsWith($gaPrefix,[System.StringComparison]::OrdinalIgnoreCase))) { throw "Endpoint credential path escapes protected GA root for $runtime: $resolved" }
+                  if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) { throw "Endpoint credential file is missing for $runtime: $resolved" }
+              }
+          }
+          $trust = [System.IO.Path]::GetFullPath($env:PSMATRIX_IMAGE_TRUST_HOME)
+          if (-not ($trust.Equals($gaRoot,[System.StringComparison]::OrdinalIgnoreCase) -or $trust.StartsWith($gaPrefix,[System.StringComparison]::OrdinalIgnoreCase))) { throw 'trust-home escapes the protected GA root.' }
+          Write-Host 'rc4_real_endpoint_path_preflight=PASS'
+
+      - name: Install exact signed RC4 product package offline
+        shell: pwsh
+        env:
+          PIP_NO_INDEX: "1"
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install --no-index --no-deps --force-reinstall "$env:PSMATRIX_IMAGE_WHEEL"
+          if ($LASTEXITCODE -ne 0) { throw "Exact signed RC4 wheel installation failed: $LASTEXITCODE" }
+          $observed = (python -c "import psmatrix; print(psmatrix.__version__)").Trim()
+          if ($LASTEXITCODE -ne 0 -or $observed -ne '2.0.0rc4') { throw "Installed product package is not PSMatrix 2.0.0rc4: $observed" }
+          Write-Host "installed_psmatrix=$observed"
+
+      - name: Measure all three real worker identities and materialize image manifests transactionally
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & python "$env:PSMATRIX_IMAGE_CONTROL_ROOT\scripts\ga\measure_windows_authority_rc4_images.py" `
+              --source-root "$env:PSMATRIX_IMAGE_RELEASE_SOURCE" `
+              --ga-root "$env:PSMATRIX_IMAGE_GA_ROOT" `
+              --media-manifest "$env:PSMATRIX_IMAGE_MEDIA" `
+              --host-identity "$env:PSMATRIX_IMAGE_HOST_IDENTITY" `
+              --config-root "$env:PSMATRIX_IMAGE_CONFIG_ROOT" `
+              --trust-home "$env:PSMATRIX_IMAGE_TRUST_HOME" `
+              --output-report "$env:PSMATRIX_IMAGE_REPORT" `
+              --timeout $env:PSMATRIX_IMAGE_TIMEOUT
+          if ($LASTEXITCODE -ne 0) { throw "RC4 image identity measurement failed: $LASTEXITCODE" }
+
+      - name: Revalidate materialized RC4 image identities and emit sanitized status
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $report = Get-Content -LiteralPath $env:PSMATRIX_IMAGE_REPORT -Raw | ConvertFrom-Json
+          if ([int]$report.schema -ne 1 -or [string]$report.kind -ne 'psmatrix.windows-authority-image-identity-measurement') { throw 'RC4 image identity measurement report identity is invalid.' }
+          if ([string]$report.status -ne 'IMAGE_IDENTITIES_MEASURED_ENDPOINTS_VALIDATED' -or [string]$report.release_version -ne '2.0.0rc4') { throw 'RC4 image identity measurement report status/version is invalid.' }
+          if ([int]$report.runtime_count -ne 3 -or @($report.runtimes).Count -ne 3) { throw 'RC4 image identity measurement report does not contain exactly three runtimes.' }
+          if ([bool]$report.actual_os_identity_measured -ne $true -or [bool]$report.real_endpoint_manifests_validated -ne $true -or [bool]$report.image_manifests_written -ne $true) { throw 'RC4 image identity measurement completion flags are incomplete.' }
+          if ([bool]$report.certification_campaign_executed -ne $false -or [bool]$report.authoritative -ne $false -or [bool]$report.ga_eligible -ne $false) { throw 'RC4 image measurement improperly claims certification, authority or GA eligibility.' }
+          if ([string]$report.media_manifest_sha256 -ne $env:PSMATRIX_IMAGE_MEDIA_SHA) { throw 'RC4 image measurement report media-manifest SHA is stale.' }
+
+          $expected = @('windows-powershell-4.0','windows-powershell-5.0','windows-powershell-5.1')
+          $observed = @($report.runtimes | ForEach-Object { [string]$_.runtime_id } | Sort-Object -Unique)
+          if ($observed.Count -ne 3 -or (Compare-Object -ReferenceObject $expected -DifferenceObject $observed).Count -ne 0) { throw 'RC4 measured image runtime set is not exact.' }
+          $summaries = @()
+          foreach ($row in @($report.runtimes)) {
+              $runtime = [string]$row.runtime_id
+              $path = [System.IO.Path]::GetFullPath([string]$row.image_manifest_path)
+              $expectedPath = [System.IO.Path]::GetFullPath((Join-Path $env:PSMATRIX_IMAGE_CONFIG_ROOT ($runtime + '-image.json')))
+              if ($path -ne $expectedPath -or -not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "RC4 real image manifest path is invalid for $runtime." }
+              $sha = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($sha -ne [string]$row.image_manifest_sha256) { throw "RC4 real image manifest SHA changed for $runtime." }
+              if ([string]$row.vm_id -eq '' -or [string]$row.snapshot_id -eq '') { throw "RC4 Hyper-V identity binding is incomplete for $runtime." }
+              if ([string]$row.measured_identity.edition -ne 'Desktop' -or [string]$row.measured_identity.architecture -ne 'x64') { throw "RC4 measured PowerShell identity is not Desktop/x64 for $runtime." }
+              $summaries += [ordered]@{
+                  runtime_id = $runtime
+                  image_id = [string]$row.image_id
+                  worker_id = [string]$row.worker_id
+                  image_manifest_sha256 = $sha
+                  endpoint_sha256 = [string]$row.endpoint_sha256
+                  vm_id = [string]$row.vm_id
+                  snapshot_id = [string]$row.snapshot_id
+                  powershell_version = [string]$row.measured_identity.powershell_version
+                  product_name = [string]$row.measured_identity.product_name
+                  os_version = [string]$row.measured_identity.os_version
+                  os_build = [string]$row.measured_identity.os_build
+                  fixture_pack_sha256 = [string]$row.fixture_pack_sha256
+              }
+          }
+
+          $status = [ordered]@{
+              schema = 1
+              kind = 'psmatrix.windows-authority-image-identity-measurement-status'
+              status = 'IMAGE_IDENTITIES_MEASURED_ENDPOINTS_VALIDATED'
+              release_version = '2.0.0rc4'
+              release_commit = $env:RELEASE_COMMIT
+              control_head = $env:CONTROL_HEAD
+              active_release_lock_sha256 = $env:PSMATRIX_IMAGE_LOCK_SHA
+              provisioning_run_id = [int64]$env:PROVISIONING_RUN_ID
+              provisioning_run_attempt = [int]$env:PROVISIONING_RUN_ATTEMPT
+              media_manifest_sha256 = $env:PSMATRIX_IMAGE_MEDIA_SHA
+              image_measurement_report_sha256 = (Get-FileHash -LiteralPath $env:PSMATRIX_IMAGE_REPORT -Algorithm SHA256).Hash.ToLowerInvariant()
+              runtime_count = 3
+              runtimes = @($summaries | Sort-Object runtime_id)
+              actual_os_identity_measured = $true
+              real_endpoint_manifests_validated = $true
+              image_manifests_written = $true
+              certification_campaign_executed = $false
+              remote_worker_results_uploaded = $false
+              endpoint_private_material_uploaded = $false
+              creates_virtual_machines = $false
+              creates_checkpoints = $false
+              authoritative = $false
+              ga_eligible = $false
+              next_required = @(
+                  'Run repeated certification campaigns against all three exact real endpoints and measured image manifests.',
+                  'Verify snapshot reset before and after every certification run.',
+                  'Bind the three repeated campaigns to the exact RC4 release binding before authoritative-matrix closure.'
+              )
+          }
+          [System.IO.File]::WriteAllText((Join-Path $env:PSMATRIX_IMAGE_EVIDENCE 'image-identity-measurement-status.json'),(($status | ConvertTo-Json -Depth 12)+[Environment]::NewLine),[System.Text.UTF8Encoding]::new($false))
+          Write-Host 'rc4_image_identity_measurement=IMAGE_IDENTITIES_MEASURED_ENDPOINTS_VALIDATED'
+
+      - name: Roll back current-run image manifests if workflow fails after materialization
+        if: failure()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if (-not [string]::IsNullOrWhiteSpace($env:PSMATRIX_IMAGE_REPORT) -and (Test-Path -LiteralPath $env:PSMATRIX_IMAGE_REPORT -PathType Leaf)) {
+              try {
+                  $report = Get-Content -LiteralPath $env:PSMATRIX_IMAGE_REPORT -Raw | ConvertFrom-Json
+                  foreach ($row in @($report.runtimes)) {
+                      $path = [System.IO.Path]::GetFullPath([string]$row.image_manifest_path)
+                      $expected = [System.IO.Path]::GetFullPath((Join-Path $env:PSMATRIX_IMAGE_CONFIG_ROOT ([string]$row.runtime_id + '-image.json')))
+                      if ($path -eq $expected -and (Test-Path -LiteralPath $path -PathType Leaf)) {
+                          $sha = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+                          if ($sha -eq [string]$row.image_manifest_sha256) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+                      }
+                  }
+                  Remove-Item -LiteralPath $env:PSMATRIX_IMAGE_REPORT -Force -ErrorAction SilentlyContinue
+              } catch { Write-Warning "RC4 image-measurement rollback could not fully inspect current-run report: $($_.Exception.Message)" }
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:PSMATRIX_IMAGE_EVIDENCE)) {
+              New-Item -ItemType Directory -Path $env:PSMATRIX_IMAGE_EVIDENCE -Force | Out-Null
+              $failure = [ordered]@{
+                  schema = 1
+                  kind = 'psmatrix.windows-authority-image-identity-measurement-status'
+                  status = 'FAIL'
+                  release_version = '2.0.0rc4'
+                  release_commit = $env:RELEASE_COMMIT
+                  control_head = $env:CONTROL_HEAD
+                  provisioning_run_id = $env:PROVISIONING_RUN_ID
+                  provisioning_run_attempt = $env:PROVISIONING_RUN_ATTEMPT
+                  certification_campaign_executed = $false
+                  remote_worker_results_uploaded = $false
+                  endpoint_private_material_uploaded = $false
+                  creates_virtual_machines = $false
+                  creates_checkpoints = $false
+                  authoritative = $false
+                  ga_eligible = $false
+              }
+              [System.IO.File]::WriteAllText((Join-Path $env:PSMATRIX_IMAGE_EVIDENCE 'image-identity-measurement-failure.json'),(($failure | ConvertTo-Json -Depth 8)+[Environment]::NewLine),[System.Text.UTF8Encoding]::new($false))
+          }
+
+      - name: Upload sanitized RC4 image-measurement status only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-authority-rc4-image-identity-measurement-status
+          path: ${{ runner.temp }}\psmatrix-rc4-image-measurement-evidence
+          if-no-files-found: error
+          retention-days: 30
