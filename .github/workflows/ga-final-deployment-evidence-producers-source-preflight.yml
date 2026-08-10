@@ -1,0 +1,207 @@
+name: production-ga-final-deployment-evidence-producers-source-preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["final/2.0.0-deployment-evidence-producers"]
+    paths:
+      - ".github/workflows/ga-final-deployment-evidence-producers-source-preflight.yml"
+      - ".github/workflows/ga-final-public-auth-live-probe.yml"
+      - ".github/workflows/ga-final-public-oauth.yml"
+      - ".github/workflows/ga-final-public-mtls.yml"
+      - "ga-packs/03-authoritative-windows/final-deployment-evidence-producer-contract.json"
+      - "scripts/ga/probe_final_public_auth.py"
+      - "tests/test_final_deployment_evidence_producers.py"
+  pull_request:
+    branches: ["final/2.0.0-ci-evidence-producers-anchor"]
+    paths:
+      - ".github/workflows/ga-final-deployment-evidence-producers-source-preflight.yml"
+      - ".github/workflows/ga-final-public-auth-live-probe.yml"
+      - ".github/workflows/ga-final-public-oauth.yml"
+      - ".github/workflows/ga-final-public-mtls.yml"
+      - "ga-packs/03-authoritative-windows/final-deployment-evidence-producer-contract.json"
+      - "scripts/ga/probe_final_public_auth.py"
+      - "tests/test_final_deployment_evidence_producers.py"
+
+concurrency:
+  group: production-ga-final-deployment-evidence-producers-source-preflight-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  final-deployment-producer-source-preflight:
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 50
+    permissions:
+      contents: read
+    env:
+      PYTHONPATH: ${{ github.workspace }}\src
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+      CI_PRODUCER_ANCHOR: 89866c0e7eaf0aa10c25fdbbc900e2f5bdaea97e
+      FINAL_RELEASE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
+
+    steps:
+      - name: Verify trusted NAVEAX source runner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') {
+              throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS"
+          }
+          Write-Host 'final_deployment_producer_source_runner=PASS'
+
+      - name: Check out exact deployment producer control source with full history
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact seven-path deployment control closure and evaluator producer count
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($env:EXPECTED_HEAD -cnotmatch '^[0-9a-f]{40}$' -or $head -ne $env:EXPECTED_HEAD.ToLowerInvariant()) { throw "Exact deployment producer head mismatch: $head / $env:EXPECTED_HEAD" }
+          if (-not [string]::IsNullOrWhiteSpace((git status --porcelain))) { throw 'Deployment producer source checkout is dirty.' }
+          foreach ($sha in @($env:CI_PRODUCER_ANCHOR,$env:FINAL_RELEASE_COMMIT)) {
+              git cat-file -e "$sha^{commit}"
+              if ($LASTEXITCODE -ne 0) { throw "Frozen source commit is unavailable: $sha" }
+          }
+          git merge-base --is-ancestor $env:CI_PRODUCER_ANCHOR $head
+          if ($LASTEXITCODE -ne 0) { throw 'CI producer anchor is not an ancestor of deployment producer controls.' }
+
+          $contract = Get-Content 'ga-packs\03-authoritative-windows\final-deployment-evidence-producer-contract.json' -Raw | ConvertFrom-Json
+          if ([int]$contract.schema -ne 1 -or [string]$contract.kind -ne 'psmatrix.final-deployment-evidence-producer-contract') { throw 'Final deployment producer contract identity mismatch.' }
+          if ([string]$contract.version -ne '2.0.0' -or [string]$contract.final_release_commit -ne $env:FINAL_RELEASE_COMMIT -or [string]$contract.ci_producer_anchor -ne $env:CI_PRODUCER_ANCHOR) { throw 'Final deployment producer frozen source identity mismatch.' }
+          if ([bool]$contract.control_source.runtime_source_changes_allowed) { throw 'Final deployment producer control layer must not permit runtime source changes.' }
+          if ([string]$contract.deployment_authority.environment -ne 'production-ga-deployment-signing' -or [bool]$contract.deployment_authority.private_key_allowed_in_live_probe) { throw 'Deployment authority isolation contract mismatch.' }
+          if ([bool]$contract.cross_gate.same_live_report_sha256_required -ne $true -or [bool]$contract.cross_gate.different_public_endpoints_required -ne $true -or [bool]$contract.cross_gate.same_deployment_authority_required -ne $true) { throw 'OAuth/mTLS cross-gate contract mismatch.' }
+          if ([int]$contract.shared_live_probe.max_rate_limit_attempts -ne 32 -or [bool]$contract.shared_live_probe.private_probe_material_allowed_in_artifact) { throw 'Shared public-auth bounded probe contract mismatch.' }
+
+          $changed = @((git diff --name-only "$env:CI_PRODUCER_ANCHOR..$head") | ForEach-Object { $_.Trim().Replace('\','/') } | Where-Object { $_ } | Sort-Object -Unique)
+          $allowed = @($contract.control_source.changed_path_allowlist | ForEach-Object { ([string]$_).Replace('\','/') } | Sort-Object -Unique)
+          $delta = @(Compare-Object -ReferenceObject $allowed -DifferenceObject $changed)
+          if ($delta.Count -ne 0) { throw "Final deployment producer changed-path closure mismatch: $($delta | Out-String)" }
+          if ($changed.Count -ne 7) { throw "Expected exactly seven deployment producer control changed paths; observed $($changed.Count)." }
+          $runtime = @($changed | Where-Object { $_ -like 'src/psmatrix/*' })
+          if ($runtime.Count -ne 0) { throw "Deployment producer controls modified runtime source: $($runtime -join ',')" }
+
+          $live = Get-Content '.github\workflows\ga-final-public-auth-live-probe.yml' -Raw
+          $oauth = Get-Content '.github\workflows\ga-final-public-oauth.yml' -Raw
+          $mtls = Get-Content '.github\workflows\ga-final-public-mtls.yml' -Raw
+          if ($live.Contains('PSMATRIX_GA_DEPLOYMENT_PRIVATE_KEY') -or $live.Contains('PSMATRIX_GA_DEPLOYMENT_PUBLIC_KEY')) { throw 'Shared live-probe workflow must not access the deployment signing authority.' }
+          foreach ($text in @($oauth,$mtls)) {
+              if (-not $text.Contains('environment: production-ga-deployment-signing')) { throw 'OAuth/mTLS proof workflow is not bound to the protected deployment-signing environment.' }
+              if ($text.Split('secrets.PSMATRIX_GA_DEPLOYMENT_PRIVATE_KEY').Count -ne 2) { throw 'OAuth/mTLS proof workflow must reference the deployment private-key secret exactly once.' }
+              if ($text.Split('secrets.PSMATRIX_GA_DEPLOYMENT_PUBLIC_KEY').Count -ne 2) { throw 'OAuth/mTLS proof workflow must reference the deployment public-key secret exactly once.' }
+              if (-not $text.Contains('production-ga-final-public-auth-live-probe')) { throw 'OAuth/mTLS proof workflow is not provenance-bound to the shared live probe.' }
+          }
+
+          $evaluator = Get-Content 'ga-packs\03-authoritative-windows\final-ga-evaluator-control-contract.json' -Raw | ConvertFrom-Json
+          $gateNames = @($evaluator.required_gates | ForEach-Object { [string]$_ })
+          if ($gateNames.Count -ne 11) { throw 'Evaluator no longer has exactly eleven required gates.' }
+          $present = 0
+          $missing = @()
+          foreach ($gate in $gateNames) {
+              $entry = $evaluator.evidence_sources.$gate
+              $path = [string]$entry.workflow_path
+              if (Test-Path -LiteralPath $path -PathType Leaf) {
+                  $text = Get-Content -LiteralPath $path -Raw
+                  if (-not $text.Contains("name: $([string]$entry.workflow)")) { throw "Producer workflow identity mismatch: $gate / $path" }
+                  $present++
+              } else {
+                  $missing += $gate
+              }
+          }
+          if ($present -ne 6) { throw "This deployment producer layer must expose exactly six of eleven producer workflow sources; observed $present." }
+          if ($missing.Count -ne 5) { throw "This deployment producer layer must leave exactly five producer sources pending; observed $($missing.Count)." }
+          Write-Host "validated_exact_deployment_producer_head=$head"
+          Write-Host 'deployment_producer_control_changed_paths=7'
+          Write-Host 'runtime_source_changes=0'
+          Write-Host "evaluator_producer_sources_present=$present"
+          Write-Host 'evaluator_producer_sources_required=11'
+          Write-Host "evaluator_producer_sources_pending=$($missing -join ',')"
+          Write-Host 'oauth_mtls_shared_live_report_required=true'
+
+      - name: Compile final deployment producer controls
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m py_compile `
+            scripts/ga/probe_final_public_auth.py `
+            tests/test_final_deployment_evidence_producers.py
+          if ($LASTEXITCODE -ne 0) { throw 'Final deployment producer Python compile failed.' }
+          Write-Host 'final_deployment_producer_compile=PASS'
+
+      - name: Run final deployment producer and inherited GA contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m unittest -v `
+            tests.test_final_deployment_evidence_producers `
+            tests.test_final_ci_evidence_producers `
+            tests.test_final_ga_evaluator_controls
+          if ($LASTEXITCODE -ne 0) { throw 'Final deployment producer source contract suite failed.' }
+          Write-Host 'final_deployment_producer_source_contract=PASS'
+
+      - name: Parse proof CLI surfaces without executing public probes or signing
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python scripts/ga/probe_final_public_auth.py --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Public-auth probe CLI parse failed.' }
+          python -m psmatrix.cli ga proof-create --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'GA proof-create CLI parse failed.' }
+          python -m psmatrix.cli ga proof-verify --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'GA proof-verify CLI parse failed.' }
+          Write-Host 'final_deployment_producer_cli_parse=PASS'
+
+      - name: Scan every tracked source byte for exact PEM private-authority headers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import subprocess
+          from pathlib import Path
+          markers = {
+              b"-----BEGIN PRIVATE KEY-----",
+              b"-----BEGIN RSA PRIVATE KEY-----",
+              b"-----BEGIN EC PRIVATE KEY-----",
+              b"-----BEGIN OPENSSH PRIVATE KEY-----",
+              b"-----BEGIN ED25519 PRIVATE KEY-----",
+          }
+          root = Path.cwd().resolve()
+          tracked = [line for line in subprocess.check_output(["git", "ls-files"], text=True).splitlines() if line]
+          scanned = 0
+          total = 0
+          for relative in tracked:
+              path = root / relative
+              if not path.is_file():
+                  continue
+              scanned += 1
+              with path.open("rb") as handle:
+                  for raw_line in handle:
+                      total += len(raw_line)
+                      if raw_line.rstrip(b"\r\n").strip() in markers:
+                          raise SystemExit(f"tracked private-key PEM material detected: {relative}")
+          print(f"repository_private_authority_absence=PASS tracked_files={scanned} tracked_bytes={total} size_limit_applied=false")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Tracked-source private authority scan failed.' }
+
+      - name: Emit final deployment producer preparation summary
+        shell: pwsh
+        run: |
+          Write-Host "validated_exact_deployment_producer_head=$env:EXPECTED_HEAD"
+          Write-Host 'evaluator_producer_sources_present=6'
+          Write-Host 'evaluator_producer_sources_required=11'
+          Write-Host 'live_probe_executed=false'
+          Write-Host 'oauth_producer_executed=false'
+          Write-Host 'mtls_producer_executed=false'
+          Write-Host 'public_auth_probe_credentials_provisioned=UNVERIFIED_EXTERNAL'
+          Write-Host 'deployment_authority_provisioned=UNVERIFIED_EXTERNAL'
+          Write-Host 'deployment_private_key_read=false'
+          Write-Host 'final_ga_evaluator_invoked=false'
+          Write-Host 'ga_eligible=false'
