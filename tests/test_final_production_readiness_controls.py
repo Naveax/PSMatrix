@@ -182,6 +182,24 @@ class FinalProductionReadinessControlTests(unittest.TestCase):
                 with self.subTest(forbidden=forbidden), self.assertRaises(self.assembler.ProductionReadinessError):
                     self.assembler.assemble(contract_path=CONTRACT, receipts_dir=receipts, output=root / "summary.json")
 
+    def test_non_boolean_present_or_path_exists_is_rejected(self) -> None:
+        for field, environment, check_name in (
+            ("present", "production-ga-root-signing", "PSMATRIX_GA_ROOT_PRIVATE_KEY"),
+            ("path_exists", "production-ga-full-matrix", "PSMATRIX_FULL_MATRIX_HOME"),
+        ):
+            with tempfile.TemporaryDirectory(prefix=f"psmatrix-readiness-nonbool-{field}-") as temp:
+                root = Path(temp)
+                receipts = root / "receipts"
+                receipts.mkdir()
+                self._write_receipts(receipts)
+                target = receipts / f"{environment}.json"
+                value = json.loads(target.read_text(encoding="utf-8"))
+                row = next(item for item in value["checks"] if item["name"] == check_name)
+                row[field] = 1
+                target.write_text(json.dumps(value), encoding="utf-8")
+                with self.subTest(field=field), self.assertRaises(self.assembler.ProductionReadinessError):
+                    self.assembler.assemble(contract_path=CONTRACT, receipts_dir=receipts, output=root / "summary.json")
+
     def test_duplicate_receipt_check_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory(prefix="psmatrix-readiness-duplicate-") as temp:
             root = Path(temp)
