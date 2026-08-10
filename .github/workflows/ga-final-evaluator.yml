@@ -122,14 +122,15 @@ jobs:
           import json
           import os
           import pathlib
+          import subprocess
           import urllib.request
 
           root = pathlib.Path('control').resolve()
           head = os.environ['GITHUB_SHA'].lower()
-          actual = os.popen(f'git -C "{root}" rev-parse HEAD').read().strip().lower()
+          actual = subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'], text=True).strip().lower()
           if actual != head:
               raise SystemExit(f'exact evaluator control checkout mismatch: {actual} != {head}')
-          if os.popen(f'git -C "{root}" status --porcelain').read().strip():
+          if subprocess.check_output(['git','-C',str(root),'status','--porcelain'], text=True).strip():
               raise SystemExit('evaluator control checkout is dirty')
           contract = json.loads((root / 'ga-packs/03-authoritative-windows/final-ga-evaluator-control-contract.json').read_text(encoding='utf-8'))
           required = contract['required_gates']
@@ -345,18 +346,24 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $status = Get-Content (Join-Path $env:PSMATRIX_FINAL_GA_CANDIDATE 'final-ga-evaluator-candidate-status.json') -Raw | ConvertFrom-Json
           $evaluation = Get-Content (Join-Path $env:PSMATRIX_FINAL_GA_CANDIDATE 'ga-evaluation.candidate.json') -Raw | ConvertFrom-Json
+          $gates = @($evaluation.gates)
           if ([string]$status.status -ne 'ALL_11_GATES_PASS_ROOT_SIGNING_PENDING') { throw 'Final GA candidate status mismatch.' }
           if ([int]$status.gate_count -ne 11 -or [bool]$status.all_required_gates_pass -ne $true) { throw 'Final GA candidate did not pass all eleven gates.' }
-          if ([string]$evaluation.status -ne 'PASS' -or @($evaluation.gates.PSObject.Properties).Count -ne 11) { throw 'Final GA candidate evaluation is not exact 11-gate PASS.' }
-          foreach ($gate in $evaluation.gates.PSObject.Properties) {
-              if ([string]$gate.Value.status -ne 'PASS') { throw "Final GA candidate gate failed: $($gate.Name)" }
+          if ([string]$evaluation.status -ne 'PASS' -or $gates.Count -ne 11) { throw 'Final GA candidate evaluation is not exact 11-gate PASS.' }
+          $gateNames = @()
+          foreach ($gate in $gates) {
+              if ([string]$gate.status -ne 'PASS') { throw "Final GA candidate gate failed: $([string]$gate.gate)" }
+              $gateNames += [string]$gate.gate
           }
-          foreach ($field in @('root_expected_key_id_bound','root_private_key_read','final_ga_attestation_written','final_ga_attestation_verified','ga_eligible')) {
+          if (@($gateNames | Sort-Object -Unique).Count -ne 11) { throw 'Final GA candidate gate names are duplicated or incomplete.' }
+          foreach ($field in @('root_private_key_read','final_ga_attestation_written','final_ga_attestation_verified','ga_eligible')) {
               if ([bool]$status.$field) { throw "Unsafe pre-root-signing field is true: $field" }
           }
           if ([string]$status.private_key_scan.status -ne 'PASS' -or [bool]$status.private_key_scan.size_limit_applied) { throw 'Final GA candidate private-key scan boundary mismatch.' }
+          if ([int]$status.authority_closure.independent_role_key_count -ne 8) { throw 'Final GA policy authority-role independence closure is incomplete.' }
           Write-Host 'final_ga_candidate_evaluation=PASS'
           Write-Host 'required_gates_pass=11/11'
+          Write-Host 'independent_policy_authorities=8/8'
           Write-Host 'root_private_key_read=false'
           Write-Host 'final_ga_attestation_written=false'
           Write-Host 'ga_eligible=false'
@@ -370,7 +377,7 @@ jobs:
           retention-days: 30
 
   sign-final-ga:
-    name: Re-evaluate 11/11 with actual GA root and sign exact final attestation
+    name: Re-evaluate 11/11 and sign with independent GA root
     needs: evaluate-final-ga
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -407,16 +414,20 @@ jobs:
           import json
           import os
           from pathlib import Path
+
           root = Path('candidate')
           status = json.loads((root / 'final-ga-evaluator-candidate-status.json').read_text(encoding='utf-8'))
-          provenance = json.loads((root / 'final-ga-run-provenance.json').read_text(encoding='utf-8'))
+          provenance = json.loads((root / 'audit/final-ga-run-provenance.json').read_text(encoding='utf-8'))
           evaluation = json.loads((root / 'ga-evaluation.candidate.json').read_text(encoding='utf-8'))
+          gates = evaluation.get('gates')
           if status.get('status') != 'ALL_11_GATES_PASS_ROOT_SIGNING_PENDING' or status.get('gate_count') != 11 or status.get('all_required_gates_pass') is not True:
               raise SystemExit('root-free final GA candidate status mismatch')
           if provenance.get('execution_control_head') != os.environ['GITHUB_SHA'].lower():
               raise SystemExit('root-free candidate execution control head mismatch')
-          if evaluation.get('status') != 'PASS' or len(evaluation.get('gates') or {}) != 11:
+          if evaluation.get('status') != 'PASS' or not isinstance(gates, list) or len(gates) != 11:
               raise SystemExit('root-free candidate evaluation is not exact 11-gate PASS')
+          if any(not isinstance(item, dict) or item.get('status') != 'PASS' for item in gates):
+              raise SystemExit('root-free candidate contains a non-PASS gate')
           entries = []
           for path in sorted((item for item in root.rglob('*') if item.is_file()), key=lambda item: item.as_posix().casefold()):
               entries.append(f'{path.relative_to(root).as_posix()}\0{hashlib.sha256(path.read_bytes()).hexdigest()}\0{path.stat().st_size}\n')
@@ -426,7 +437,7 @@ jobs:
           print(f'final_ga_input_tree_sha256={tree}')
           PY
 
-      - name: Materialize GA root, re-evaluate eleven gates, sign, and verify
+      - name: Materialize independent GA root, re-evaluate, sign, and verify
         shell: bash
         env:
           GA_ROOT_PRIVATE_KEY: ${{ secrets.PSMATRIX_GA_ROOT_PRIVATE_KEY }}
@@ -454,37 +465,37 @@ jobs:
             --policy candidate/ga-policy.json \
             --private-key "$key_root/root.private.pem" \
             --public-key "$key_root/root.public.pem" \
-            --evaluation-output "$signed/ga-evaluation.root-bound.json" \
+            --evaluation-output "$signed/ga-evaluation.root-signed.json" \
             --output "$signed/psmatrix-2.0.0-final-ga.dsse.json"
 
-          PYTHONPATH=control/src python -m psmatrix.cli ga verify \
-            --attestation "$signed/psmatrix-2.0.0-final-ga.dsse.json" \
-            --public-key "$key_root/root.public.pem" \
-            --output "$signed/psmatrix-2.0.0-final-ga-verification.json"
-
-          cp "$key_root/root.public.pem" "$signed/psmatrix-2.0.0-ga-root-public.pem"
-          PSMATRIX_FINAL_GA_SIGNED="$signed" PYTHONPATH=control/src python - <<'PY'
+          PSMATRIX_GA_ROOT_PUBLIC_PATH="$key_root/root.public.pem" PSMATRIX_FINAL_GA_SIGNED="$signed" PYTHONPATH=control/src python - <<'PY'
           import hashlib
           import json
           import os
           import shutil
           from pathlib import Path
+          from psmatrix.ga import verify_ga_attestation
           from psmatrix.signing import public_key_id
+          from psmatrix.util import atomic_write_json, read_json
 
           candidate = Path('candidate')
           signed = Path(os.environ['PSMATRIX_FINAL_GA_SIGNED'])
-          evaluation = json.loads((signed / 'ga-evaluation.root-bound.json').read_text(encoding='utf-8'))
-          verification = json.loads((signed / 'psmatrix-2.0.0-final-ga-verification.json').read_text(encoding='utf-8'))
-          if evaluation.get('status') != 'PASS' or len(evaluation.get('gates') or {}) != 11:
-              raise SystemExit('root-bound GA evaluation is not exact 11-gate PASS')
-          for name, gate in evaluation['gates'].items():
-              if not isinstance(gate, dict) or gate.get('status') != 'PASS':
-                  raise SystemExit(f'root-bound final GA gate failed: {name}')
+          root_public = Path(os.environ['PSMATRIX_GA_ROOT_PUBLIC_PATH'])
+          evaluation = json.loads((signed / 'ga-evaluation.root-signed.json').read_text(encoding='utf-8'))
+          gates = evaluation.get('gates')
+          if evaluation.get('status') != 'PASS' or not isinstance(gates, list) or len(gates) != 11:
+              raise SystemExit('GA-root signing re-evaluation is not exact 11-gate PASS')
+          if any(not isinstance(item, dict) or item.get('status') != 'PASS' for item in gates):
+              raise SystemExit('GA-root signing re-evaluation contains a non-PASS gate')
+          envelope = read_json(signed / 'psmatrix-2.0.0-final-ga.dsse.json')
+          verification = verify_ga_attestation(envelope, public_key=root_public)
           if verification.get('valid') is not True:
               raise SystemExit('final GA DSSE verification did not PASS')
-          root_public = signed / 'psmatrix-2.0.0-ga-root-public.pem'
-          release_public = candidate / 'release-public.pem'
-          root_id = public_key_id(root_public)
+          atomic_write_json(signed / 'psmatrix-2.0.0-final-ga-verification.json', verification)
+          root_copy = signed / 'psmatrix-2.0.0-ga-root-public.pem'
+          shutil.copyfile(root_public, root_copy)
+          release_public = candidate / 'keys/release.pem'
+          root_id = public_key_id(root_copy)
           release_id = public_key_id(release_public)
           if root_id == release_id:
               raise SystemExit('GA root authority must remain independent from release authority')
@@ -505,9 +516,10 @@ jobs:
               'final_ga_attestation_verified': True,
               'ga_eligible': True,
           }
-          (signed / 'final-ga-attestation-status.json').write_text(json.dumps(status, indent=2, sort_keys=True) + '\n', encoding='utf-8')
-          for name in ('ga-policy.json','final-ga-run-provenance.json','final-ga-evaluator-candidate-status.json'):
-              shutil.copyfile(candidate / name, signed / name)
+          atomic_write_json(signed / 'final-ga-attestation-status.json', status)
+          shutil.copyfile(candidate / 'ga-policy.json', signed / 'ga-policy.json')
+          shutil.copyfile(candidate / 'audit/final-ga-run-provenance.json', signed / 'final-ga-run-provenance.json')
+          shutil.copyfile(candidate / 'final-ga-evaluator-candidate-status.json', signed / 'final-ga-evaluator-candidate-status.json')
           markers = (b'-----BEGIN PRIVATE KEY-----', b'-----BEGIN RSA PRIVATE KEY-----', b'-----BEGIN EC PRIVATE KEY-----', b'-----BEGIN OPENSSH PRIVATE KEY-----', b'-----BEGIN ED25519 PRIVATE KEY-----')
           for path in signed.rglob('*'):
               if path.is_file() and any(marker in path.read_bytes() for marker in markers):
@@ -518,7 +530,8 @@ jobs:
                   continue
               sums.append(f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n')
           (signed / 'SHA256SUMS.txt').write_text(''.join(sums), encoding='utf-8', newline='\n')
-          print('root_bound_final_ga_evaluation=PASS')
+          print('ga_root_release_authorities_independent=true')
+          print('root_signed_final_ga_evaluation=PASS')
           print('required_gates_pass=11/11')
           print('final_ga_attestation_verified=true')
           print('ga_eligible=true')
