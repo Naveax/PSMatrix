@@ -5,6 +5,20 @@
   "version": "2.0.0",
   "final_release_commit": "02cef95d40cf524ce00f9d917188343dc49e6f2c",
   "final_release_source_branch": "final/2.0.0-release-candidate-anchor",
+  "control_source": {
+    "runtime_source_changes_allowed": false,
+    "changed_path_allowlist": [
+      ".github/workflows/ga-windows-authority-final-release-lock-promotion.yml",
+      ".github/workflows/ga-windows-authority-final-release-lock-review.yml",
+      ".github/workflows/ga-windows-authority-final-release-lock-signing-source-preflight.yml",
+      ".github/workflows/ga-windows-authority-final-release-sign-from-lock.yml",
+      "ga-packs/03-authoritative-windows/final-release-lock-signing-control-contract.json",
+      "scripts/ga/build_windows_authority_final_release_lock_draft.py",
+      "scripts/ga/promote_windows_authority_final_release_lock.py",
+      "scripts/ga/sign_windows_authority_final_release.py",
+      "tests/test_windows_authority_final_release_lock_signing.py"
+    ]
+  },
   "rc4_authority_continuity": {
     "version": "2.0.0rc4",
     "enrollment_control_head": "0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63",
