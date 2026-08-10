@@ -79,6 +79,10 @@ jobs:
           if ([bool]$contract.control_source.runtime_source_changes_allowed) { throw 'Final CI producer control layer must not permit runtime source changes.' }
           if ([string]$contract.ci_authority.environment -ne 'production-ga-ci-signing' -or [bool]$contract.ci_authority.private_key_allowed_on_persistent_self_hosted_runner) { throw 'Final CI authority isolation contract mismatch.' }
           if ([string]$contract.full_runtime_matrix.endpoint_environment -ne 'production-ga-full-matrix' -or [string]$contract.full_runtime_matrix.endpoint_root_variable -ne 'PSMATRIX_FULL_MATRIX_ENDPOINT_ROOT') { throw 'Full-matrix endpoint prerequisite contract mismatch.' }
+          if ([string]$contract.full_runtime_matrix.home_variable -ne 'PSMATRIX_FULL_MATRIX_HOME' -or [bool]$contract.full_runtime_matrix.ambient_default_home_allowed) { throw 'Full-matrix explicit runtime/trust home contract mismatch.' }
+          $matrixWorkflow = Get-Content '.github\workflows\ga-final-full-runtime-matrix.yml' -Raw
+          if (-not $matrixWorkflow.Contains('PSMATRIX_HOME: ${{ vars.PSMATRIX_FULL_MATRIX_HOME }}')) { throw 'Full-matrix workflow does not bind the dedicated PSMatrix home.' }
+          if (-not $matrixWorkflow.Contains('PSMATRIX_FULL_MATRIX_HOME is missing from production-ga-full-matrix.')) { throw 'Full-matrix workflow does not fail closed when the dedicated home is missing.' }
 
           $changed = @((git diff --name-only "$env:EVALUATOR_ANCHOR..$head") | ForEach-Object { $_.Trim().Replace('\','/') } | Where-Object { $_ } | Sort-Object -Unique)
           $allowed = @($contract.control_source.changed_path_allowlist | ForEach-Object { ([string]$_).Replace('\','/') } | Sort-Object -Unique)
@@ -113,6 +117,7 @@ jobs:
           Write-Host "evaluator_producer_sources_present=$present"
           Write-Host 'evaluator_producer_sources_required=11'
           Write-Host "evaluator_producer_sources_pending=$($missing -join ',')"
+          Write-Host 'full_matrix_ambient_default_home_allowed=false'
 
       - name: Compile final CI producer controls
         shell: pwsh
@@ -205,6 +210,7 @@ jobs:
           Write-Host 'full_matrix_producer_executed=false'
           Write-Host 'ci_authority_provisioned=UNVERIFIED_EXTERNAL'
           Write-Host 'full_matrix_endpoint_bundle_provisioned=UNVERIFIED_EXTERNAL'
+          Write-Host 'full_matrix_runtime_trust_home_provisioned=UNVERIFIED_EXTERNAL'
           Write-Host 'ci_private_key_read=false'
           Write-Host 'final_ga_evaluator_invoked=false'
           Write-Host 'ga_eligible=false'
