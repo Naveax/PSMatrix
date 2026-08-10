@@ -28,7 +28,57 @@ permissions:
   statuses: write
 
 jobs:
+  registration-probe:
+    name: Register exact-head source-preflight before NAVEAX scheduling
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      statuses: write
+    env:
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+      STATUS_CONTEXT: production-readiness/source-preflight
+    steps:
+      - name: Publish pending exact-head source-preflight status
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]] || { echo 'expected exact head is invalid' >&2; exit 1; }
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          url = f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}/statuses/{os.environ['EXPECTED_HEAD']}"
+          payload = json.dumps({
+              "state": "pending",
+              "target_url": f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+              "description": "NAVEAX exact-head source preflight queued",
+              "context": os.environ['STATUS_CONTEXT'],
+          }).encode("utf-8")
+          request = urllib.request.Request(
+              url,
+              data=payload,
+              method="POST",
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                  "X-GitHub-Api-Version": "2026-03-10",
+                  "Content-Type": "application/json",
+                  "User-Agent": "psmatrix-production-readiness-registration-probe",
+              },
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              value = json.load(response)
+          if value.get("state") != "pending" or value.get("context") != os.environ['STATUS_CONTEXT']:
+              raise SystemExit("commit-status registration response mismatch")
+          print(f"production_readiness_workflow_registration=PASS run_id={os.environ['GITHUB_RUN_ID']}")
+          PY
+
   production-readiness-source-preflight:
+    needs: registration-probe
     runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
     timeout-minutes: 60
     permissions:
@@ -48,27 +98,6 @@ jobs:
           $ErrorActionPreference = 'Stop'
           if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') { throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS" }
           Write-Host 'production_readiness_source_runner=PASS'
-
-      - name: Publish pending exact-head source-preflight status
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $headers = @{
-              Accept = 'application/vnd.github+json'
-              Authorization = "Bearer $env:GH_TOKEN"
-              'X-GitHub-Api-Version' = '2026-03-10'
-              'User-Agent' = 'psmatrix-production-readiness-preflight'
-          }
-          $body = @{
-              state = 'pending'
-              target_url = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
-              description = 'NAVEAX exact-head source preflight running'
-              context = $env:STATUS_CONTEXT
-          } | ConvertTo-Json -Compress
-          Invoke-RestMethod -Method Post -Uri "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/statuses/$env:EXPECTED_HEAD" -Headers $headers -ContentType 'application/json' -Body $body | Out-Null
-          Write-Host "production_readiness_commit_status=PENDING context=$env:STATUS_CONTEXT"
 
       - name: Check out exact production-readiness control source with full history
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
