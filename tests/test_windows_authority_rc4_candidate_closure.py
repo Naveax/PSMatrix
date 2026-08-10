@@ -10,7 +10,7 @@ BUILDER = ROOT / "scripts" / "ga" / "build_windows_authority_rc4_candidate_closu
 WORKFLOW = ROOT / ".github" / "workflows" / "ga-windows-authority-rc4-candidate-closure-selfhosted.yml"
 CONTRACT = ROOT / "ga-packs" / "03-authoritative-windows" / "rc4-candidate-closure-workflow-contract.json"
 GA_EVALUATOR = ROOT / "src" / "psmatrix" / "ga.py"
-PREFLIGHT = ROOT / ".github" / "workflows" / "ga-windows-authority-rc4-source-preflight.yml"
+PREFLIGHT = ROOT / ".github" / "workflows" / "ga-windows-authority-rc4-candidate-closure-source-preflight.yml"
 
 
 def _load_builder():
