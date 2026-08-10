@@ -191,6 +191,9 @@ class FinalCIEvidenceProducerTests(unittest.TestCase):
             "name: production-ga-final-full-runtime-matrix",
             "environment: production-ga-full-matrix",
             "PSMATRIX_FULL_MATRIX_ENDPOINT_ROOT",
+            "shutil.copytree(source, destination, symlinks=False)",
+            "full-matrix endpoint bundle contains a symlink",
+            "endpoint_bundle_copy=PASS method=shutil.copytree symlinks=false",
             "canonical matrix cardinality mismatch",
             "targets=25 remote=13 differential=strict",
             "Require all twenty-five matrix targets READY before execution",
@@ -213,6 +216,7 @@ class FinalCIEvidenceProducerTests(unittest.TestCase):
         self.assertEqual(text.count("secrets.PSMATRIX_GA_CI_PRIVATE_KEY"), 1)
         compute_prefix = text[: text.index("sign-full-matrix:")]
         self.assertNotIn("PSMATRIX_GA_CI_PRIVATE_KEY", compute_prefix)
+        self.assertNotIn("Copy-Item -LiteralPath $env:FULL_MATRIX_ENDPOINT_ROOT", text)
         self.assertNotIn("windows-authority-rc4", text)
         self.assertNotIn("ga_eligible=true", text)
 
