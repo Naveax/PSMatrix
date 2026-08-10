@@ -2,7 +2,7 @@ name: production-ga-windows-authority-rc4-candidate-closure-hardening-source-pre
 on:
   workflow_dispatch:
   push:
-    branches: [main, "release/**"]
+    branches: ["release/**"]
     paths:
       - ".github/workflows/ga-windows-authority-rc4-candidate-closure-hardening-source-preflight.yml"
       - ".github/workflows/ga-windows-authority-rc4-candidate-closure-hardened-selfhosted.yml"
@@ -12,7 +12,7 @@ on:
       - "ga-packs/03-authoritative-windows/rc4-candidate-closure-hardening-workflow-contract.json"
       - "tests/test_windows_authority_rc4_candidate_closure_hardening.py"
   pull_request:
-    branches: [main, "release/**"]
+    branches: ["release/**"]
     paths:
       - ".github/workflows/ga-windows-authority-rc4-candidate-closure-hardening-source-preflight.yml"
       - ".github/workflows/ga-windows-authority-rc4-candidate-closure-hardened-selfhosted.yml"
