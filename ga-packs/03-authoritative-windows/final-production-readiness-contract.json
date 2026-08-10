@@ -10,44 +10,143 @@
     "artifact": "psmatrix-2.0.0-production-readiness"
   },
   "environments": [
-    {"name":"production-ga-release-signing","runner":"ubuntu-latest","required_secrets":["PSMATRIX_RELEASE_PRIVATE_KEY"],"required_vars":[],"path_vars":[]},
-    {"name":"production-ga-windows-lab","runner":"ubuntu-latest","required_secrets":["PSMATRIX_WINDOWS_LAB_PRIVATE_KEY","PSMATRIX_WINDOWS_LAB_PUBLIC_KEY"],"required_vars":[],"path_vars":[]},
-    {"name":"production-ga-ci-signing","runner":"ubuntu-latest","required_secrets":["PSMATRIX_GA_CI_PRIVATE_KEY","PSMATRIX_GA_CI_PUBLIC_KEY"],"required_vars":[],"path_vars":[]},
-    {"name":"production-ga-full-matrix","runner":"NAVEAX","required_secrets":[],"required_vars":["PSMATRIX_FULL_MATRIX_ENDPOINT_ROOT","PSMATRIX_FULL_MATRIX_HOME"],"path_vars":["PSMATRIX_FULL_MATRIX_ENDPOINT_ROOT","PSMATRIX_FULL_MATRIX_HOME"]},
     {
-      "name":"production-ga-public-auth-probe",
-      "runner":"ubuntu-latest",
-      "required_secrets":["PSMATRIX_OAUTH_VALID_TOKEN","PSMATRIX_OAUTH_EXPIRED_TOKEN","PSMATRIX_OAUTH_WRONG_AUDIENCE_TOKEN","PSMATRIX_OAUTH_MISSING_SCOPE_TOKEN","PSMATRIX_OAUTH_REPLAY_TOKEN","PSMATRIX_OAUTH_RATE_LIMIT_TOKEN","PSMATRIX_MTLS_CURRENT_CERT","PSMATRIX_MTLS_CURRENT_KEY","PSMATRIX_MTLS_ROTATION_CERT","PSMATRIX_MTLS_ROTATION_KEY","PSMATRIX_MTLS_UNTRUSTED_CERT","PSMATRIX_MTLS_UNTRUSTED_KEY","PSMATRIX_MTLS_REVOKED_CERT","PSMATRIX_MTLS_REVOKED_KEY"],
-      "required_vars":["PSMATRIX_OAUTH_PUBLIC_ENDPOINT","PSMATRIX_OAUTH_DISCOVERY_URL","PSMATRIX_OAUTH_EXPECTED_ISSUER","PSMATRIX_OAUTH_EXPECTED_AUDIENCE","PSMATRIX_OAUTH_REQUIRED_SCOPE","PSMATRIX_OAUTH_RATE_LIMIT_ATTEMPTS","PSMATRIX_MTLS_PUBLIC_ENDPOINT","PSMATRIX_MTLS_CERT_FINGERPRINT_HEADER"],
-      "path_vars":[]
+      "name": "production-ga-release-signing",
+      "runner": "ubuntu-latest",
+      "producer_workflow_path": ".github/workflows/ga-windows-authority-final-release-sign-from-lock.yml",
+      "required_secrets": ["PSMATRIX_RELEASE_PRIVATE_KEY"],
+      "required_vars": [],
+      "path_vars": []
     },
-    {"name":"production-ga-deployment-signing","runner":"ubuntu-latest","required_secrets":["PSMATRIX_GA_DEPLOYMENT_PRIVATE_KEY","PSMATRIX_GA_DEPLOYMENT_PUBLIC_KEY"],"required_vars":[],"path_vars":[]},
-    {"name":"production-ga-external-otlp-probe","runner":"ubuntu-latest","required_secrets":["PSMATRIX_GA_EXTERNAL_OTLP_HEADERS_JSON"],"required_vars":["PSMATRIX_GA_EXTERNAL_OTLP_ENDPOINT"],"path_vars":[]},
-    {"name":"production-ga-operations-signing","runner":"ubuntu-latest","required_secrets":["PSMATRIX_GA_OPERATIONS_PRIVATE_KEY","PSMATRIX_GA_OPERATIONS_PUBLIC_KEY"],"required_vars":[],"path_vars":[]},
-    {"name":"production-ga-recovery-signing","runner":"ubuntu-latest","required_secrets":["PSMATRIX_GA_RECOVERY_PRIVATE_KEY","PSMATRIX_GA_RECOVERY_PUBLIC_KEY"],"required_vars":[],"path_vars":[]},
-    {"name":"production-ga-security-review-signing","runner":"ubuntu-latest","required_secrets":["PSMATRIX_GA_SECURITY_REVIEW_PRIVATE_KEY","PSMATRIX_GA_SECURITY_REVIEW_PUBLIC_KEY"],"required_vars":["PSMATRIX_GA_SECURITY_REVIEW_REPORT_JSON"],"path_vars":[]},
-    {"name":"production-ga-vulnerability-scanner-signing","runner":"ubuntu-latest","required_secrets":["PSMATRIX_GA_VULNERABILITY_SCANNER_PRIVATE_KEY","PSMATRIX_GA_VULNERABILITY_SCANNER_PUBLIC_KEY"],"required_vars":[],"path_vars":[]},
-    {"name":"production-ga-root-signing","runner":"ubuntu-latest","required_secrets":["PSMATRIX_GA_ROOT_PRIVATE_KEY","PSMATRIX_GA_ROOT_PUBLIC_KEY"],"required_vars":[],"path_vars":[]}
+    {
+      "name": "production-ga-windows-lab",
+      "runner": "ubuntu-latest",
+      "producer_workflow_path": ".github/workflows/ga-windows-authority-final-windows-evidence-rebind.yml",
+      "required_secrets": ["PSMATRIX_WINDOWS_LAB_PRIVATE_KEY", "PSMATRIX_WINDOWS_LAB_PUBLIC_KEY"],
+      "required_vars": [],
+      "path_vars": []
+    },
+    {
+      "name": "production-ga-ci-signing",
+      "runner": "ubuntu-latest",
+      "producer_workflow_path": ".github/workflows/ga-final-validation-summary.yml",
+      "required_secrets": ["PSMATRIX_GA_CI_PRIVATE_KEY", "PSMATRIX_GA_CI_PUBLIC_KEY"],
+      "required_vars": [],
+      "path_vars": []
+    },
+    {
+      "name": "production-ga-full-matrix",
+      "runner": "NAVEAX",
+      "producer_workflow_path": ".github/workflows/ga-final-full-runtime-matrix.yml",
+      "required_secrets": [],
+      "required_vars": ["PSMATRIX_FULL_MATRIX_ENDPOINT_ROOT", "PSMATRIX_FULL_MATRIX_HOME"],
+      "path_vars": ["PSMATRIX_FULL_MATRIX_ENDPOINT_ROOT", "PSMATRIX_FULL_MATRIX_HOME"]
+    },
+    {
+      "name": "production-ga-public-auth-probe",
+      "runner": "ubuntu-latest",
+      "producer_workflow_path": ".github/workflows/ga-final-public-auth-live-probe.yml",
+      "required_secrets": [
+        "PSMATRIX_OAUTH_VALID_TOKEN",
+        "PSMATRIX_OAUTH_EXPIRED_TOKEN",
+        "PSMATRIX_OAUTH_WRONG_AUDIENCE_TOKEN",
+        "PSMATRIX_OAUTH_MISSING_SCOPE_TOKEN",
+        "PSMATRIX_OAUTH_REPLAY_TOKEN",
+        "PSMATRIX_OAUTH_RATE_LIMIT_TOKEN",
+        "PSMATRIX_MTLS_CURRENT_CERT",
+        "PSMATRIX_MTLS_CURRENT_KEY",
+        "PSMATRIX_MTLS_ROTATION_CERT",
+        "PSMATRIX_MTLS_ROTATION_KEY",
+        "PSMATRIX_MTLS_UNTRUSTED_CERT",
+        "PSMATRIX_MTLS_UNTRUSTED_KEY",
+        "PSMATRIX_MTLS_REVOKED_CERT",
+        "PSMATRIX_MTLS_REVOKED_KEY"
+      ],
+      "required_vars": [
+        "PSMATRIX_OAUTH_ENDPOINT",
+        "PSMATRIX_OAUTH_DISCOVERY_URL",
+        "PSMATRIX_OAUTH_EXPECTED_ISSUER",
+        "PSMATRIX_MTLS_ENDPOINT",
+        "PSMATRIX_MTLS_FINGERPRINT_HEADER"
+      ],
+      "path_vars": []
+    },
+    {
+      "name": "production-ga-deployment-signing",
+      "runner": "ubuntu-latest",
+      "producer_workflow_path": ".github/workflows/ga-final-public-oauth.yml",
+      "required_secrets": ["PSMATRIX_GA_DEPLOYMENT_PRIVATE_KEY", "PSMATRIX_GA_DEPLOYMENT_PUBLIC_KEY"],
+      "required_vars": [],
+      "path_vars": []
+    },
+    {
+      "name": "production-ga-external-otlp-probe",
+      "runner": "ubuntu-latest",
+      "producer_workflow_path": ".github/workflows/ga-final-external-otlp.yml",
+      "required_secrets": ["PSMATRIX_GA_EXTERNAL_OTLP_HEADERS_JSON"],
+      "required_vars": ["PSMATRIX_GA_EXTERNAL_OTLP_ENDPOINT"],
+      "path_vars": []
+    },
+    {
+      "name": "production-ga-operations-signing",
+      "runner": "ubuntu-latest",
+      "producer_workflow_path": ".github/workflows/ga-final-external-otlp.yml",
+      "required_secrets": ["PSMATRIX_GA_OPERATIONS_PRIVATE_KEY", "PSMATRIX_GA_OPERATIONS_PUBLIC_KEY"],
+      "required_vars": [],
+      "path_vars": []
+    },
+    {
+      "name": "production-ga-recovery-signing",
+      "runner": "ubuntu-latest",
+      "producer_workflow_path": ".github/workflows/ga-final-disaster-recovery.yml",
+      "required_secrets": ["PSMATRIX_GA_RECOVERY_PRIVATE_KEY", "PSMATRIX_GA_RECOVERY_PUBLIC_KEY"],
+      "required_vars": [],
+      "path_vars": []
+    },
+    {
+      "name": "production-ga-security-review-signing",
+      "runner": "ubuntu-latest",
+      "producer_workflow_path": ".github/workflows/ga-final-security-review.yml",
+      "required_secrets": ["PSMATRIX_GA_SECURITY_REVIEW_PRIVATE_KEY", "PSMATRIX_GA_SECURITY_REVIEW_PUBLIC_KEY"],
+      "required_vars": ["PSMATRIX_GA_SECURITY_REVIEW_REPORT_JSON"],
+      "path_vars": []
+    },
+    {
+      "name": "production-ga-vulnerability-scanner-signing",
+      "runner": "ubuntu-latest",
+      "producer_workflow_path": ".github/workflows/ga-final-vulnerability-scan.yml",
+      "required_secrets": ["PSMATRIX_GA_VULNERABILITY_SCANNER_PRIVATE_KEY", "PSMATRIX_GA_VULNERABILITY_SCANNER_PUBLIC_KEY"],
+      "required_vars": [],
+      "path_vars": []
+    },
+    {
+      "name": "production-ga-root-signing",
+      "runner": "ubuntu-latest",
+      "producer_workflow_path": ".github/workflows/ga-final-evaluator.yml",
+      "required_secrets": ["PSMATRIX_GA_ROOT_PRIVATE_KEY", "PSMATRIX_GA_ROOT_PUBLIC_KEY"],
+      "required_vars": [],
+      "path_vars": []
+    }
   ],
   "receipt_contract": {
-    "kind":"psmatrix.production-readiness-receipt",
-    "secret_values_allowed":false,
-    "secret_hashes_allowed":false,
-    "secret_lengths_allowed":false,
-    "allowed_check_fields":["name","source","present","path_exists"],
-    "all_required_checks_must_pass":true
+    "kind": "psmatrix.production-readiness-receipt",
+    "secret_values_allowed": false,
+    "secret_hashes_allowed": false,
+    "secret_lengths_allowed": false,
+    "allowed_check_fields": ["name", "source", "present", "path_exists"],
+    "all_required_checks_must_pass": true
   },
   "summary_contract": {
-    "kind":"psmatrix.production-readiness-summary",
-    "required_environment_count":12,
-    "all_environments_pass_required":true,
-    "producer_source_coverage_required":11,
-    "production_evidence_runs_required_for_ga":true,
-    "environment_readiness_is_not_ga_readiness":true
+    "kind": "psmatrix.production-readiness-summary",
+    "required_environment_count": 12,
+    "all_environments_pass_required": true,
+    "producer_source_coverage_required": 11,
+    "production_evidence_runs_required_for_ga": true,
+    "environment_readiness_is_not_ga_readiness": true
   },
   "control_source": {
-    "runtime_source_changes_allowed":false,
-    "changed_path_allowlist":[
+    "runtime_source_changes_allowed": false,
+    "changed_path_allowlist": [
       ".github/workflows/ga-final-production-readiness-source-preflight.yml",
       ".github/workflows/ga-final-production-readiness.yml",
       "ga-packs/03-authoritative-windows/final-production-readiness-contract.json",
@@ -56,11 +155,11 @@
     ]
   },
   "preparation_state": {
-    "readiness_workflow_executed":false,
-    "environment_receipts_observed":false,
-    "all_environments_ready":false,
-    "production_evidence_runs_complete":false,
-    "production_evaluator_ready":false,
-    "ga_eligible":false
+    "readiness_workflow_executed": false,
+    "environment_receipts_observed": false,
+    "all_environments_ready": false,
+    "production_evidence_runs_complete": false,
+    "production_evaluator_ready": false,
+    "ga_eligible": false
   }
 }
