@@ -1,0 +1,63 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.final-execution-control-contract",
+  "version": "2.0.0",
+  "pack": "03-authoritative-windows",
+  "readiness_source_head": "2b686f482ce23bc581e52d5b04d31fe522d68e1c",
+  "producer_source_anchor": "89372d9432433237abdf677900093b399c4d0868",
+  "final_release_commit": "02cef95d40cf524ce00f9d917188343dc49e6f2c",
+  "required_gates": ["validation-summary","signed-release","authoritative-windows","complete-runtime-matrix","public-oauth","public-mtls","external-otlp","key-rotation","disaster-recovery","security-review","vulnerability-scan"],
+  "required_authority_roles": ["release","ci","windows-lab","deployment","operations","recovery","security-review","vulnerability-scanner"],
+  "required_environments": ["production-ga-release-signing","production-ga-windows-lab","production-ga-ci-signing","production-ga-full-matrix","production-ga-public-auth-probe","production-ga-deployment-signing","production-ga-external-otlp-probe","production-ga-operations-signing","production-ga-recovery-signing","production-ga-security-review-signing","production-ga-vulnerability-scanner-signing","production-ga-root-signing"],
+  "control_workflows": {
+    "readiness": {"workflow":"production-ga-final-production-readiness","path":".github/workflows/ga-final-production-readiness.yml"},
+    "evaluator": {"workflow":"production-ga-final-evaluator","path":".github/workflows/ga-final-evaluator.yml"}
+  },
+  "auxiliary_workflows": [
+    {"id":"public-auth-live-probe","workflow":"production-ga-final-public-auth-live-probe","path":".github/workflows/ga-final-public-auth-live-probe.yml"},
+    {"id":"security-review-packet","workflow":"production-ga-final-security-review-packet","path":".github/workflows/ga-final-security-review-packet.yml"}
+  ],
+  "execution_sequence": [
+    {"step":1,"id":"readiness","workflow":"production-ga-final-production-readiness","path":".github/workflows/ga-final-production-readiness.yml","evidence_gate":null},
+    {"step":2,"id":"signed-release","workflow":"production-ga-windows-authority-final-release-sign-from-lock","path":".github/workflows/ga-windows-authority-final-release-sign-from-lock.yml","evidence_gate":"signed-release"},
+    {"step":3,"id":"validation-summary","workflow":"production-ga-final-validation-summary","path":".github/workflows/ga-final-validation-summary.yml","evidence_gate":"validation-summary"},
+    {"step":4,"id":"authoritative-windows","workflow":"production-ga-windows-authority-final-windows-evidence-rebind","path":".github/workflows/ga-windows-authority-final-windows-evidence-rebind.yml","evidence_gate":"authoritative-windows"},
+    {"step":5,"id":"complete-runtime-matrix","workflow":"production-ga-final-full-runtime-matrix","path":".github/workflows/ga-final-full-runtime-matrix.yml","evidence_gate":"complete-runtime-matrix"},
+    {"step":6,"id":"public-auth-live-probe","workflow":"production-ga-final-public-auth-live-probe","path":".github/workflows/ga-final-public-auth-live-probe.yml","evidence_gate":null},
+    {"step":7,"id":"public-oauth","workflow":"production-ga-final-public-oauth","path":".github/workflows/ga-final-public-oauth.yml","evidence_gate":"public-oauth"},
+    {"step":8,"id":"public-mtls","workflow":"production-ga-final-public-mtls","path":".github/workflows/ga-final-public-mtls.yml","evidence_gate":"public-mtls"},
+    {"step":9,"id":"external-otlp","workflow":"production-ga-final-external-otlp","path":".github/workflows/ga-final-external-otlp.yml","evidence_gate":"external-otlp"},
+    {"step":10,"id":"key-rotation","workflow":"production-ga-final-key-rotation","path":".github/workflows/ga-final-key-rotation.yml","evidence_gate":"key-rotation"},
+    {"step":11,"id":"disaster-recovery","workflow":"production-ga-final-disaster-recovery","path":".github/workflows/ga-final-disaster-recovery.yml","evidence_gate":"disaster-recovery"},
+    {"step":12,"id":"security-review-packet","workflow":"production-ga-final-security-review-packet","path":".github/workflows/ga-final-security-review-packet.yml","evidence_gate":null},
+    {"step":13,"id":"security-review","workflow":"production-ga-final-security-review","path":".github/workflows/ga-final-security-review.yml","evidence_gate":"security-review"},
+    {"step":14,"id":"vulnerability-scan","workflow":"production-ga-final-vulnerability-scan","path":".github/workflows/ga-final-vulnerability-scan.yml","evidence_gate":"vulnerability-scan"},
+    {"step":15,"id":"final-evaluator","workflow":"production-ga-final-evaluator","path":".github/workflows/ga-final-evaluator.yml","evidence_gate":null}
+  ],
+  "execution_requirements": {
+    "readiness_must_pass_before_production_evidence":true,
+    "readiness_source_preflight_success_required_before_promotion":true,
+    "all_evidence_runs_must_be_workflow_dispatch":true,
+    "all_evidence_runs_must_be_completed_successfully":true,
+    "all_evidence_runs_must_share_exact_execution_control_head":true,
+    "all_evidence_run_ids_must_be_distinct":true,
+    "exactly_one_nonexpired_expected_artifact_per_gate":true,
+    "producer_workflow_source_must_exist_at_execution_head":true,
+    "automatic_production_dispatch_allowed_from_source_preflight":false,
+    "ga_root_private_key_allowed_before_root_signing_job":false,
+    "ga_eligibility_requires_verified_final_attestation":true
+  },
+  "control_source": {
+    "runtime_source_changes_allowed":false,
+    "changed_path_allowlist":[".github/workflows/ga-final-execution-control-source-preflight.yml","ga-packs/03-authoritative-windows/final-execution-control-contract.json","scripts/ga/validate_final_execution_control.py","tests/test_final_execution_control_contract.py"]
+  },
+  "preparation_state": {
+    "readiness_source_preflight_observed_success":false,
+    "production_readiness_executed":false,
+    "production_evidence_runs_complete":false,
+    "production_evaluator_ready":false,
+    "final_ga_evaluator_invoked":false,
+    "final_ga_attestation_verified":false,
+    "ga_eligible":false
+  }
+}
