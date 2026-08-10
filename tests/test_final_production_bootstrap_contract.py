@@ -13,6 +13,7 @@ LOCK_CONTROL = ROOT / "ga-packs" / "03-authoritative-windows" / "final-release-l
 REVIEW_WORKFLOW = ROOT / ".github" / "workflows" / "ga-windows-authority-final-release-lock-review.yml"
 PROMOTION_WORKFLOW = ROOT / ".github" / "workflows" / "ga-windows-authority-final-release-lock-promotion.yml"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+BOOTSTRAP_PREFLIGHT = ROOT / ".github" / "workflows" / "ga-final-production-bootstrap-source-preflight.yml"
 LEGACY_PHASE_PREFLIGHTS = [
     ".github/workflows/ga-windows-authority-provisioning-handoff-source-preflight.yml",
     ".github/workflows/ga-windows-authority-rc4-source-preflight.yml",
@@ -89,6 +90,15 @@ class FinalProductionBootstrapContractTests(unittest.TestCase):
             self.assertIn(marker, text)
         self.assertIn("& python -m unittest $module -v", text)
 
+    def test_post_publication_registration_gate_is_automatic_and_fail_closed(self) -> None:
+        text = BOOTSTRAP_PREFLIGHT.read_text(encoding="utf-8")
+        trigger = text.split("\nconcurrency:", 1)[0]
+        self.assertIn('branches: ["final/2.0.0-production-bootstrap-controls", "main"]', trigger)
+        self.assertIn("$env:GITHUB_EVENT_NAME -eq 'push' -and $env:GITHUB_REF -eq 'refs/heads/main'", text)
+        self.assertIn("$args += '--require-default-branch-registration'", text)
+        self.assertIn("post_publication_registration_enforced=", text)
+        self.assertIn("post_publication_default_branch_registration_gate_required=true", text)
+
     def test_bootstrap_is_inserted_between_readiness_and_signed_release(self) -> None:
         self.assertEqual(
             self.contract["execution_insertion_point"],
@@ -115,6 +125,7 @@ class FinalProductionBootstrapContractTests(unittest.TestCase):
         for key in (
             "default_branch_publication_required_before_any_production_dispatch",
             "all_required_dispatch_workflow_paths_must_exist_on_default_branch",
+            "post_publication_default_branch_registration_gate_required",
             "legacy_phase_preflights_must_not_trigger_default_branch",
             "main_ci_must_defer_rc4_runtime_modules_on_non_rc4_source",
             "readiness_source_preflight_success_required",
