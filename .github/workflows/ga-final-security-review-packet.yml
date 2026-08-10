@@ -1,0 +1,154 @@
+name: production-ga-final-security-review-packet
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_signing_run_id:
+        description: Successful protected final 2.0.0 signing workflow run ID from this exact control head
+        required: true
+        type: string
+
+concurrency:
+  group: production-ga-final-security-review-packet
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-review-packet:
+    name: Build exact final independent security-review packet
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    env:
+      RELEASE_SIGNING_RUN_ID: ${{ inputs.release_signing_run_id }}
+      FINAL_RELEASE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
+
+    steps:
+      - name: Validate review-packet dispatch identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_SIGNING_RUN_ID" =~ ^[0-9]+$ ]] || { echo 'release_signing_run_id must contain only decimal digits.' >&2; exit 1; }
+          [[ "$RELEASE_SIGNING_RUN_ID" != "$GITHUB_RUN_ID" ]] || { echo 'release-signing and review-packet run IDs must be distinct.' >&2; exit 1; }
+          echo 'security_review_packet_dispatch_identity=PASS'
+
+      - name: Check out exact final security/vulnerability controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out exact frozen final 2.0.0 source under review
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: 02cef95d40cf524ce00f9d917188343dc49e6f2c
+          path: review-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Validate exact final-signing run before release download
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=control/src python - <<'PY'
+          import json, os, subprocess, urllib.request
+          from pathlib import Path
+          control_head=subprocess.check_output(['git','-C','control','rev-parse','HEAD'],text=True).strip().lower()
+          review_head=subprocess.check_output(['git','-C','review-source','rev-parse','HEAD'],text=True).strip().lower()
+          if control_head!=os.environ['GITHUB_SHA'].lower():
+              raise SystemExit('security review packet control checkout is not exact GITHUB_SHA')
+          if review_head!=os.environ['FINAL_RELEASE_COMMIT'].lower():
+              raise SystemExit('security review packet source checkout is not exact frozen final release commit')
+          contract=json.loads(Path('control/ga-packs/03-authoritative-windows/final-security-vulnerability-evidence-producer-contract.json').read_text(encoding='utf-8'))
+          if contract['security_review_packet']['workflow']!='production-ga-final-security-review-packet':
+              raise SystemExit('security review packet workflow contract mismatch')
+          run_id=os.environ['RELEASE_SIGNING_RUN_ID']
+          headers={'Accept':'application/vnd.github+json','Authorization':f'Bearer {os.environ["GH_TOKEN"]}','X-GitHub-Api-Version':'2026-03-10','User-Agent':'psmatrix-final-security-review-packet'}
+          def fetch(path):
+              request=urllib.request.Request(f'https://api.github.com/repos/Naveax/PSMatrix/{path}',headers=headers)
+              with urllib.request.urlopen(request,timeout=30) as response:
+                  return json.load(response)
+          run=fetch(f'actions/runs/{run_id}')
+          if run.get('name')!='production-ga-windows-authority-final-release-sign-from-lock' or run.get('event')!='workflow_dispatch':
+              raise SystemExit('security review packet final-signing workflow provenance mismatch')
+          if run.get('status')!='completed' or run.get('conclusion')!='success' or (run.get('head_sha') or '').lower()!=control_head:
+              raise SystemExit('security review packet final-signing run is not successful exact-head evidence')
+          artifacts=fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts',[])
+          matches=[item for item in artifacts if item.get('name')=='psmatrix-2.0.0-protected-release' and not item.get('expired')]
+          if len(matches)!=1:
+              raise SystemExit(f'expected one non-expired protected final release artifact; found {len(matches)}')
+          print(f'security_review_packet_release_provenance=PASS run_id={run_id} artifact_id={matches[0].get("id")}')
+          PY
+
+      - name: Download exact protected final release
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-protected-release
+          path: signed-release
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.release_signing_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Verify release and build version-normalized final review packet
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/psmatrix-2.0.0-final-security-review-packet"
+          rm -rf "$output"
+          mkdir -p "$output"
+          PYTHONPATH=control/src python - <<'PY'
+          from pathlib import Path
+          from psmatrix.release import verify_release_manifest
+          release=Path('signed-release')
+          result=verify_release_manifest(release/'psmatrix-2.0.0-release.json',release,signing_public_key=release/'psmatrix-2.0.0-release-public.pem')
+          if result.get('valid') is not True or result.get('version')!='2.0.0':
+              raise SystemExit('security review packet protected final release verification failed')
+          for name in ('psmatrix-2.0.0-source.zip','psmatrix-2.0.0-release.json'):
+              path=release/name
+              if not path.is_file() or path.is_symlink():
+                  raise SystemExit(f'security review packet required release file missing/unsafe: {name}')
+          print('security_review_packet_release_verification=PASS')
+          PY
+          PYTHONPATH=control/src python control/scripts/ga/build_final_security_review_packet.py packet \
+            --root review-source \
+            --source-archive signed-release/psmatrix-2.0.0-source.zip \
+            --release-manifest signed-release/psmatrix-2.0.0-release.json \
+            --expected-commit "$FINAL_RELEASE_COMMIT" \
+            --output "$output/psmatrix-2.0.0-security-review-packet.zip" > "$output/normalization-result.json"
+          PSMATRIX_REVIEW_PACKET_OUTPUT="$output" PYTHONPATH=control/src python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from psmatrix.util import atomic_write_json, sha256_file
+          root=Path(os.environ['PSMATRIX_REVIEW_PACKET_OUTPUT'])
+          normalization=json.loads((root/'normalization-result.json').read_text(encoding='utf-8'))
+          if normalization.get('status')!='PASS' or normalization.get('legacy_packet_version')!='2.0.0rc2' or normalization.get('final_packet_version')!='2.0.0':
+              raise SystemExit('security review packet final normalization result is invalid')
+          if normalization.get('changed_entries')!=['psmatrix-independent-security-review/review-input-manifest.json']:
+              raise SystemExit('security review packet normalized more than one exact entry')
+          status={'schema':1,'kind':'psmatrix.final-security-review-packet-status','status':'PASS','version':'2.0.0','control_head':os.environ['GITHUB_SHA'].lower(),'release_signing_run_id':os.environ['RELEASE_SIGNING_RUN_ID'],'reviewed_commit':os.environ['FINAL_RELEASE_COMMIT'].lower(),'source_sha256':normalization['source_sha256'],'release_sha256':normalization['release_sha256'],'packet_sha256':sha256_file(root/'psmatrix-2.0.0-security-review-packet.zip'),'legacy_runtime_packet_version':'2.0.0rc2','final_packet_version':'2.0.0','semantic_delta':'review-input-manifest.json version field only','reviewer_private_key_read':False,'review_completed':False,'ga_eligible':False}
+          atomic_write_json(root/'security-review-packet-status.json',status)
+          print('final_security_review_packet=PASS version_only_normalization=true')
+          PY
+          rm -f "$output/normalization-result.json"
+          echo "PSMATRIX_REVIEW_PACKET_OUTPUT=$output" >> "$GITHUB_ENV"
+
+      - name: Upload exact final independent security-review packet
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-2.0.0-final-security-review-packet
+          path: ${{ env.PSMATRIX_REVIEW_PACKET_OUTPUT }}
+          if-no-files-found: error
+          retention-days: 90
