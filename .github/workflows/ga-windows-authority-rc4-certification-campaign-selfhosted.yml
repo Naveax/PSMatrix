@@ -1,0 +1,296 @@
+name: production-ga-windows-authority-rc4-certification-campaign-selfhosted
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_commit:
+        description: Exact reviewed RC4 release source commit frozen by the active lock
+        required: true
+        type: string
+      control_head:
+        description: Exact repository commit containing the active RC4 lock and campaign controls
+        required: true
+        type: string
+      measurement_run_id:
+        description: Successful protected RC4 image-identity measurement workflow run ID
+        required: true
+        type: string
+      measurement_run_attempt:
+        description: Successful protected RC4 image-identity measurement workflow run attempt
+        required: true
+        default: "1"
+        type: string
+      iterations:
+        description: Independent certification iterations per runtime
+        required: true
+        default: "10"
+        type: string
+      campaign_timeout_seconds:
+        description: Per-worker certification campaign timeout, 60-3600 seconds
+        required: true
+        default: "1800"
+        type: string
+
+concurrency:
+  group: production-ga-windows-authority-rc4-certification-campaign-selfhosted
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  certify:
+    name: Run repeated RC4 Windows certification campaigns
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 360
+    environment: production-ga-windows-lab
+    permissions:
+      contents: read
+    env:
+      PSMATRIX_WINDOWS_GA_ROOT: ${{ vars.PSMATRIX_WINDOWS_GA_ROOT }}
+      RELEASE_COMMIT: ${{ inputs.release_commit }}
+      CONTROL_HEAD: ${{ inputs.control_head }}
+      MEASUREMENT_RUN_ID: ${{ inputs.measurement_run_id }}
+      MEASUREMENT_RUN_ATTEMPT: ${{ inputs.measurement_run_attempt }}
+      CAMPAIGN_ITERATIONS: ${{ inputs.iterations }}
+      CAMPAIGN_TIMEOUT_SECONDS: ${{ inputs.campaign_timeout_seconds }}
+
+    steps:
+      - name: Initialize fail-closed RC4 certification workspace
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') { throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS" }
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_WINDOWS_GA_ROOT)) { throw 'PSMATRIX_WINDOWS_GA_ROOT is missing from production-ga-windows-lab.' }
+          if (-not [System.IO.Path]::IsPathRooted($env:PSMATRIX_WINDOWS_GA_ROOT)) { throw 'PSMATRIX_WINDOWS_GA_ROOT must be an absolute path.' }
+          $gaRoot = [System.IO.Path]::GetFullPath($env:PSMATRIX_WINDOWS_GA_ROOT)
+          if (-not (Test-Path -LiteralPath $gaRoot -PathType Container)) { throw "PSMATRIX_WINDOWS_GA_ROOT does not exist: $gaRoot" }
+          foreach ($item in @(@{Name='release_commit';Value=$env:RELEASE_COMMIT},@{Name='control_head';Value=$env:CONTROL_HEAD})) {
+              if ([string]$item.Value -cnotmatch '^[0-9a-f]{40}$') { throw "$($item.Name) must contain exactly 40 lowercase hexadecimal characters." }
+          }
+          if ($env:CONTROL_HEAD -ne $env:GITHUB_SHA.ToLowerInvariant()) { throw 'control_head must equal the exact workflow control head.' }
+          if ($env:MEASUREMENT_RUN_ID -notmatch '^[1-9][0-9]*$' -or $env:MEASUREMENT_RUN_ATTEMPT -notmatch '^[1-9][0-9]*$') { throw 'measurement_run_id and measurement_run_attempt must contain positive decimal integers.' }
+          $iterations = 0
+          if (-not [int]::TryParse($env:CAMPAIGN_ITERATIONS,[ref]$iterations) -or $iterations -ne 10) { throw 'RC4 certification contract requires exactly 10 independent iterations per runtime.' }
+          $timeout = 0
+          if (-not [int]::TryParse($env:CAMPAIGN_TIMEOUT_SECONDS,[ref]$timeout) -or $timeout -lt 60 -or $timeout -gt 3600) { throw 'campaign_timeout_seconds must be an integer between 60 and 3600.' }
+
+          $releaseRoot = Join-Path $gaRoot 'media\release\2.0.0rc4'
+          $measurementRoot = Join-Path $gaRoot ('measurement\2.0.0rc4\run-{0}-attempt-{1}' -f $env:MEASUREMENT_RUN_ID,$env:MEASUREMENT_RUN_ATTEMPT)
+          $measurementReport = Join-Path $measurementRoot 'windows-authority-image-identity-measurement.json'
+          $media = Join-Path $gaRoot 'config\windows-lab-media.json'
+          $configRoot = Join-Path $gaRoot 'config'
+          $trustHome = Join-Path $gaRoot 'trust-home'
+          $releaseManifest = Join-Path $releaseRoot 'psmatrix-2.0.0rc4-release.json'
+          $releasePublicKey = Join-Path $releaseRoot 'psmatrix-2.0.0rc4-release-public.pem'
+          $output = Join-Path $gaRoot ('campaign\2.0.0rc4\run-{0}-attempt-{1}' -f $env:GITHUB_RUN_ID,$env:GITHUB_RUN_ATTEMPT)
+          if (Test-Path -LiteralPath $output) { throw "RC4 certification output already exists; refusing to overwrite: $output" }
+          New-Item -ItemType Directory -Path $output -Force | Out-Null
+          foreach ($path in @($releaseRoot,$measurementRoot,$configRoot,$trustHome)) { if (-not (Test-Path -LiteralPath $path -PathType Container)) { throw "Required RC4 campaign directory is missing: $path" } }
+          foreach ($path in @($measurementReport,$media,$releaseManifest,$releasePublicKey)) { if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required RC4 campaign input is missing: $path" } }
+
+          "PSMATRIX_CAMPAIGN_GA_ROOT=$gaRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_CAMPAIGN_RELEASE_ROOT=$releaseRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_CAMPAIGN_MEASUREMENT_REPORT=$measurementReport" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_CAMPAIGN_MEDIA=$media" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_CAMPAIGN_CONFIG_ROOT=$configRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_CAMPAIGN_TRUST_HOME=$trustHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_CAMPAIGN_RELEASE_MANIFEST=$releaseManifest" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_CAMPAIGN_RELEASE_PUBLIC_KEY=$releasePublicKey" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_CAMPAIGN_OUTPUT=$output" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_CAMPAIGN_TIMEOUT=$timeout" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Check out exact RC4 campaign controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.control_head }}
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out exact RC4 product source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.release_commit }}
+          path: release-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up controller Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Validate exact source, active RC4 lock and measurement closure
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $controlRoot = Join-Path $env:GITHUB_WORKSPACE 'control'
+          $releaseSource = Join-Path $env:GITHUB_WORKSPACE 'release-source'
+          $controlHead = (git -C $controlRoot rev-parse HEAD).Trim().ToLowerInvariant()
+          $releaseHead = (git -C $releaseSource rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($controlHead -ne $env:CONTROL_HEAD) { throw 'Exact RC4 campaign control checkout mismatch.' }
+          if ($releaseHead -ne $env:RELEASE_COMMIT) { throw 'Exact RC4 campaign product source checkout mismatch.' }
+          if (-not [string]::IsNullOrWhiteSpace((git -C $controlRoot status --porcelain))) { throw 'RC4 campaign control checkout is dirty.' }
+          if (-not [string]::IsNullOrWhiteSpace((git -C $releaseSource status --porcelain))) { throw 'RC4 campaign product source checkout is dirty.' }
+
+          $lockPath = Join-Path $controlRoot 'ga-packs\03-authoritative-windows\rc4-release-lock.json'
+          $committedPublic = Join-Path $controlRoot 'release-assets\2.0.0rc4\psmatrix-2.0.0rc4-release-public.pem'
+          foreach ($path in @($lockPath,$committedPublic)) { if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Committed RC4 authority input is missing: $path" } }
+          $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+          if ([int]$lock.schema -ne 1 -or [string]$lock.kind -ne 'psmatrix.windows-authority-release-staging-lock' -or [string]$lock.pack -ne '03-authoritative-windows') { throw 'RC4 active release lock identity is invalid.' }
+          if ([string]$lock.version -ne '2.0.0rc4' -or [string]$lock.release_commit -ne $env:RELEASE_COMMIT) { throw 'RC4 active release lock does not match requested release commit.' }
+          $rotation = $lock.authority_rotation
+          if ([string]$rotation.reason -ne 'lost_previous_private_authority' -or [bool]$rotation.existing_candidate_mutated -ne $false -or [bool]$rotation.new_candidate -ne $true -or [bool]$rotation.review_required -ne $true) { throw 'RC4 reviewed authority-rotation metadata mismatch.' }
+          $lockSha = (Get-FileHash -LiteralPath $lockPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $committedPublicSha = (Get-FileHash -LiteralPath $committedPublic -Algorithm SHA256).Hash.ToLowerInvariant()
+          $releasePublicSha = (Get-FileHash -LiteralPath $env:PSMATRIX_CAMPAIGN_RELEASE_PUBLIC_KEY -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($committedPublicSha -ne [string]$lock.release_public_key.sha256 -or $releasePublicSha -ne $committedPublicSha) { throw 'RC4 release public key does not match active lock and imported release.' }
+
+          $media = Get-Content -LiteralPath $env:PSMATRIX_CAMPAIGN_MEDIA -Raw | ConvertFrom-Json
+          $mediaSha = (Get-FileHash -LiteralPath $env:PSMATRIX_CAMPAIGN_MEDIA -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ([int]$media.schema -ne 1 -or [string]$media.kind -ne 'psmatrix.windows-lab-media' -or [string]$media.release_version -ne '2.0.0rc4' -or [string]$media.release_commit -ne $env:RELEASE_COMMIT) { throw 'Current RC4 media manifest identity/release binding is invalid.' }
+          if ([bool]$media.complete -ne $true -or [bool]$media.ready_for_hyper_v_provisioning -ne $true) { throw 'Current RC4 media manifest is not complete/Hyper-V ready.' }
+
+          $measurement = Get-Content -LiteralPath $env:PSMATRIX_CAMPAIGN_MEASUREMENT_REPORT -Raw | ConvertFrom-Json
+          if ([int]$measurement.schema -ne 1 -or [string]$measurement.kind -ne 'psmatrix.windows-authority-image-identity-measurement') { throw 'RC4 measurement report identity is invalid.' }
+          if ([string]$measurement.status -ne 'IMAGE_IDENTITIES_MEASURED_ENDPOINTS_VALIDATED' -or [string]$measurement.release_version -ne '2.0.0rc4') { throw 'RC4 measurement report status/version is invalid.' }
+          if ([string]$measurement.media_manifest_sha256 -ne $mediaSha) { throw 'RC4 measurement report is not bound to the current media manifest.' }
+          if ([int]$measurement.runtime_count -ne 3 -or @($measurement.runtimes).Count -ne 3) { throw 'RC4 measurement report does not contain exactly three runtimes.' }
+          if ([bool]$measurement.actual_os_identity_measured -ne $true -or [bool]$measurement.real_endpoint_manifests_validated -ne $true -or [bool]$measurement.image_manifests_written -ne $true) { throw 'RC4 measurement report completion flags are incomplete.' }
+          if ([bool]$measurement.certification_campaign_executed -ne $false -or [bool]$measurement.authoritative -ne $false -or [bool]$measurement.ga_eligible -ne $false) { throw 'RC4 measurement report has already crossed the certification/authority boundary.' }
+
+          $fixtureManifest = Join-Path $releaseSource 'fixtures\windows-authoritative\fixture-pack.json'
+          if (-not (Test-Path -LiteralPath $fixtureManifest -PathType Leaf)) { throw 'Exact RC4 authoritative fixture-pack manifest is missing.' }
+          $fixtureRoot = Split-Path -Parent $fixtureManifest
+          $fixtureFiles = @(Get-ChildItem -LiteralPath $fixtureRoot -File -Recurse | Sort-Object FullName)
+          if ($fixtureFiles.Count -eq 0) { throw 'Exact RC4 authoritative fixture pack is empty.' }
+          $fixtureRows = @($fixtureFiles | ForEach-Object {
+              $relative = $_.FullName.Substring($fixtureRoot.Length).TrimStart('\','/') -replace '\\','/'
+              [ordered]@{ path = $relative; sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(); size = [int64]$_.Length }
+          })
+          $fixtureCanonical = [Text.Encoding]::UTF8.GetBytes((($fixtureRows | ConvertTo-Json -Depth 6 -Compress)))
+          $fixtureHash = [System.Security.Cryptography.SHA256]::HashData($fixtureCanonical)
+          $fixtureSha = ([BitConverter]::ToString($fixtureHash)).Replace('-','').ToLowerInvariant()
+
+          $expected = @('windows-powershell-4.0','windows-powershell-5.0','windows-powershell-5.1')
+          $observed = @($measurement.runtimes | ForEach-Object { [string]$_.runtime_id } | Sort-Object -Unique)
+          if ($observed.Count -ne 3 -or (Compare-Object -ReferenceObject $expected -DifferenceObject $observed).Count -ne 0) { throw 'Measured RC4 runtime set is not exact.' }
+          foreach ($row in @($measurement.runtimes)) {
+              $runtime = [string]$row.runtime_id
+              $imagePath = [System.IO.Path]::GetFullPath((Join-Path $env:PSMATRIX_CAMPAIGN_CONFIG_ROOT ($runtime + '-image.json')))
+              $endpointPath = [System.IO.Path]::GetFullPath((Join-Path $env:PSMATRIX_CAMPAIGN_CONFIG_ROOT ($runtime + '-endpoint.json')))
+              foreach ($path in @($imagePath,$endpointPath)) { if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required real RC4 campaign input is missing: $path" } }
+              $imageSha = (Get-FileHash -LiteralPath $imagePath -Algorithm SHA256).Hash.ToLowerInvariant()
+              $endpointSha = (Get-FileHash -LiteralPath $endpointPath -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($imageSha -ne [string]$row.image_manifest_sha256 -or $endpointSha -ne [string]$row.endpoint_sha256) { throw "Measured RC4 image/endpoint SHA closure changed for $runtime." }
+              if ([string]$row.fixture_pack_sha256 -ne [string]$measurement.fixture_pack_sha256) { throw "Measured RC4 fixture-pack binding differs across report rows for $runtime." }
+          }
+
+          "PSMATRIX_CAMPAIGN_CONTROL_ROOT=$controlRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_CAMPAIGN_RELEASE_SOURCE=$releaseSource" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_CAMPAIGN_LOCK_SHA=$lockSha" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_CAMPAIGN_MEDIA_SHA=$mediaSha" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_CAMPAIGN_MEASUREMENT_SHA=$((Get-FileHash -LiteralPath $env:PSMATRIX_CAMPAIGN_MEASUREMENT_REPORT -Algorithm SHA256).Hash.ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host 'rc4_campaign_measurement_closure=PASS'
+
+      - name: Run exact repeated RC4 authoritative certification campaigns
+        shell: pwsh
+        env:
+          LAB_PRIVATE_KEY_PEM: ${{ secrets.PSMATRIX_WINDOWS_LAB_PRIVATE_KEY }}
+          LAB_PUBLIC_KEY_PEM: ${{ secrets.PSMATRIX_WINDOWS_LAB_PUBLIC_KEY }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:LAB_PRIVATE_KEY_PEM) -or [string]::IsNullOrWhiteSpace($env:LAB_PUBLIC_KEY_PEM)) { throw 'Protected Windows lab signing keypair is missing.' }
+          if ($env:LAB_PRIVATE_KEY_PEM -notmatch '-----BEGIN PRIVATE KEY-----' -or $env:LAB_PUBLIC_KEY_PEM -notmatch '-----BEGIN PUBLIC KEY-----') { throw 'Protected Windows lab signing keypair is not PEM encoded.' }
+          $keyRoot = Join-Path $env:RUNNER_TEMP ('psmatrix-rc4-lab-signing-' + [Guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $keyRoot -Force | Out-Null
+          $privatePath = Join-Path $keyRoot 'lab-private.pem'
+          $publicPath = Join-Path $keyRoot 'lab-public.pem'
+          try {
+              [System.IO.File]::WriteAllText($privatePath,$env:LAB_PRIVATE_KEY_PEM,[System.Text.UTF8Encoding]::new($false))
+              [System.IO.File]::WriteAllText($publicPath,$env:LAB_PUBLIC_KEY_PEM,[System.Text.UTF8Encoding]::new($false))
+              & "$env:PSMATRIX_CAMPAIGN_CONTROL_ROOT\scripts\ga\Invoke-PSMatrixAuthoritativeWindowsGA.ps1" `
+                  -SourceRoot $env:PSMATRIX_CAMPAIGN_RELEASE_SOURCE `
+                  -ReleaseCommit $env:RELEASE_COMMIT `
+                  -ReleaseManifest $env:PSMATRIX_CAMPAIGN_RELEASE_MANIFEST `
+                  -ReleaseArtifactDir $env:PSMATRIX_CAMPAIGN_RELEASE_ROOT `
+                  -ReleasePublicKey $env:PSMATRIX_CAMPAIGN_RELEASE_PUBLIC_KEY `
+                  -LabPrivateKey $privatePath `
+                  -LabPublicKey $publicPath `
+                  -TrustHome $env:PSMATRIX_CAMPAIGN_TRUST_HOME `
+                  -ConfigRoot $env:PSMATRIX_CAMPAIGN_CONFIG_ROOT `
+                  -OutputDir $env:PSMATRIX_CAMPAIGN_OUTPUT `
+                  -Iterations 10 `
+                  -CampaignTimeout $env:PSMATRIX_CAMPAIGN_TIMEOUT
+              if ($LASTEXITCODE -ne 0) { throw "RC4 authoritative campaign orchestrator failed: $LASTEXITCODE" }
+          }
+          finally {
+              Remove-Item -LiteralPath $keyRoot -Recurse -Force -ErrorAction SilentlyContinue
+              Remove-Item Env:LAB_PRIVATE_KEY_PEM -ErrorAction SilentlyContinue
+              Remove-Item Env:LAB_PUBLIC_KEY_PEM -ErrorAction SilentlyContinue
+          }
+
+      - name: Revalidate RC4 candidate matrix and evidence closure
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $statusPath = Join-Path $env:PSMATRIX_CAMPAIGN_OUTPUT 'windows-ga-operation-status.json'
+          $bindingPath = Join-Path $env:PSMATRIX_CAMPAIGN_OUTPUT 'windows-release-binding.json'
+          $verificationPath = Join-Path $env:PSMATRIX_CAMPAIGN_OUTPUT 'authoritative-matrix-verification.json'
+          $matrixPath = Join-Path $env:PSMATRIX_CAMPAIGN_OUTPUT 'windows-authoritative.dsse.json'
+          $inventoryPath = Join-Path $env:PSMATRIX_CAMPAIGN_OUTPUT 'evidence-inventory.json'
+          foreach ($path in @($statusPath,$bindingPath,$verificationPath,$matrixPath,$inventoryPath)) { if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required RC4 certification evidence file is missing: $path" } }
+
+          $status = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json
+          $binding = Get-Content -LiteralPath $bindingPath -Raw | ConvertFrom-Json
+          $verified = Get-Content -LiteralPath $verificationPath -Raw | ConvertFrom-Json
+          if ([int]$status.schema -ne 1 -or [string]$status.kind -ne 'psmatrix.windows-ga-operation-status') { throw 'RC4 certification status identity is invalid.' }
+          if ([string]$status.status -ne 'PASS_PARTIAL' -or [bool]$status.authoritative -ne $true -or [bool]$status.release_bound -ne $true -or [bool]$status.ga_eligible -ne $false) { throw 'RC4 candidate certification status did not remain authoritative-but-not-GA-eligible.' }
+          if ([string]$status.release_version -ne '2.0.0rc4' -or [string]$status.release_commit -ne $env:RELEASE_COMMIT) { throw 'RC4 certification status release identity mismatch.' }
+          if ([int]$status.campaign_iterations -ne 10 -or [bool]$status.provisioned_in_this_run -ne $false) { throw 'RC4 certification campaign iteration/provisioning state is invalid.' }
+          $expected = @('windows-powershell-4.0','windows-powershell-5.0','windows-powershell-5.1')
+          $runtimes = @($status.runtimes)
+          if ($runtimes.Count -ne 3 -or (Compare-Object -ReferenceObject $expected -DifferenceObject $runtimes).Count -ne 0) { throw 'RC4 certification status runtime set is not exact.' }
+          if ([string]$binding.release_version -ne '2.0.0rc4' -or [string]$binding.release_commit -ne $env:RELEASE_COMMIT -or [string]$binding.binding_sha256 -ne [string]$status.release_binding_sha256) { throw 'RC4 release binding is not exact/current.' }
+          if ([bool]$verified.valid -ne $true -or [bool]$verified.release_bound -ne $true -or [int]$verified.campaign_count -ne 3) { throw 'RC4 authoritative matrix verification did not PASS.' }
+          $verifiedRuntimes = @($verified.runtimes)
+          if ($verifiedRuntimes.Count -ne 3 -or (Compare-Object -ReferenceObject $expected -DifferenceObject $verifiedRuntimes).Count -ne 0) { throw 'Verified RC4 authoritative matrix runtime set is not exact.' }
+          $matrixSha = (Get-FileHash -LiteralPath $matrixPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $inventorySha = (Get-FileHash -LiteralPath $inventoryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($matrixSha -ne [string]$status.matrix_attestation_sha256 -or $inventorySha -ne [string]$status.evidence_inventory_sha256) { throw 'RC4 certification status evidence SHA closure is stale.' }
+
+          foreach ($file in @(Get-ChildItem -LiteralPath $env:PSMATRIX_CAMPAIGN_OUTPUT -File -Recurse -ErrorAction Stop)) {
+              if (Select-String -LiteralPath $file.FullName -Pattern '-----BEGIN (?:ED25519 |EC |RSA )?PRIVATE KEY-----' -Quiet -ErrorAction SilentlyContinue) { throw "Private key material was found in RC4 certification evidence: $($file.FullName)" }
+          }
+          Write-Host 'rc4_certification_candidate_status=PASS_PARTIAL'
+
+      - name: Upload full private-key-free RC4 certification evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-authority-rc4-certification-evidence
+          path: ${{ env.PSMATRIX_CAMPAIGN_OUTPUT }}
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Record fail-closed RC4 certification failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_CAMPAIGN_OUTPUT)) { exit 0 }
+          New-Item -ItemType Directory -Path $env:PSMATRIX_CAMPAIGN_OUTPUT -Force | Out-Null
+          $failure = [ordered]@{
+              schema = 1
+              kind = 'psmatrix.windows-authority-rc4-certification-workflow-status'
+              status = 'FAIL'
+              release_version = '2.0.0rc4'
+              release_commit = $env:RELEASE_COMMIT
+              control_head = $env:CONTROL_HEAD
+              measurement_run_id = $env:MEASUREMENT_RUN_ID
+              measurement_run_attempt = $env:MEASUREMENT_RUN_ATTEMPT
+              authoritative = $false
+              release_bound = $false
+              ga_eligible = $false
+          }
+          [System.IO.File]::WriteAllText((Join-Path $env:PSMATRIX_CAMPAIGN_OUTPUT 'rc4-certification-workflow-failure.json'),(($failure | ConvertTo-Json -Depth 8)+[Environment]::NewLine),[System.Text.UTF8Encoding]::new($false))
