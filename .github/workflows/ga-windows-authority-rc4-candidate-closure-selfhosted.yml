@@ -1,0 +1,244 @@
+name: production-ga-windows-authority-rc4-candidate-closure-selfhosted
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_commit:
+        description: Exact reviewed RC4 release source commit frozen by the active lock
+        required: true
+        type: string
+      control_head:
+        description: Exact repository commit containing the active RC4 lock and closure controls
+        required: true
+        type: string
+      operation_run_id:
+        required: true
+        type: string
+      operation_run_attempt:
+        required: true
+        default: "1"
+        type: string
+      provisioning_run_id:
+        required: true
+        type: string
+      provisioning_run_attempt:
+        required: true
+        default: "1"
+        type: string
+      measurement_run_id:
+        required: true
+        type: string
+      measurement_run_attempt:
+        required: true
+        default: "1"
+        type: string
+      campaign_run_id:
+        required: true
+        type: string
+      campaign_run_attempt:
+        required: true
+        default: "1"
+        type: string
+
+concurrency:
+  group: production-ga-windows-authority-rc4-candidate-closure-selfhosted
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  candidate-closure:
+    name: Cross-bind authoritative RC4 Windows candidate evidence
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 45
+    environment: production-ga-windows-lab
+    permissions:
+      contents: read
+    env:
+      PSMATRIX_WINDOWS_GA_ROOT: ${{ vars.PSMATRIX_WINDOWS_GA_ROOT }}
+      RELEASE_COMMIT: ${{ inputs.release_commit }}
+      CONTROL_HEAD: ${{ inputs.control_head }}
+      OPERATION_RUN_ID: ${{ inputs.operation_run_id }}
+      OPERATION_RUN_ATTEMPT: ${{ inputs.operation_run_attempt }}
+      PROVISIONING_RUN_ID: ${{ inputs.provisioning_run_id }}
+      PROVISIONING_RUN_ATTEMPT: ${{ inputs.provisioning_run_attempt }}
+      MEASUREMENT_RUN_ID: ${{ inputs.measurement_run_id }}
+      MEASUREMENT_RUN_ATTEMPT: ${{ inputs.measurement_run_attempt }}
+      CAMPAIGN_RUN_ID: ${{ inputs.campaign_run_id }}
+      CAMPAIGN_RUN_ATTEMPT: ${{ inputs.campaign_run_attempt }}
+
+    steps:
+      - name: Initialize fail-closed RC4 candidate-closure workspace
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'psmatrix-rc4-candidate-closure-evidence'
+          if (Test-Path -LiteralPath $evidence) { Remove-Item -LiteralPath $evidence -Recurse -Force }
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          "PSMATRIX_CLOSURE_EVIDENCE=$evidence" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') { throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS" }
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_WINDOWS_GA_ROOT)) { throw 'PSMATRIX_WINDOWS_GA_ROOT is missing from production-ga-windows-lab.' }
+          if (-not [System.IO.Path]::IsPathRooted($env:PSMATRIX_WINDOWS_GA_ROOT)) { throw 'PSMATRIX_WINDOWS_GA_ROOT must be an absolute path.' }
+          $gaRoot = [System.IO.Path]::GetFullPath($env:PSMATRIX_WINDOWS_GA_ROOT)
+          if (-not (Test-Path -LiteralPath $gaRoot -PathType Container)) { throw "PSMATRIX_WINDOWS_GA_ROOT does not exist: $gaRoot" }
+          foreach ($item in @(@{Name='release_commit';Value=$env:RELEASE_COMMIT},@{Name='control_head';Value=$env:CONTROL_HEAD})) {
+              if ([string]$item.Value -cnotmatch '^[0-9a-f]{40}$') { throw "$($item.Name) must contain exactly 40 lowercase hexadecimal characters." }
+          }
+          if ($env:CONTROL_HEAD -ne $env:GITHUB_SHA.ToLowerInvariant()) { throw 'control_head must equal the exact workflow control head.' }
+          foreach ($name in @('OPERATION_RUN_ID','OPERATION_RUN_ATTEMPT','PROVISIONING_RUN_ID','PROVISIONING_RUN_ATTEMPT','MEASUREMENT_RUN_ID','MEASUREMENT_RUN_ATTEMPT','CAMPAIGN_RUN_ID','CAMPAIGN_RUN_ATTEMPT')) {
+              if ([Environment]::GetEnvironmentVariable($name) -notmatch '^[1-9][0-9]*$') { throw "$name must contain a positive decimal integer." }
+          }
+
+          $operationRoot = Join-Path $gaRoot ('operation\2.0.0rc4\run-{0}-attempt-{1}' -f $env:OPERATION_RUN_ID,$env:OPERATION_RUN_ATTEMPT)
+          $provisioningRoot = Join-Path $gaRoot ('provisioning\2.0.0rc4\run-{0}-attempt-{1}' -f $env:PROVISIONING_RUN_ID,$env:PROVISIONING_RUN_ATTEMPT)
+          $measurementRoot = Join-Path $gaRoot ('measurement\2.0.0rc4\run-{0}-attempt-{1}' -f $env:MEASUREMENT_RUN_ID,$env:MEASUREMENT_RUN_ATTEMPT)
+          $campaignRoot = Join-Path $gaRoot ('campaign\2.0.0rc4\run-{0}-attempt-{1}' -f $env:CAMPAIGN_RUN_ID,$env:CAMPAIGN_RUN_ATTEMPT)
+          foreach ($path in @($operationRoot,$provisioningRoot,$measurementRoot,$campaignRoot)) { if (-not (Test-Path -LiteralPath $path -PathType Container)) { throw "Required protected RC4 evidence root is missing: $path" } }
+          $closureRoot = Join-Path $gaRoot ('closure\2.0.0rc4\run-{0}-attempt-{1}' -f $env:GITHUB_RUN_ID,$env:GITHUB_RUN_ATTEMPT)
+          if (Test-Path -LiteralPath $closureRoot) { throw "RC4 candidate-closure output already exists; refusing to overwrite: $closureRoot" }
+          New-Item -ItemType Directory -Path $closureRoot -Force | Out-Null
+
+          "PSMATRIX_CLOSURE_GA_ROOT=$gaRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_CLOSURE_OPERATION_ROOT=$operationRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_CLOSURE_PROVISIONING_ROOT=$provisioningRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_CLOSURE_MEASUREMENT_ROOT=$measurementRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_CLOSURE_CAMPAIGN_ROOT=$campaignRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_CLOSURE_ROOT=$closureRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_CLOSURE_OUTPUT=$(Join-Path $closureRoot 'windows-authority-rc4-candidate-closure.json')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Check out exact RC4 closure controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.control_head }}
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out exact RC4 product source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.release_commit }}
+          path: release-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up controller Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Verify exact clean control and release-source checkouts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $controlRoot = Join-Path $env:GITHUB_WORKSPACE 'control'
+          $releaseSource = Join-Path $env:GITHUB_WORKSPACE 'release-source'
+          $controlHead = (git -C $controlRoot rev-parse HEAD).Trim().ToLowerInvariant()
+          $releaseHead = (git -C $releaseSource rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($controlHead -ne $env:CONTROL_HEAD) { throw 'Exact RC4 candidate-closure control checkout mismatch.' }
+          if ($releaseHead -ne $env:RELEASE_COMMIT) { throw 'Exact RC4 candidate-closure product source checkout mismatch.' }
+          if (-not [string]::IsNullOrWhiteSpace((git -C $controlRoot status --porcelain))) { throw 'RC4 candidate-closure control checkout is dirty.' }
+          if (-not [string]::IsNullOrWhiteSpace((git -C $releaseSource status --porcelain))) { throw 'RC4 candidate-closure release-source checkout is dirty.' }
+          "PSMATRIX_CLOSURE_CONTROL_ROOT=$controlRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_CLOSURE_RELEASE_SOURCE=$releaseSource" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build exact authoritative RC4 candidate closure
+        shell: pwsh
+        env:
+          LAB_PUBLIC_KEY_PEM: ${{ secrets.PSMATRIX_WINDOWS_LAB_PUBLIC_KEY }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:LAB_PUBLIC_KEY_PEM) -or $env:LAB_PUBLIC_KEY_PEM -notmatch '-----BEGIN PUBLIC KEY-----') { throw 'Protected Windows lab public key is missing or invalid.' }
+          $keyRoot = Join-Path $env:RUNNER_TEMP ('psmatrix-rc4-closure-public-' + [Guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $keyRoot -Force | Out-Null
+          $publicPath = Join-Path $keyRoot 'windows-lab-public.pem'
+          try {
+              [System.IO.File]::WriteAllText($publicPath,$env:LAB_PUBLIC_KEY_PEM,[System.Text.UTF8Encoding]::new($false))
+              & python "$env:PSMATRIX_CLOSURE_CONTROL_ROOT\scripts\ga\build_windows_authority_rc4_candidate_closure.py" `
+                  --source-root "$env:PSMATRIX_CLOSURE_CONTROL_ROOT" `
+                  --release-source "$env:PSMATRIX_CLOSURE_RELEASE_SOURCE" `
+                  --ga-root "$env:PSMATRIX_CLOSURE_GA_ROOT" `
+                  --release-commit "$env:RELEASE_COMMIT" `
+                  --release-lock "ga-packs\03-authoritative-windows\rc4-release-lock.json" `
+                  --lab-public-key "$publicPath" `
+                  --operation-root "$env:PSMATRIX_CLOSURE_OPERATION_ROOT" `
+                  --provisioning-root "$env:PSMATRIX_CLOSURE_PROVISIONING_ROOT" `
+                  --measurement-root "$env:PSMATRIX_CLOSURE_MEASUREMENT_ROOT" `
+                  --campaign-root "$env:PSMATRIX_CLOSURE_CAMPAIGN_ROOT" `
+                  --operation-run-id $env:OPERATION_RUN_ID `
+                  --operation-run-attempt $env:OPERATION_RUN_ATTEMPT `
+                  --provisioning-run-id $env:PROVISIONING_RUN_ID `
+                  --provisioning-run-attempt $env:PROVISIONING_RUN_ATTEMPT `
+                  --measurement-run-id $env:MEASUREMENT_RUN_ID `
+                  --measurement-run-attempt $env:MEASUREMENT_RUN_ATTEMPT `
+                  --campaign-run-id $env:CAMPAIGN_RUN_ID `
+                  --campaign-run-attempt $env:CAMPAIGN_RUN_ATTEMPT `
+                  --output "$env:PSMATRIX_CLOSURE_OUTPUT"
+              if ($LASTEXITCODE -ne 0) { throw "RC4 candidate-closure builder failed: $LASTEXITCODE" }
+          }
+          finally {
+              Remove-Item -LiteralPath $keyRoot -Recurse -Force -ErrorAction SilentlyContinue
+              Remove-Item Env:LAB_PUBLIC_KEY_PEM -ErrorAction SilentlyContinue
+          }
+
+      - name: Revalidate candidate closure and enforce final-release-pending boundary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $value = Get-Content -LiteralPath $env:PSMATRIX_CLOSURE_OUTPUT -Raw | ConvertFrom-Json
+          if ([int]$value.schema -ne 1 -or [string]$value.kind -ne 'psmatrix.windows-authority-rc4-candidate-closure') { throw 'RC4 candidate closure identity is invalid.' }
+          if ([string]$value.status -ne 'AUTHORITATIVE_RC4_EVIDENCE_READY_FINAL_RELEASE_PENDING') { throw 'RC4 candidate closure status is invalid.' }
+          if ([string]$value.release_version -ne '2.0.0rc4' -or [string]$value.release_commit -ne $env:RELEASE_COMMIT) { throw 'RC4 candidate closure release identity mismatch.' }
+          if ([bool]$value.authoritative_windows -ne $true -or [bool]$value.release_bound -ne $true) { throw 'RC4 candidate closure lost authoritative/release-bound state.' }
+          if ([bool]$value.final_release_required -ne $true -or [string]$value.final_release_version_required -ne '2.0.0') { throw 'RC4 candidate closure does not require the final 2.0.0 release.' }
+          if ([bool]$value.final_ga_evaluator_invoked -ne $false -or [bool]$value.ga_eligible -ne $false) { throw 'RC4 candidate closure improperly crossed the final GA boundary.' }
+          foreach ($field in @('active_release_lock_sha256','release_manifest_sha256','release_public_key_sha256','release_binding_sha256','operation_zip_sha256','windows_lab_media_sha256','measurement_report_sha256','authoritative_matrix_sha256','evidence_inventory_sha256','closure_sha256')) {
+              if ([string]$value.$field -cnotmatch '^[0-9a-f]{64}$') { throw "RC4 candidate closure SHA field is invalid: $field" }
+          }
+          if (@($value.image_bindings).Count -ne 3) { throw 'RC4 candidate closure must bind exactly three measured images.' }
+          $runtimes = @($value.image_bindings | ForEach-Object { [string]$_.runtime_id } | Sort-Object -Unique)
+          $expected = @('windows-powershell-4.0','windows-powershell-5.0','windows-powershell-5.1')
+          if ($runtimes.Count -ne 3 -or (Compare-Object -ReferenceObject $expected -DifferenceObject $runtimes).Count -ne 0) { throw 'RC4 candidate closure runtime set is not exact.' }
+          if ([int64]$value.provenance.operation.run_id -ne [int64]$env:OPERATION_RUN_ID -or [int]$value.provenance.operation.attempt -ne [int]$env:OPERATION_RUN_ATTEMPT) { throw 'RC4 candidate closure operation provenance mismatch.' }
+          if ([int64]$value.provenance.provisioning.run_id -ne [int64]$env:PROVISIONING_RUN_ID -or [int]$value.provenance.provisioning.attempt -ne [int]$env:PROVISIONING_RUN_ATTEMPT) { throw 'RC4 candidate closure provisioning provenance mismatch.' }
+          if ([int64]$value.provenance.measurement.run_id -ne [int64]$env:MEASUREMENT_RUN_ID -or [int]$value.provenance.measurement.attempt -ne [int]$env:MEASUREMENT_RUN_ATTEMPT) { throw 'RC4 candidate closure measurement provenance mismatch.' }
+          if ([int64]$value.provenance.campaign.run_id -ne [int64]$env:CAMPAIGN_RUN_ID -or [int]$value.provenance.campaign.attempt -ne [int]$env:CAMPAIGN_RUN_ATTEMPT) { throw 'RC4 candidate closure campaign provenance mismatch.' }
+          if (Select-String -LiteralPath $env:PSMATRIX_CLOSURE_OUTPUT -Pattern '-----BEGIN (?:ED25519 |EC |RSA )?PRIVATE KEY-----' -Quiet) { throw 'Private key material was found in RC4 candidate closure.' }
+
+          $copy = Join-Path $env:PSMATRIX_CLOSURE_EVIDENCE 'windows-authority-rc4-candidate-closure.json'
+          Copy-Item -LiteralPath $env:PSMATRIX_CLOSURE_OUTPUT -Destination $copy -Force
+          Write-Host 'rc4_candidate_closure=AUTHORITATIVE_RC4_EVIDENCE_READY_FINAL_RELEASE_PENDING'
+
+      - name: Record fail-closed RC4 candidate-closure failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_CLOSURE_EVIDENCE)) { exit 0 }
+          New-Item -ItemType Directory -Path $env:PSMATRIX_CLOSURE_EVIDENCE -Force | Out-Null
+          $failure = [ordered]@{
+              schema = 1
+              kind = 'psmatrix.windows-authority-rc4-candidate-closure-workflow-status'
+              status = 'FAIL'
+              release_version = '2.0.0rc4'
+              release_commit = $env:RELEASE_COMMIT
+              control_head = $env:CONTROL_HEAD
+              authoritative_windows = $false
+              release_bound = $false
+              final_release_required = $true
+              final_release_version_required = '2.0.0'
+              final_ga_evaluator_invoked = $false
+              ga_eligible = $false
+          }
+          [System.IO.File]::WriteAllText((Join-Path $env:PSMATRIX_CLOSURE_EVIDENCE 'candidate-closure-failure.json'),(($failure | ConvertTo-Json -Depth 8)+[Environment]::NewLine),[System.Text.UTF8Encoding]::new($false))
+
+      - name: Upload sanitized RC4 candidate closure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-authority-rc4-candidate-closure
+          path: ${{ runner.temp }}\psmatrix-rc4-candidate-closure-evidence
+          if-no-files-found: error
+          retention-days: 90
