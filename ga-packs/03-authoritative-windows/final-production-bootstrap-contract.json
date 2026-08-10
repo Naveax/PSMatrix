@@ -1,0 +1,91 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.final-production-bootstrap-contract",
+  "version": "2.0.0",
+  "pack": "03-authoritative-windows",
+  "execution_control_head": "8d29ce6e957ab08206aba24e75f1324cafd46856",
+  "readiness_source_head": "18eb9a7eed6fef807e709ce4377fd2709429066d",
+  "producer_source_anchor": "89372d9432433237abdf677900093b399c4d0868",
+  "final_release_commit": "02cef95d40cf524ce00f9d917188343dc49e6f2c",
+  "default_branch": "main",
+  "execution_insertion_point": {
+    "after_stage": "readiness",
+    "before_stage": "signed-release"
+  },
+  "active_repository_targets": {
+    "lock": "ga-packs/03-authoritative-windows/final-release-lock.json",
+    "public_key": "release-assets/2.0.0/psmatrix-2.0.0-release-public.pem"
+  },
+  "required_dispatch_workflow_paths": [
+    ".github/workflows/ga-final-production-readiness.yml",
+    ".github/workflows/ga-windows-authority-rc4-release-authority-enrollment.yml",
+    ".github/workflows/ga-windows-authority-final-staging-candidate-selfhosted.yml",
+    ".github/workflows/ga-windows-authority-final-release-lock-review.yml",
+    ".github/workflows/ga-windows-authority-final-release-lock-promotion.yml",
+    ".github/workflows/ga-windows-authority-final-release-sign-from-lock.yml",
+    ".github/workflows/ga-final-validation-summary.yml",
+    ".github/workflows/ga-windows-authority-final-windows-evidence-rebind.yml",
+    ".github/workflows/ga-final-full-runtime-matrix.yml",
+    ".github/workflows/ga-final-public-auth-live-probe.yml",
+    ".github/workflows/ga-final-public-oauth.yml",
+    ".github/workflows/ga-final-public-mtls.yml",
+    ".github/workflows/ga-final-external-otlp.yml",
+    ".github/workflows/ga-final-key-rotation.yml",
+    ".github/workflows/ga-final-disaster-recovery.yml",
+    ".github/workflows/ga-final-security-review-packet.yml",
+    ".github/workflows/ga-final-security-review.yml",
+    ".github/workflows/ga-final-vulnerability-scan.yml",
+    ".github/workflows/ga-final-evaluator.yml"
+  ],
+  "bootstrap_sequence": [
+    {"step": 1, "id": "default-branch-publication", "kind": "repository_condition"},
+    {"step": 2, "id": "readiness-source-preflight", "kind": "source_gate"},
+    {"step": 3, "id": "production-readiness", "kind": "workflow_dispatch", "workflow_path": ".github/workflows/ga-final-production-readiness.yml"},
+    {"step": 4, "id": "rc4-authority-enrollment-provenance", "kind": "artifact_provenance", "workflow_path": ".github/workflows/ga-windows-authority-rc4-release-authority-enrollment.yml"},
+    {"step": 5, "id": "final-staging", "kind": "workflow_dispatch", "workflow_path": ".github/workflows/ga-windows-authority-final-staging-candidate-selfhosted.yml"},
+    {"step": 6, "id": "final-lock-review", "kind": "workflow_dispatch", "workflow_path": ".github/workflows/ga-windows-authority-final-release-lock-review.yml"},
+    {"step": 7, "id": "human-review-digests", "kind": "human_review"},
+    {"step": 8, "id": "final-lock-promotion", "kind": "workflow_dispatch", "workflow_path": ".github/workflows/ga-windows-authority-final-release-lock-promotion.yml"},
+    {"step": 9, "id": "exact-lock-authority-repository-commit", "kind": "repository_commit"},
+    {"step": 10, "id": "active-lock-authority-verification", "kind": "repository_condition"}
+  ],
+  "requirements": {
+    "default_branch_publication_required_before_any_production_dispatch": true,
+    "all_required_dispatch_workflow_paths_must_exist_on_default_branch": true,
+    "readiness_source_preflight_success_required": true,
+    "production_readiness_pass_required_before_lock_bootstrap": true,
+    "review_and_promotion_runs_must_share_exact_control_head": true,
+    "review_run_must_be_successful_workflow_dispatch": true,
+    "promotion_run_must_be_successful_workflow_dispatch": true,
+    "exactly_one_nonexpired_review_artifact_required": true,
+    "human_reviewed_draft_sha256_required": true,
+    "human_reviewed_public_key_sha256_required": true,
+    "reviewed_sha256_format": "^[0-9a-f]{64}$",
+    "promotion_workflow_may_mutate_repository": false,
+    "exact_repository_commit_required_before_signing": true,
+    "active_lock_and_public_key_must_both_exist_before_signed_release": true,
+    "automatic_production_dispatch_allowed_from_source_preflight": false,
+    "automatic_merge_allowed": false,
+    "ga_eligibility_before_full_evidence_and_final_attestation": false
+  },
+  "control_source": {
+    "runtime_source_changes_allowed": false,
+    "changed_path_allowlist": [
+      ".github/workflows/ga-final-production-bootstrap-source-preflight.yml",
+      "ga-packs/03-authoritative-windows/final-production-bootstrap-contract.json",
+      "scripts/ga/validate_final_production_bootstrap.py",
+      "tests/test_final_production_bootstrap_contract.py"
+    ]
+  },
+  "preparation_state": {
+    "default_branch_dispatch_surface_ready": false,
+    "readiness_source_preflight_observed_success": false,
+    "production_readiness_executed": false,
+    "active_final_lock_present": false,
+    "final_public_authority_present": false,
+    "signed_release_executed": false,
+    "production_evidence_runs_complete": false,
+    "final_ga_evaluator_invoked": false,
+    "ga_eligible": false
+  }
+}
