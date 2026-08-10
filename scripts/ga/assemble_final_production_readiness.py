@@ -39,6 +39,11 @@ def _receipt(path: Path) -> dict[str, Any]:
     extra = set(value) - allowed
     if extra:
         raise ProductionReadinessError(f"readiness receipt contains forbidden top-level fields: {path.name}: {sorted(extra)}")
+    if value.get("status") not in {"PASS", "FAIL"}:
+        raise ProductionReadinessError(f"readiness receipt status is invalid: {path.name}")
+    checked_at = value.get("checked_at")
+    if not isinstance(checked_at, str) or not checked_at.strip():
+        raise ProductionReadinessError(f"readiness receipt checked_at is invalid: {path.name}")
     checks = value.get("checks")
     if not isinstance(checks, list):
         raise ProductionReadinessError(f"readiness receipt checks are invalid: {path.name}")
@@ -51,9 +56,9 @@ def _receipt(path: Path) -> dict[str, Any]:
             raise ProductionReadinessError(f"readiness receipt check contains forbidden fields: {path.name}: {sorted(extra_check)}")
         name = str(item.get("name") or "")
         source = str(item.get("source") or "")
-        if not name or source not in {"secret", "var"} or item.get("present") not in {True, False}:
+        if not name or source not in {"secret", "var"} or type(item.get("present")) is not bool:
             raise ProductionReadinessError(f"readiness receipt check shape is invalid: {path.name}")
-        if "path_exists" in item and item.get("path_exists") not in {True, False}:
+        if "path_exists" in item and type(item.get("path_exists")) is not bool:
             raise ProductionReadinessError(f"readiness receipt path_exists value is invalid: {path.name}")
     return value
 
