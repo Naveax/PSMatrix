@@ -48,7 +48,14 @@ class FinalProductionReadinessControlTests(unittest.TestCase):
                     item[forbidden_field] = "forbidden"
                 checks.append(item)
             status = "PASS" if all(item["present"] and item.get("path_exists", True) is True for item in checks) else "FAIL"
-            receipt = {"schema":1,"kind":"psmatrix.production-readiness-receipt","environment":name,"status":status,"checked_at":"2026-08-10T12:00:00+00:00","checks":checks}
+            receipt = {
+                "schema": 1,
+                "kind": "psmatrix.production-readiness-receipt",
+                "environment": name,
+                "status": status,
+                "checked_at": "2026-08-10T12:00:00+00:00",
+                "checks": checks,
+            }
             (root / f"{name}.json").write_text(json.dumps(receipt), encoding="utf-8")
 
     def test_contract_freezes_exact_twelve_environment_set(self) -> None:
@@ -61,10 +68,18 @@ class FinalProductionReadinessControlTests(unittest.TestCase):
         environments = value["environments"]
         self.assertEqual(len(environments), 12)
         expected = {
-            "production-ga-release-signing","production-ga-windows-lab","production-ga-ci-signing",
-            "production-ga-full-matrix","production-ga-public-auth-probe","production-ga-deployment-signing",
-            "production-ga-external-otlp-probe","production-ga-operations-signing","production-ga-recovery-signing",
-            "production-ga-security-review-signing","production-ga-vulnerability-scanner-signing","production-ga-root-signing",
+            "production-ga-release-signing",
+            "production-ga-windows-lab",
+            "production-ga-ci-signing",
+            "production-ga-full-matrix",
+            "production-ga-public-auth-probe",
+            "production-ga-deployment-signing",
+            "production-ga-external-otlp-probe",
+            "production-ga-operations-signing",
+            "production-ga-recovery-signing",
+            "production-ga-security-review-signing",
+            "production-ga-vulnerability-scanner-signing",
+            "production-ga-root-signing",
         }
         self.assertEqual({item["name"] for item in environments}, expected)
         full = next(item for item in environments if item["name"] == "production-ga-full-matrix")
@@ -82,6 +97,40 @@ class FinalProductionReadinessControlTests(unittest.TestCase):
             self.assertEqual(len(variables), len(set(variables)), environment["name"])
             self.assertFalse(set(secrets) & set(variables), environment["name"])
             self.assertTrue(set(environment.get("path_vars") or []) <= set(variables))
+            source = str(environment.get("producer_workflow_path") or "")
+            self.assertTrue(source.startswith(".github/workflows/") and source.endswith(".yml"), environment["name"])
+
+    def test_readiness_names_are_grounded_in_real_producer_workflows(self) -> None:
+        for environment in self.contract["environments"]:
+            source = ROOT / environment["producer_workflow_path"]
+            self.assertTrue(source.is_file(), f"missing producer source for {environment['name']}: {source}")
+            producer = source.read_text(encoding="utf-8")
+            self.assertIn(f"environment: {environment['name']}", producer, environment["name"])
+            for secret in environment.get("required_secrets") or []:
+                self.assertIn("${{ secrets." + secret + " }}", producer, f"{environment['name']} / {secret}")
+            for var in environment.get("required_vars") or []:
+                self.assertIn("${{ vars." + var + " }}", producer, f"{environment['name']} / {var}")
+
+    def test_public_auth_readiness_uses_exact_required_live_probe_variables(self) -> None:
+        public_auth = next(item for item in self.contract["environments"] if item["name"] == "production-ga-public-auth-probe")
+        self.assertEqual(
+            public_auth["required_vars"],
+            [
+                "PSMATRIX_OAUTH_ENDPOINT",
+                "PSMATRIX_OAUTH_DISCOVERY_URL",
+                "PSMATRIX_OAUTH_EXPECTED_ISSUER",
+                "PSMATRIX_MTLS_ENDPOINT",
+                "PSMATRIX_MTLS_FINGERPRINT_HEADER",
+            ],
+        )
+        stale = {
+            "PSMATRIX_OAUTH_PUBLIC_ENDPOINT",
+            "PSMATRIX_OAUTH_EXPECTED_AUDIENCE",
+            "PSMATRIX_OAUTH_REQUIRED_SCOPE",
+            "PSMATRIX_MTLS_PUBLIC_ENDPOINT",
+            "PSMATRIX_MTLS_CERT_FINGERPRINT_HEADER",
+        }
+        self.assertTrue(stale.isdisjoint(public_auth["required_vars"]))
 
     def test_clean_receipts_pass_environment_readiness_but_not_ga_readiness(self) -> None:
         with tempfile.TemporaryDirectory(prefix="psmatrix-readiness-pass-") as temp:
@@ -95,7 +144,15 @@ class FinalProductionReadinessControlTests(unittest.TestCase):
             self.assertEqual(result["environment_passed"], 12)
             self.assertEqual(result["environment_failed"], 0)
             self.assertEqual(result["producer_source_coverage"], 11)
-            for field in ("secret_values_observed","secret_hashes_observed","secret_lengths_observed","production_evidence_runs_complete","production_evaluator_ready","final_ga_evaluator_invoked","ga_eligible"):
+            for field in (
+                "secret_values_observed",
+                "secret_hashes_observed",
+                "secret_lengths_observed",
+                "production_evidence_runs_complete",
+                "production_evaluator_ready",
+                "final_ga_evaluator_invoked",
+                "ga_eligible",
+            ):
                 self.assertFalse(result[field], field)
 
     def test_missing_secret_produces_fail_without_serialized_secret_field(self) -> None:
@@ -103,7 +160,7 @@ class FinalProductionReadinessControlTests(unittest.TestCase):
             root = Path(temp)
             receipts = root / "receipts"
             receipts.mkdir()
-            self._write_receipts(receipts, missing={("production-ga-root-signing","secret","PSMATRIX_GA_ROOT_PRIVATE_KEY")})
+            self._write_receipts(receipts, missing={("production-ga-root-signing", "secret", "PSMATRIX_GA_ROOT_PRIVATE_KEY")})
             result = self.assembler.assemble(contract_path=CONTRACT, receipts_dir=receipts, output=root / "summary.json")
             self.assertEqual(result["status"], "FAIL")
             self.assertFalse(result["environment_readiness"])
@@ -143,7 +200,7 @@ class FinalProductionReadinessControlTests(unittest.TestCase):
             root = Path(temp)
             receipts = root / "receipts"
             receipts.mkdir()
-            self._write_receipts(receipts, missing_path={("production-ga-full-matrix","PSMATRIX_FULL_MATRIX_ENDPOINT_ROOT")})
+            self._write_receipts(receipts, missing_path={("production-ga-full-matrix", "PSMATRIX_FULL_MATRIX_ENDPOINT_ROOT")})
             result = self.assembler.assemble(contract_path=CONTRACT, receipts_dir=receipts, output=root / "summary.json")
             self.assertEqual(result["status"], "FAIL")
             row = next(item for item in result["environments"] if item["environment"] == "production-ga-full-matrix")
@@ -169,7 +226,17 @@ class FinalProductionReadinessControlTests(unittest.TestCase):
 
     def test_workflow_never_serializes_secret_values_hashes_or_lengths(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")
-        for forbidden in ("toJSON(secrets)","toJson(secrets)","hashlib.sha256(os.environ","len(os.environ",'"value":os.environ','"sha256":','"length":',"echo $CHECK_SECRET_","Write-Host $env:CHECK_SECRET_"):
+        for forbidden in (
+            "toJSON(secrets)",
+            "toJson(secrets)",
+            "hashlib.sha256(os.environ",
+            "len(os.environ",
+            '"value":os.environ',
+            '"sha256":',
+            '"length":',
+            "echo $CHECK_SECRET_",
+            "Write-Host $env:CHECK_SECRET_",
+        ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, text)
         self.assertIn('"present":bool(os.environ.get(', text)
@@ -179,9 +246,23 @@ class FinalProductionReadinessControlTests(unittest.TestCase):
 
     def test_source_preflight_freezes_five_paths_and_no_execution_claims(self) -> None:
         text = PREFLIGHT.read_text(encoding="utf-8")
-        for item in ("production-ga-final-production-readiness-source-preflight","production_readiness_control_changed_paths=5","runtime_source_changes=0","evaluator_producer_sources_present=11","evaluator_producer_sources_required=11","readiness_workflow_executed=false","environment_receipts_observed=false","all_environments_ready=false","production_evidence_runs_complete=false","production_evaluator_ready=false","ga_eligible=false"):
+        for item in (
+            "production-ga-final-production-readiness-source-preflight",
+            "production_readiness_control_changed_paths=5",
+            "runtime_source_changes=0",
+            "evaluator_producer_sources_present=11",
+            "evaluator_producer_sources_required=11",
+            "readiness_workflow_executed=false",
+            "environment_receipts_observed=false",
+            "all_environments_ready=false",
+            "production_evidence_runs_complete=false",
+            "production_evaluator_ready=false",
+            "ga_eligible=false",
+        ):
             with self.subTest(item=item):
                 self.assertIn(item, text)
+        self.assertIn("producer_workflow_path", text)
+        self.assertIn("Production-readiness producer source is missing", text)
 
 
 if __name__ == "__main__":
