@@ -284,7 +284,7 @@ class FinalProductionReadinessControlTests(unittest.TestCase):
 
     def test_source_preflight_registration_safety_is_frozen(self) -> None:
         text = PREFLIGHT.read_text(encoding="utf-8")
-        self.assertEqual(text.count("tests/test_final_production_readiness_controls.py"), 2)
+        self.assertEqual(text.count("tests/test_final_production_readiness_controls.py"), 3)
         self.assertNotIn("tests/test_final-production-readiness-controls.py", text)
         self.assertNotIn("'${{ secrets.", text)
         self.assertNotIn("'${{ vars.", text)
