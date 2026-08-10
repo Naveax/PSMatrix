@@ -100,7 +100,8 @@ class FinalExecutionControlContractTests(unittest.TestCase):
             self.assertIn(f"name: {item['workflow']}", text)
             self.assertIn("workflow_dispatch:", text)
         controls = self.contract["control_workflows"]
-        self.assertEqual(controls["readiness"], self.readiness["workflow"])
+        self.assertEqual(controls["readiness"]["workflow"], self.readiness["workflow"]["name"])
+        self.assertEqual(controls["readiness"]["path"], self.readiness["workflow"]["path"])
         self.assertEqual(controls["evaluator"]["workflow"], "production-ga-final-evaluator")
         self.assertEqual(controls["evaluator"]["path"], ".github/workflows/ga-final-evaluator.yml")
 
