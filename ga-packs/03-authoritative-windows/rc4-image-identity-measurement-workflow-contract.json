@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-authority-image-identity-measurement-workflow-contract",
+  "pack": "03-authoritative-windows",
+  "release_version": "2.0.0rc4",
+  "workflow": "production-ga-windows-authority-rc4-image-identity-measurement-selfhosted",
+  "protected_environment": "production-ga-windows-lab",
+  "required_runner_labels": ["self-hosted", "Windows", "X64", "psmatrix-hyperv"],
+  "prerequisites": {
+    "exact_release_commit_required": true,
+    "exact_control_head_required": true,
+    "active_rc4_release_lock_required": true,
+    "provisioned_vm_set_required": true,
+    "exact_runtime_count": 3,
+    "generation": 2,
+    "checkpoint_name": "psmatrix-clean",
+    "real_endpoint_manifests_required": true,
+    "endpoint_templates_forbidden": true,
+    "endpoint_private_paths_must_stay_under_ga_root": true,
+    "trust_home_required": true
+  },
+  "measurement": {
+    "product_identity_collector": "src/psmatrix/windows/collect-image-identity.ps1",
+    "worker_health_attestation_required": true,
+    "worker_health_runtime_must_match": true,
+    "remote_result_signature_verification_required": true,
+    "powershell_desktop_required": true,
+    "windows_required": true,
+    "x64_required": true,
+    "required_capabilities": ["registry", "services", "com", "wmi", "event-log"],
+    "fixture_pack_sha256_required": true,
+    "vm_id_required": true,
+    "snapshot_id_required": true,
+    "existing_real_image_manifest_overwrite": false
+  },
+  "outputs": {
+    "status": "IMAGE_IDENTITIES_MEASURED_ENDPOINTS_VALIDATED",
+    "image_manifest_count": 3,
+    "actual_os_identity_measured": true,
+    "real_endpoint_manifests_validated": true,
+    "image_manifests_written": true,
+    "certification_campaign_executed": false,
+    "authoritative": false,
+    "ga_eligible": false
+  },
+  "safety": {
+    "creates_virtual_machines": false,
+    "creates_checkpoints": false,
+    "writes_endpoint_manifests": false,
+    "reads_release_private_key": false,
+    "reads_windows_lab_private_key": false,
+    "uploads_private_endpoint_material": false,
+    "uploads_remote_worker_result": false,
+    "uploads_sanitized_status_only": true,
+    "runs_authoritative_campaign": false,
+    "authoritative": false,
+    "ga_eligible": false
+  }
+}
