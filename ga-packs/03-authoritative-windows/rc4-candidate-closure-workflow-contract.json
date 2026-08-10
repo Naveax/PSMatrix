@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-authority-rc4-candidate-closure-workflow-contract",
+  "pack": "03-authoritative-windows",
+  "release_version": "2.0.0rc4",
+  "workflow": "production-ga-windows-authority-rc4-candidate-closure-selfhosted",
+  "protected_environment": "production-ga-windows-lab",
+  "required_runner_labels": ["self-hosted", "Windows", "X64", "psmatrix-hyperv"],
+  "provenance": {
+    "operation_run_and_attempt_required": true,
+    "provisioning_run_and_attempt_required": true,
+    "measurement_run_and_attempt_required": true,
+    "campaign_run_and_attempt_required": true,
+    "active_release_lock_sha256_required": true,
+    "signed_release_manifest_reverified": true,
+    "signed_release_artifacts_must_equal_active_lock": true,
+    "operation_release_binding_cross_checked": true,
+    "provisioning_media_sha256_cross_checked": true,
+    "measurement_media_image_endpoint_sha256_cross_checked": true,
+    "campaign_release_binding_cross_checked": true,
+    "authoritative_matrix_dsse_reverified": true,
+    "campaign_evidence_private_key_rescan_required": true
+  },
+  "candidate_state": {
+    "status": "AUTHORITATIVE_RC4_EVIDENCE_READY_FINAL_RELEASE_PENDING",
+    "authoritative_windows": true,
+    "release_bound": true,
+    "final_release_required": true,
+    "final_release_version_required": "2.0.0",
+    "final_ga_evaluator_invoked": false,
+    "ga_eligible": false
+  },
+  "safety": {
+    "release_private_key_required": false,
+    "windows_lab_private_key_required": false,
+    "windows_lab_public_key_only": true,
+    "creates_virtual_machines": false,
+    "creates_checkpoints": false,
+    "contacts_workers": false,
+    "reruns_certification_campaign": false,
+    "mutates_existing_evidence": false,
+    "invokes_final_ga_evaluator": false,
+    "claims_final_version": false,
+    "ga_eligible": false
+  }
+}
