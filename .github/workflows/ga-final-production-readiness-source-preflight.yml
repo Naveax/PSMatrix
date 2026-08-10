@@ -1,11 +1,27 @@
 name: production-ga-final-production-readiness-source-preflight
 
 on:
+  workflow_dispatch:
   push:
     branches: ["final/2.0.0-production-readiness-controls-v2"]
+    paths:
+      - ".github/workflows/ga-final-production-readiness-source-preflight.yml"
+      - ".github/workflows/ga-final-production-readiness.yml"
+      - "ga-packs/03-authoritative-windows/final-production-readiness-contract.json"
+      - "scripts/ga/assemble_final_production_readiness.py"
+      - "tests/test_final-production-readiness-controls.py"
   pull_request:
     branches: ["final/2.0.0-security-vulnerability-evidence-producers-anchor"]
-  workflow_dispatch:
+    paths:
+      - ".github/workflows/ga-final-production-readiness-source-preflight.yml"
+      - ".github/workflows/ga-final-production-readiness.yml"
+      - "ga-packs/03-authoritative-windows/final-production-readiness-contract.json"
+      - "scripts/ga/assemble_final_production_readiness.py"
+      - "tests/test_final-production-readiness-controls.py"
+
+concurrency:
+  group: production-ga-final-production-readiness-source-preflight-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -13,6 +29,7 @@ permissions:
 
 jobs:
   registration-probe:
+    name: Register exact-head source-preflight before NAVEAX scheduling
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -20,41 +37,272 @@ jobs:
       statuses: write
     env:
       EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+      STATUS_CONTEXT: production-readiness/source-preflight
     steps:
-      - name: Publish diagnostic registration status
+      - name: Publish pending exact-head source-preflight status
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]] || { echo 'expected exact head is invalid' >&2; exit 1; }
           python - <<'PY'
           import json
           import os
           import urllib.request
-          head = os.environ['EXPECTED_HEAD']
-          if len(head) != 40:
-              raise SystemExit('invalid exact head')
+          url = f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}/statuses/{os.environ['EXPECTED_HEAD']}"
           payload = json.dumps({
-              'state': 'success',
-              'target_url': f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
-              'description': 'Diagnostic workflow registration succeeded',
-              'context': 'production-readiness/registration-diagnostic',
-          }).encode('utf-8')
-          request = urllib.request.Request(
-              f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}/statuses/{head}",
-              data=payload,
-              method='POST',
-              headers={
-                  'Accept':'application/vnd.github+json',
-                  'Authorization':f"Bearer {os.environ['GH_TOKEN']}",
-                  'X-GitHub-Api-Version':'2026-03-10',
-                  'Content-Type':'application/json',
-                  'User-Agent':'psmatrix-readiness-registration-diagnostic',
-              },
-          )
+              "state": "pending",
+              "target_url": f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+              "description": "NAVEAX exact-head source preflight queued",
+              "context": os.environ['STATUS_CONTEXT'],
+          }).encode("utf-8")
+          request = urllib.request.Request(url, data=payload, method="POST", headers={
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+              "X-GitHub-Api-Version": "2026-03-10",
+              "Content-Type": "application/json",
+              "User-Agent": "psmatrix-production-readiness-registration-probe",
+          })
           with urllib.request.urlopen(request, timeout=30) as response:
-              result=json.load(response)
-          if result.get('state')!='success':
-              raise SystemExit('diagnostic commit status was not accepted')
-          print(f"production_readiness_registration_diagnostic=PASS run_id={os.environ['GITHUB_RUN_ID']}")
+              value = json.load(response)
+          if value.get("state") != "pending" or value.get("context") != os.environ['STATUS_CONTEXT']:
+              raise SystemExit("commit-status registration response mismatch")
+          print(f"production_readiness_workflow_registration=PASS run_id={os.environ['GITHUB_RUN_ID']}")
           PY
+
+  production-readiness-source-preflight:
+    needs: registration-probe
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      statuses: write
+    env:
+      PYTHONPATH: ${{ github.workspace }}\src
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+      PRODUCER_SOURCE_ANCHOR: 89372d9432433237abdf677900093b399c4d0868
+      FINAL_RELEASE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
+      STATUS_CONTEXT: production-readiness/source-preflight
+
+    steps:
+      - name: Verify trusted NAVEAX source runner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') { throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS" }
+          Write-Host 'production_readiness_source_runner=PASS'
+
+      - name: Check out exact production-readiness control source with full history
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact five-path closure and eleven producer sources
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($env:EXPECTED_HEAD -cnotmatch '^[0-9a-f]{40}$' -or $head -ne $env:EXPECTED_HEAD.ToLowerInvariant()) { throw "Exact production-readiness head mismatch: $head / $env:EXPECTED_HEAD" }
+          if (-not [string]::IsNullOrWhiteSpace((git status --porcelain))) { throw 'Production-readiness source checkout is dirty.' }
+          foreach ($sha in @($env:PRODUCER_SOURCE_ANCHOR,$env:FINAL_RELEASE_COMMIT)) {
+              git cat-file -e "$sha^{commit}"
+              if ($LASTEXITCODE -ne 0) { throw "Frozen source commit is unavailable: $sha" }
+          }
+          git merge-base --is-ancestor $env:PRODUCER_SOURCE_ANCHOR $head
+          if ($LASTEXITCODE -ne 0) { throw 'Eleven-producer source anchor is not an ancestor.' }
+
+          $contract = Get-Content 'ga-packs\03-authoritative-windows\final-production-readiness-contract.json' -Raw | ConvertFrom-Json
+          if ([int]$contract.schema -ne 1 -or [string]$contract.kind -ne 'psmatrix.final-production-readiness-contract' -or [string]$contract.version -ne '2.0.0') { throw 'Production-readiness contract identity mismatch.' }
+          if ([string]$contract.producer_source_anchor -ne $env:PRODUCER_SOURCE_ANCHOR -or [string]$contract.final_release_commit -ne $env:FINAL_RELEASE_COMMIT) { throw 'Production-readiness frozen source identity mismatch.' }
+          if ([bool]$contract.control_source.runtime_source_changes_allowed) { throw 'Production-readiness controls must not modify runtime source.' }
+          if ([int]$contract.summary_contract.required_environment_count -ne 12 -or [int]$contract.summary_contract.producer_source_coverage_required -ne 11 -or -not [bool]$contract.summary_contract.environment_readiness_is_not_ga_readiness) { throw 'Production-readiness summary boundary mismatch.' }
+          if ([bool]$contract.receipt_contract.secret_values_allowed -or [bool]$contract.receipt_contract.secret_hashes_allowed -or [bool]$contract.receipt_contract.secret_lengths_allowed) { throw 'Production-readiness receipt contract permits secret-derived data.' }
+          $allowedCheck = @($contract.receipt_contract.allowed_check_fields | ForEach-Object { [string]$_ }) | Sort-Object
+          $expectedCheck = @('name','path_exists','present','source') | Sort-Object
+          if (@(Compare-Object -ReferenceObject $expectedCheck -DifferenceObject $allowedCheck).Count -ne 0) { throw 'Production-readiness receipt allowed-field set mismatch.' }
+
+          $environments = @($contract.environments)
+          if ($environments.Count -ne 12) { throw "Expected exactly twelve readiness environments; observed $($environments.Count)." }
+          $names = @($environments | ForEach-Object { [string]$_.name })
+          if (@($names | Sort-Object -Unique).Count -ne 12) { throw 'Production-readiness environment names are not unique.' }
+          $full = @($environments | Where-Object { [string]$_.name -eq 'production-ga-full-matrix' })
+          if ($full.Count -ne 1 -or [string]$full[0].runner -ne 'NAVEAX') { throw 'Production-ga-full-matrix must be the single NAVEAX readiness environment.' }
+          $fullPaths = @($full[0].path_vars | ForEach-Object { [string]$_ }) | Sort-Object
+          $expectedPaths = @('PSMATRIX_FULL_MATRIX_ENDPOINT_ROOT','PSMATRIX_FULL_MATRIX_HOME') | Sort-Object
+          if (@(Compare-Object -ReferenceObject $expectedPaths -DifferenceObject $fullPaths).Count -ne 0) { throw 'Full-matrix readiness path-variable contract mismatch.' }
+
+          $publicAuth = @($environments | Where-Object { [string]$_.name -eq 'production-ga-public-auth-probe' })
+          if ($publicAuth.Count -ne 1) { throw 'Public-auth readiness environment cardinality mismatch.' }
+          $actualPublicAuthVars = @($publicAuth[0].required_vars | ForEach-Object { [string]$_ })
+          $expectedPublicAuthVars = @('PSMATRIX_OAUTH_ENDPOINT','PSMATRIX_OAUTH_DISCOVERY_URL','PSMATRIX_OAUTH_EXPECTED_ISSUER','PSMATRIX_MTLS_ENDPOINT','PSMATRIX_MTLS_FINGERPRINT_HEADER')
+          if (@(Compare-Object -ReferenceObject ($expectedPublicAuthVars | Sort-Object) -DifferenceObject ($actualPublicAuthVars | Sort-Object)).Count -ne 0) { throw 'Public-auth readiness variables differ from required live-probe variables.' }
+
+          $changed = @((git diff --name-only "$env:PRODUCER_SOURCE_ANCHOR..$head") | ForEach-Object { $_.Trim().Replace('\','/') } | Where-Object { $_ } | Sort-Object -Unique)
+          $allowed = @($contract.control_source.changed_path_allowlist | ForEach-Object { ([string]$_).Replace('\','/') } | Sort-Object -Unique)
+          $delta = @(Compare-Object -ReferenceObject $allowed -DifferenceObject $changed)
+          if ($delta.Count -ne 0) { throw "Production-readiness changed-path closure mismatch: $($delta | Out-String)" }
+          if ($changed.Count -ne 5) { throw "Expected exactly five production-readiness control paths; observed $($changed.Count)." }
+          $runtime = @($changed | Where-Object { $_ -like 'src/psmatrix/*' })
+          if ($runtime.Count -ne 0) { throw "Production-readiness controls modified runtime source: $($runtime -join ',')" }
+
+          $workflow = Get-Content '.github\workflows\ga-final-production-readiness.yml' -Raw
+          if (-not $workflow.Contains('name: production-ga-final-production-readiness')) { throw 'Production-readiness workflow identity mismatch.' }
+          $dollar = [char]36
+          foreach ($environment in $environments) {
+              $environmentName = [string]$environment.name
+              $needle = "environment: $environmentName"
+              if ($workflow.Split($needle).Count -ne 2) { throw "Production-readiness workflow must reference environment exactly once: $environmentName" }
+
+              $producerPath = [string]$environment.producer_workflow_path
+              if ([string]::IsNullOrWhiteSpace($producerPath) -or -not (Test-Path -LiteralPath $producerPath -PathType Leaf)) { throw "Production-readiness producer source is missing: $environmentName / $producerPath" }
+              $producerText = Get-Content -LiteralPath $producerPath -Raw
+              if (-not $producerText.Contains($needle)) { throw "Production-readiness producer source does not bind expected environment: $environmentName / $producerPath" }
+
+              foreach ($secret in @($environment.required_secrets)) {
+                  $reference = $dollar + '{{ secrets.' + [string]$secret + ' }}'
+                  if ($workflow.Split($reference).Count -ne 2) { throw "Production-readiness secret reference count mismatch: $secret" }
+                  if (-not $producerText.Contains($reference)) { throw "Production-readiness secret is not grounded in producer source: $environmentName / $secret / $producerPath" }
+              }
+              foreach ($var in @($environment.required_vars)) {
+                  $reference = $dollar + '{{ vars.' + [string]$var + ' }}'
+                  if ($workflow.Split($reference).Count -ne 2) { throw "Production-readiness variable reference count mismatch: $var" }
+                  if (-not $producerText.Contains($reference)) { throw "Production-readiness variable is not grounded in producer source: $environmentName / $var / $producerPath" }
+              }
+          }
+          foreach ($forbidden in @('toJSON(secrets)','toJson(secrets)','hashlib.sha256(os.environ','len(os.environ','"value":os.environ','"sha256":','"length":','echo $CHECK_SECRET_','Write-Host $env:CHECK_SECRET_')) {
+              if ($workflow.Contains($forbidden)) { throw "Production-readiness workflow contains forbidden secret-derived output pattern: $forbidden" }
+          }
+          if ($workflow.Split('runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]').Count -ne 2) { throw 'Production-readiness workflow must contain exactly one trusted NAVEAX readiness job.' }
+          if (-not $workflow.Contains("RUNNER_NAME -ne 'NAVEAX'")) { throw 'Full-matrix readiness job does not bind exact NAVEAX runner identity.' }
+          if (-not $workflow.Contains('pattern: psmatrix-readiness-*') -or -not $workflow.Contains('merge-multiple: true') -or -not $workflow.Contains('--require-pass')) { throw 'Production-readiness aggregator wiring is incomplete.' }
+
+          $evaluator = Get-Content 'ga-packs\03-authoritative-windows\final-ga-evaluator-control-contract.json' -Raw | ConvertFrom-Json
+          $gateNames = @($evaluator.required_gates | ForEach-Object { [string]$_ })
+          if ($gateNames.Count -ne 11) { throw 'Evaluator no longer has exactly eleven required gates.' }
+          $present = 0
+          foreach ($gate in $gateNames) {
+              $entry = $evaluator.evidence_sources.$gate
+              $path = [string]$entry.workflow_path
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required producer source is missing after readiness layer: $gate / $path" }
+              $text = Get-Content -LiteralPath $path -Raw
+              if (-not $text.Contains("name: $([string]$entry.workflow)")) { throw "Producer workflow identity mismatch after readiness layer: $gate / $path" }
+              $present++
+          }
+          if ($present -ne 11) { throw "Readiness layer inherited producer coverage is not 11/11: $present" }
+          Write-Host "validated_exact_production_readiness_head=$head"
+          Write-Host 'production_readiness_control_changed_paths=5'
+          Write-Host 'runtime_source_changes=0'
+          Write-Host 'readiness_producer_source_crosscheck=PASS environments=12'
+          Write-Host 'evaluator_producer_sources_present=11'
+          Write-Host 'evaluator_producer_sources_required=11'
+
+      - name: Compile production-readiness controls
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m py_compile scripts/ga/assemble_final_production_readiness.py tests/test_final_production_readiness_controls.py
+          if ($LASTEXITCODE -ne 0) { throw 'Production-readiness Python compile failed.' }
+          Write-Host 'production_readiness_compile=PASS'
+
+      - name: Run readiness and inherited final producer contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m unittest -v tests.test_final_production_readiness_controls tests.test_final_security_vulnerability_evidence_producers tests.test_final_ga_evaluator_controls
+          if ($LASTEXITCODE -ne 0) { throw 'Production-readiness source contract suite failed.' }
+          Write-Host 'production_readiness_source_contract=PASS'
+
+      - name: Parse readiness assembler without environment execution
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python scripts/ga/assemble_final_production_readiness.py --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Production-readiness assembler CLI parse failed.' }
+          Write-Host 'production_readiness_cli_parse=PASS'
+
+      - name: Scan every tracked source byte for exact PEM private-authority headers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import subprocess
+          from pathlib import Path
+          markers = {b"-----BEGIN PRIVATE KEY-----",b"-----BEGIN RSA PRIVATE KEY-----",b"-----BEGIN EC PRIVATE KEY-----",b"-----BEGIN OPENSSH PRIVATE KEY-----",b"-----BEGIN ED25519 PRIVATE KEY-----"}
+          root = Path.cwd().resolve()
+          tracked = [line for line in subprocess.check_output(["git", "ls-files"], text=True).splitlines() if line]
+          scanned = 0
+          total = 0
+          for relative in tracked:
+              path = root / relative
+              if not path.is_file(): continue
+              scanned += 1
+              with path.open("rb") as handle:
+                  for raw_line in handle:
+                      total += len(raw_line)
+                      if raw_line.rstrip(b"\r\n").strip() in markers:
+                          raise SystemExit(f"tracked private-key PEM material detected: {relative}")
+          print(f"repository_private_authority_absence=PASS tracked_files={scanned} tracked_bytes={total} size_limit_applied=false")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Tracked-source private authority scan failed.' }
+
+      - name: Emit production-readiness source preparation summary
+        shell: pwsh
+        run: |
+          Write-Host "validated_exact_production_readiness_head=$env:EXPECTED_HEAD"
+          Write-Host 'evaluator_producer_sources_present=11'
+          Write-Host 'evaluator_producer_sources_required=11'
+          Write-Host 'readiness_producer_source_crosscheck=PASS environments=12'
+          Write-Host 'readiness_workflow_executed=false'
+          Write-Host 'environment_receipts_observed=false'
+          Write-Host 'all_environments_ready=false'
+          Write-Host 'production_evidence_runs_complete=false'
+          Write-Host 'production_evaluator_ready=false'
+          Write-Host 'final_ga_evaluator_invoked=false'
+          Write-Host 'ga_eligible=false'
+
+      - name: Publish failed exact-head source-preflight status
+        if: ${{ failure() }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $headers = @{
+              Accept = 'application/vnd.github+json'
+              Authorization = "Bearer $env:GH_TOKEN"
+              'X-GitHub-Api-Version' = '2026-03-10'
+              'User-Agent' = 'psmatrix-production-readiness-preflight'
+          }
+          $body = @{
+              state = 'failure'
+              target_url = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+              description = 'NAVEAX exact-head source preflight failed'
+              context = $env:STATUS_CONTEXT
+          } | ConvertTo-Json -Compress
+          Invoke-RestMethod -Method Post -Uri "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/statuses/$env:EXPECTED_HEAD" -Headers $headers -ContentType 'application/json' -Body $body | Out-Null
+          Write-Host "production_readiness_commit_status=FAILURE context=$env:STATUS_CONTEXT"
+
+      - name: Publish successful exact-head source-preflight status
+        if: ${{ success() }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $headers = @{
+              Accept = 'application/vnd.github+json'
+              Authorization = "Bearer $env:GH_TOKEN"
+              'X-GitHub-Api-Version' = '2026-03-10'
+              'User-Agent' = 'psmatrix-production-readiness-preflight'
+          }
+          $body = @{
+              state = 'success'
+              target_url = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+              description = 'NAVEAX exact-head source preflight passed'
+              context = $env:STATUS_CONTEXT
+          } | ConvertTo-Json -Compress
+          Invoke-RestMethod -Method Post -Uri "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/statuses/$env:EXPECTED_HEAD" -Headers $headers -ContentType 'application/json' -Body $body | Out-Null
+          Write-Host "production_readiness_commit_status=SUCCESS context=$env:STATUS_CONTEXT"
