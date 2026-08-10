@@ -133,26 +133,31 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           @'
-          import importlib.util
           import subprocess
           from pathlib import Path
 
+          markers = {
+              b"-----BEGIN PRIVATE KEY-----",
+              b"-----BEGIN RSA PRIVATE KEY-----",
+              b"-----BEGIN EC PRIVATE KEY-----",
+              b"-----BEGIN OPENSSH PRIVATE KEY-----",
+              b"-----BEGIN ED25519 PRIVATE KEY-----",
+          }
           root = Path.cwd().resolve()
-          scanner_path = root / "scripts" / "ga" / "scan_private_key_material_streaming.py"
-          spec = importlib.util.spec_from_file_location("psmatrix_final_private_scan", scanner_path)
-          if spec is None or spec.loader is None:
-              raise SystemExit("could not load streaming private-key scanner")
-          scanner = importlib.util.module_from_spec(spec)
-          spec.loader.exec_module(scanner)
           tracked = [line for line in subprocess.check_output(["git", "ls-files"], text=True).splitlines() if line]
           total = 0
+          scanned = 0
           for relative in tracked:
               path = root / relative
               if not path.is_file():
                   continue
-              _, size = scanner._scan_file(path)
-              total += size
-          print(f"repository_private_authority_absence=PASS tracked_files={len(tracked)} tracked_bytes={total}")
+              scanned += 1
+              with path.open("rb") as handle:
+                  for raw_line in handle:
+                      total += len(raw_line)
+                      if raw_line.rstrip(b"\r\n").strip() in markers:
+                          raise SystemExit(f"tracked private-key PEM material detected: {relative}")
+          print(f"repository_private_authority_absence=PASS tracked_files={scanned} tracked_bytes={total} size_limit_applied=false")
           '@ | python -
           if ($LASTEXITCODE -ne 0) { throw 'Tracked-source private authority scan failed.' }
 
