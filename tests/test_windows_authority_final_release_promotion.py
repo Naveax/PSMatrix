@@ -179,7 +179,7 @@ class WindowsAuthorityFinalReleasePromotionTests(unittest.TestCase):
 
     def test_historical_rc_builder_remains_candidate_only(self) -> None:
         text = RC_BUILDER.read_text(encoding="utf-8")
-        self.assertIn(r'_RC = re.compile(r"^2\\.0\\.0rc[0-9]+$")', text)
+        self.assertIn('_RC = re.compile(r"^2\\.0\\.0rc[0-9]+$")', text)
         self.assertIn("Windows Authority staging requires a 2.0.0rcN version", text)
         self.assertNotIn("READY_FOR_FINAL_RELEASE_LOCK_REVIEW", text)
 
