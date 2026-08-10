@@ -113,50 +113,63 @@ jobs:
 
       - name: Materialize isolated canonical matrix spec and complete endpoint bundle
         shell: pwsh
+        env:
+          PSMATRIX_MATRIX_ROOT: ${{ runner.temp }}\psmatrix-final-full-matrix-spec
         run: |
           $ErrorActionPreference = 'Stop'
-          $matrixRoot = Join-Path $env:RUNNER_TEMP 'psmatrix-final-full-matrix-spec'
+          $matrixRoot = $env:PSMATRIX_MATRIX_ROOT
           if (Test-Path -LiteralPath $matrixRoot) { Remove-Item -LiteralPath $matrixRoot -Recurse -Force }
           New-Item -ItemType Directory -Path $matrixRoot | Out-Null
           $spec = Join-Path $matrixRoot 'psmatrix.full.json'
           $env:PYTHONPATH = (Join-Path $env:GITHUB_WORKSPACE 'control\src')
           python -m psmatrix.cli full init --output $spec
           if ($LASTEXITCODE -ne 0) { throw 'Canonical full-matrix spec initialization failed.' }
-          Copy-Item -LiteralPath $env:FULL_MATRIX_ENDPOINT_ROOT -Destination (Join-Path $matrixRoot 'endpoints') -Recurse -Force
           @'
           import json
           import os
+          import shutil
           from pathlib import Path
-          root=Path(os.environ['PSMATRIX_MATRIX_ROOT'])
-          spec_path=root/'psmatrix.full.json'
-          value=json.loads(spec_path.read_text(encoding='utf-8'))
-          targets=value.get('targets') or []
-          remote=[item for item in targets if isinstance(item,dict) and item.get('kind')=='remote']
-          if len(targets)!=25 or len(remote)!=13:
+
+          root = Path(os.environ['PSMATRIX_MATRIX_ROOT']).resolve()
+          source = Path(os.environ['FULL_MATRIX_ENDPOINT_ROOT']).resolve()
+          if not source.is_dir() or source.is_symlink():
+              raise SystemExit(f'full-matrix endpoint bundle root is missing or unsafe: {source}')
+          for item in source.rglob('*'):
+              if item.is_symlink():
+                  raise SystemExit(f'full-matrix endpoint bundle contains a symlink: {item.relative_to(source)}')
+          destination = root / 'endpoints'
+          if destination.exists():
+              raise SystemExit(f'canonical endpoint destination already exists: {destination}')
+          shutil.copytree(source, destination, symlinks=False)
+
+          spec_path = root / 'psmatrix.full.json'
+          value = json.loads(spec_path.read_text(encoding='utf-8'))
+          targets = value.get('targets') or []
+          remote = [item for item in targets if isinstance(item, dict) and item.get('kind') == 'remote']
+          if len(targets) != 25 or len(remote) != 13:
               raise SystemExit(f'canonical matrix cardinality mismatch: targets={len(targets)} remote={len(remote)}')
-          value.setdefault('differential',{})['mode']='strict'
-          value['differential']['allow']=[]
-          value.setdefault('requirements',{})['require_complete']=True
-          spec_path.write_text(json.dumps(value,indent=2,sort_keys=False)+'\n',encoding='utf-8')
+          value.setdefault('differential', {})['mode'] = 'strict'
+          value['differential']['allow'] = []
+          value.setdefault('requirements', {})['require_complete'] = True
+          spec_path.write_text(json.dumps(value, indent=2, sort_keys=False) + '\n', encoding='utf-8')
           for item in remote:
-              relative=Path(str(item['endpoint']))
-              candidate=(root/relative).resolve()
+              relative = Path(str(item['endpoint']))
+              candidate = (root / relative).resolve()
               try:
-                  candidate.relative_to(root.resolve())
+                  candidate.relative_to(root)
               except ValueError:
                   raise SystemExit(f'remote endpoint escapes matrix root: {relative}')
               if not candidate.is_file() or candidate.is_symlink():
                   raise SystemExit(f'required remote endpoint is missing or unsafe: {relative}')
-          allowance=root/'psmatrix.differences.json'
-          data=json.loads(allowance.read_text(encoding='utf-8'))
-          if data.get('rules') not in ([],None):
+          allowance = root / 'psmatrix.differences.json'
+          data = json.loads(allowance.read_text(encoding='utf-8'))
+          if data.get('rules') not in ([], None):
               raise SystemExit('canonical GA matrix difference allowance manifest is not empty')
+          print('endpoint_bundle_copy=PASS method=shutil.copytree symlinks=false')
           print('canonical_matrix_spec=PASS targets=25 remote=13 differential=strict')
           '@ | python -
           if ($LASTEXITCODE -ne 0) { throw 'Canonical full-matrix endpoint/spec materialization failed.' }
           "PSMATRIX_FINAL_MATRIX_ROOT=$matrixRoot" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-        env:
-          PSMATRIX_MATRIX_ROOT: ${{ runner.temp }}\psmatrix-final-full-matrix-spec
 
       - name: Require all twenty-five matrix targets READY before execution
         shell: pwsh
@@ -217,21 +230,23 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           @'
-          import json, os
+          import json
+          import os
           from pathlib import Path
-          root=Path(os.environ['PSMATRIX_FINAL_MATRIX_UNSIGNED'])
-          report=json.loads((root/'full-matrix-report.json').read_text(encoding='utf-8'))
-          matrix=report.get('matrix') or {}
-          coverage=matrix.get('coverage') or {}
-          if report.get('schema')!=8 or report.get('status')!='PASS':
+
+          root = Path(os.environ['PSMATRIX_FINAL_MATRIX_UNSIGNED'])
+          report = json.loads((root / 'full-matrix-report.json').read_text(encoding='utf-8'))
+          matrix = report.get('matrix') or {}
+          coverage = matrix.get('coverage') or {}
+          if report.get('schema') != 8 or report.get('status') != 'PASS':
               raise SystemExit('unsigned full-matrix report identity/status mismatch')
-          if matrix.get('full') is not True or matrix.get('require_complete') is not True or matrix.get('differential_mode')!='strict':
+          if matrix.get('full') is not True or matrix.get('require_complete') is not True or matrix.get('differential_mode') != 'strict':
               raise SystemExit('unsigned full-matrix strict/complete boundary mismatch')
-          if int(coverage.get('declared') or 0)!=25 or int(coverage.get('passed') or 0)!=25 or int(coverage.get('incomplete') or 0)!=0 or int(coverage.get('failed') or 0)!=0:
+          if int(coverage.get('declared') or 0) != 25 or int(coverage.get('passed') or 0) != 25 or int(coverage.get('incomplete') or 0) != 0 or int(coverage.get('failed') or 0) != 0:
               raise SystemExit('unsigned full-matrix coverage is not exact 25 PASS')
-          if len(report.get('targets') or [])!=25:
+          if len(report.get('targets') or []) != 25:
               raise SystemExit('unsigned full-matrix target result count is not 25')
-          markers=(b'-----BEGIN PRIVATE KEY-----',b'-----BEGIN RSA PRIVATE KEY-----',b'-----BEGIN EC PRIVATE KEY-----',b'-----BEGIN OPENSSH PRIVATE KEY-----',b'-----BEGIN ED25519 PRIVATE KEY-----')
+          markers = (b'-----BEGIN PRIVATE KEY-----', b'-----BEGIN RSA PRIVATE KEY-----', b'-----BEGIN EC PRIVATE KEY-----', b'-----BEGIN OPENSSH PRIVATE KEY-----', b'-----BEGIN ED25519 PRIVATE KEY-----')
           for path in root.rglob('*'):
               if path.is_file() and any(marker in path.read_bytes() for marker in markers):
                   raise SystemExit(f'private-key material found in unsigned full-matrix output: {path.name}')
@@ -283,16 +298,19 @@ jobs:
         run: |
           set -euo pipefail
           PYTHONPATH=control/src python - <<'PY'
-          import json, os, subprocess
+          import json
+          import os
+          import subprocess
           from pathlib import Path
           from psmatrix.full_matrix_ga import validate_canonical_full_matrix_report, load_full_matrix_release_binding
-          head=subprocess.check_output(['git','-C','control','rev-parse','HEAD'],text=True).strip().lower()
+
+          head = subprocess.check_output(['git', '-C', 'control', 'rev-parse', 'HEAD'], text=True).strip().lower()
           if head != os.environ['GITHUB_SHA'].lower():
               raise SystemExit('CI matrix-signing control checkout mismatch')
-          report=json.loads(Path('unsigned/full-matrix-report.json').read_text(encoding='utf-8'))
+          report = json.loads(Path('unsigned/full-matrix-report.json').read_text(encoding='utf-8'))
           validate_canonical_full_matrix_report(report)
-          binding=load_full_matrix_release_binding(Path('unsigned/full-matrix-release-binding.json'))
-          if binding.get('release_version')!='2.0.0' or binding.get('release_commit')!='02cef95d40cf524ce00f9d917188343dc49e6f2c':
+          binding = load_full_matrix_release_binding(Path('unsigned/full-matrix-release-binding.json'))
+          if binding.get('release_version') != '2.0.0' or binding.get('release_commit') != '02cef95d40cf524ce00f9d917188343dc49e6f2c':
               raise SystemExit('unsigned full-matrix release binding identity mismatch')
           print('full_matrix_candidate_pre_secret=PASS')
           PY
@@ -339,24 +357,33 @@ jobs:
           from psmatrix.full_matrix_ga import verify_full_matrix_ga_attestation
           from psmatrix.signing import public_key_id
           from psmatrix.util import read_json, sha256_file, atomic_write_json
-          root=Path(os.environ['PSMATRIX_MATRIX_SIGNED'])
-          verified=verify_full_matrix_ga_attestation(read_json(root/'full-matrix-report.dsse.json'),report_path=root/'full-matrix-report.json',public_key=root/'ci-public.pem')
-          if verified.get('valid') is not True or verified.get('targets')!=25:
+
+          root = Path(os.environ['PSMATRIX_MATRIX_SIGNED'])
+          verified = verify_full_matrix_ga_attestation(read_json(root / 'full-matrix-report.dsse.json'), report_path=root / 'full-matrix-report.json', public_key=root / 'ci-public.pem')
+          if verified.get('valid') is not True or verified.get('targets') != 25:
               raise SystemExit('signed full-matrix attestation verification failed')
-          binding=verified.get('release_binding') or {}
-          if binding.get('release_version')!='2.0.0' or binding.get('release_commit')!='02cef95d40cf524ce00f9d917188343dc49e6f2c':
+          binding = verified.get('release_binding') or {}
+          if binding.get('release_version') != '2.0.0' or binding.get('release_commit') != '02cef95d40cf524ce00f9d917188343dc49e6f2c':
               raise SystemExit('signed full-matrix final release binding mismatch')
-          status={
-              'schema':1,'kind':'psmatrix.final-full-runtime-matrix-producer-status','status':'PASS','version':'2.0.0',
-              'targets':25,'passed':25,'release_bound':True,
-              'report_sha256':sha256_file(root/'full-matrix-report.json'),
-              'attestation_sha256':sha256_file(root/'full-matrix-report.dsse.json'),
-              'ci_public_key_sha256':sha256_file(root/'ci-public.pem'),'ci_key_id':public_key_id(root/'ci-public.pem'),
-              'attestation_verified':True,'ci_private_key_copied_to_output':False,
-              'final_ga_evaluator_invoked':False,'ga_eligible':False,
+          status = {
+              'schema': 1,
+              'kind': 'psmatrix.final-full-runtime-matrix-producer-status',
+              'status': 'PASS',
+              'version': '2.0.0',
+              'targets': 25,
+              'passed': 25,
+              'release_bound': True,
+              'report_sha256': sha256_file(root / 'full-matrix-report.json'),
+              'attestation_sha256': sha256_file(root / 'full-matrix-report.dsse.json'),
+              'ci_public_key_sha256': sha256_file(root / 'ci-public.pem'),
+              'ci_key_id': public_key_id(root / 'ci-public.pem'),
+              'attestation_verified': True,
+              'ci_private_key_copied_to_output': False,
+              'final_ga_evaluator_invoked': False,
+              'ga_eligible': False,
           }
-          atomic_write_json(root/'full-matrix-producer-status.json',status)
-          markers=(b'-----BEGIN PRIVATE KEY-----',b'-----BEGIN RSA PRIVATE KEY-----',b'-----BEGIN EC PRIVATE KEY-----',b'-----BEGIN OPENSSH PRIVATE KEY-----',b'-----BEGIN ED25519 PRIVATE KEY-----')
+          atomic_write_json(root / 'full-matrix-producer-status.json', status)
+          markers = (b'-----BEGIN PRIVATE KEY-----', b'-----BEGIN RSA PRIVATE KEY-----', b'-----BEGIN EC PRIVATE KEY-----', b'-----BEGIN OPENSSH PRIVATE KEY-----', b'-----BEGIN ED25519 PRIVATE KEY-----')
           for path in root.rglob('*'):
               if path.is_file() and any(marker in path.read_bytes() for marker in markers):
                   raise SystemExit(f'private-key material found in signed full-matrix output: {path.name}')
