@@ -1,0 +1,218 @@
+name: production-ga-final-disaster-recovery
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: production-ga-final-disaster-recovery
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run-recovery-campaign:
+    name: Run bounded exact final recovery campaign
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out exact disaster-recovery producer controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Validate exact recovery campaign control source
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=control/src python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          head=subprocess.check_output(['git','-C','control','rev-parse','HEAD'],text=True).strip().lower()
+          if head!=os.environ['GITHUB_SHA'].lower():
+              raise SystemExit('disaster-recovery control checkout is not exact GITHUB_SHA')
+          if subprocess.check_output(['git','-C','control','status','--porcelain'],text=True).strip():
+              raise SystemExit('disaster-recovery control checkout is dirty')
+          contract=json.loads(Path('control/ga-packs/03-authoritative-windows/final-disaster-recovery-evidence-producer-contract.json').read_text(encoding='utf-8'))
+          producer=contract.get('producer') or {}
+          if producer.get('workflow')!='production-ga-final-disaster-recovery' or producer.get('authority')!='recovery':
+              raise SystemExit('disaster-recovery producer identity mismatch')
+          if producer.get('production_state_mutation_allowed') is not False or producer.get('private_key_allowed_in_campaign_job') is not False:
+              raise SystemExit('disaster-recovery campaign boundary is unsafe')
+          print('disaster_recovery_control_identity=PASS')
+          PY
+
+      - name: Execute unsigned bounded recovery campaign
+        shell: bash
+        run: |
+          set -euo pipefail
+          home="$RUNNER_TEMP/psmatrix-final-recovery-home"
+          output="$RUNNER_TEMP/psmatrix-final-recovery-unsigned"
+          rm -rf "$home" "$output"
+          mkdir -p "$home" "$output"
+          PSMATRIX_HOME="$home" PYTHONPATH=control/src python -m psmatrix.cli recovery run \
+            --report-json "$output/recovery-report.json"
+          PSMATRIX_RECOVERY_UNSIGNED="$output" PYTHONPATH=control/src python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          from psmatrix.recovery import list_recovery_cases
+          from psmatrix.signing import canonical_json_bytes
+          root=Path(os.environ['PSMATRIX_RECOVERY_UNSIGNED'])
+          report=json.loads((root/'recovery-report.json').read_text(encoding='utf-8'))
+          expected=[item['id'] for item in list_recovery_cases()]
+          cases=report.get('cases') if isinstance(report.get('cases'),list) else []
+          actual=[str(item.get('id')) for item in cases if isinstance(item,dict)]
+          if report.get('schema')!=1 or report.get('kind')!='psmatrix.recovery-campaign' or report.get('tool_version')!='2.0.0' or report.get('status')!='PASS':
+              raise SystemExit('unsigned final recovery campaign identity/status mismatch')
+          if actual!=expected or len(cases)!=10 or any(item.get('status')!='PASS' for item in cases):
+              raise SystemExit('unsigned final recovery campaign exact case set is not 10/10 PASS')
+          summary=report.get('summary') or {}
+          if int(summary.get('total') or 0)!=10 or int(summary.get('passed') or 0)!=10 or int(summary.get('failed') or 0)!=0:
+              raise SystemExit('unsigned final recovery campaign summary mismatch')
+          declared=str(report.get('report_sha256') or '')
+          body={key:value for key,value in report.items() if key!='report_sha256'}
+          computed=hashlib.sha256(canonical_json_bytes(body)).hexdigest()
+          if declared!=computed:
+              raise SystemExit('unsigned final recovery campaign self-digest mismatch')
+          print(f'unsigned_disaster_recovery=PASS cases={len(cases)} report_sha256={declared}')
+          PY
+          rm -rf "$home"
+          echo "PSMATRIX_RECOVERY_UNSIGNED=$output" >> "$GITHUB_ENV"
+
+      - name: Upload unsigned bounded recovery report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-2.0.0-final-disaster-recovery-unsigned
+          path: ${{ env.PSMATRIX_RECOVERY_UNSIGNED }}/recovery-report.json
+          if-no-files-found: error
+          retention-days: 30
+
+  sign-recovery-campaign:
+    name: Sign exact recovery report with protected recovery authority
+    needs: run-recovery-campaign
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production-ga-recovery-signing
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out exact disaster-recovery producer controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Download exact unsigned report from this workflow run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-final-disaster-recovery-unsigned
+          path: unsigned
+
+      - name: Revalidate exact unsigned report before recovery-key access
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=control/src python - <<'PY'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          from psmatrix.recovery import list_recovery_cases
+          from psmatrix.signing import canonical_json_bytes
+          head=subprocess.check_output(['git','-C','control','rev-parse','HEAD'],text=True).strip().lower()
+          if head!=os.environ['GITHUB_SHA'].lower():
+              raise SystemExit('recovery signing control checkout is not exact GITHUB_SHA')
+          report=json.loads(Path('unsigned/recovery-report.json').read_text(encoding='utf-8'))
+          expected=[item['id'] for item in list_recovery_cases()]
+          cases=report.get('cases') if isinstance(report.get('cases'),list) else []
+          if [str(item.get('id')) for item in cases]!=expected or any(item.get('status')!='PASS' for item in cases):
+              raise SystemExit('recovery report changed before protected signing')
+          body={key:value for key,value in report.items() if key!='report_sha256'}
+          computed=hashlib.sha256(canonical_json_bytes(body)).hexdigest()
+          if str(report.get('report_sha256') or '')!=computed:
+              raise SystemExit('recovery report self-digest failed before protected signing')
+          print(f'disaster_recovery_pre_secret=PASS cases={len(cases)} report_sha256={computed}')
+          PY
+
+      - name: Materialize recovery authority, sign exact report, verify, and remove private key
+        shell: bash
+        env:
+          RECOVERY_PRIVATE_KEY: ${{ secrets.PSMATRIX_GA_RECOVERY_PRIVATE_KEY }}
+          RECOVERY_PUBLIC_KEY: ${{ secrets.PSMATRIX_GA_RECOVERY_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$RECOVERY_PRIVATE_KEY" ]] || { echo 'PSMATRIX_GA_RECOVERY_PRIVATE_KEY is missing from production-ga-recovery-signing.' >&2; exit 1; }
+          [[ "$RECOVERY_PUBLIC_KEY" == *'-----BEGIN PUBLIC KEY-----'* ]] || { echo 'PSMATRIX_GA_RECOVERY_PUBLIC_KEY is missing from production-ga-recovery-signing.' >&2; exit 1; }
+          key_root="$RUNNER_TEMP/psmatrix-final-recovery-keys"
+          output="$RUNNER_TEMP/psmatrix-2.0.0-final-disaster-recovery"
+          rm -rf "$key_root" "$output"
+          install -d -m 0700 "$key_root" "$output"
+          printf '%s\n' "$RECOVERY_PRIVATE_KEY" > "$key_root/recovery.private.pem"
+          printf '%s\n' "$RECOVERY_PUBLIC_KEY" > "$key_root/recovery.public.pem"
+          chmod 0600 "$key_root/recovery.private.pem"
+          cleanup() {
+            shred -u "$key_root/recovery.private.pem" 2>/dev/null || rm -f "$key_root/recovery.private.pem"
+            rm -f "$key_root/recovery.public.pem"
+            rmdir "$key_root" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          cp unsigned/recovery-report.json "$output/recovery-report.json"
+          PSMATRIX_RECOVERY_OUTPUT="$output" PSMATRIX_RECOVERY_PRIVATE="$key_root/recovery.private.pem" PSMATRIX_RECOVERY_PUBLIC="$key_root/recovery.public.pem" PYTHONPATH=control/src python - <<'PY'
+          import os
+          from pathlib import Path
+          from psmatrix.recovery import list_recovery_cases, sign_recovery_report, verify_recovery_report
+          from psmatrix.signing import public_key_id
+          from psmatrix.util import atomic_write_json, read_json, sha256_file
+          root=Path(os.environ['PSMATRIX_RECOVERY_OUTPUT'])
+          private=Path(os.environ['PSMATRIX_RECOVERY_PRIVATE'])
+          public=Path(os.environ['PSMATRIX_RECOVERY_PUBLIC'])
+          report=read_json(root/'recovery-report.json')
+          envelope=sign_recovery_report(report,private,public)
+          atomic_write_json(root/'recovery.dsse.json',envelope)
+          (root/'recovery-public.pem').write_bytes(public.read_bytes())
+          verified=verify_recovery_report(read_json(root/'recovery.dsse.json'),root/'recovery-public.pem')
+          signed=verified.get('report')
+          if verified.get('valid') is not True or not isinstance(signed,dict):
+              raise SystemExit('signed disaster-recovery attestation verification failed')
+          expected=[item['id'] for item in list_recovery_cases()]
+          cases=signed.get('cases') if isinstance(signed.get('cases'),list) else []
+          if [str(item.get('id')) for item in cases]!=expected or any(item.get('status')!='PASS' for item in cases):
+              raise SystemExit('signed disaster-recovery attestation is not exact 10/10 PASS')
+          key_id=public_key_id(root/'recovery-public.pem')
+          if set(verified.get('key_ids') or [])!={key_id}:
+              raise SystemExit('disaster-recovery attestation is not signed exclusively by recovery authority')
+          status={'schema':1,'kind':'psmatrix.final-disaster-recovery-producer-status','status':'PASS','version':'2.0.0','cases':len(cases),'report_sha256':signed.get('report_sha256'),'attestation_sha256':sha256_file(root/'recovery.dsse.json'),'recovery_key_id':key_id,'recovery_public_key_sha256':sha256_file(root/'recovery-public.pem'),'proof_verified':True,'production_state_mutated':False,'recovery_private_key_copied_to_output':False,'final_ga_evaluator_invoked':False,'ga_eligible':False}
+          atomic_write_json(root/'disaster-recovery-producer-status.json',status)
+          markers=(b'-----BEGIN PRIVATE KEY-----',b'-----BEGIN RSA PRIVATE KEY-----',b'-----BEGIN EC PRIVATE KEY-----',b'-----BEGIN OPENSSH PRIVATE KEY-----',b'-----BEGIN ED25519 PRIVATE KEY-----')
+          for path in root.rglob('*'):
+              if path.is_file() and any(marker in path.read_bytes() for marker in markers):
+                  raise SystemExit(f'private-key material found in disaster-recovery output: {path.name}')
+          print(f'signed_disaster_recovery=PASS cases={len(cases)} key_id={key_id}')
+          print('production_state_mutated=false')
+          print('final_ga_evaluator_invoked=false')
+          print('ga_eligible=false')
+          PY
+          echo "PSMATRIX_RECOVERY_OUTPUT=$output" >> "$GITHUB_ENV"
+
+      - name: Upload final recovery-authority disaster-recovery proof
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-2.0.0-final-disaster-recovery
+          path: ${{ env.PSMATRIX_RECOVERY_OUTPUT }}
+          if-no-files-found: error
+          retention-days: 30
