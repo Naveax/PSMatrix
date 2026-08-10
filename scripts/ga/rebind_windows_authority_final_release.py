@@ -188,7 +188,7 @@ def _validate_hardened_closure(root: Path, contract: dict[str, Any]) -> tuple[di
             raise RuntimeError(f"Hardened RC4 closure boundary mismatch: {field}")
     if scan.get("status") != "PASS" or scan.get("size_limit_applied") is not False or scan.get("tree_stable_during_closure") is not True:
         raise RuntimeError("Hardened RC4 complete streaming scan did not PASS")
-    if int(scan.get("private_key_markers_found") or -1) != 0:
+    if int(scan.get("private_key_markers_found", -1)) != 0:
         raise RuntimeError("Hardened RC4 campaign evidence contains private-key markers")
     if scan.get("pre_scan_tree_sha256") != scan.get("post_scan_tree_sha256") or value.get("campaign_evidence_tree_sha256") != scan.get("post_scan_tree_sha256"):
         raise RuntimeError("Hardened RC4 campaign evidence tree is unstable")
