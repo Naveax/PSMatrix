@@ -82,6 +82,8 @@ jobs:
           $contract = Get-Content (Join-Path $control 'ga-packs\03-authoritative-windows\final-release-lock-signing-control-contract.json') -Raw | ConvertFrom-Json
           if ([string]$contract.final_release_commit -ne $env:FINAL_CANDIDATE_COMMIT) { throw 'Dispatch final candidate differs from frozen control contract.' }
           if ([string]$contract.version -ne '2.0.0') { throw 'Final lock/signing contract version mismatch.' }
+          if ([string]$contract.rc4_authority_continuity.workflow -ne 'production-ga-windows-authority-rc4-release-authority-enrollment') { throw 'Frozen RC4 authority workflow identity mismatch.' }
+          if ([string]$contract.final_staging.workflow -ne 'production-ga-windows-authority-final-staging-candidate-selfhosted') { throw 'Frozen final staging workflow identity mismatch.' }
           $project = (python -c "import tomllib,pathlib;print(tomllib.loads(pathlib.Path(r'$candidate\pyproject.toml').read_text(encoding='utf-8'))['project']['version'])").Trim()
           if ($project -ne '2.0.0') { throw "Frozen final candidate version mismatch: $project" }
           foreach ($path in @(
