@@ -37,6 +37,19 @@ EXPECTED_DISPATCH_PATHS = [
     ".github/workflows/ga-final-vulnerability-scan.yml",
     ".github/workflows/ga-final-evaluator.yml",
 ]
+EXPECTED_LEGACY_PHASE_PREFLIGHTS = [
+    ".github/workflows/ga-windows-authority-provisioning-handoff-source-preflight.yml",
+    ".github/workflows/ga-windows-authority-rc4-source-preflight.yml",
+    ".github/workflows/ga-windows-authority-rc4-candidate-closure-source-preflight.yml",
+    ".github/workflows/ga-windows-authority-rc4-candidate-closure-hardening-source-preflight.yml",
+]
+EXPECTED_CONTROL_PATHS = {
+    ".github/workflows/ga-final-production-bootstrap-source-preflight.yml",
+    *EXPECTED_LEGACY_PHASE_PREFLIGHTS,
+    "ga-packs/03-authoritative-windows/final-production-bootstrap-contract.json",
+    "scripts/ga/validate_final_production_bootstrap.py",
+    "tests/test_final_production_bootstrap_contract.py",
+}
 EXPECTED_BOOTSTRAP_IDS = [
     "default-branch-publication",
     "readiness-source-preflight",
@@ -88,6 +101,22 @@ def _workflow_dispatchable(root: Path, relative: str) -> None:
     text = path.read_text(encoding="utf-8")
     if "workflow_dispatch:" not in text:
         raise ProductionBootstrapError(f"required production workflow is not workflow_dispatch enabled: {relative}")
+
+
+def _legacy_phase_trigger_hygiene(root: Path, relative: str) -> None:
+    path = (root / relative).resolve()
+    try:
+        path.relative_to(root.resolve())
+    except ValueError as exc:
+        raise ProductionBootstrapError(f"legacy preflight path escapes repository root: {relative}") from exc
+    if not path.is_file() or path.is_symlink():
+        raise ProductionBootstrapError(f"legacy phase preflight source is missing or unsafe: {relative}")
+    text = path.read_text(encoding="utf-8")
+    trigger = text.split("\nconcurrency:", 1)[0]
+    if "release/**" not in trigger:
+        raise ProductionBootstrapError(f"legacy phase preflight is not scoped to release branches: {relative}")
+    if "main" in trigger:
+        raise ProductionBootstrapError(f"legacy phase preflight still targets default branch main: {relative}")
 
 
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -178,6 +207,12 @@ def validate(
     for relative in EXPECTED_DISPATCH_PATHS:
         _workflow_dispatchable(root, relative)
 
+    legacy_paths = contract.get("legacy_phase_preflight_paths")
+    if legacy_paths != EXPECTED_LEGACY_PHASE_PREFLIGHTS or len(legacy_paths or []) != 4 or len(set(legacy_paths or [])) != 4:
+        raise ProductionBootstrapError("legacy phase preflight set is not exact 4/4")
+    for relative in EXPECTED_LEGACY_PHASE_PREFLIGHTS:
+        _legacy_phase_trigger_hygiene(root, relative)
+
     execution_paths = [str(item.get("path") or "") for item in execution.get("execution_sequence") or [] if isinstance(item, dict)]
     if len(execution_paths) != 15 or not set(execution_paths).issubset(set(EXPECTED_DISPATCH_PATHS)):
         raise ProductionBootstrapError("execution-control 15-stage workflow map is not covered by default-branch dispatch registration set")
@@ -208,6 +243,7 @@ def validate(
     for key in (
         "default_branch_publication_required_before_any_production_dispatch",
         "all_required_dispatch_workflow_paths_must_exist_on_default_branch",
+        "legacy_phase_preflights_must_not_trigger_default_branch",
         "readiness_source_preflight_success_required",
         "production_readiness_pass_required_before_lock_bootstrap",
         "review_and_promotion_runs_must_share_exact_control_head",
@@ -238,14 +274,8 @@ def validate(
             raise ProductionBootstrapError(f"source preparation crossed production boundary: {key}")
 
     source_control = contract.get("control_source") or {}
-    expected_paths = {
-        ".github/workflows/ga-final-production-bootstrap-source-preflight.yml",
-        "ga-packs/03-authoritative-windows/final-production-bootstrap-contract.json",
-        "scripts/ga/validate_final_production_bootstrap.py",
-        "tests/test_final_production_bootstrap_contract.py",
-    }
-    if source_control.get("runtime_source_changes_allowed") is not False or set(source_control.get("changed_path_allowlist") or []) != expected_paths:
-        raise ProductionBootstrapError("production bootstrap source boundary is not exact four paths / zero runtime")
+    if source_control.get("runtime_source_changes_allowed") is not False or set(source_control.get("changed_path_allowlist") or []) != EXPECTED_CONTROL_PATHS:
+        raise ProductionBootstrapError("production bootstrap source boundary is not exact eight paths / zero runtime")
 
     registration = None
     if inspect_default_branch or require_default_branch_registration:
@@ -263,7 +293,10 @@ def validate(
         "execution_control_head": EXPECTED_EXECUTION_CONTROL_HEAD,
         "final_release_commit": EXPECTED_FINAL_RELEASE_COMMIT,
         "required_dispatch_workflow_paths": 19,
+        "legacy_phase_preflights": 4,
+        "legacy_phase_preflight_default_branch_triggers": 0,
         "bootstrap_stages": 10,
+        "control_source_paths": 8,
         "default_branch": EXPECTED_DEFAULT_BRANCH,
         "default_branch_registration": registration,
         "default_branch_dispatch_surface_ready": bool(registration and registration["ready"]),
