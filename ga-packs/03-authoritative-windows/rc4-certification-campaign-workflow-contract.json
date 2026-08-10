@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-authority-certification-campaign-workflow-contract",
+  "pack": "03-authoritative-windows",
+  "release_version": "2.0.0rc4",
+  "workflow": "production-ga-windows-authority-rc4-certification-campaign-selfhosted",
+  "protected_environment": "production-ga-windows-lab",
+  "required_runner_labels": ["self-hosted", "Windows", "X64", "psmatrix-hyperv"],
+  "prerequisites": {
+    "exact_release_commit_required": true,
+    "exact_control_head_required": true,
+    "active_rc4_release_lock_required": true,
+    "measurement_run_id_required": true,
+    "measurement_run_attempt_required": true,
+    "measurement_status_required": "IMAGE_IDENTITIES_MEASURED_ENDPOINTS_VALIDATED",
+    "exact_runtime_count": 3,
+    "real_endpoint_manifests_required": true,
+    "real_image_manifests_required": true,
+    "image_manifest_sha256_must_match_measurement_report": true,
+    "fixture_pack_sha256_must_match_measurement_report": true
+  },
+  "campaign": {
+    "orchestrator": "scripts/ga/Invoke-PSMatrixAuthoritativeWindowsGA.ps1",
+    "iterations_per_runtime": 10,
+    "runtime_count": 3,
+    "exact_runtime_ids": [
+      "windows-powershell-4.0",
+      "windows-powershell-5.0",
+      "windows-powershell-5.1"
+    ],
+    "reset_before_required": true,
+    "reset_after_required": true,
+    "all_authoritative_fixtures_pass_required": true,
+    "nonduplicated_certification_digests_required": true,
+    "nonduplicated_worker_result_digests_required": true,
+    "release_binding_required": true,
+    "matrix_dsse_verification_required": true,
+    "windows_lab_private_key_ephemeral": true
+  },
+  "output": {
+    "status": "PASS_PARTIAL",
+    "authoritative": true,
+    "release_bound": true,
+    "ga_eligible": false,
+    "campaign_count": 3,
+    "run_count_per_campaign": 10,
+    "full_evidence_artifact_required": true
+  },
+  "safety": {
+    "provisions_virtual_machines": false,
+    "creates_checkpoints": false,
+    "writes_endpoint_manifests": false,
+    "writes_image_manifests": false,
+    "release_private_key_required": false,
+    "windows_lab_private_key_persisted": false,
+    "private_key_material_in_evidence": false,
+    "ga_eligible": false
+  }
+}
