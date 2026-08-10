@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import re
 import tempfile
 from pathlib import Path
@@ -35,6 +34,31 @@ def _read_object(path: Path, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise RuntimeError(f"{label} root must be an object: {path}")
     return value
+
+
+def _require_under(path: Path, root: Path, label: str) -> Path:
+    candidate = path.resolve()
+    base = root.resolve()
+    try:
+        candidate.relative_to(base)
+    except ValueError as exc:
+        raise RuntimeError(f"{label} must remain under protected GA root {base}: {candidate}") from exc
+    return candidate
+
+
+def _validate_endpoint_paths(endpoint: RemoteEndpoint, ga_root: Path, runtime_id: str) -> None:
+    paths = {
+        "controller TLS certificate": endpoint.controller_certificate,
+        "controller TLS private key": endpoint.controller_private_key,
+        "server CA": endpoint.server_ca,
+        "controller signing private key": endpoint.controller_signing_private_key,
+        "controller signing public key": endpoint.controller_signing_public_key,
+        "worker signing public key": endpoint.worker_signing_public_key,
+    }
+    for label, path in paths.items():
+        resolved = _require_under(path, ga_root, f"{runtime_id} {label}")
+        if not resolved.is_file():
+            raise RuntimeError(f"{runtime_id} {label} is missing: {resolved}")
 
 
 def _parse_identity(remote: dict[str, Any], runtime_id: str) -> dict[str, Any]:
@@ -170,9 +194,25 @@ def _manifest_value(
     }
 
 
+def _validate_pending_manifests(pending: list[dict[str, Any]]) -> None:
+    with tempfile.TemporaryDirectory(prefix="psmatrix-rc4-image-measurement-") as temp:
+        root = Path(temp)
+        for item in pending:
+            path = root / f"{item['runtime_id']}.json"
+            atomic_write_json(path, item["manifest"])
+            loaded = WindowsImageManifest.load(path)
+            if (
+                loaded.runtime_id != item["runtime_id"]
+                or loaded.worker_id != item["worker_id"]
+                or loaded.image_id != item["image_id"]
+            ):
+                raise RuntimeError(f"Product loader rejected pending image identity binding for {item['runtime_id']}")
+
+
 def measure(
     *,
     source_root: Path,
+    ga_root: Path,
     media_manifest: Path,
     host_identity: Path,
     config_root: Path,
@@ -183,15 +223,19 @@ def measure(
     if not 30 <= timeout <= 3600:
         raise RuntimeError("timeout must be between 30 and 3600 seconds")
     source = source_root.resolve()
-    config = config_root.resolve()
-    trust = trust_home.resolve()
-    if not source.is_dir() or not config.is_dir() or not trust.is_dir():
-        raise RuntimeError("source_root, config_root, and trust_home must exist")
+    ga = ga_root.resolve()
+    config = _require_under(config_root, ga, "config_root")
+    trust = _require_under(trust_home, ga, "trust_home")
+    report_path = _require_under(output_report, ga, "output_report")
+    if not source.is_dir() or not ga.is_dir() or not config.is_dir() or not trust.is_dir():
+        raise RuntimeError("source_root, ga_root, config_root, and trust_home must exist")
 
-    manifest = WindowsLabManifest.load(media_manifest.resolve())
+    media_path = _require_under(media_manifest, ga, "media_manifest")
+    host_path = _require_under(host_identity, ga, "host_identity")
+    manifest = WindowsLabManifest.load(media_path)
     if {item.runtime_id for item in manifest.images} != set(RUNTIMES):
         raise RuntimeError("Windows lab manifest does not contain the exact three runtime set")
-    hosts = _host_rows(host_identity)
+    hosts = _host_rows(host_path)
     fixture_pack = load_fixture_pack(_fixture_root(source))
     fixture_caps = {str(item) for item in fixture_pack["manifest"].get("capabilities", [])}
     required_caps = set(_REQUIRED_CAPABILITIES) | fixture_caps
@@ -199,14 +243,23 @@ def measure(
     if not identity_script.is_file():
         raise RuntimeError("Exact product image-identity collector is missing")
 
-    results: list[dict[str, Any]] = []
+    final_paths = {runtime: (config / f"{runtime}-image.json").resolve() for runtime in RUNTIMES}
+    if report_path.exists():
+        raise RuntimeError(f"Refusing to overwrite an existing image-measurement report: {report_path}")
+    for runtime, path in final_paths.items():
+        if path.exists():
+            raise RuntimeError(f"Refusing to overwrite an existing real image manifest for {runtime}: {path}")
+
+    pending: list[dict[str, Any]] = []
     for image in manifest.images:
         runtime = image.runtime_id
         host = hosts[runtime]
         if str(host.get("image_id") or "") != image.image_id:
             raise RuntimeError(f"Hyper-V image_id differs from provisioning manifest for {runtime}")
         endpoint_path = _endpoint_path(config, runtime)
+        _require_under(endpoint_path, ga, f"{runtime} endpoint manifest")
         endpoint = RemoteEndpoint.load(endpoint_path, trust_home=trust)
+        _validate_endpoint_paths(endpoint, ga, runtime)
         if endpoint.worker_id != image.worker_id or endpoint.expected_runtime_id != runtime:
             raise RuntimeError(f"Endpoint worker/runtime does not match provisioning manifest for {runtime}")
         health = probe_remote_endpoint(endpoint, timeout=min(timeout, 60))
@@ -225,60 +278,101 @@ def measure(
         if measured["machine_name"].casefold() != str(image.computer_name).casefold():
             raise RuntimeError(f"Measured computer name differs from provisioning manifest for {runtime}")
 
-        output = (config / f"{runtime}-image.json").resolve()
-        if output.exists():
-            raise RuntimeError(f"Refusing to overwrite an existing real image manifest: {output}")
         value = _manifest_value(image=image, host=host, identity=measured, fixture_pack=fixture_pack)
-        atomic_write_json(output, value)
-        loaded = WindowsImageManifest.load(output)
-        if loaded.runtime_id != runtime or loaded.worker_id != image.worker_id or loaded.image_id != image.image_id:
-            raise RuntimeError(f"Product loader rejected materialized identity binding for {runtime}")
-
-        remote_sha = hashlib.sha256(canonical_json_bytes(remote)).hexdigest()
-        results.append(
+        pending.append(
             {
                 "runtime_id": runtime,
                 "image_id": image.image_id,
                 "worker_id": image.worker_id,
-                "endpoint_path": str(endpoint_path),
+                "endpoint_path": endpoint_path,
                 "endpoint_sha256": sha256_file(endpoint_path),
-                "image_manifest_path": str(output),
-                "image_manifest_sha256": sha256_file(output),
+                "output_path": final_paths[runtime],
+                "manifest": value,
                 "vm_id": str(host["vm_id"]),
                 "snapshot_id": str(host["snapshot_id"]),
                 "fixture_pack_sha256": str(fixture_pack["sha256"]),
                 "worker_health_key_ids": list(health.get("key_ids") or []),
-                "worker_result_sha256": remote_sha,
+                "worker_result_sha256": hashlib.sha256(canonical_json_bytes(remote)).hexdigest(),
                 "measured_identity": measured,
             }
         )
 
-    report = {
-        "schema": 1,
-        "kind": "psmatrix.windows-authority-image-identity-measurement",
-        "status": "IMAGE_IDENTITIES_MEASURED_ENDPOINTS_VALIDATED",
-        "release_version": "2.0.0rc4",
-        "media_manifest_path": str(media_manifest.resolve()),
-        "media_manifest_sha256": sha256_file(media_manifest.resolve()),
-        "host_identity_path": str(host_identity.resolve()),
-        "host_identity_sha256": sha256_file(host_identity.resolve()),
-        "fixture_pack_sha256": str(fixture_pack["sha256"]),
-        "runtime_count": len(results),
-        "runtimes": sorted(results, key=lambda row: row["runtime_id"]),
-        "actual_os_identity_measured": True,
-        "real_endpoint_manifests_validated": True,
-        "image_manifests_written": True,
-        "certification_campaign_executed": False,
-        "authoritative": False,
-        "ga_eligible": False,
-    }
-    atomic_write_json(output_report.resolve(), report)
-    return report
+    if len(pending) != 3 or {item["runtime_id"] for item in pending} != set(RUNTIMES):
+        raise RuntimeError("Image measurement did not produce the exact three pending runtime bindings")
+    _validate_pending_manifests(pending)
+
+    # Re-check immediately before materialization so a concurrent operator action cannot be overwritten.
+    for runtime, path in final_paths.items():
+        if path.exists():
+            raise RuntimeError(f"Real image manifest appeared during measurement for {runtime}: {path}")
+    if report_path.exists():
+        raise RuntimeError(f"Image-measurement report appeared during measurement: {report_path}")
+
+    written: list[Path] = []
+    try:
+        for item in sorted(pending, key=lambda row: row["runtime_id"]):
+            output = item["output_path"]
+            atomic_write_json(output, item["manifest"])
+            written.append(output)
+            loaded = WindowsImageManifest.load(output)
+            if (
+                loaded.runtime_id != item["runtime_id"]
+                or loaded.worker_id != item["worker_id"]
+                or loaded.image_id != item["image_id"]
+            ):
+                raise RuntimeError(f"Product loader rejected final image identity binding for {item['runtime_id']}")
+
+        results = [
+            {
+                "runtime_id": item["runtime_id"],
+                "image_id": item["image_id"],
+                "worker_id": item["worker_id"],
+                "endpoint_path": str(item["endpoint_path"]),
+                "endpoint_sha256": item["endpoint_sha256"],
+                "image_manifest_path": str(item["output_path"]),
+                "image_manifest_sha256": sha256_file(item["output_path"]),
+                "vm_id": item["vm_id"],
+                "snapshot_id": item["snapshot_id"],
+                "fixture_pack_sha256": item["fixture_pack_sha256"],
+                "worker_health_key_ids": item["worker_health_key_ids"],
+                "worker_result_sha256": item["worker_result_sha256"],
+                "measured_identity": item["measured_identity"],
+            }
+            for item in sorted(pending, key=lambda row: row["runtime_id"])
+        ]
+        report = {
+            "schema": 1,
+            "kind": "psmatrix.windows-authority-image-identity-measurement",
+            "status": "IMAGE_IDENTITIES_MEASURED_ENDPOINTS_VALIDATED",
+            "release_version": "2.0.0rc4",
+            "media_manifest_path": str(media_path),
+            "media_manifest_sha256": sha256_file(media_path),
+            "host_identity_path": str(host_path),
+            "host_identity_sha256": sha256_file(host_path),
+            "fixture_pack_sha256": str(fixture_pack["sha256"]),
+            "runtime_count": len(results),
+            "runtimes": results,
+            "actual_os_identity_measured": True,
+            "real_endpoint_manifests_validated": True,
+            "image_manifests_written": True,
+            "certification_campaign_executed": False,
+            "authoritative": False,
+            "ga_eligible": False,
+        }
+        atomic_write_json(report_path, report)
+        return report
+    except Exception:
+        if report_path.exists():
+            report_path.unlink(missing_ok=True)
+        for path in reversed(written):
+            path.unlink(missing_ok=True)
+        raise
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Measure real RC4 Windows worker identities and materialize exact image manifests")
     parser.add_argument("--source-root", type=Path, required=True)
+    parser.add_argument("--ga-root", type=Path, required=True)
     parser.add_argument("--media-manifest", type=Path, required=True)
     parser.add_argument("--host-identity", type=Path, required=True)
     parser.add_argument("--config-root", type=Path, required=True)
@@ -288,6 +382,7 @@ def main() -> int:
     args = parser.parse_args()
     report = measure(
         source_root=args.source_root,
+        ga_root=args.ga_root,
         media_manifest=args.media_manifest,
         host_identity=args.host_identity,
         config_root=args.config_root,
