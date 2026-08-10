@@ -194,10 +194,13 @@ jobs:
 
           root=Path(os.environ['PSMATRIX_MTLS_SIGNED'])
           verified=verify_ga_proof(read_json(root/'public-mtls.dsse.json'),expected_type='public-mtls',public_key=root/'deployment-public.pem')
-          assertions=verified.get('assertions') or {}
-          artifacts=verified.get('artifacts') or []
+          result=verified.get('result')
+          if not isinstance(result, dict):
+              raise SystemExit('verified mTLS proof result payload is missing')
+          assertions=result.get('assertions') if isinstance(result.get('assertions'), dict) else {}
+          artifacts=result.get('artifacts') if isinstance(result.get('artifacts'), list) else []
           live_sha=sha256_file(root/'public-auth-live-report.json')
-          if verified.get('valid') is not True or len(artifacts)!=1 or artifacts[0].get('sha256')!=live_sha:
+          if verified.get('valid') is not True or len(artifacts)!=1 or artifacts[0].get('name')!='public-auth-live-report.json' or artifacts[0].get('sha256')!=live_sha:
               raise SystemExit('signed mTLS proof did not verify the exact shared live-report subject')
           required=('external_probe','public_dns','public_tls','client_certificate_required','untrusted_client_rejected','certificate_rotation_ready','revoked_client_rejected','tls_passthrough_verified','release_commit_bound')
           if any(assertions.get(name) is not True for name in required):
