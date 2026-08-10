@@ -23,7 +23,7 @@
       "workflow_path": ".github/workflows/ga-final-validation-summary.yml",
       "artifact": "psmatrix-2.0.0-final-validation-summary",
       "authority": "ci",
-      "files": ["validation-summary.json", "validation-summary.attestation.json", "ci-public.pem"]
+      "files": ["validation-summary.json", "validation-summary.dsse.json", "ci-public.pem"]
     },
     "signed-release": {
       "workflow": "production-ga-windows-authority-final-release-sign-from-lock",
@@ -60,21 +60,21 @@
       "workflow_path": ".github/workflows/ga-final-full-runtime-matrix.yml",
       "artifact": "psmatrix-2.0.0-final-full-runtime-matrix",
       "authority": "ci",
-      "files": ["full-matrix-report.json", "full-matrix-report.attestation.json", "ci-public.pem"]
+      "files": ["full-matrix-report.json", "full-matrix-report.dsse.json", "ci-public.pem"]
     },
     "public-oauth": {
       "workflow": "production-ga-final-public-oauth",
       "workflow_path": ".github/workflows/ga-final-public-oauth.yml",
       "artifact": "psmatrix-2.0.0-final-public-oauth",
-      "authority": "operations",
-      "files": ["public-oauth.dsse.json", "operations-public.pem"]
+      "authority": "deployment",
+      "files": ["public-oauth.dsse.json", "deployment-public.pem"]
     },
     "public-mtls": {
       "workflow": "production-ga-final-public-mtls",
       "workflow_path": ".github/workflows/ga-final-public-mtls.yml",
       "artifact": "psmatrix-2.0.0-final-public-mtls",
-      "authority": "operations",
-      "files": ["public-mtls.dsse.json", "operations-public.pem"]
+      "authority": "deployment",
+      "files": ["public-mtls.dsse.json", "deployment-public.pem"]
     },
     "external-otlp": {
       "workflow": "production-ga-final-external-otlp",
@@ -87,41 +87,52 @@
       "workflow": "production-ga-final-key-rotation",
       "workflow_path": ".github/workflows/ga-final-key-rotation.yml",
       "artifact": "psmatrix-2.0.0-final-key-rotation",
-      "authority": "operations",
-      "files": ["key-rotation-attestation.json", "operations-public.pem"]
+      "authority": "release",
+      "files": ["key-rotation.dsse.json", "release-public.pem"]
     },
     "disaster-recovery": {
       "workflow": "production-ga-final-disaster-recovery",
       "workflow_path": ".github/workflows/ga-final-disaster-recovery.yml",
       "artifact": "psmatrix-2.0.0-final-disaster-recovery",
       "authority": "recovery",
-      "files": ["recovery-attestation.json", "recovery-public.pem"]
+      "files": ["recovery.dsse.json", "recovery-public.pem"]
     },
     "security-review": {
       "workflow": "production-ga-final-security-review",
       "workflow_path": ".github/workflows/ga-final-security-review.yml",
       "artifact": "psmatrix-2.0.0-final-security-review",
       "authority": "security-review",
-      "files": ["security-review.json", "security-review-public.pem"]
+      "files": ["security-review.dsse.json", "security-review-public.pem"]
     },
     "vulnerability-scan": {
       "workflow": "production-ga-final-vulnerability-scan",
       "workflow_path": ".github/workflows/ga-final-vulnerability-scan.yml",
       "artifact": "psmatrix-2.0.0-final-vulnerability-scan",
       "authority": "vulnerability-scanner",
-      "files": ["vulnerability-scan.json", "vulnerability-scan-public.pem"]
+      "files": ["vulnerability-scan.dsse.json", "vulnerability-scanner-public.pem"]
     }
   },
   "authority_closure": {
     "ci_must_match_across": ["validation-summary", "complete-runtime-matrix"],
-    "operations_must_match_across": ["public-oauth", "public-mtls", "external-otlp", "key-rotation"],
+    "deployment_must_match_across": ["public-oauth", "public-mtls"],
+    "release_must_match_across": ["signed-release", "key-rotation"],
+    "independent_policy_roles_required": [
+      "release",
+      "ci",
+      "windows-lab",
+      "deployment",
+      "operations",
+      "recovery",
+      "security-review",
+      "vulnerability-scanner"
+    ],
     "windows_public_key_environment": "production-ga-windows-lab",
     "windows_public_key_secret": "PSMATRIX_WINDOWS_LAB_PUBLIC_KEY",
     "root_signing_environment": "production-ga-root-signing",
     "root_private_key_secret": "PSMATRIX_GA_ROOT_PRIVATE_KEY",
     "root_public_key_secret": "PSMATRIX_GA_ROOT_PUBLIC_KEY",
     "root_private_key_allowed_in_evaluation_job": false,
-    "root_key_id_must_be_bound_before_final_evaluation": true
+    "root_release_authorities_must_be_independent_after_signing": true
   },
   "execution": {
     "all_evidence_runs_must_be_workflow_dispatch": true,
