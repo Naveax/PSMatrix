@@ -27,7 +27,7 @@ def verify(root: Path) -> dict[str, Any]:
     summary_path = root / "validation-summary.json"
     attestation_path = root / "validation-summary.dsse.json"
     public_path = root / "ci-public.pem"
-    status_path = root / "validation-summary-producer-status.json"
+    status_path = root / "validation-producer-status.json"
     for path in (summary_path, attestation_path, public_path, status_path):
         if not path.is_file():
             raise ValidationSummaryBundleError(f"required validation-summary file missing: {path.name}")
