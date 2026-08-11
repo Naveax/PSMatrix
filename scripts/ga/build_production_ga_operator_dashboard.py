@@ -6,6 +6,18 @@ import sys
 from pathlib import Path
 from typing import Any
 
+SINGLE_GATES = {
+    "validation-summary",
+    "signed-release",
+    "authoritative-windows",
+    "complete-runtime-matrix",
+    "external-otlp",
+    "key-rotation",
+    "disaster-recovery",
+    "security-review",
+    "vulnerability-scan",
+}
+
 
 class OperatorDashboardError(RuntimeError):
     pass
@@ -19,6 +31,23 @@ def _optional(value: dict[str, Any] | None, kind: str) -> dict[str, Any] | None:
     return value
 
 
+def _single_operations(values: list[dict[str, Any]] | None) -> tuple[bool, int]:
+    if not values:
+        return False, 0
+    if len(values) != 9:
+        raise OperatorDashboardError(f"single evidence content operation cardinality mismatch: {len(values)}")
+    observed: set[str] = set()
+    for value in values:
+        _optional(value, "psmatrix.final-ga-single-evidence-content-operation")
+        gate = value.get("gate")
+        if gate not in SINGLE_GATES or gate in observed:
+            raise OperatorDashboardError(f"invalid/duplicate single evidence content operation gate: {gate}")
+        observed.add(gate)
+        if value.get("status") != "PASS" or value.get("api_artifact_origin_verified") is not True or value.get("materialized_tree_verified") is not True or value.get("content_semantics_verified") is not True or value.get("final_ga_evaluator_invoked") is not False or value.get("ga_eligible") is not False:
+            return False, len(observed)
+    return observed == SINGLE_GATES, len(observed)
+
+
 def build(
     inventory: dict[str, Any],
     readiness_summary: dict[str, Any],
@@ -26,6 +55,13 @@ def build(
     lock_verification: dict[str, Any] | None = None,
     evidence_api_verification: dict[str, Any] | None = None,
     content_closure: dict[str, Any] | None = None,
+    content_plan: dict[str, Any] | None = None,
+    single_content_operations: list[dict[str, Any]] | None = None,
+    public_auth_operation: dict[str, Any] | None = None,
+    content_closure_verification: dict[str, Any] | None = None,
+    evaluator_verification: dict[str, Any] | None = None,
+    final_attestation_operation: dict[str, Any] | None = None,
+    release_closure: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if inventory.get("schema") != 1 or inventory.get("kind") != "psmatrix.production-ga-environment-inventory-audit" or inventory.get("version") != "2.0.0":
         raise OperatorDashboardError("environment inventory identity mismatch")
@@ -33,20 +69,35 @@ def build(
         raise OperatorDashboardError("environment inventory cardinality mismatch")
     if readiness_summary.get("schema") != 1 or readiness_summary.get("kind") != "psmatrix.production-readiness-summary" or readiness_summary.get("version") != "2.0.0" or readiness_summary.get("environment_count") != 12:
         raise OperatorDashboardError("production readiness summary identity/cardinality mismatch")
+
     readiness_verification = _optional(readiness_verification, "psmatrix.production-readiness-summary-verification")
     lock_verification = _optional(lock_verification, "psmatrix.final-release-lock-repository-content-verification")
     evidence_api_verification = _optional(evidence_api_verification, "psmatrix.final-ga-evidence-api-verification")
     content_closure = _optional(content_closure, "psmatrix.final-ga-evidence-content-closure")
+    content_plan = _optional(content_plan, "psmatrix.final-ga-evidence-content-operator-plan")
+    public_auth_operation = _optional(public_auth_operation, "psmatrix.final-ga-public-auth-evidence-content-operation")
+    content_closure_verification = _optional(content_closure_verification, "psmatrix.final-ga-evidence-content-closure-verification")
+    evaluator_verification = _optional(evaluator_verification, "psmatrix.final-ga-evaluator-run-api-verification")
+    final_attestation_operation = _optional(final_attestation_operation, "psmatrix.final-ga-attestation-content-operation")
+    release_closure = _optional(release_closure, "psmatrix.release-closure-readiness")
 
     present = inventory.get("present_check_count")
     missing = inventory.get("missing_check_count")
     if type(present) is not int or type(missing) is not int or present < 0 or missing < 0 or present + missing != 41:
         raise OperatorDashboardError("environment inventory counts are invalid")
+
     raw_readiness_pass = readiness_summary.get("status") == "PASS" and readiness_summary.get("environment_passed") == 12 and readiness_summary.get("environment_failed") == 0 and readiness_summary.get("environment_readiness") is True
     readiness_verified = readiness_verification is not None and readiness_verification.get("status") == "PASS" and readiness_verification.get("verified_environment_count") == 12 and readiness_verification.get("verified_check_count") == 41 and readiness_verification.get("summary_content_verified") is True and readiness_verification.get("production_readiness_verified") is True and readiness_verification.get("ga_eligible") is False
     lock_pass = lock_verification is not None and lock_verification.get("status") == "PASS" and lock_verification.get("repository_target_content_verified") is True and lock_verification.get("release_signing_executed") is False and lock_verification.get("ga_eligible") is False
     evidence_api_pass = evidence_api_verification is not None and evidence_api_verification.get("status") == "PASS" and evidence_api_verification.get("verified_gate_count") == 11 and evidence_api_verification.get("ready_for_final_ga_evaluator_dispatch") is True
+    plan_pass = content_plan is not None and content_plan.get("status") == "PASS" and content_plan.get("required_gate_count") == 11 and content_plan.get("single_artifact_gate_count") == 9 and content_plan.get("public_auth_gate_count") == 2 and content_plan.get("support_file_count") == 5 and content_plan.get("ready_for_artifact_materialization") is True and content_plan.get("ga_eligible") is False
+    single_pass, single_count = _single_operations(single_content_operations)
+    public_pass = public_auth_operation is not None and public_auth_operation.get("status") == "PASS" and public_auth_operation.get("covered_gates") == ["public-oauth", "public-mtls"] and public_auth_operation.get("api_artifact_origins_verified") is True and public_auth_operation.get("both_materialized_trees_verified") is True and public_auth_operation.get("content_semantics_verified") is True and public_auth_operation.get("cross_gate_semantics_verified") is True and public_auth_operation.get("ga_eligible") is False
     content_pass = content_closure is not None and content_closure.get("status") == "PASS" and content_closure.get("api_verified_gate_count") == 11 and content_closure.get("content_verified_gate_count") == 11 and content_closure.get("all_gate_contents_verified") is True and content_closure.get("ready_for_final_ga_evaluator_dispatch") is True and content_closure.get("final_ga_evaluator_invoked") is False and content_closure.get("ga_eligible") is False
+    closure_reverified = content_closure_verification is not None and content_closure_verification.get("status") == "PASS" and content_closure_verification.get("verified_gate_count") == 11 and content_closure_verification.get("source_binding_receipt_count") == 10 and content_closure_verification.get("repository_owned_rederivation") is True and content_closure_verification.get("closure_exactly_recomputed") is True and content_closure_verification.get("ready_for_final_ga_evaluator_dispatch") is True and content_closure_verification.get("ga_eligible") is False
+    evaluator_pass = evaluator_verification is not None and evaluator_verification.get("status") == "PASS" and evaluator_verification.get("content_verified_gate_count_before_dispatch") == 11 and evaluator_verification.get("content_closure_required") is True and evaluator_verification.get("final_ga_evaluator_run_verified") is True and evaluator_verification.get("ga_root_signing_run_completed") is True and evaluator_verification.get("final_attestation_content_verified") is False and evaluator_verification.get("ga_eligible") is False
+    attestation_pass = final_attestation_operation is not None and final_attestation_operation.get("status") == "PASS" and final_attestation_operation.get("exact_api_artifact_id_used") is True and final_attestation_operation.get("safe_extraction_verified") is True and final_attestation_operation.get("semantic_verifier_repository_owned") is True and final_attestation_operation.get("semantic_verification_mutated_tree") is False and final_attestation_operation.get("final_ga_attestation_verified") is True and final_attestation_operation.get("ga_eligible") is True
+    release_ready = release_closure is not None and release_closure.get("status") == "READY_FOR_RELEASE_CLOSURE" and release_closure.get("precondition_count") == 5 and release_closure.get("preconditions_passed") == 5 and release_closure.get("final_ga_attestation_verified") is True and release_closure.get("ga_eligible") is True and release_closure.get("release_closed") is False
 
     if present < 41:
         stage = "PROVISION_ENVIRONMENTS"
@@ -61,11 +112,33 @@ def build(
         stage = "RUN_AND_VERIFY_PRODUCTION_EVIDENCE_API"
         next_action = "Run all eleven final evidence producers on one execution head and verify distinct workflow_dispatch runs plus exact nonexpired artifact IDs through GitHub API."
     elif not content_pass:
-        stage = "MATERIALIZE_AND_VERIFY_PRODUCTION_EVIDENCE_CONTENT"
-        next_action = "Materialize the eleven API-verified artifacts by exact artifact ID, verify each content bundle, bind artifact origins to semantic receipts, and require exact 11/11 content closure."
+        if not plan_pass:
+            stage = "BUILD_EVIDENCE_CONTENT_OPERATOR_PLAN"
+            next_action = "Build the exact 11-gate content operator plan from 11/11 API provenance and the five whitelisted non-secret support files."
+        elif not single_pass:
+            stage = "RUN_NINE_SINGLE_EVIDENCE_CONTENT_OPERATIONS"
+            next_action = "Materialize and semantically bind all nine single-artifact gates by exact artifact ID."
+        elif not public_pass:
+            stage = "RUN_PUBLIC_AUTH_CONTENT_OPERATION"
+            next_action = "Materialize OAuth and mTLS artifacts separately and require the cross-gate live-report/deployment/release semantic closure."
+        else:
+            stage = "BUILD_EVIDENCE_CONTENT_CLOSURE"
+            next_action = "Build exact 11/11 content closure from the nine single bindings plus OAuth/mTLS cross-gate binding."
+    elif not closure_reverified:
+        stage = "REVERIFY_PRODUCTION_EVIDENCE_CONTENT_CLOSURE"
+        next_action = "Re-derive the 11/11 content closure from API provenance and all ten binding receipts and require exact equality before evaluator dispatch."
+    elif not evaluator_pass:
+        stage = "DISPATCH_AND_VERIFY_FINAL_GA_EVALUATOR"
+        next_action = "Dispatch final evaluator/root signing only through the verified-readiness plus rederived-content-closure handoff, then verify the successful run and exact attestation artifact ID."
+    elif not attestation_pass:
+        stage = "MATERIALIZE_AND_VERIFY_FINAL_GA_ATTESTATION"
+        next_action = "Download the exact final-attestation artifact ID, safely extract it, independently verify the GA-root DSSE bundle, and prove the tree is unchanged."
+    elif not release_ready:
+        stage = "BUILD_RELEASE_CLOSURE_READINESS"
+        next_action = "Bind verified readiness, final-lock content, 11/11 content closure, evaluator run and final attestation into the five-precondition release-closure receipt."
     else:
-        stage = "DISPATCH_FINAL_GA_EVALUATOR"
-        next_action = "Dispatch final GA evaluator/root signing only with the exact 11/11 API-and-content-closed evidence set. Final attestation verification remains a separate post-run gate."
+        stage = "READY_FOR_RELEASE_CLOSURE_OPERATIONS"
+        next_action = "GA evidence is independently closed. Perform release tag/publication, immutable GA anchor, docs cleanup, stale branch/PR cleanup and final repository secret scan before marking release_closed=true."
 
     return {
         "schema": 1,
@@ -78,11 +151,17 @@ def build(
         "production_readiness_content_verified": readiness_verified,
         "final_lock_content_verification_pass": lock_pass,
         "final_evidence_api_verification_pass": evidence_api_pass,
+        "evidence_content_operator_plan_pass": plan_pass,
+        "single_evidence_content_operations_passed": single_count if single_pass else 0,
+        "public_auth_content_operation_pass": public_pass,
         "final_evidence_content_closure_pass": content_pass,
-        "final_ga_evaluator_invoked": False,
-        "ga_root_signing_completed": False,
-        "final_ga_attestation_verified": False,
-        "ga_eligible": False,
+        "final_evidence_content_closure_reverified": closure_reverified,
+        "final_ga_evaluator_invoked": evaluator_pass,
+        "ga_root_signing_completed": evaluator_pass,
+        "final_ga_attestation_verified": attestation_pass,
+        "release_closure_ready": release_ready,
+        "ga_eligible": attestation_pass or release_ready,
+        "release_closed": bool(release_closure.get("release_closed")) if release_closure is not None else False,
     }
 
 
@@ -103,6 +182,13 @@ def main() -> int:
     parser.add_argument("--lock-verification", type=Path)
     parser.add_argument("--evidence-api-verification", type=Path)
     parser.add_argument("--content-closure", type=Path)
+    parser.add_argument("--content-plan", type=Path)
+    parser.add_argument("--single-content-operation", type=Path, action="append")
+    parser.add_argument("--public-auth-operation", type=Path)
+    parser.add_argument("--content-closure-verification", type=Path)
+    parser.add_argument("--evaluator-verification", type=Path)
+    parser.add_argument("--final-attestation-operation", type=Path)
+    parser.add_argument("--release-closure", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
@@ -113,12 +199,21 @@ def main() -> int:
             _read(args.lock_verification),
             _read(args.evidence_api_verification),
             _read(args.content_closure),
+            _read(args.content_plan),
+            [_read(path) or {} for path in (args.single_content_operation or [])],
+            _read(args.public_auth_operation),
+            _read(args.content_closure_verification),
+            _read(args.evaluator_verification),
+            _read(args.final_attestation_operation),
+            _read(args.release_closure),
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(f"production_ga_operator_stage={value['stage']}")
-        print(f"final_evidence_content_closure_pass={str(value['final_evidence_content_closure_pass']).lower()}")
-        print("ga_eligible=false")
+        print(f"final_evidence_content_closure_reverified={str(value['final_evidence_content_closure_reverified']).lower()}")
+        print(f"final_ga_attestation_verified={str(value['final_ga_attestation_verified']).lower()}")
+        print(f"ga_eligible={str(value['ga_eligible']).lower()}")
+        print(f"release_closed={str(value['release_closed']).lower()}")
         return 0
     except (OSError, json.JSONDecodeError, OperatorDashboardError, TypeError, ValueError) as exc:
         print(f"Production GA operator dashboard failed: {exc}", file=sys.stderr)
