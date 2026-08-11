@@ -46,11 +46,16 @@ def _reject_symlink_components(path: Path, label: str) -> None:
             )
 
 
-def _read(path: Path, label: str) -> dict[str, Any]:
+def _safe_input_path(path: Path, label: str) -> Path:
     _reject_symlink_components(path, label)
     resolved = path.expanduser().resolve()
     if not resolved.is_file():
         raise StaleReleaseWorkCleanupOperationError(f"{label} is missing or unsafe")
+    return resolved
+
+
+def _read(path: Path, label: str) -> dict[str, Any]:
+    resolved = _safe_input_path(path, label)
     try:
         value = json.loads(resolved.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
@@ -60,9 +65,61 @@ def _read(path: Path, label: str) -> dict[str, Any]:
     return value
 
 
-def _write(path: Path, value: dict[str, Any]) -> None:
+def _safe_output_path(path: Path, label: str) -> Path:
+    _reject_symlink_components(path, label)
     resolved = path.expanduser().resolve()
+    if resolved.exists() and not resolved.is_file():
+        raise StaleReleaseWorkCleanupOperationError(f"{label} must be a regular file path")
+    return resolved
+
+
+def _paths_alias(first: Path, second: Path) -> bool:
+    if first == second:
+        return True
+    if first.exists() and second.exists():
+        try:
+            return first.samefile(second)
+        except OSError as exc:
+            raise StaleReleaseWorkCleanupOperationError(
+                "unable to compare cleanup input/output file identity"
+            ) from exc
+    return False
+
+
+def _validate_output_boundaries(
+    output: Path,
+    verification_output: Path,
+    release_closure: Path,
+    immutable_release: Path,
+) -> tuple[Path, Path]:
+    output_resolved = _safe_output_path(output, "cleanup operation output")
+    verification_resolved = _safe_output_path(
+        verification_output, "cleanup verification output"
+    )
+    if _paths_alias(output_resolved, verification_resolved):
+        raise StaleReleaseWorkCleanupOperationError(
+            "cleanup operation and verification outputs must be distinct physical files"
+        )
+    protected = (
+        (_safe_input_path(release_closure, "release-closure readiness"), "release-closure readiness"),
+        (_safe_input_path(immutable_release, "immutable release verification"), "immutable release verification"),
+    )
+    for protected_path, protected_label in protected:
+        if _paths_alias(output_resolved, protected_path):
+            raise StaleReleaseWorkCleanupOperationError(
+                f"cleanup operation output may not overwrite {protected_label}"
+            )
+        if _paths_alias(verification_resolved, protected_path):
+            raise StaleReleaseWorkCleanupOperationError(
+                f"cleanup verification output may not overwrite {protected_label}"
+            )
+    return output_resolved, verification_resolved
+
+
+def _write(path: Path, value: dict[str, Any], label: str) -> None:
+    resolved = _safe_output_path(path, label)
     resolved.parent.mkdir(parents=True, exist_ok=True)
+    _reject_symlink_components(path, label)
     resolved.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
@@ -387,7 +444,12 @@ def main() -> int:
     args = parser.parse_args()
     try:
         _validate_repository(args.repository)
-        verification_path = args.verification_output.expanduser().resolve()
+        output_path, verification_path = _validate_output_boundaries(
+            args.output,
+            args.verification_output,
+            args.release_closure,
+            args.immutable_release_verification,
+        )
         if not args.execute and verification_path.exists():
             raise StaleReleaseWorkCleanupOperationError(
                 "dry-run may not reuse an existing verification output path"
@@ -395,9 +457,13 @@ def main() -> int:
         closure = _read(args.release_closure, "release-closure readiness")
         immutable = _read(args.immutable_release_verification, "immutable release verification")
         receipt, verification = run_operation(closure, immutable, args.repository, args.gh, args.execute)
-        _write(args.output, receipt)
+        _write(args.output, receipt, "cleanup operation output")
         if verification is not None:
-            _write(args.verification_output, verification)
+            _write(
+                args.verification_output,
+                verification,
+                "cleanup verification output",
+            )
         print(
             f"stale_release_work_cleanup_operation={receipt['status']} "
             f"repository={REPOSITORY} branches={receipt['stale_branch_count']} open_prs={receipt['stale_open_pr_count']}"
