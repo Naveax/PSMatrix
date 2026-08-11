@@ -185,7 +185,7 @@ function Assert-AuthorityManifest {
     if ($rows.Count -ne 9) { throw 'Production GA authority manifest must contain exactly nine authority rows.' }
     $roles = @($rows | ForEach-Object { [string]$_.role })
     if (@($roles | Sort-Object -Unique).Count -ne 9) { throw 'Production GA authority roles must be unique.' }
-    if (@($roles | Sort-Object) -join "`n" -ne @($ExpectedRoles | Sort-Object) -join "`n") {
+    if ((@($roles | Sort-Object) -join "`n") -ne (@($ExpectedRoles | Sort-Object) -join "`n")) {
         throw 'Production GA authority role set mismatch.'
     }
     if ($Manifest.safety.private_key_values_serialized -ne $false -or
