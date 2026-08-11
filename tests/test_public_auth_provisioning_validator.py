@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import shutil
-import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 SCRIPT = ROOT / "scripts" / "ga" / "validate_public_auth_provisioning.py"
+
+from psmatrix.pki import create_ca, issue_certificate
 
 
 def _load_module():
@@ -26,9 +30,6 @@ class PublicAuthProvisioningValidatorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.module = _load_module()
-        cls.openssl = shutil.which("openssl")
-        if cls.openssl is None:
-            raise unittest.SkipTest("OpenSSL is required for mTLS provisioning tests")
 
     def _make_material(self, root: Path) -> Path:
         material = root / "material"
@@ -44,33 +45,21 @@ class PublicAuthProvisioningValidatorTests(unittest.TestCase):
         (material / "vars.json").write_text(json.dumps(variables), encoding="utf-8")
         for index, name in enumerate(self.module.TOKEN_NAMES, 1):
             (secrets / f"{name}.txt").write_text(f"opaque-oauth-fixture-{index}\n", encoding="utf-8")
+
+        ca = create_ca(root / "fixture-ca", common_name="PSMatrix Public Auth Fixture CA", days=30)
+        ca_certificate = Path(ca["certificate"])
+        ca_private_key = Path(ca["private_key"])
         for index, prefix in enumerate(self.module.PAIR_PREFIXES, 1):
-            cert = secrets / f"{prefix}_CERT.pem"
-            key = secrets / f"{prefix}_KEY.pem"
-            completed = subprocess.run(
-                [
-                    str(self.openssl),
-                    "req",
-                    "-x509",
-                    "-newkey",
-                    "rsa:2048",
-                    "-nodes",
-                    "-keyout",
-                    str(key),
-                    "-out",
-                    str(cert),
-                    "-subj",
-                    f"/CN=psmatrix-fixture-{index}",
-                    "-days",
-                    "1",
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=30,
-                check=False,
+            issued = issue_certificate(
+                ca_certificate,
+                ca_private_key,
+                root / f"fixture-client-{index}",
+                common_name=f"psmatrix-fixture-{index}",
+                role="client",
+                days=1,
             )
-            self.assertEqual(completed.returncode, 0, completed.stderr)
+            (secrets / f"{prefix}_CERT.pem").write_bytes(Path(issued["certificate"]).read_bytes())
+            (secrets / f"{prefix}_KEY.pem").write_bytes(Path(issued["private_key"]).read_bytes())
         return material
 
     def test_validates_exact_nineteen_public_auth_requirements(self) -> None:
