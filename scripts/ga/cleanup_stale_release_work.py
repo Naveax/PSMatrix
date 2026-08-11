@@ -3,9 +3,12 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import re
+import stat
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -21,9 +24,13 @@ class StaleReleaseWorkCleanupOperationError(RuntimeError):
 
 
 def _load_verifier():
-    spec = importlib.util.spec_from_file_location("psmatrix_stale_cleanup_verifier", VERIFIER_PATH)
+    spec = importlib.util.spec_from_file_location(
+        "psmatrix_stale_cleanup_verifier", VERIFIER_PATH
+    )
     if spec is None or spec.loader is None:
-        raise StaleReleaseWorkCleanupOperationError("unable to load repository-owned stale cleanup verifier")
+        raise StaleReleaseWorkCleanupOperationError(
+            "unable to load repository-owned stale cleanup verifier"
+        )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -55,7 +62,10 @@ def _safe_input_path(path: Path, label: str) -> Path:
 
 
 def _read(path: Path, label: str) -> dict[str, Any]:
-    resolved = _safe_input_path(path, label)
+    _reject_symlink_components(path, label)
+    resolved = path.expanduser().resolve()
+    if not resolved.is_file():
+        raise StaleReleaseWorkCleanupOperationError(f"{label} is missing or unsafe")
     try:
         value = json.loads(resolved.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
@@ -69,7 +79,9 @@ def _safe_output_path(path: Path, label: str) -> Path:
     _reject_symlink_components(path, label)
     resolved = path.expanduser().resolve()
     if resolved.exists() and not resolved.is_file():
-        raise StaleReleaseWorkCleanupOperationError(f"{label} must be a regular file path")
+        raise StaleReleaseWorkCleanupOperationError(
+            f"{label} must be a regular file path"
+        )
     return resolved
 
 
@@ -101,8 +113,14 @@ def _validate_output_boundaries(
             "cleanup operation and verification outputs must be distinct physical files"
         )
     protected = (
-        (_safe_input_path(release_closure, "release-closure readiness"), "release-closure readiness"),
-        (_safe_input_path(immutable_release, "immutable release verification"), "immutable release verification"),
+        (
+            _safe_input_path(release_closure, "release-closure readiness"),
+            "release-closure readiness",
+        ),
+        (
+            _safe_input_path(immutable_release, "immutable release verification"),
+            "immutable release verification",
+        ),
     )
     for protected_path, protected_label in protected:
         if _paths_alias(output_resolved, protected_path):
@@ -116,11 +134,179 @@ def _validate_output_boundaries(
     return output_resolved, verification_resolved
 
 
-def _write(path: Path, value: dict[str, Any], label: str) -> None:
-    resolved = _safe_output_path(path, label)
-    resolved.parent.mkdir(parents=True, exist_ok=True)
+def _reserve_output(path: Path, label: str) -> dict[str, Any]:
     _reject_symlink_components(path, label)
-    resolved.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    absolute = path.expanduser().absolute()
+    if absolute.exists():
+        raise StaleReleaseWorkCleanupOperationError(f"{label} must not already exist")
+    parent = absolute.parent
+    _reject_symlink_components(parent, f"{label} parent")
+    resolved_parent = parent.resolve()
+    if not resolved_parent.is_dir():
+        raise StaleReleaseWorkCleanupOperationError(
+            f"{label} parent must already exist"
+        )
+    candidate = resolved_parent / absolute.name
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    try:
+        fd = os.open(candidate, flags, 0o600)
+    except FileExistsError as exc:
+        raise StaleReleaseWorkCleanupOperationError(
+            f"{label} appeared before exclusive reservation"
+        ) from exc
+    except OSError as exc:
+        raise StaleReleaseWorkCleanupOperationError(
+            f"{label} could not be reserved: {exc}"
+        ) from exc
+
+    info = os.fstat(fd)
+    identity = (int(info.st_dev), int(info.st_ino))
+    try:
+        path_info = os.lstat(candidate)
+        if (
+            not stat.S_ISREG(path_info.st_mode)
+            or (int(path_info.st_dev), int(path_info.st_ino)) != identity
+        ):
+            raise StaleReleaseWorkCleanupOperationError(
+                f"{label} reservation path identity mismatch"
+            )
+    except Exception:
+        try:
+            os.close(fd)
+        finally:
+            try:
+                path_info = os.lstat(candidate)
+                if (
+                    stat.S_ISREG(path_info.st_mode)
+                    and (int(path_info.st_dev), int(path_info.st_ino)) == identity
+                ):
+                    candidate.unlink()
+            except OSError:
+                pass
+        raise
+
+    return {
+        "path": candidate,
+        "fd": fd,
+        "device": identity[0],
+        "inode": identity[1],
+        "label": label,
+        "finalized": False,
+    }
+
+
+def _cleanup_reserved_output(reservation: dict[str, Any]) -> None:
+    errors: list[str] = []
+    fd = reservation.get("fd")
+    if type(fd) is int:
+        try:
+            os.close(fd)
+        except OSError as exc:
+            errors.append(f"close: {exc}")
+        reservation["fd"] = None
+
+    candidate = Path(reservation["path"])
+    identity = (int(reservation["device"]), int(reservation["inode"]))
+    try:
+        path_info = os.lstat(candidate)
+    except FileNotFoundError:
+        path_info = None
+    except OSError as exc:
+        errors.append(f"lstat: {exc}")
+        path_info = None
+
+    if path_info is not None:
+        observed = (int(path_info.st_dev), int(path_info.st_ino))
+        if stat.S_ISREG(path_info.st_mode) and observed == identity:
+            try:
+                candidate.unlink()
+            except OSError as exc:
+                errors.append(f"unlink: {exc}")
+        else:
+            errors.append("path identity changed; refusing cleanup unlink")
+
+    if errors:
+        raise StaleReleaseWorkCleanupOperationError(
+            f"{reservation['label']} reserved-output cleanup failed: "
+            + "; ".join(errors)
+        )
+
+
+def _finalize_reserved_output(
+    reservation: dict[str, Any], value: dict[str, Any]
+) -> None:
+    fd = reservation.get("fd")
+    if type(fd) is not int:
+        raise StaleReleaseWorkCleanupOperationError(
+            f"{reservation['label']} reservation is not open"
+        )
+    candidate = Path(reservation["path"])
+    identity = (int(reservation["device"]), int(reservation["inode"]))
+    handle = None
+    try:
+        handle = os.fdopen(fd, "r+", encoding="utf-8", newline="\n")
+        reservation["fd"] = None
+        path_info = os.lstat(candidate)
+        if (
+            not stat.S_ISREG(path_info.st_mode)
+            or (int(path_info.st_dev), int(path_info.st_ino)) != identity
+        ):
+            raise StaleReleaseWorkCleanupOperationError(
+                f"{reservation['label']} reservation path identity changed before finalize"
+            )
+        payload = json.dumps(value, indent=2, sort_keys=True) + "\n"
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+        handle.seek(0)
+        if handle.read() != payload:
+            raise StaleReleaseWorkCleanupOperationError(
+                f"{reservation['label']} exact read-back verification failed"
+            )
+        path_info = os.lstat(candidate)
+        if (
+            not stat.S_ISREG(path_info.st_mode)
+            or (int(path_info.st_dev), int(path_info.st_ino)) != identity
+        ):
+            raise StaleReleaseWorkCleanupOperationError(
+                f"{reservation['label']} path identity changed during finalize"
+            )
+        reservation["finalized"] = True
+    finally:
+        if handle is not None:
+            handle.close()
+        elif reservation.get("fd") == fd:
+            try:
+                os.close(fd)
+            finally:
+                reservation["fd"] = None
+
+
+def _finalize_reserved_outputs(
+    entries: list[tuple[dict[str, Any], dict[str, Any]]]
+) -> None:
+    try:
+        for reservation, value in entries:
+            _finalize_reserved_output(reservation, value)
+    except Exception as exc:
+        cleanup_errors: list[str] = []
+        for reservation, _value in entries:
+            try:
+                _cleanup_reserved_output(reservation)
+            except Exception as cleanup_exc:
+                cleanup_errors.append(str(cleanup_exc))
+        if cleanup_errors:
+            raise StaleReleaseWorkCleanupOperationError(
+                "audit finalization failed and reserved-output cleanup was incomplete: "
+                + "; ".join(cleanup_errors)
+            ) from exc
+        if isinstance(exc, StaleReleaseWorkCleanupOperationError):
+            raise
+        raise StaleReleaseWorkCleanupOperationError(
+            f"audit finalization failed: {exc}"
+        ) from exc
 
 
 def _validate_repository(repository: str) -> None:
@@ -140,11 +326,15 @@ def _gh_json(gh: str, endpoint: str) -> Any:
         check=False,
     )
     if completed.returncode != 0:
-        raise StaleReleaseWorkCleanupOperationError(f"gh api failed for {endpoint}: {completed.stderr.strip()}")
+        raise StaleReleaseWorkCleanupOperationError(
+            f"gh api failed for {endpoint}: {completed.stderr.strip()}"
+        )
     try:
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
-        raise StaleReleaseWorkCleanupOperationError(f"gh api returned invalid JSON for {endpoint}") from exc
+        raise StaleReleaseWorkCleanupOperationError(
+            f"gh api returned invalid JSON for {endpoint}"
+        ) from exc
 
 
 def _gh_delete(gh: str, endpoint: str) -> None:
@@ -157,7 +347,9 @@ def _gh_delete(gh: str, endpoint: str) -> None:
         check=False,
     )
     if completed.returncode != 0:
-        raise StaleReleaseWorkCleanupOperationError(f"gh delete failed for {endpoint}: {completed.stderr.strip()}")
+        raise StaleReleaseWorkCleanupOperationError(
+            f"gh delete failed for {endpoint}: {completed.stderr.strip()}"
+        )
 
 
 def _gh_create_ref(gh: str, repository: str, branch: str, sha: str) -> None:
@@ -197,7 +389,9 @@ def _paged_list(gh: str, endpoint: str) -> list[dict[str, Any]]:
                 f"paged GitHub API endpoint did not return a list: {endpoint}"
             )
         if any(not isinstance(row, dict) for row in value):
-            raise StaleReleaseWorkCleanupOperationError(f"paged GitHub API returned a non-object row: {endpoint}")
+            raise StaleReleaseWorkCleanupOperationError(
+                f"paged GitHub API returned a non-object row: {endpoint}"
+            )
         rows.extend(value)
         if len(value) < 100:
             return rows
@@ -208,7 +402,11 @@ def _paged_list(gh: str, endpoint: str) -> list[dict[str, Any]]:
             )
 
 
-def _validate_release_state(verifier: Any, release_closure: dict[str, Any], immutable_release: dict[str, Any]) -> None:
+def _validate_release_state(
+    verifier: Any,
+    release_closure: dict[str, Any],
+    immutable_release: dict[str, Any],
+) -> None:
     try:
         verifier.verify(release_closure, immutable_release, [], [])
     except Exception as exc:
@@ -227,13 +425,19 @@ def _collect_stale(
     for row in branches:
         name = row.get("name")
         if not isinstance(name, str) or not name:
-            raise StaleReleaseWorkCleanupOperationError("branch API row has invalid name")
+            raise StaleReleaseWorkCleanupOperationError(
+                "branch API row has invalid name"
+            )
         if name in seen_branches:
-            raise StaleReleaseWorkCleanupOperationError(f"duplicate branch API row: {name}")
+            raise StaleReleaseWorkCleanupOperationError(
+                f"duplicate branch API row: {name}"
+            )
         seen_branches.add(name)
         if verifier._is_stale_branch(name):
             if name in verifier.ALLOWED_BRANCHES:
-                raise StaleReleaseWorkCleanupOperationError(f"allowed branch was classified stale: {name}")
+                raise StaleReleaseWorkCleanupOperationError(
+                    f"allowed branch was classified stale: {name}"
+                )
             stale_branches.append(name)
 
     stale_pulls: list[dict[str, Any]] = []
@@ -241,18 +445,26 @@ def _collect_stale(
     for row in pulls:
         number = row.get("number")
         if type(number) is not int or number <= 0 or row.get("state") != "open":
-            raise StaleReleaseWorkCleanupOperationError("open pull request API row is invalid")
+            raise StaleReleaseWorkCleanupOperationError(
+                "open pull request API row is invalid"
+            )
         if number in seen_pulls:
-            raise StaleReleaseWorkCleanupOperationError(f"duplicate open PR API row: {number}")
+            raise StaleReleaseWorkCleanupOperationError(
+                f"duplicate open PR API row: {number}"
+            )
         seen_pulls.add(number)
         head = row.get("head") if isinstance(row.get("head"), dict) else {}
         ref = head.get("ref")
         if not isinstance(ref, str) or not ref:
-            raise StaleReleaseWorkCleanupOperationError(f"open PR head ref is invalid: {number}")
+            raise StaleReleaseWorkCleanupOperationError(
+                f"open PR head ref is invalid: {number}"
+            )
         if verifier._is_stale_branch(ref):
             stale_pulls.append({"number": number, "head": ref})
 
-    return sorted(stale_branches), sorted(stale_pulls, key=lambda row: row["number"])
+    return sorted(stale_branches), sorted(
+        stale_pulls, key=lambda row: row["number"]
+    )
 
 
 def _branch_ref(gh: str, repository: str, branch: str) -> dict[str, str]:
@@ -260,11 +472,15 @@ def _branch_ref(gh: str, repository: str, branch: str) -> dict[str, str]:
     encoded = quote(branch, safe="")
     value = _gh_json(gh, f"repos/{repository}/git/ref/heads/{encoded}")
     if not isinstance(value, dict) or value.get("ref") != f"refs/heads/{branch}":
-        raise StaleReleaseWorkCleanupOperationError(f"branch ref identity mismatch: {branch}")
+        raise StaleReleaseWorkCleanupOperationError(
+            f"branch ref identity mismatch: {branch}"
+        )
     obj = value.get("object") if isinstance(value.get("object"), dict) else {}
     sha = str(obj.get("sha") or "").lower()
     if obj.get("type") != "commit" or SHA40.fullmatch(sha) is None:
-        raise StaleReleaseWorkCleanupOperationError(f"branch ref does not resolve to an exact commit: {branch}")
+        raise StaleReleaseWorkCleanupOperationError(
+            f"branch ref does not resolve to an exact commit: {branch}"
+        )
     return {"branch": branch, "sha": sha}
 
 
@@ -280,7 +496,9 @@ def build_plan(
     stale_branches, stale_pulls = _collect_stale(verifier, branches, pulls)
     target_by_name = {row["branch"]: row["sha"] for row in branch_targets}
     if set(target_by_name) != set(stale_branches):
-        raise StaleReleaseWorkCleanupOperationError("stale branch target set differs from cleanup plan")
+        raise StaleReleaseWorkCleanupOperationError(
+            "stale branch target set differs from cleanup plan"
+        )
     return {
         "schema": 1,
         "kind": "psmatrix.release-stale-work-cleanup-operation",
@@ -297,7 +515,8 @@ def build_plan(
         "stale_branch_count": len(stale_branches),
         "stale_open_pr_count": len(stale_pulls),
         "stale_branches": [
-            {"branch": name, "target_sha": target_by_name[name]} for name in stale_branches
+            {"branch": name, "target_sha": target_by_name[name]}
+            for name in stale_branches
         ],
         "stale_open_prs": stale_pulls,
         "delete_requires_explicit_execute": True,
@@ -324,39 +543,61 @@ def execute_plan(
     immutable_release: dict[str, Any],
     repository: str,
     gh: str,
+    audit_finalizer: Callable[[dict[str, Any], dict[str, Any]], None] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     _validate_repository(repository)
     if plan.get("repository") != REPOSITORY:
-        raise StaleReleaseWorkCleanupOperationError("cleanup plan repository binding mismatch")
+        raise StaleReleaseWorkCleanupOperationError(
+            "cleanup plan repository binding mismatch"
+        )
     if plan.get("status") != "DRY_RUN" or plan.get("mutation_executed") is not False:
-        raise StaleReleaseWorkCleanupOperationError("cleanup execution requires an unexecuted dry-run plan")
+        raise StaleReleaseWorkCleanupOperationError(
+            "cleanup execution requires an unexecuted dry-run plan"
+        )
     stale_pulls = plan.get("stale_open_prs")
     if not isinstance(stale_pulls, list):
-        raise StaleReleaseWorkCleanupOperationError("cleanup plan stale PR list is invalid")
+        raise StaleReleaseWorkCleanupOperationError(
+            "cleanup plan stale PR list is invalid"
+        )
     if stale_pulls:
-        formatted = ",".join(f"#{row['number']}:{row['head']}" for row in stale_pulls)
+        formatted = ",".join(
+            f"#{row['number']}:{row['head']}" for row in stale_pulls
+        )
         raise StaleReleaseWorkCleanupOperationError(
             f"stale open PRs must be closed explicitly before branch deletion: {formatted}"
         )
     rows = plan.get("stale_branches")
     if not isinstance(rows, list):
-        raise StaleReleaseWorkCleanupOperationError("cleanup plan branch list is invalid")
+        raise StaleReleaseWorkCleanupOperationError(
+            "cleanup plan branch list is invalid"
+        )
 
     verifier_allowed = set(verifier.ALLOWED_BRANCHES)
     planned: list[dict[str, str]] = []
     for row in rows:
         if not isinstance(row, dict):
-            raise StaleReleaseWorkCleanupOperationError("cleanup plan branch row is invalid")
+            raise StaleReleaseWorkCleanupOperationError(
+                "cleanup plan branch row is invalid"
+            )
         branch = row.get("branch")
         sha = row.get("target_sha")
-        if not isinstance(branch, str) or not isinstance(sha, str) or SHA40.fullmatch(sha) is None:
-            raise StaleReleaseWorkCleanupOperationError("cleanup plan branch identity is invalid")
+        if (
+            not isinstance(branch, str)
+            or not isinstance(sha, str)
+            or SHA40.fullmatch(sha) is None
+        ):
+            raise StaleReleaseWorkCleanupOperationError(
+                "cleanup plan branch identity is invalid"
+            )
         if branch in verifier_allowed or not verifier._is_stale_branch(branch):
-            raise StaleReleaseWorkCleanupOperationError(f"refusing to delete non-stale/allowed branch: {branch}")
+            raise StaleReleaseWorkCleanupOperationError(
+                f"refusing to delete non-stale/allowed branch: {branch}"
+            )
         current = _branch_ref(gh, repository, branch)
         if current["sha"] != sha:
             raise StaleReleaseWorkCleanupOperationError(
-                f"branch target changed after dry-run planning: {branch} planned={sha} current={current['sha']}"
+                f"branch target changed after dry-run planning: {branch} "
+                f"planned={sha} current={current['sha']}"
             )
         planned.append({"branch": branch, "sha": sha})
 
@@ -375,11 +616,32 @@ def execute_plan(
         branches_after = _paged_list(gh, f"repos/{repository}/branches")
         pulls_after = _paged_list(gh, f"repos/{repository}/pulls?state=open")
         try:
-            verification = verifier.verify(release_closure, immutable_release, branches_after, pulls_after)
+            verification = verifier.verify(
+                release_closure, immutable_release, branches_after, pulls_after
+            )
         except Exception as exc:
             raise StaleReleaseWorkCleanupOperationError(
                 f"post-delete stale-work verification failed: {exc}"
             ) from exc
+
+        receipt = dict(plan)
+        receipt.update(
+            {
+                "status": "PASS",
+                "mutation_executed": bool(deleted),
+                "deleted_branch_count": len(deleted),
+                "deleted_branches": [
+                    {"branch": row["branch"], "target_sha": row["sha"]}
+                    for row in deleted
+                ],
+                "rollback_completed": False,
+                "post_delete_verification_passed": True,
+                "stale_branch_pr_cleanup_completed": True,
+                "release_closed": False,
+            }
+        )
+        if audit_finalizer is not None:
+            audit_finalizer(receipt, verification)
     except Exception:
         for row in reversed(deleted):
             try:
@@ -388,25 +650,11 @@ def execute_plan(
                 rollback_errors.append(f"{row['branch']}: {rollback_exc}")
         if rollback_errors:
             raise StaleReleaseWorkCleanupOperationError(
-                "cleanup failed and branch rollback was incomplete: " + "; ".join(rollback_errors)
+                "cleanup failed and branch rollback was incomplete: "
+                + "; ".join(rollback_errors)
             )
         raise
 
-    receipt = dict(plan)
-    receipt.update(
-        {
-            "status": "PASS",
-            "mutation_executed": bool(deleted),
-            "deleted_branch_count": len(deleted),
-            "deleted_branches": [
-                {"branch": row["branch"], "target_sha": row["sha"]} for row in deleted
-            ],
-            "rollback_completed": False,
-            "post_delete_verification_passed": True,
-            "stale_branch_pr_cleanup_completed": True,
-            "release_closed": False,
-        }
-    )
     return receipt, verification
 
 
@@ -416,18 +664,33 @@ def run_operation(
     repository: str,
     gh: str,
     execute: bool,
+    audit_finalizer: Callable[[dict[str, Any], dict[str, Any]], None] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     _validate_repository(repository)
+    if not execute and audit_finalizer is not None:
+        raise StaleReleaseWorkCleanupOperationError(
+            "dry-run may not provide an audit finalizer"
+        )
     verifier = _load_verifier()
     _validate_release_state(verifier, release_closure, immutable_release)
     branches = _paged_list(gh, f"repos/{repository}/branches")
     pulls = _paged_list(gh, f"repos/{repository}/pulls?state=open")
     stale_branches, _ = _collect_stale(verifier, branches, pulls)
     targets = [_branch_ref(gh, repository, name) for name in stale_branches]
-    plan = build_plan(verifier, release_closure, immutable_release, branches, pulls, targets)
+    plan = build_plan(
+        verifier, release_closure, immutable_release, branches, pulls, targets
+    )
     if not execute:
         return plan, None
-    return execute_plan(verifier, plan, release_closure, immutable_release, repository, gh)
+    return execute_plan(
+        verifier,
+        plan,
+        release_closure,
+        immutable_release,
+        repository,
+        gh,
+        audit_finalizer=audit_finalizer,
+    )
 
 
 def main() -> int:
@@ -442,6 +705,9 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--verification-output", type=Path, required=True)
     args = parser.parse_args()
+
+    reservations: list[dict[str, Any]] = []
+    audit_committed = False
     try:
         _validate_repository(args.repository)
         output_path, verification_path = _validate_output_boundaries(
@@ -454,23 +720,76 @@ def main() -> int:
             raise StaleReleaseWorkCleanupOperationError(
                 "dry-run may not reuse an existing verification output path"
             )
-        closure = _read(args.release_closure, "release-closure readiness")
-        immutable = _read(args.immutable_release_verification, "immutable release verification")
-        receipt, verification = run_operation(closure, immutable, args.repository, args.gh, args.execute)
-        _write(args.output, receipt, "cleanup operation output")
-        if verification is not None:
-            _write(
-                args.verification_output,
-                verification,
-                "cleanup verification output",
+
+        operation_reservation = _reserve_output(
+            output_path, "cleanup operation output"
+        )
+        reservations.append(operation_reservation)
+        verification_reservation: dict[str, Any] | None = None
+        if args.execute:
+            verification_reservation = _reserve_output(
+                verification_path, "cleanup verification output"
             )
+            reservations.append(verification_reservation)
+
+        closure = _read(args.release_closure, "release-closure readiness")
+        immutable = _read(
+            args.immutable_release_verification, "immutable release verification"
+        )
+
+        if args.execute:
+            assert verification_reservation is not None
+
+            def audit_finalizer(
+                receipt_value: dict[str, Any],
+                verification_value: dict[str, Any],
+            ) -> None:
+                receipt_value["audit_outputs_reserved_before_mutation"] = True
+                receipt_value[
+                    "audit_outputs_finalized_inside_rollback_boundary"
+                ] = True
+                verification_value[
+                    "cleanup_audit_outputs_reserved_before_mutation"
+                ] = True
+                verification_value[
+                    "cleanup_audit_outputs_finalized_inside_rollback_boundary"
+                ] = True
+                _finalize_reserved_outputs(
+                    [
+                        (operation_reservation, receipt_value),
+                        (verification_reservation, verification_value),
+                    ]
+                )
+
+            receipt, verification = run_operation(
+                closure,
+                immutable,
+                args.repository,
+                args.gh,
+                True,
+                audit_finalizer=audit_finalizer,
+            )
+        else:
+            receipt, verification = run_operation(
+                closure, immutable, args.repository, args.gh, False
+            )
+            _finalize_reserved_outputs([(operation_reservation, receipt)])
+
+        audit_committed = True
         print(
             f"stale_release_work_cleanup_operation={receipt['status']} "
-            f"repository={REPOSITORY} branches={receipt['stale_branch_count']} open_prs={receipt['stale_open_pr_count']}"
+            f"repository={REPOSITORY} branches={receipt['stale_branch_count']} "
+            f"open_prs={receipt['stale_open_pr_count']}"
         )
         print(f"mutation_executed={str(receipt['mutation_executed']).lower()}")
-        print(f"delete_requires_explicit_execute={str(receipt['delete_requires_explicit_execute']).lower()}")
-        print(f"stale_branch_pr_cleanup_completed={str(receipt['stale_branch_pr_cleanup_completed']).lower()}")
+        print(
+            "delete_requires_explicit_execute="
+            + str(receipt["delete_requires_explicit_execute"]).lower()
+        )
+        print(
+            "stale_branch_pr_cleanup_completed="
+            + str(receipt["stale_branch_pr_cleanup_completed"]).lower()
+        )
         print("release_closed=false")
         return 0
     except (
@@ -482,7 +801,22 @@ def main() -> int:
         ValueError,
         KeyError,
     ) as exc:
-        print(f"stale release-work cleanup operation failed: {exc}", file=sys.stderr)
+        cleanup_errors: list[str] = []
+        if not audit_committed:
+            for reservation in reservations:
+                try:
+                    _cleanup_reserved_output(reservation)
+                except Exception as cleanup_exc:
+                    cleanup_errors.append(str(cleanup_exc))
+        suffix = (
+            "; reserved-output cleanup errors: " + "; ".join(cleanup_errors)
+            if cleanup_errors
+            else ""
+        )
+        print(
+            f"stale release-work cleanup operation failed: {exc}{suffix}",
+            file=sys.stderr,
+        )
         return 1
 
 
