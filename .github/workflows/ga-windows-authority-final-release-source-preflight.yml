@@ -1,0 +1,174 @@
+name: production-ga-windows-authority-final-release-source-preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["final/**"]
+    paths:
+      - ".github/workflows/ga-windows-authority-final-release-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-final-staging-candidate-selfhosted.yml"
+      - "ga-packs/03-authoritative-windows/final-release-source-promotion-contract.json"
+      - "scripts/ga/build_windows_authority_final_release_candidate.py"
+      - "scripts/ga/scan_private_key_material_streaming.py"
+      - "tests/test_windows_authority_final_release_promotion.py"
+      - "tests/test_windows_authority_release_candidate_builder.py"
+      - "tests/test_windows_authority_rc4_authority_rotation.py"
+      - "pyproject.toml"
+      - "src/psmatrix/__init__.py"
+  pull_request:
+    branches: ["final/**"]
+    paths:
+      - ".github/workflows/ga-windows-authority-final-release-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-final-staging-candidate-selfhosted.yml"
+      - "ga-packs/03-authoritative-windows/final-release-source-promotion-contract.json"
+      - "scripts/ga/build_windows_authority_final_release_candidate.py"
+      - "scripts/ga/scan_private_key_material_streaming.py"
+      - "tests/test_windows_authority_final_release_promotion.py"
+      - "tests/test_windows_authority_release_candidate_builder.py"
+      - "tests/test_windows_authority_rc4_authority_rotation.py"
+      - "pyproject.toml"
+      - "src/psmatrix/__init__.py"
+
+concurrency:
+  group: production-ga-windows-authority-final-release-source-preflight-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  final-release-source-preflight:
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    env:
+      PYTHONPATH: ${{ github.workspace }}\src
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+
+    steps:
+      - name: Verify trusted NAVEAX runner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') {
+              throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS"
+          }
+          Write-Host 'final_release_runner=PASS'
+
+      - name: Check out exact final release preparation source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact final identity and RC4 promotion lineage
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($env:EXPECTED_HEAD -cnotmatch '^[0-9a-f]{40}$' -or $head -ne $env:EXPECTED_HEAD.ToLowerInvariant()) {
+              throw "Exact final head mismatch: $head / $env:EXPECTED_HEAD"
+          }
+          if (-not [string]::IsNullOrWhiteSpace((git status --porcelain))) { throw 'Final source checkout is dirty.' }
+
+          $project = (python -c "import tomllib,pathlib;print(tomllib.loads(pathlib.Path('pyproject.toml').read_text(encoding='utf-8'))['project']['version'])").Trim()
+          $package = (python -c "import psmatrix;print(psmatrix.__version__)").Trim()
+          if ($project -ne '2.0.0' -or $package -ne '2.0.0') { throw "Final version mismatch: $project / $package" }
+
+          $contractPath = 'ga-packs\03-authoritative-windows\final-release-source-promotion-contract.json'
+          $contract = Get-Content $contractPath -Raw | ConvertFrom-Json
+          if ([int]$contract.schema -ne 1 -or [string]$contract.kind -ne 'psmatrix.windows-authority-final-release-source-promotion-contract') { throw 'Final source-promotion contract identity mismatch.' }
+          if ([string]$contract.from_version -ne '2.0.0rc4' -or [string]$contract.to_version -ne '2.0.0') { throw 'Final source-promotion version boundary mismatch.' }
+          if ([bool]$contract.promotion.rc4_evidence_may_be_relabelled_as_final -ne $false) { throw 'RC4 evidence relabelling boundary was weakened.' }
+          $anchor = ([string]$contract.rc4_hardened_source_head).ToLowerInvariant()
+          if ($anchor -cnotmatch '^[0-9a-f]{40}$' -or $head -eq $anchor) { throw 'Final release requires a distinct valid RC4 anchor and final head.' }
+          git merge-base --is-ancestor $anchor $head
+          if ($LASTEXITCODE -ne 0) { throw 'Exact hardened RC4 source head is not an ancestor of final 2.0.0.' }
+
+          $changed = @((git diff --name-only "$anchor..$head") | ForEach-Object { $_.Trim().Replace('\','/') } | Where-Object { $_ } | Sort-Object -Unique)
+          $allowed = @($contract.promotion.changed_path_allowlist | ForEach-Object { ([string]$_).Replace('\','/') } | Sort-Object -Unique)
+          $delta = @(Compare-Object -ReferenceObject $allowed -DifferenceObject $changed)
+          if ($delta.Count -ne 0) { throw "Final promotion changed-path closure mismatch: $($delta | Out-String)" }
+          $runtime = @($changed | Where-Object { $_ -like 'src/psmatrix/*' } | Sort-Object -Unique)
+          $runtimeAllowed = @($contract.promotion.runtime_source_change_allowlist | ForEach-Object { [string]$_ } | Sort-Object -Unique)
+          $runtimeDelta = @(Compare-Object -ReferenceObject $runtimeAllowed -DifferenceObject $runtime)
+          if ($runtimeDelta.Count -ne 0) { throw "Final promotion runtime-source closure mismatch: $($runtimeDelta | Out-String)" }
+
+          foreach ($path in @('ga-packs\03-authoritative-windows\final-release-lock.json','release-assets\2.0.0\psmatrix-2.0.0-release-public.pem')) {
+              if (Test-Path -LiteralPath $path -PathType Leaf) { throw "Final preparation contains active authority material: $path" }
+          }
+          Write-Host "validated_exact_final_head=$head"
+          Write-Host "validated_rc4_anchor=$anchor"
+          Write-Host "final_changed_paths=$($changed.Count)"
+          Write-Host "final_runtime_changed_paths=$($runtime -join ',')"
+
+      - name: Compile final release controls
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m py_compile `
+            scripts/ga/build_windows_authority_final_release_candidate.py `
+            scripts/ga/scan_private_key_material_streaming.py `
+            tests/test_windows_authority_final_release_promotion.py `
+            tests/test_windows_authority_release_candidate_builder.py `
+            tests/test_windows_authority_rc4_authority_rotation.py
+          if ($LASTEXITCODE -ne 0) { throw 'Final release control compile failed.' }
+          Write-Host 'final_release_compile=PASS'
+
+      - name: Run final release promotion source contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m unittest -v `
+            tests.test_windows_authority_final_release_promotion `
+            tests.test_windows_authority_release_candidate_builder `
+            tests.test_windows_authority_rc4_authority_rotation
+          if ($LASTEXITCODE -ne 0) { throw 'Final release source contract suite failed.' }
+          Write-Host 'final_release_source_contract=PASS'
+
+      - name: Stream-scan every tracked source byte for private authority material
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import subprocess
+          from pathlib import Path
+
+          markers = {
+              b"-----BEGIN PRIVATE KEY-----",
+              b"-----BEGIN RSA PRIVATE KEY-----",
+              b"-----BEGIN EC PRIVATE KEY-----",
+              b"-----BEGIN OPENSSH PRIVATE KEY-----",
+              b"-----BEGIN ED25519 PRIVATE KEY-----",
+          }
+          root = Path.cwd().resolve()
+          tracked = [line for line in subprocess.check_output(["git", "ls-files"], text=True).splitlines() if line]
+          total = 0
+          scanned = 0
+          for relative in tracked:
+              path = root / relative
+              if not path.is_file():
+                  continue
+              scanned += 1
+              with path.open("rb") as handle:
+                  for raw_line in handle:
+                      total += len(raw_line)
+                      if raw_line.rstrip(b"\r\n").strip() in markers:
+                          raise SystemExit(f"tracked private-key PEM material detected: {relative}")
+          print(f"repository_private_authority_absence=PASS tracked_files={scanned} tracked_bytes={total} size_limit_applied=false")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Tracked-source private authority scan failed.' }
+
+      - name: Emit final source-preflight summary
+        shell: pwsh
+        run: |
+          Write-Host "validated_exact_final_head=$env:EXPECTED_HEAD"
+          Write-Host 'final_release_artifacts_built=false'
+          Write-Host 'final_release_lock_written=false'
+          Write-Host 'final_release_artifacts_signed=false'
+          Write-Host 'final_windows_evidence_rebound=false'
+          Write-Host 'final_ga_evaluator_invoked=false'
+          Write-Host 'authoritative=false'
+          Write-Host 'ga_eligible=false'

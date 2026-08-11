@@ -1,0 +1,367 @@
+name: production-ga-windows-authority-final-release-sign-from-lock
+
+on:
+  workflow_dispatch:
+    inputs:
+      lock_control_head:
+        description: Exact repository commit containing reviewed final-release-lock.json and final public key
+        required: true
+        type: string
+      final_candidate_commit:
+        description: Exact frozen PSMatrix 2.0.0 release source commit
+        required: true
+        type: string
+      rc4_enrollment_run_id:
+        description: RC4 authority-enrollment run ID frozen by the final lock
+        required: true
+        type: string
+      staging_run_id:
+        description: Unsigned final staging run ID frozen by the final lock
+        required: true
+        type: string
+      review_run_id:
+        description: Final lock-review run ID frozen by the final lock
+        required: true
+        type: string
+      promotion_run_id:
+        description: Final lock-promotion run ID frozen by the final lock
+        required: true
+        type: string
+
+concurrency:
+  group: production-ga-windows-authority-final-release-sign-from-lock
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  sign-exact-final-lock:
+    name: Sign exact final 2.0.0 only after reviewed lock is committed
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: production-ga-release-signing
+    permissions:
+      contents: read
+      actions: read
+    env:
+      LOCK_CONTROL_HEAD: ${{ inputs.lock_control_head }}
+      FINAL_CANDIDATE_COMMIT: ${{ inputs.final_candidate_commit }}
+      RC4_ENROLLMENT_RUN_ID: ${{ inputs.rc4_enrollment_run_id }}
+      STAGING_RUN_ID: ${{ inputs.staging_run_id }}
+      REVIEW_RUN_ID: ${{ inputs.review_run_id }}
+      PROMOTION_RUN_ID: ${{ inputs.promotion_run_id }}
+
+    steps:
+      - name: Initialize isolated protected final signing paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "${RUNNER_TEMP:-}" ]] || { echo 'RUNNER_TEMP is unavailable.' >&2; exit 1; }
+          {
+            echo "PSMATRIX_FINAL_KEY_ROOT=$RUNNER_TEMP/psmatrix-final-release-keys"
+            echo "PSMATRIX_FINAL_SIGNED=$RUNNER_TEMP/psmatrix-final-protected-signing"
+            echo "PSMATRIX_FINAL_BUNDLE=$RUNNER_TEMP/psmatrix-2.0.0-protected-release"
+          } >> "$GITHUB_ENV"
+
+      - name: Validate exact final signing dispatch identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$LOCK_CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]] || { echo 'lock_control_head must be 40 lowercase hex characters.' >&2; exit 1; }
+          [[ "$FINAL_CANDIDATE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo 'final_candidate_commit must be 40 lowercase hex characters.' >&2; exit 1; }
+          [[ "$LOCK_CONTROL_HEAD" == "${GITHUB_SHA,,}" ]] || { echo "lock_control_head must equal exact workflow control head ${GITHUB_SHA,,}." >&2; exit 1; }
+          for value in "$RC4_ENROLLMENT_RUN_ID" "$STAGING_RUN_ID" "$REVIEW_RUN_ID" "$PROMOTION_RUN_ID" "$GITHUB_RUN_ID"; do
+            [[ "$value" =~ ^[0-9]+$ ]] || { echo 'all provenance run IDs must contain only decimal digits.' >&2; exit 1; }
+          done
+          unique="$(printf '%s\n' "$RC4_ENROLLMENT_RUN_ID" "$STAGING_RUN_ID" "$REVIEW_RUN_ID" "$PROMOTION_RUN_ID" "$GITHUB_RUN_ID" | sort -u | wc -l | tr -d ' ')"
+          [[ "$unique" == '5' ]] || { echo 'enrollment, staging, review, promotion, and signing run IDs must be distinct.' >&2; exit 1; }
+          echo 'final_signing_dispatch_identity=PASS'
+
+      - name: Check out exact committed final lock control
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.lock_control_head }}
+          path: locked
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out exact frozen final 2.0.0 release source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.final_candidate_commit }}
+          path: final-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Verify committed final lock, authority continuity, and frozen provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=locked/src python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+          from psmatrix.signing import public_key_id
+
+          locked = Path('locked')
+          source = Path('final-source')
+          lock_path = locked / 'ga-packs/03-authoritative-windows/final-release-lock.json'
+          public_path = locked / 'release-assets/2.0.0/psmatrix-2.0.0-release-public.pem'
+          if not lock_path.is_file():
+              raise SystemExit('committed final release lock is missing')
+          if not public_path.is_file():
+              raise SystemExit('committed final release public authority is missing')
+          lock = json.loads(lock_path.read_text(encoding='utf-8'))
+          if lock.get('schema') != 1 or lock.get('kind') != 'psmatrix.windows-authority-final-release-staging-lock':
+              raise SystemExit('committed final release lock identity mismatch')
+          if lock.get('pack') != '03-authoritative-windows' or lock.get('version') != '2.0.0':
+              raise SystemExit('committed final release lock pack/version mismatch')
+          if lock.get('release_commit') != os.environ['FINAL_CANDIDATE_COMMIT']:
+              raise SystemExit('final_candidate_commit differs from committed final lock')
+          if lock.get('promotion_state') != 'READY_FOR_EXACT_REPOSITORY_COMMIT':
+              raise SystemExit('committed final lock lacks reviewed promotion state')
+          for field in ('release_artifacts_signed','final_windows_evidence_rebound','final_ga_evaluator_invoked','authoritative','ga_eligible'):
+              if lock.get(field) is not False:
+                  raise SystemExit(f'unsafe committed final lock field: {field}')
+
+          safety = lock.get('safety') or {}
+          required_false = ('authority_rotation_during_final_allowed','private_key_in_repository_allowed','sign_without_exact_lock_match_allowed','rc4_evidence_may_be_relabelled_as_final','final_ga_evaluator_allowed_during_signing')
+          for field in required_false:
+              if safety.get(field) is not False:
+                  raise SystemExit(f'unsafe final lock safety field: {field}')
+          if safety.get('final_windows_evidence_rebind_required_after_signing') is not True:
+              raise SystemExit('final lock does not require post-signing Windows evidence rebind')
+
+          key = lock.get('release_public_key') or {}
+          digest = hashlib.sha256(public_path.read_bytes()).hexdigest()
+          key_id = public_key_id(public_path)
+          if key.get('path') != 'release-assets/2.0.0/psmatrix-2.0.0-release-public.pem' or key.get('sha256') != digest or key.get('key_id') != key_id:
+              raise SystemExit('committed final public authority closure mismatch')
+          continuity = lock.get('authority_continuity') or {}
+          if continuity.get('source_version') != '2.0.0rc4' or continuity.get('public_key_sha256') != digest or continuity.get('key_id') != key_id:
+              raise SystemExit('final authority continuity metadata mismatch')
+          if continuity.get('same_reviewed_private_authority_required') is not True or continuity.get('authority_reused_for_final_release') is not True or continuity.get('authority_rotated_during_final_release') is not False:
+              raise SystemExit('final authority continuity boundary mismatch')
+
+          source_runs = lock.get('source_runs') or {}
+          rc4 = source_runs.get('rc4_authority_enrollment') or {}
+          staging = source_runs.get('unsigned_final_staging') or {}
+          if source_runs.get('final_release_commit') != os.environ['FINAL_CANDIDATE_COMMIT']:
+              raise SystemExit('final lock source-run release commit mismatch')
+          if str(rc4.get('run_id')) != os.environ['RC4_ENROLLMENT_RUN_ID'] or str(staging.get('run_id')) != os.environ['STAGING_RUN_ID']:
+              raise SystemExit('final lock upstream run IDs differ from dispatch')
+          if rc4.get('workflow') != 'production-ga-windows-authority-rc4-release-authority-enrollment' or rc4.get('artifact') != 'psmatrix-2.0.0rc4-release-authority-enrollment':
+              raise SystemExit('final lock RC4 authority provenance mismatch')
+          if staging.get('workflow') != 'production-ga-windows-authority-final-staging-candidate-selfhosted' or staging.get('artifact') != 'windows-authority-final-unlocked-staging-candidate':
+              raise SystemExit('final lock staging provenance mismatch')
+
+          promotion = lock.get('promotion_evidence') or {}
+          if str(promotion.get('review_run_id')) != os.environ['REVIEW_RUN_ID'] or str(promotion.get('promotion_run_id')) != os.environ['PROMOTION_RUN_ID']:
+              raise SystemExit('final review/promotion run IDs differ from committed lock')
+          if promotion.get('review_workflow') != 'production-ga-windows-authority-final-release-lock-review' or promotion.get('review_artifact') != 'psmatrix-2.0.0-final-release-lock-review':
+              raise SystemExit('final lock review provenance mismatch')
+          if promotion.get('promotion_workflow') != 'production-ga-windows-authority-final-release-lock-promotion' or promotion.get('promotion_artifact') != 'psmatrix-2.0.0-final-release-lock-promotion-candidate':
+              raise SystemExit('final lock promotion provenance mismatch')
+          if promotion.get('human_review_bound') is not True or promotion.get('repository_commit_required') is not True:
+              raise SystemExit('final lock lacks human-review/repository-commit boundary')
+          promotion_head = str(promotion.get('promotion_control_head') or '').lower()
+          if not re.fullmatch(r'[0-9a-f]{40}', promotion_head):
+              raise SystemExit('final promotion control head is invalid')
+
+          artifacts = lock.get('artifacts')
+          if not isinstance(artifacts, list) or len(artifacts) != 6:
+              raise SystemExit('committed final lock must contain exactly six artifacts')
+          control_head = subprocess.check_output(['git','-C','locked','rev-parse','HEAD'], text=True).strip().lower()
+          source_head = subprocess.check_output(['git','-C','final-source','rev-parse','HEAD'], text=True).strip().lower()
+          if control_head != os.environ['LOCK_CONTROL_HEAD'] or source_head != os.environ['FINAL_CANDIDATE_COMMIT']:
+              raise SystemExit('exact lock/source checkout head closure mismatch')
+          if subprocess.check_output(['git','-C','locked','status','--porcelain'], text=True).strip() or subprocess.check_output(['git','-C','final-source','status','--porcelain'], text=True).strip():
+              raise SystemExit('final signing checkout is dirty')
+          print(f'committed_final_lock=PASS promotion_control_head={promotion_head}')
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as stream:
+              stream.write(f'FINAL_PROMOTION_CONTROL_HEAD={promotion_head}\n')
+              stream.write(f'FINAL_RC4_AUTHORITY_CONTROL_HEAD={rc4.get("control_head")}\n')
+          PY
+
+      - name: Validate all four frozen upstream workflow runs and artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+          repo = 'Naveax/PSMatrix'
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {os.environ["GH_TOKEN"]}',
+              'X-GitHub-Api-Version': '2026-03-10',
+              'User-Agent': 'psmatrix-final-protected-signing',
+          }
+          def fetch(path):
+              request = urllib.request.Request(f'https://api.github.com/repos/{repo}/{path}', headers=headers)
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+          expected = (
+              (os.environ['RC4_ENROLLMENT_RUN_ID'], 'production-ga-windows-authority-rc4-release-authority-enrollment', 'psmatrix-2.0.0rc4-release-authority-enrollment', os.environ['FINAL_RC4_AUTHORITY_CONTROL_HEAD']),
+              (os.environ['STAGING_RUN_ID'], 'production-ga-windows-authority-final-staging-candidate-selfhosted', 'windows-authority-final-unlocked-staging-candidate', os.environ['FINAL_CANDIDATE_COMMIT']),
+              (os.environ['REVIEW_RUN_ID'], 'production-ga-windows-authority-final-release-lock-review', 'psmatrix-2.0.0-final-release-lock-review', os.environ['FINAL_PROMOTION_CONTROL_HEAD']),
+              (os.environ['PROMOTION_RUN_ID'], 'production-ga-windows-authority-final-release-lock-promotion', 'psmatrix-2.0.0-final-release-lock-promotion-candidate', os.environ['FINAL_PROMOTION_CONTROL_HEAD']),
+          )
+          for run_id, workflow, artifact, expected_head in expected:
+              run = fetch(f'actions/runs/{run_id}')
+              if run.get('name') != workflow or run.get('event') != 'workflow_dispatch':
+                  raise SystemExit(f'workflow provenance mismatch for run {run_id}')
+              if run.get('status') != 'completed' or run.get('conclusion') != 'success':
+                  raise SystemExit(f'workflow run {run_id} is not completed successfully')
+              if (run.get('head_sha') or '').lower() != expected_head.lower():
+                  raise SystemExit(f'workflow head mismatch for run {run_id}')
+              artifacts = fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts', [])
+              matches = [item for item in artifacts if item.get('name') == artifact and not item.get('expired')]
+              if len(matches) != 1:
+                  raise SystemExit(f'expected exactly one non-expired {artifact!r} artifact for run {run_id}; found {len(matches)}')
+              print(f'final_upstream_run=PASS run_id={run_id} artifact_id={matches[0].get("id")}')
+          PY
+
+      - name: Download exact unsigned final staging frozen by committed lock
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-authority-final-unlocked-staging-candidate
+          path: final-staging
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.staging_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Revalidate exact locked final staging bytes before secret access
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          lock = json.loads(Path('locked/ga-packs/03-authoritative-windows/final-release-lock.json').read_text(encoding='utf-8'))
+          staging = Path('final-staging')
+          for item in lock['artifacts']:
+              path = staging / item['name']
+              if not path.is_file():
+                  raise SystemExit(f'locked final staging artifact missing: {item["name"]}')
+              data = path.read_bytes()
+              if hashlib.sha256(data).hexdigest() != item['sha256'] or len(data) != item['size']:
+                  raise SystemExit(f'locked final staging bytes differ: {item["name"]}')
+          report = json.loads((staging / 'psmatrix-2.0.0-windows-authority-final-staging.json').read_text(encoding='utf-8'))
+          if report.get('status') != 'READY_FOR_FINAL_RELEASE_LOCK_REVIEW' or report.get('release_commit') != lock['release_commit'] or report.get('version') != '2.0.0':
+              raise SystemExit('final staging report identity/readiness mismatch')
+          for field in ('private_key_read','release_artifacts_signed','final_release_lock_written','final_windows_evidence_rebound','final_ga_evaluator_invoked','rc4_evidence_relabelled_as_final','downloads_files','extracts_existing_operation_package','authoritative','ga_eligible'):
+              if report.get(field) is not False:
+                  raise SystemExit(f'unsafe final staging field before signing: {field}')
+          print('exact_final_locked_staging=PASS')
+          PY
+
+      - name: Materialize protected final release private key
+        shell: bash
+        env:
+          RELEASE_PRIVATE_KEY: ${{ secrets.PSMATRIX_RELEASE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$RELEASE_PRIVATE_KEY" ]] || { echo 'PSMATRIX_RELEASE_PRIVATE_KEY is missing from production-ga-release-signing.' >&2; exit 1; }
+          rm -rf "$PSMATRIX_FINAL_KEY_ROOT" "$PSMATRIX_FINAL_SIGNED" "$PSMATRIX_FINAL_BUNDLE"
+          install -d -m 0700 "$PSMATRIX_FINAL_KEY_ROOT" "$PSMATRIX_FINAL_SIGNED" "$PSMATRIX_FINAL_BUNDLE"
+          printf '%s\n' "$RELEASE_PRIVATE_KEY" > "$PSMATRIX_FINAL_KEY_ROOT/release.private.pem"
+          chmod 0600 "$PSMATRIX_FINAL_KEY_ROOT/release.private.pem"
+
+      - name: Sign exact committed final release lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=locked/src python locked/scripts/ga/sign_windows_authority_final_release.py \
+            --source-root final-source \
+            --staging-root final-staging \
+            --release-lock locked/ga-packs/03-authoritative-windows/final-release-lock.json \
+            --release-private-key "$PSMATRIX_FINAL_KEY_ROOT/release.private.pem" \
+            --release-public-key locked/release-assets/2.0.0/psmatrix-2.0.0-release-public.pem \
+            --output-root "$PSMATRIX_FINAL_SIGNED"
+
+      - name: Remove protected final release private key
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          shred -u "$PSMATRIX_FINAL_KEY_ROOT/release.private.pem" 2>/dev/null || rm -f "$PSMATRIX_FINAL_KEY_ROOT/release.private.pem"
+          rmdir "$PSMATRIX_FINAL_KEY_ROOT" 2>/dev/null || true
+
+      - name: Independently verify signed final release and publish clean bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ ! -e "$PSMATRIX_FINAL_KEY_ROOT/release.private.pem" ]] || { echo 'protected final private key still exists after signing' >&2; exit 1; }
+          PYTHONPATH=locked/src python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import shutil
+          from pathlib import Path
+          from psmatrix.release import verify_release_manifest
+
+          signed = Path(os.environ['PSMATRIX_FINAL_SIGNED'])
+          bundle = Path(os.environ['PSMATRIX_FINAL_BUNDLE'])
+          staging = Path('final-staging')
+          lock = json.loads(Path('locked/ga-packs/03-authoritative-windows/final-release-lock.json').read_text(encoding='utf-8'))
+          public = Path('locked/release-assets/2.0.0/psmatrix-2.0.0-release-public.pem')
+          manifest = signed / 'psmatrix-2.0.0-release.json'
+          status_path = signed / 'psmatrix-2.0.0-protected-release-signing-status.json'
+          result = verify_release_manifest(manifest, staging, signing_public_key=public)
+          if result.get('valid') is not True or result.get('version') != '2.0.0':
+              raise SystemExit('independent final signed-release verification failed')
+          status = json.loads(status_path.read_text(encoding='utf-8'))
+          required_true = ('release_private_key_matches_locked_authority','signed_release_manifest_verified','release_artifacts_signed','authority_continuity_from_rc4_verified')
+          for field in required_true:
+              if status.get(field) is not True:
+                  raise SystemExit(f'final protected signing success field missing: {field}')
+          for field in ('release_authority_rotated_during_final_signing','private_key_copied_to_output','rc4_evidence_relabelled_as_final','final_windows_evidence_rebound','final_ga_evaluator_invoked','downloads_files','extracts_existing_operation_package','authoritative','ga_eligible'):
+              if status.get(field) is not False:
+                  raise SystemExit(f'unsafe final protected signing field: {field}')
+
+          for path in signed.iterdir():
+              if path.is_file():
+                  shutil.copyfile(path, bundle / path.name)
+          for item in lock['artifacts']:
+              source = staging / item['name']
+              target = bundle / item['name']
+              shutil.copyfile(source, target)
+              data = target.read_bytes()
+              if hashlib.sha256(data).hexdigest() != item['sha256'] or len(data) != item['size']:
+                  raise SystemExit(f'final protected bundle artifact copy mismatch: {item["name"]}')
+
+          markers = (b'-----BEGIN PRIVATE KEY-----', b'-----BEGIN RSA PRIVATE KEY-----', b'-----BEGIN EC PRIVATE KEY-----', b'-----BEGIN OPENSSH PRIVATE KEY-----', b'-----BEGIN ED25519 PRIVATE KEY-----')
+          for path in bundle.rglob('*'):
+              if path.is_file() and any(marker in path.read_bytes() for marker in markers):
+                  raise SystemExit(f'private-key material found in final protected release bundle: {path.name}')
+          print('independent_final_release_verification=PASS')
+          print('private_key_free_final_protected_release=PASS')
+          print('release_artifacts_signed=true')
+          print('final_windows_evidence_rebound=false')
+          print('final_ga_evaluator_invoked=false')
+          print('authoritative=false')
+          print('ga_eligible=false')
+          PY
+
+      - name: Upload exact protected final 2.0.0 release
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-2.0.0-protected-release
+          path: ${{ env.PSMATRIX_FINAL_BUNDLE }}
+          if-no-files-found: error
+          retention-days: 30

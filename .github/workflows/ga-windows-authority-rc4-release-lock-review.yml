@@ -1,0 +1,204 @@
+name: production-ga-windows-authority-rc4-release-lock-review
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_commit:
+        description: Exact reviewed PSMatrix 2.0.0rc4 candidate commit; must equal this control head
+        required: true
+        type: string
+      enrollment_run_id:
+        description: Successful protected RC4 authority-enrollment workflow run ID
+        required: true
+        type: string
+      staging_run_id:
+        description: Successful unsigned RC4 staging-candidate workflow run ID
+        required: true
+        type: string
+
+concurrency:
+  group: production-ga-windows-authority-rc4-release-lock-review
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-lock-review:
+    name: Build private-key-free RC4 release lock review bundle
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    env:
+      CANDIDATE_COMMIT: ${{ inputs.candidate_commit }}
+      ENROLLMENT_RUN_ID: ${{ inputs.enrollment_run_id }}
+      STAGING_RUN_ID: ${{ inputs.staging_run_id }}
+
+    steps:
+      - name: Validate review dispatch identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') {
+              throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS"
+          }
+          if ($env:CANDIDATE_COMMIT -cnotmatch '^[0-9a-f]{40}$') { throw 'candidate_commit must be 40 lowercase hex characters.' }
+          if ($env:CANDIDATE_COMMIT -ne $env:GITHUB_SHA.ToLowerInvariant()) {
+              throw "candidate_commit must equal the exact workflow control head $env:GITHUB_SHA."
+          }
+          foreach ($name in @('ENROLLMENT_RUN_ID','STAGING_RUN_ID')) {
+              $value = [Environment]::GetEnvironmentVariable($name)
+              if ($value -cnotmatch '^[0-9]+$') { throw "$name must contain only decimal digits." }
+          }
+          if ($env:ENROLLMENT_RUN_ID -eq $env:STAGING_RUN_ID) { throw 'Enrollment and staging run IDs must be distinct.' }
+
+      - name: Check out exact RC4 candidate controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.candidate_commit }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate source-run provenance before download
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import json
+          import os
+          import urllib.request
+
+          repo = 'Naveax/PSMatrix'
+          token = os.environ['GH_TOKEN']
+          control_head = os.environ['CANDIDATE_COMMIT'].lower()
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {token}',
+              'X-GitHub-Api-Version': '2026-03-10',
+              'User-Agent': 'psmatrix-rc4-release-lock-review',
+          }
+
+          def fetch(path):
+              request = urllib.request.Request(f'https://api.github.com/repos/{repo}/{path}', headers=headers)
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+
+          expected = (
+              (
+                  os.environ['ENROLLMENT_RUN_ID'],
+                  'production-ga-windows-authority-rc4-release-authority-enrollment',
+                  'psmatrix-2.0.0rc4-release-authority-enrollment',
+              ),
+              (
+                  os.environ['STAGING_RUN_ID'],
+                  'production-ga-windows-authority-rc4-staging-candidate-selfhosted',
+                  'windows-authority-rc4-unlocked-staging-candidate',
+              ),
+          )
+          for run_id, workflow_name, artifact_name in expected:
+              run = fetch(f'actions/runs/{run_id}')
+              if run.get('name') != workflow_name:
+                  raise SystemExit(f'unexpected workflow for run {run_id}: {run.get("name")!r}')
+              if run.get('event') != 'workflow_dispatch':
+                  raise SystemExit(f'run {run_id} is not workflow_dispatch')
+              if run.get('status') != 'completed' or run.get('conclusion') != 'success':
+                  raise SystemExit(f'run {run_id} is not completed successfully')
+              if (run.get('head_sha') or '').lower() != control_head:
+                  raise SystemExit(f'run {run_id} was not executed from exact RC4 control head')
+              artifacts = fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts', [])
+              matches = [item for item in artifacts if item.get('name') == artifact_name and not item.get('expired')]
+              if len(matches) != 1:
+                  raise SystemExit(f'expected exactly one non-expired {artifact_name!r} artifact for run {run_id}; found {len(matches)}')
+              print(f'run_provenance=PASS run_id={run_id} artifact_id={matches[0].get("id")}')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'RC4 source-run provenance validation failed.' }
+
+      - name: Download protected public authority enrollment
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0rc4-release-authority-enrollment
+          path: enrollment
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.enrollment_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Download unsigned RC4 staging candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-authority-rc4-unlocked-staging-candidate
+          path: staging
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.staging_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Build review-only RC4 release lock draft
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:RUNNER_TEMP 'psmatrix-2.0.0rc4-release-lock-review'
+          if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
+          & python `
+            (Join-Path $env:GITHUB_WORKSPACE 'candidate\scripts\ga\build_windows_authority_release_lock_draft.py') `
+            --staging-root (Join-Path $env:GITHUB_WORKSPACE 'staging') `
+            --enrollment-root (Join-Path $env:GITHUB_WORKSPACE 'enrollment') `
+            --previous-public-key (Join-Path $env:GITHUB_WORKSPACE 'candidate\release-assets\2.0.0rc2\psmatrix-2.0.0rc2-release-public.pem') `
+            --output-root $output `
+            --candidate-commit $env:CANDIDATE_COMMIT `
+            --enrollment-run-id $env:ENROLLMENT_RUN_ID `
+            --staging-run-id $env:STAGING_RUN_ID
+          if ($LASTEXITCODE -ne 0) { throw 'RC4 release-lock review bundle build failed.' }
+          "PSMATRIX_RC4_LOCK_REVIEW=$output" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Enforce review-only lock boundary and provenance
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $draftPath = Join-Path $env:PSMATRIX_RC4_LOCK_REVIEW 'rc4-release-lock.review-draft.json'
+          $reviewPath = Join-Path $env:PSMATRIX_RC4_LOCK_REVIEW 'rc4-release-lock-review.json'
+          foreach ($path in @($draftPath,$reviewPath)) {
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "RC4 review output is missing: $path" }
+          }
+          $draft = Get-Content -LiteralPath $draftPath -Raw | ConvertFrom-Json
+          $review = Get-Content -LiteralPath $reviewPath -Raw | ConvertFrom-Json
+          if ([string]$draft.version -ne '2.0.0rc4' -or [string]$draft.release_commit -ne $env:CANDIDATE_COMMIT) { throw 'RC4 lock draft identity mismatch.' }
+          if ([string]$draft.review_state -ne 'DRAFT_REQUIRES_HUMAN_REVIEW') { throw 'RC4 lock draft is not explicitly review-only.' }
+          if ([bool]$draft.active_lock_written -or [bool]$draft.release_artifacts_signed -or [bool]$draft.authoritative -or [bool]$draft.ga_eligible) { throw 'RC4 lock draft improperly claims active/signing/authority state.' }
+          if ([string]$review.status -ne 'READY_FOR_HUMAN_REVIEW' -or [bool]$review.active_lock_written -or [bool]$review.release_artifacts_signed) { throw 'RC4 lock review report boundary mismatch.' }
+
+          foreach ($value in @($draft,$review)) {
+              if ([string]$value.source_runs.control_head -ne $env:CANDIDATE_COMMIT) { throw 'RC4 source-run control-head provenance mismatch.' }
+              if ([string]$value.source_runs.authority_enrollment.run_id -ne $env:ENROLLMENT_RUN_ID) { throw 'RC4 enrollment run-ID provenance mismatch.' }
+              if ([string]$value.source_runs.authority_enrollment.workflow -ne 'production-ga-windows-authority-rc4-release-authority-enrollment') { throw 'RC4 enrollment workflow provenance mismatch.' }
+              if ([string]$value.source_runs.authority_enrollment.artifact -ne 'psmatrix-2.0.0rc4-release-authority-enrollment') { throw 'RC4 enrollment artifact provenance mismatch.' }
+              if ([string]$value.source_runs.unsigned_staging.run_id -ne $env:STAGING_RUN_ID) { throw 'RC4 staging run-ID provenance mismatch.' }
+              if ([string]$value.source_runs.unsigned_staging.workflow -ne 'production-ga-windows-authority-rc4-staging-candidate-selfhosted') { throw 'RC4 staging workflow provenance mismatch.' }
+              if ([string]$value.source_runs.unsigned_staging.artifact -ne 'windows-authority-rc4-unlocked-staging-candidate') { throw 'RC4 staging artifact provenance mismatch.' }
+          }
+
+          $activeLock = Join-Path $env:PSMATRIX_RC4_LOCK_REVIEW 'rc4-release-lock.json'
+          if (Test-Path -LiteralPath $activeLock) { throw 'Review workflow must not materialize an active rc4-release-lock.json.' }
+          $privateMarkers = @('-----BEGIN PRIVATE KEY-----','-----BEGIN RSA PRIVATE KEY-----','-----BEGIN EC PRIVATE KEY-----','-----BEGIN OPENSSH PRIVATE KEY-----')
+          foreach ($file in Get-ChildItem -LiteralPath $env:PSMATRIX_RC4_LOCK_REVIEW -Recurse -File) {
+              $text = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($file.FullName))
+              foreach ($marker in $privateMarkers) {
+                  if ($text.Contains($marker)) { throw "Private-key material found in RC4 lock review bundle: $($file.Name)" }
+              }
+          }
+          Write-Host 'rc4_source_run_provenance=PASS'
+          Write-Host 'rc4_release_lock_review_bundle=PASS'
+          Write-Host 'active_lock_written=false'
+          Write-Host 'release_artifacts_signed=false'
+
+      - name: Upload RC4 release lock review bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-2.0.0rc4-release-lock-review
+          path: ${{ env.PSMATRIX_RC4_LOCK_REVIEW }}
+          if-no-files-found: error
+          retention-days: 30

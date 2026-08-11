@@ -1,0 +1,430 @@
+name: production-ga-windows-authority-rc4-release-sign-from-lock
+
+on:
+  workflow_dispatch:
+    inputs:
+      lock_control_head:
+        description: Exact repository commit containing the reviewed RC4 lock and public key
+        required: true
+        type: string
+      candidate_commit:
+        description: Exact reviewed RC4 release source commit frozen by the lock
+        required: true
+        type: string
+      enrollment_run_id:
+        description: Protected RC4 authority-enrollment run ID frozen by the lock
+        required: true
+        type: string
+      staging_run_id:
+        description: Unsigned RC4 staging run ID frozen by the lock
+        required: true
+        type: string
+      review_run_id:
+        description: RC4 lock-review run ID frozen by the lock
+        required: true
+        type: string
+      promotion_run_id:
+        description: RC4 lock-promotion run ID frozen by the committed lock
+        required: true
+        type: string
+
+concurrency:
+  group: production-ga-windows-authority-rc4-release-sign-from-lock
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  sign-reviewed-lock:
+    name: Sign exact RC4 staging only after reviewed lock is committed
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production-ga-release-signing
+    permissions:
+      contents: read
+      actions: read
+    env:
+      LOCK_CONTROL_HEAD: ${{ inputs.lock_control_head }}
+      CANDIDATE_COMMIT: ${{ inputs.candidate_commit }}
+      ENROLLMENT_RUN_ID: ${{ inputs.enrollment_run_id }}
+      STAGING_RUN_ID: ${{ inputs.staging_run_id }}
+      REVIEW_RUN_ID: ${{ inputs.review_run_id }}
+      PROMOTION_RUN_ID: ${{ inputs.promotion_run_id }}
+
+    steps:
+      - name: Initialize isolated protected signing paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "${RUNNER_TEMP:-}" ]] || { echo 'RUNNER_TEMP is unavailable.' >&2; exit 1; }
+          {
+            echo "PSMATRIX_RC4_KEY_ROOT=$RUNNER_TEMP/psmatrix-rc4-release-keys"
+            echo "PSMATRIX_RC4_SIGNED=$RUNNER_TEMP/psmatrix-rc4-protected-signing"
+            echo "PSMATRIX_RC4_BUNDLE=$RUNNER_TEMP/psmatrix-2.0.0rc4-protected-release"
+          } >> "$GITHUB_ENV"
+
+      - name: Validate exact signing dispatch identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$LOCK_CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]] || { echo 'lock_control_head must be 40 lowercase hex characters.' >&2; exit 1; }
+          [[ "$CANDIDATE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo 'candidate_commit must be 40 lowercase hex characters.' >&2; exit 1; }
+          [[ "$LOCK_CONTROL_HEAD" == "${GITHUB_SHA,,}" ]] || { echo "lock_control_head must equal exact workflow control head ${GITHUB_SHA,,}." >&2; exit 1; }
+          for value in "$ENROLLMENT_RUN_ID" "$STAGING_RUN_ID" "$REVIEW_RUN_ID" "$PROMOTION_RUN_ID"; do
+            [[ "$value" =~ ^[0-9]+$ ]] || { echo 'all provenance run IDs must contain only decimal digits.' >&2; exit 1; }
+          done
+          unique="$(printf '%s\n' "$ENROLLMENT_RUN_ID" "$STAGING_RUN_ID" "$REVIEW_RUN_ID" "$PROMOTION_RUN_ID" | sort -u | wc -l | tr -d ' ')"
+          [[ "$unique" == '4' ]] || { echo 'enrollment, staging, review, and promotion run IDs must be distinct.' >&2; exit 1; }
+          echo 'rc4_signing_dispatch_identity=PASS'
+
+      - name: Check out exact lock control commit
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.lock_control_head }}
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out exact reviewed RC4 release source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.candidate_commit }}
+          path: release-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Verify committed RC4 lock and public authority closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          control = Path('control')
+          lock_path = control / 'ga-packs/03-authoritative-windows/rc4-release-lock.json'
+          if not lock_path.is_file():
+              raise SystemExit('committed RC4 release lock is missing')
+          lock = json.loads(lock_path.read_text(encoding='utf-8'))
+          if lock.get('schema') != 1 or lock.get('kind') != 'psmatrix.windows-authority-release-staging-lock':
+              raise SystemExit('committed RC4 release lock identity mismatch')
+          if lock.get('pack') != '03-authoritative-windows' or lock.get('version') != '2.0.0rc4':
+              raise SystemExit('committed RC4 release lock pack/version mismatch')
+          if lock.get('release_commit') != os.environ['CANDIDATE_COMMIT']:
+              raise SystemExit('candidate_commit differs from committed RC4 release lock')
+          if lock.get('promotion_state') != 'READY_FOR_EXACT_REPOSITORY_COMMIT':
+              raise SystemExit('committed RC4 lock does not carry reviewed promotion state')
+          for field in ('release_artifacts_signed','authoritative','ga_eligible'):
+              if bool(lock.get(field)):
+                  raise SystemExit(f'unsafe committed RC4 lock field is true: {field}')
+
+          safety = lock.get('safety') or {}
+          for field in ('stale_rc2_operation_package_allowed','release_authority_rotation_allowed','private_key_in_repository_allowed','sign_without_exact_hash_match_allowed'):
+              if safety.get(field) is not False:
+                  raise SystemExit(f'unsafe committed RC4 lock safety field: {field}')
+
+          rotation = lock.get('authority_rotation') or {}
+          if rotation.get('reason') != 'lost_previous_private_authority' or rotation.get('existing_candidate_mutated') is not False or rotation.get('new_candidate') is not True or rotation.get('review_required') is not True:
+              raise SystemExit('committed RC4 authority-rotation metadata mismatch')
+
+          source_runs = lock.get('source_runs') or {}
+          if source_runs.get('control_head') != os.environ['CANDIDATE_COMMIT']:
+              raise SystemExit('committed RC4 lock source-run control head mismatch')
+          enrollment = source_runs.get('authority_enrollment') or {}
+          staging = source_runs.get('unsigned_staging') or {}
+          if str(enrollment.get('run_id')) != os.environ['ENROLLMENT_RUN_ID']:
+              raise SystemExit('enrollment run ID differs from committed RC4 lock')
+          if str(staging.get('run_id')) != os.environ['STAGING_RUN_ID']:
+              raise SystemExit('staging run ID differs from committed RC4 lock')
+          if enrollment.get('workflow') != 'production-ga-windows-authority-rc4-release-authority-enrollment' or enrollment.get('artifact') != 'psmatrix-2.0.0rc4-release-authority-enrollment':
+              raise SystemExit('committed RC4 enrollment provenance mismatch')
+          if staging.get('workflow') != 'production-ga-windows-authority-rc4-staging-candidate-selfhosted' or staging.get('artifact') != 'windows-authority-rc4-unlocked-staging-candidate':
+              raise SystemExit('committed RC4 staging provenance mismatch')
+
+          promotion = lock.get('promotion_evidence') or {}
+          if str(promotion.get('review_run_id')) != os.environ['REVIEW_RUN_ID'] or str(promotion.get('promotion_run_id')) != os.environ['PROMOTION_RUN_ID']:
+              raise SystemExit('review/promotion run IDs differ from committed RC4 lock')
+          if promotion.get('review_workflow') != 'production-ga-windows-authority-rc4-release-lock-review' or promotion.get('review_artifact') != 'psmatrix-2.0.0rc4-release-lock-review':
+              raise SystemExit('committed RC4 review provenance mismatch')
+          if promotion.get('promotion_workflow') != 'production-ga-windows-authority-rc4-release-lock-promotion' or promotion.get('promotion_artifact') != 'psmatrix-2.0.0rc4-release-lock-promotion-candidate':
+              raise SystemExit('committed RC4 promotion provenance mismatch')
+          if promotion.get('human_review_bound') is not True or promotion.get('repository_commit_required') is not True:
+              raise SystemExit('committed RC4 lock lacks human-review/repository-commit boundary')
+          promotion_head = str(promotion.get('promotion_control_head') or '').lower()
+          if not re.fullmatch(r'[0-9a-f]{40}', promotion_head):
+              raise SystemExit('committed RC4 promotion control head is invalid')
+
+          key = lock.get('release_public_key') or {}
+          expected_key_path = 'release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem'
+          if key.get('path') != expected_key_path:
+              raise SystemExit('committed RC4 release public-key path is not canonical')
+          public = control / expected_key_path
+          if not public.is_file():
+              raise SystemExit('committed RC4 public authority is missing')
+          digest = hashlib.sha256(public.read_bytes()).hexdigest()
+          if digest != key.get('sha256') or digest != promotion.get('reviewed_public_key_sha256') or digest != rotation.get('proposed_public_key_sha256'):
+              raise SystemExit('committed RC4 public authority digest closure mismatch')
+
+          artifacts = lock.get('artifacts')
+          if not isinstance(artifacts, list) or len(artifacts) != 6:
+              raise SystemExit('committed RC4 lock must contain exactly six artifacts')
+          expected_suffixes = {
+              '-py3-none-any.whl','-source.tar.gz','-source.zip','-windows-certification-kit.zip','-windows-provisioning-kit.zip','-windows-workers.zip'
+          }
+          suffixes = {item['name'][len('psmatrix-2.0.0rc4'):] for item in artifacts if isinstance(item, dict) and str(item.get('name') or '').startswith('psmatrix-2.0.0rc4')}
+          if suffixes != expected_suffixes:
+              raise SystemExit('committed RC4 lock artifact-role set mismatch')
+
+          control_head = subprocess.check_output(['git','-C','control','rev-parse','HEAD'], text=True).strip().lower()
+          release_head = subprocess.check_output(['git','-C','release-source','rev-parse','HEAD'], text=True).strip().lower()
+          if control_head != os.environ['LOCK_CONTROL_HEAD'] or release_head != os.environ['CANDIDATE_COMMIT']:
+              raise SystemExit('exact checkout head closure mismatch')
+          if subprocess.check_output(['git','-C','control','status','--porcelain'], text=True).strip() or subprocess.check_output(['git','-C','release-source','status','--porcelain'], text=True).strip():
+              raise SystemExit('signing checkout is dirty')
+          print(f'committed_rc4_lock=PASS promotion_control_head={promotion_head}')
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as stream:
+              stream.write(f'PROMOTION_CONTROL_HEAD={promotion_head}\n')
+          PY
+
+      - name: Validate all four frozen workflow runs and artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          repo = 'Naveax/PSMatrix'
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {os.environ["GH_TOKEN"]}',
+              'X-GitHub-Api-Version': '2026-03-10',
+              'User-Agent': 'psmatrix-rc4-protected-signing',
+          }
+          def fetch(path):
+              request = urllib.request.Request(f'https://api.github.com/repos/{repo}/{path}', headers=headers)
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+
+          expected = (
+              (os.environ['ENROLLMENT_RUN_ID'], 'production-ga-windows-authority-rc4-release-authority-enrollment', 'psmatrix-2.0.0rc4-release-authority-enrollment', os.environ['CANDIDATE_COMMIT']),
+              (os.environ['STAGING_RUN_ID'], 'production-ga-windows-authority-rc4-staging-candidate-selfhosted', 'windows-authority-rc4-unlocked-staging-candidate', os.environ['CANDIDATE_COMMIT']),
+              (os.environ['REVIEW_RUN_ID'], 'production-ga-windows-authority-rc4-release-lock-review', 'psmatrix-2.0.0rc4-release-lock-review', os.environ['CANDIDATE_COMMIT']),
+              (os.environ['PROMOTION_RUN_ID'], 'production-ga-windows-authority-rc4-release-lock-promotion', 'psmatrix-2.0.0rc4-release-lock-promotion-candidate', os.environ['PROMOTION_CONTROL_HEAD']),
+          )
+          for run_id, workflow, artifact, head in expected:
+              run = fetch(f'actions/runs/{run_id}')
+              if run.get('name') != workflow or run.get('event') != 'workflow_dispatch':
+                  raise SystemExit(f'workflow provenance mismatch for run {run_id}')
+              if run.get('status') != 'completed' or run.get('conclusion') != 'success':
+                  raise SystemExit(f'workflow run {run_id} is not completed successfully')
+              if (run.get('head_sha') or '').lower() != head.lower():
+                  raise SystemExit(f'workflow head mismatch for run {run_id}')
+              artifacts = fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts', [])
+              matches = [item for item in artifacts if item.get('name') == artifact and not item.get('expired')]
+              if len(matches) != 1:
+                  raise SystemExit(f'expected exactly one non-expired {artifact!r} artifact for run {run_id}; found {len(matches)}')
+              print(f'rc4_run_provenance=PASS run_id={run_id} artifact_id={matches[0].get("id")}')
+          PY
+
+      - name: Download exact unsigned staging frozen by committed lock
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-authority-rc4-unlocked-staging-candidate
+          path: staging
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.staging_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Revalidate exact locked RC4 staging bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          lock = json.loads(Path('control/ga-packs/03-authoritative-windows/rc4-release-lock.json').read_text(encoding='utf-8'))
+          staging = Path('staging')
+          for item in lock['artifacts']:
+              path = staging / item['name']
+              if not path.is_file():
+                  raise SystemExit(f'locked RC4 staging artifact missing: {item["name"]}')
+              data = path.read_bytes()
+              if hashlib.sha256(data).hexdigest() != item['sha256'] or len(data) != item['size']:
+                  raise SystemExit(f'locked RC4 staging bytes differ: {item["name"]}')
+          report = json.loads((staging / 'psmatrix-2.0.0rc4-windows-authority-staging.json').read_text(encoding='utf-8'))
+          if report.get('status') != 'READY_FOR_PROTECTED_SIGNING' or report.get('release_commit') != lock['release_commit'] or report.get('version') != '2.0.0rc4':
+              raise SystemExit('RC4 staging report identity/readiness mismatch')
+          for field in ('private_key_read','signed_release_manifest_written','downloads_files','extracts_existing_operation_package','authoritative','ga_eligible'):
+              if bool(report.get(field)):
+                  raise SystemExit(f'unsafe RC4 staging field is true: {field}')
+          print('locked_rc4_staging_bytes=PASS')
+          PY
+
+      - name: Materialize protected RC4 release private key
+        shell: bash
+        env:
+          RELEASE_PRIVATE_KEY: ${{ secrets.PSMATRIX_RELEASE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$RELEASE_PRIVATE_KEY" ]] || { echo 'PSMATRIX_RELEASE_PRIVATE_KEY is missing from production-ga-release-signing.' >&2; exit 1; }
+          rm -rf "$PSMATRIX_RC4_KEY_ROOT"
+          install -d -m 0700 "$PSMATRIX_RC4_KEY_ROOT"
+          printf '%s\n' "$RELEASE_PRIVATE_KEY" > "$PSMATRIX_RC4_KEY_ROOT/release.private.pem"
+          chmod 0600 "$PSMATRIX_RC4_KEY_ROOT/release.private.pem"
+
+      - name: Sign exact committed RC4 lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$PSMATRIX_RC4_SIGNED"
+          PYTHONPATH="$GITHUB_WORKSPACE/control/src" python control/scripts/ga/sign_windows_authority_release_candidate.py \
+            --source-root release-source \
+            --staging-root staging \
+            --release-lock control/ga-packs/03-authoritative-windows/rc4-release-lock.json \
+            --release-private-key "$PSMATRIX_RC4_KEY_ROOT/release.private.pem" \
+            --release-public-key control/release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem \
+            --output-root "$PSMATRIX_RC4_SIGNED"
+
+      - name: Remove protected RC4 release private key
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          shred -u "$PSMATRIX_RC4_KEY_ROOT/release.private.pem" 2>/dev/null || rm -f "$PSMATRIX_RC4_KEY_ROOT/release.private.pem"
+
+      - name: Independently verify signed RC4 release manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ ! -e "$PSMATRIX_RC4_KEY_ROOT/release.private.pem" ]] || { echo 'RC4 release private key still exists before independent verification' >&2; exit 1; }
+          PYTHONPATH="$GITHUB_WORKSPACE/control/src" python -m psmatrix.cli release verify \
+            "$PSMATRIX_RC4_SIGNED/psmatrix-2.0.0rc4-release.json" \
+            --artifact-dir staging \
+            --public-key control/release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem \
+            > "$PSMATRIX_RC4_SIGNED/psmatrix-2.0.0rc4-release-independent-verification.json"
+          python - "$PSMATRIX_RC4_SIGNED/psmatrix-2.0.0rc4-release-independent-verification.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          value = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+          signature = value.get('signature') or {}
+          if value.get('valid') is not True or signature.get('valid') is not True or not signature.get('key_ids'):
+              raise SystemExit('independent RC4 release verification did not pass')
+          print('independent_rc4_release_verification=PASS')
+          PY
+
+      - name: Assemble private-key-free canonical RC4 protected release
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$PSMATRIX_RC4_BUNDLE"
+          install -d -m 0755 "$PSMATRIX_RC4_BUNDLE"
+          python - "$PSMATRIX_RC4_BUNDLE" staging "$PSMATRIX_RC4_SIGNED" control/ga-packs/03-authoritative-windows/rc4-release-lock.json <<'PY'
+          import hashlib
+          import json
+          import shutil
+          import sys
+          from pathlib import Path
+          bundle, staging, signed, lock_path = map(Path, sys.argv[1:])
+          lock = json.loads(lock_path.read_text(encoding='utf-8'))
+          copied = []
+          for item in lock['artifacts']:
+              source = staging / item['name']
+              target = bundle / item['name']
+              shutil.copyfile(source, target)
+              data = target.read_bytes()
+              if hashlib.sha256(data).hexdigest() != item['sha256'] or len(data) != item['size']:
+                  raise SystemExit(f'RC4 bundle artifact changed during copy: {item["name"]}')
+              copied.append(target)
+          for name in (
+              'psmatrix-2.0.0rc4-release.json',
+              'psmatrix-2.0.0rc4-release-public.pem',
+              'psmatrix-2.0.0rc4-release-verification.json',
+              'psmatrix-2.0.0rc4-release-independent-verification.json',
+              'psmatrix-2.0.0rc4-protected-release-signing-status.json',
+          ):
+              source = signed / name
+              target = bundle / name
+              shutil.copyfile(source, target)
+              copied.append(target)
+          lock_copy = bundle / 'rc4-release-lock.json'
+          shutil.copyfile(lock_path, lock_copy)
+          copied.append(lock_copy)
+          rotation = lock['authority_rotation']
+          promotion = lock['promotion_evidence']
+          inventory = {
+              'schema': 1,
+              'kind': 'psmatrix.windows-authority-protected-release-bundle',
+              'status': 'PASS',
+              'version': '2.0.0rc4',
+              'release_commit': lock['release_commit'],
+              'lock_control_head': '${{ inputs.lock_control_head }}',
+              'source_runs': lock['source_runs'],
+              'review_run_id': str(promotion['review_run_id']),
+              'promotion_run_id': str(promotion['promotion_run_id']),
+              'promotion_control_head': promotion['promotion_control_head'],
+              'release_public_key_sha256': lock['release_public_key']['sha256'],
+              'authority_rotation_reason': rotation['reason'],
+              'authority_rotation_reviewed': True,
+              'release_authority_rotated_during_signing': False,
+              'private_key_material_absent': True,
+              'files': [
+                  {'name': path.name, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'size': path.stat().st_size}
+                  for path in sorted(copied, key=lambda item: item.name)
+              ],
+              'authoritative': False,
+              'ga_eligible': False,
+          }
+          (bundle / 'psmatrix-2.0.0rc4-protected-release-bundle.json').write_text(json.dumps(inventory, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          PY
+
+      - name: Enforce final RC4 protected-release boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ ! -e "$PSMATRIX_RC4_KEY_ROOT/release.private.pem" ]] || { echo 'RC4 private key remains present' >&2; exit 1; }
+          python - "$PSMATRIX_RC4_BUNDLE" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          markers = (b'-----BEGIN PRIVATE KEY-----', b'-----BEGIN RSA PRIVATE KEY-----', b'-----BEGIN EC PRIVATE KEY-----', b'-----BEGIN OPENSSH PRIVATE KEY-----')
+          for path in root.rglob('*'):
+              if path.is_file() and any(marker in path.read_bytes() for marker in markers):
+                  raise SystemExit(f'private-key material found in RC4 protected release: {path.name}')
+          status = json.loads((root / 'psmatrix-2.0.0rc4-protected-release-signing-status.json').read_text(encoding='utf-8'))
+          inventory = json.loads((root / 'psmatrix-2.0.0rc4-protected-release-bundle.json').read_text(encoding='utf-8'))
+          if status.get('status') != 'PASS' or status.get('signed_release_manifest_verified') is not True or status.get('release_private_key_matches_locked_authority') is not True:
+              raise SystemExit('RC4 protected signer status is not PASS')
+          if status.get('release_authority_rotated') is not False or status.get('private_key_copied_to_output') is not False:
+              raise SystemExit('RC4 signing-time authority/private-key boundary mismatch')
+          if inventory.get('status') != 'PASS' or inventory.get('authority_rotation_reviewed') is not True or inventory.get('release_authority_rotated_during_signing') is not False:
+              raise SystemExit('RC4 protected bundle rotation boundary mismatch')
+          if inventory.get('authoritative') is not False or inventory.get('ga_eligible') is not False:
+              raise SystemExit('RC4 protected release improperly claims Windows GA authority')
+          print('private_key_free_rc4_protected_release=PASS')
+          PY
+
+      - name: Upload canonical protected RC4 release
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-2.0.0rc4-protected-release
+          path: ${{ env.PSMATRIX_RC4_BUNDLE }}
+          if-no-files-found: error
+          retention-days: 90

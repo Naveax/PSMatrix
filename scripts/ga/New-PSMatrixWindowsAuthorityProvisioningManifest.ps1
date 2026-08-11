@@ -16,6 +16,8 @@ param(
     [ValidatePattern('^[0-9a-f]{40}$')]
     [string]$ReleaseCommit,
 
+    [string]$ContractPath = '',
+
     [string]$SelectionManifestPath = '',
 
     [string]$ProfilePath = '',
@@ -54,6 +56,9 @@ $arguments = @(
     '--ga-root', $ga,
     '--release-commit', $ReleaseCommit
 )
+if (-not [string]::IsNullOrWhiteSpace($ContractPath)) {
+    $arguments += @('--contract', [System.IO.Path]::GetFullPath($ContractPath))
+}
 if (-not [string]::IsNullOrWhiteSpace($SelectionManifestPath)) {
     $arguments += @('--selection-manifest', [System.IO.Path]::GetFullPath($SelectionManifestPath))
 }

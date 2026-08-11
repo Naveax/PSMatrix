@@ -1,0 +1,330 @@
+name: production-ga-final-validation-summary
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_signing_run_id:
+        description: Successful protected final 2.0.0 signing workflow run ID from this exact control head
+        required: true
+        type: string
+
+concurrency:
+  group: production-ga-final-validation-summary
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-validation-summary:
+    name: Validate exact final source and build unsigned summary
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read
+    env:
+      RELEASE_SIGNING_RUN_ID: ${{ inputs.release_signing_run_id }}
+      FINAL_RELEASE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
+
+    steps:
+      - name: Validate trusted NAVEAX dispatch identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') {
+              throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS"
+          }
+          if ($env:RELEASE_SIGNING_RUN_ID -cnotmatch '^[0-9]+$') { throw 'release_signing_run_id must contain only decimal digits.' }
+          if ($env:FINAL_RELEASE_COMMIT -cnotmatch '^[0-9a-f]{40}$') { throw 'Frozen final release commit is invalid.' }
+          Write-Host 'final_validation_dispatch_identity=PASS'
+
+      - name: Check out exact producer controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out exact frozen final source with full history
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: 02cef95d40cf524ce00f9d917188343dc49e6f2c
+          path: final-source
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact producer and final-source checkouts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $control = Join-Path $env:GITHUB_WORKSPACE 'control'
+          $source = Join-Path $env:GITHUB_WORKSPACE 'final-source'
+          $controlHead = (git -C $control rev-parse HEAD).Trim().ToLowerInvariant()
+          $sourceHead = (git -C $source rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($controlHead -ne $env:GITHUB_SHA.ToLowerInvariant()) { throw 'Validation producer control checkout is not exact GITHUB_SHA.' }
+          if ($sourceHead -ne $env:FINAL_RELEASE_COMMIT) { throw 'Frozen final source checkout mismatch.' }
+          foreach ($root in @($control,$source)) {
+              if (-not [string]::IsNullOrWhiteSpace((git -C $root status --porcelain))) { throw "Dirty checkout: $root" }
+          }
+          $contract = Get-Content (Join-Path $control 'ga-packs\03-authoritative-windows\final-ci-evidence-producer-contract.json') -Raw | ConvertFrom-Json
+          if ([string]$contract.final_release_commit -ne $env:FINAL_RELEASE_COMMIT) { throw 'CI producer contract final release commit mismatch.' }
+          if ([string]$contract.validation_summary.workflow -ne 'production-ga-final-validation-summary') { throw 'Validation producer contract workflow identity mismatch.' }
+          Write-Host "validation_control_head=$controlHead"
+          Write-Host "validated_final_source_head=$sourceHead"
+
+      - name: Validate exact protected final-signing run before download
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import json
+          import os
+          import urllib.request
+
+          run_id = os.environ['RELEASE_SIGNING_RUN_ID']
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {os.environ["GH_TOKEN"]}',
+              'X-GitHub-Api-Version': '2026-03-10',
+              'User-Agent': 'psmatrix-final-validation-summary',
+          }
+          def fetch(path):
+              request = urllib.request.Request(f'https://api.github.com/repos/Naveax/PSMatrix/{path}', headers=headers)
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+          run = fetch(f'actions/runs/{run_id}')
+          if run.get('name') != 'production-ga-windows-authority-final-release-sign-from-lock':
+              raise SystemExit(f'unexpected release-signing workflow: {run.get("name")!r}')
+          if run.get('event') != 'workflow_dispatch' or run.get('status') != 'completed' or run.get('conclusion') != 'success':
+              raise SystemExit('release-signing run is not a successful workflow_dispatch')
+          if (run.get('head_sha') or '').lower() != os.environ['GITHUB_SHA'].lower():
+              raise SystemExit('release-signing run does not share exact validation producer control head')
+          artifacts = fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts', [])
+          matches = [item for item in artifacts if item.get('name') == 'psmatrix-2.0.0-protected-release' and not item.get('expired')]
+          if len(matches) != 1:
+              raise SystemExit(f'expected exactly one non-expired protected final release artifact; found {len(matches)}')
+          print(f'validation_release_provenance=PASS run_id={run_id} artifact_id={matches[0].get("id")}')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Protected final release provenance validation failed.' }
+
+      - name: Download exact protected final release
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-protected-release
+          path: signed-release
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.release_signing_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Run exact final-source platform-neutral validation suite
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:RUNNER_TEMP 'psmatrix-final-validation-suite.json'
+          $env:PYTHONPATH = (Join-Path $env:GITHUB_WORKSPACE 'control\src')
+          python (Join-Path $env:GITHUB_WORKSPACE 'control\scripts\ga\build_final_validation_summary.py') `
+            test-suite `
+            --repo-root (Join-Path $env:GITHUB_WORKSPACE 'final-source') `
+            --output $output
+          if ($LASTEXITCODE -ne 0) { throw 'Exact final-source validation suite failed.' }
+          "PSMATRIX_FINAL_VALIDATION_TESTS=$output" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Rebuild exact final artifacts deterministically from frozen source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $rebuilt = Join-Path $env:RUNNER_TEMP 'psmatrix-final-validation-rebuild'
+          if (Test-Path -LiteralPath $rebuilt) { Remove-Item -LiteralPath $rebuilt -Recurse -Force }
+          $env:PYTHONPATH = (Join-Path $env:GITHUB_WORKSPACE 'final-source\src')
+          python (Join-Path $env:GITHUB_WORKSPACE 'final-source\scripts\ga\build_windows_authority_final_release_candidate.py') `
+            --expected-head $env:FINAL_RELEASE_COMMIT `
+            --output-root $rebuilt
+          if ($LASTEXITCODE -ne 0) { throw 'Exact final deterministic rebuild failed.' }
+          "PSMATRIX_FINAL_VALIDATION_REBUILD=$rebuilt" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build release-bound validation summary and perform offline install
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:RUNNER_TEMP 'psmatrix-final-validation-unsigned'
+          if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
+          New-Item -ItemType Directory -Path $output | Out-Null
+          $summary = Join-Path $output 'validation-summary.json'
+          $env:PYTHONPATH = (Join-Path $env:GITHUB_WORKSPACE 'control\src')
+          python (Join-Path $env:GITHUB_WORKSPACE 'control\scripts\ga\build_final_validation_summary.py') `
+            build-summary `
+            --source-root (Join-Path $env:GITHUB_WORKSPACE 'final-source') `
+            --signed-root (Join-Path $env:GITHUB_WORKSPACE 'signed-release') `
+            --rebuilt-root $env:PSMATRIX_FINAL_VALIDATION_REBUILD `
+            --test-report $env:PSMATRIX_FINAL_VALIDATION_TESTS `
+            --output $summary
+          if ($LASTEXITCODE -ne 0) { throw 'Final validation summary build failed.' }
+          Copy-Item -LiteralPath $env:PSMATRIX_FINAL_VALIDATION_TESTS -Destination (Join-Path $output 'validation-suite.json')
+          Copy-Item -LiteralPath (Join-Path $env:PSMATRIX_FINAL_VALIDATION_REBUILD 'psmatrix-2.0.0-windows-authority-final-staging.json') -Destination (Join-Path $output 'deterministic-rebuild-status.json')
+          "PSMATRIX_FINAL_VALIDATION_UNSIGNED=$output" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Enforce unsigned validation boundary and scan for private material
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $summaryPath = Join-Path $env:PSMATRIX_FINAL_VALIDATION_UNSIGNED 'validation-summary.json'
+          $summary = Get-Content $summaryPath -Raw | ConvertFrom-Json
+          if ([string]$summary.kind -ne 'psmatrix.validation-summary' -or [string]$summary.status -ne 'PASS' -or [string]$summary.version -ne '2.0.0') { throw 'Validation summary identity/status mismatch.' }
+          if ([string]$summary.git_commit -ne $env:FINAL_RELEASE_COMMIT) { throw 'Validation summary final commit binding mismatch.' }
+          if ([int]$summary.automated_tests.failed -ne 0 -or [int]$summary.automated_tests.skipped -ne 0 -or [int]$summary.automated_tests.passed -ne [int]$summary.automated_tests.total -or [int]$summary.automated_tests.total -le 0) { throw 'Validation test accounting is incomplete.' }
+          foreach ($field in @('source_zip','source_tar_gz','wheel')) {
+              if ([bool]$summary.reproducibility.$field -ne $true) { throw "Validation reproducibility field is false: $field" }
+          }
+          if ([int]$summary.offline_install_exit_code -ne 0 -or [bool]$summary.core_release_signature_valid -ne $true -or [bool]$summary.distribution_signature_valid -ne $true) { throw 'Validation release/install boundary mismatch.' }
+          @'
+          from pathlib import Path
+          import os
+          markers=(b'-----BEGIN PRIVATE KEY-----',b'-----BEGIN RSA PRIVATE KEY-----',b'-----BEGIN EC PRIVATE KEY-----',b'-----BEGIN OPENSSH PRIVATE KEY-----',b'-----BEGIN ED25519 PRIVATE KEY-----')
+          root=Path(os.environ['PSMATRIX_FINAL_VALIDATION_UNSIGNED'])
+          for path in root.rglob('*'):
+              if path.is_file() and any(marker in path.read_bytes() for marker in markers):
+                  raise SystemExit(f'private-key material found in unsigned validation candidate: {path.name}')
+          print('unsigned_validation_private_key_scan=PASS')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Unsigned validation private-key scan failed.' }
+          Write-Host 'final_validation_unsigned=PASS'
+          Write-Host 'ci_private_key_read=false'
+          Write-Host 'ga_eligible=false'
+
+      - name: Upload unsigned validation evidence for protected CI signing
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-2.0.0-final-validation-summary-unsigned
+          path: ${{ env.PSMATRIX_FINAL_VALIDATION_UNSIGNED }}
+          if-no-files-found: error
+          retention-days: 7
+
+  sign-validation-summary:
+    name: Sign exact validation summary with protected CI authority
+    needs: build-validation-summary
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production-ga-ci-signing
+    permissions:
+      contents: read
+      actions: read
+
+    steps:
+      - name: Check out exact producer controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Download exact unsigned validation candidate from this run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-final-validation-summary-unsigned
+          path: unsigned
+
+      - name: Validate candidate before CI private-key access
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=control/src python - <<'PY'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+          head=subprocess.check_output(['git','-C','control','rev-parse','HEAD'],text=True).strip().lower()
+          if head != os.environ['GITHUB_SHA'].lower():
+              raise SystemExit('CI signing control checkout mismatch')
+          summary=json.loads(Path('unsigned/validation-summary.json').read_text(encoding='utf-8'))
+          if summary.get('status')!='PASS' or summary.get('version')!='2.0.0' or summary.get('git_commit')!='02cef95d40cf524ce00f9d917188343dc49e6f2c':
+              raise SystemExit('unsigned validation summary identity mismatch')
+          tests=summary.get('automated_tests') or {}
+          if tests.get('failed')!=0 or tests.get('skipped')!=0 or tests.get('passed')!=tests.get('total') or int(tests.get('total') or 0)<=0:
+              raise SystemExit('unsigned validation test accounting mismatch')
+          print('validation_candidate_pre_secret=PASS')
+          PY
+
+      - name: Materialize CI authority, sign exact summary, verify, and remove private key
+        shell: bash
+        env:
+          CI_PRIVATE_KEY: ${{ secrets.PSMATRIX_GA_CI_PRIVATE_KEY }}
+          CI_PUBLIC_KEY: ${{ secrets.PSMATRIX_GA_CI_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$CI_PRIVATE_KEY" ]] || { echo 'PSMATRIX_GA_CI_PRIVATE_KEY is missing from production-ga-ci-signing.' >&2; exit 1; }
+          [[ "$CI_PUBLIC_KEY" == *'-----BEGIN PUBLIC KEY-----'* ]] || { echo 'PSMATRIX_GA_CI_PUBLIC_KEY is missing from production-ga-ci-signing.' >&2; exit 1; }
+          key_root="$RUNNER_TEMP/psmatrix-final-validation-ci-keys"
+          output="$RUNNER_TEMP/psmatrix-2.0.0-final-validation-summary"
+          rm -rf "$key_root" "$output"
+          install -d -m 0700 "$key_root" "$output"
+          printf '%s\n' "$CI_PRIVATE_KEY" > "$key_root/ci.private.pem"
+          printf '%s\n' "$CI_PUBLIC_KEY" > "$key_root/ci.public.pem"
+          chmod 0600 "$key_root/ci.private.pem"
+          observed="$(python -c "import json;print(json.load(open('unsigned/validation-summary.json',encoding='utf-8'))['validated_at'])")"
+          cleanup() {
+            shred -u "$key_root/ci.private.pem" 2>/dev/null || rm -f "$key_root/ci.private.pem"
+            rm -f "$key_root/ci.public.pem"
+            rmdir "$key_root" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          cp unsigned/validation-summary.json "$output/validation-summary.json"
+          cp unsigned/validation-suite.json "$output/validation-suite.json"
+          cp unsigned/deterministic-rebuild-status.json "$output/deterministic-rebuild-status.json"
+          PYTHONPATH=control/src python -m psmatrix.cli ga artifact-sign \
+            --type validation-summary \
+            --artifact "$output/validation-summary.json" \
+            --observed-at "$observed" \
+            --private-key "$key_root/ci.private.pem" \
+            --public-key "$key_root/ci.public.pem" \
+            --output "$output/validation-summary.dsse.json"
+          PYTHONPATH=control/src python -m psmatrix.cli ga artifact-verify \
+            --type validation-summary \
+            --artifact "$output/validation-summary.json" \
+            --attestation "$output/validation-summary.dsse.json" \
+            --public-key "$key_root/ci.public.pem" >/dev/null
+          cp "$key_root/ci.public.pem" "$output/ci-public.pem"
+          PSMATRIX_VALIDATION_SIGNED="$output" PYTHONPATH=control/src python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from psmatrix.ga import verify_ga_artifact_attestation
+          from psmatrix.signing import public_key_id
+          from psmatrix.util import read_json, sha256_file, atomic_write_json
+          root=Path(os.environ['PSMATRIX_VALIDATION_SIGNED'])
+          verified=verify_ga_artifact_attestation(read_json(root/'validation-summary.dsse.json'),artifact=root/'validation-summary.json',artifact_type='validation-summary',public_key=root/'ci-public.pem')
+          status={
+              'schema':1,'kind':'psmatrix.final-validation-summary-producer-status','status':'PASS','version':'2.0.0',
+              'validation_summary_sha256':sha256_file(root/'validation-summary.json'),
+              'attestation_sha256':sha256_file(root/'validation-summary.dsse.json'),
+              'ci_public_key_sha256':sha256_file(root/'ci-public.pem'),'ci_key_id':public_key_id(root/'ci-public.pem'),
+              'attestation_verified':verified.get('valid') is True,'ci_private_key_copied_to_output':False,
+              'final_ga_evaluator_invoked':False,'ga_eligible':False,
+          }
+          if status['attestation_verified'] is not True:
+              raise SystemExit('signed validation attestation verification failed')
+          atomic_write_json(root/'validation-producer-status.json',status)
+          markers=(b'-----BEGIN PRIVATE KEY-----',b'-----BEGIN RSA PRIVATE KEY-----',b'-----BEGIN EC PRIVATE KEY-----',b'-----BEGIN OPENSSH PRIVATE KEY-----',b'-----BEGIN ED25519 PRIVATE KEY-----')
+          for path in root.rglob('*'):
+              if path.is_file() and any(marker in path.read_bytes() for marker in markers):
+                  raise SystemExit(f'private-key material found in signed validation output: {path.name}')
+          print('signed_validation_summary=PASS')
+          print('final_ga_evaluator_invoked=false')
+          print('ga_eligible=false')
+          PY
+          echo "PSMATRIX_FINAL_VALIDATION_SIGNED=$output" >> "$GITHUB_ENV"
+
+      - name: Upload final CI-signed validation summary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-2.0.0-final-validation-summary
+          path: ${{ env.PSMATRIX_FINAL_VALIDATION_SIGNED }}
+          if-no-files-found: error
+          retention-days: 30

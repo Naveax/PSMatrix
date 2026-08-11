@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.final-disaster-recovery-evidence-producer-contract",
+  "version": "2.0.0",
+  "operations_release_producer_anchor": "e9a70816639f946e7cda02f15b515266f5753773",
+  "producer": {
+    "workflow": "production-ga-final-disaster-recovery",
+    "workflow_path": ".github/workflows/ga-final-disaster-recovery.yml",
+    "artifact": "psmatrix-2.0.0-final-disaster-recovery",
+    "report": "recovery-report.json",
+    "attestation": "recovery.dsse.json",
+    "public_key": "recovery-public.pem",
+    "authority": "recovery",
+    "signing_environment": "production-ga-recovery-signing",
+    "private_key_secret": "PSMATRIX_GA_RECOVERY_PRIVATE_KEY",
+    "public_key_secret": "PSMATRIX_GA_RECOVERY_PUBLIC_KEY",
+    "private_key_allowed_in_campaign_job": false,
+    "expected_case_count": 10,
+    "exact_case_set_required": true,
+    "all_cases_pass_required": true,
+    "production_state_mutation_allowed": false
+  },
+  "execution": {
+    "campaign_uses_runtime_recovery_run": true,
+    "campaign_runs_without_persistent_signing_keys": true,
+    "private_key_access_only_after_unsigned_report_validation": true,
+    "signed_attestation_must_bind_exact_unsigned_report": true,
+    "production_execution_is_not_source_validation": true
+  },
+  "control_source": {
+    "runtime_source_changes_allowed": false,
+    "changed_path_allowlist": [
+      ".github/workflows/ga-final-disaster-recovery-evidence-producer-source-preflight.yml",
+      ".github/workflows/ga-final-disaster-recovery.yml",
+      "ga-packs/03-authoritative-windows/final-disaster-recovery-evidence-producer-contract.json",
+      "tests/test_final_disaster_recovery_evidence_producer.py"
+    ]
+  },
+  "preparation_state": {
+    "disaster_recovery_producer_executed": false,
+    "recovery_private_key_read": false,
+    "production_state_mutated": false,
+    "evaluator_producer_sources_present_after_this_layer": 9,
+    "evaluator_producer_sources_required": 11,
+    "ga_eligible": false
+  }
+}

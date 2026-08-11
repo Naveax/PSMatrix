@@ -1,0 +1,62 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-authority-final-release-lock-signing-control-contract",
+  "pack": "03-authoritative-windows",
+  "version": "2.0.0",
+  "final_release_commit": "02cef95d40cf524ce00f9d917188343dc49e6f2c",
+  "final_release_source_branch": "final/2.0.0-release-candidate-anchor",
+  "control_source": {
+    "runtime_source_changes_allowed": false,
+    "changed_path_allowlist": [
+      ".github/workflows/ga-windows-authority-final-release-lock-promotion.yml",
+      ".github/workflows/ga-windows-authority-final-release-lock-review.yml",
+      ".github/workflows/ga-windows-authority-final-release-lock-signing-source-preflight.yml",
+      ".github/workflows/ga-windows-authority-final-release-sign-from-lock.yml",
+      "ga-packs/03-authoritative-windows/final-release-lock-signing-control-contract.json",
+      "scripts/ga/build_windows_authority_final_release_lock_draft.py",
+      "scripts/ga/promote_windows_authority_final_release_lock.py",
+      "scripts/ga/sign_windows_authority_final_release.py",
+      "tests/test_windows_authority_final_release_lock_signing.py"
+    ]
+  },
+  "rc4_authority_continuity": {
+    "version": "2.0.0rc4",
+    "enrollment_control_head": "0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63",
+    "workflow": "production-ga-windows-authority-rc4-release-authority-enrollment",
+    "artifact": "psmatrix-2.0.0rc4-release-authority-enrollment",
+    "enrollment_report": "psmatrix-2.0.0rc4-release-authority-enrollment.json",
+    "public_key_file": "psmatrix-2.0.0rc4-release-public.pem",
+    "authority_rotation_during_final_allowed": false,
+    "same_reviewed_private_authority_required": true
+  },
+  "final_staging": {
+    "workflow": "production-ga-windows-authority-final-staging-candidate-selfhosted",
+    "artifact": "windows-authority-final-unlocked-staging-candidate",
+    "report": "psmatrix-2.0.0-windows-authority-final-staging.json",
+    "required_status": "READY_FOR_FINAL_RELEASE_LOCK_REVIEW",
+    "artifact_count": 6
+  },
+  "repository_targets": {
+    "lock": "ga-packs/03-authoritative-windows/final-release-lock.json",
+    "public_key": "release-assets/2.0.0/psmatrix-2.0.0-release-public.pem"
+  },
+  "safety": {
+    "review_required_before_promotion": true,
+    "reviewed_digests_required_for_promotion": true,
+    "repository_commit_required_before_signing": true,
+    "private_key_in_repository_allowed": false,
+    "sign_without_exact_lock_match_allowed": false,
+    "rc4_evidence_may_be_relabelled_as_final": false,
+    "final_windows_evidence_rebind_required_after_signing": true,
+    "final_ga_evaluator_allowed_during_signing": false
+  },
+  "preparation_state": {
+    "active_final_lock_present": false,
+    "final_public_authority_present": false,
+    "final_release_artifacts_signed": false,
+    "final_windows_evidence_rebound": false,
+    "final_ga_evaluator_invoked": false,
+    "authoritative": false,
+    "ga_eligible": false
+  }
+}

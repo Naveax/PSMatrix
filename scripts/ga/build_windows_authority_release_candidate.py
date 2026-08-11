@@ -168,8 +168,8 @@ def build(expected_head: str, output_root: Path) -> dict[str, Any]:
     previous_epoch = os.environ.get("SOURCE_DATE_EPOCH")
     os.environ["SOURCE_DATE_EPOCH"] = "0"
     try:
-        with tempfile.TemporaryDirectory(prefix="psmatrix-rc3-build-a-") as temp_a, tempfile.TemporaryDirectory(
-            prefix="psmatrix-rc3-build-b-"
+        with tempfile.TemporaryDirectory(prefix="psmatrix-release-candidate-build-a-") as temp_a, tempfile.TemporaryDirectory(
+            prefix="psmatrix-release-candidate-build-b-"
         ) as temp_b:
             root_a = Path(temp_a)
             root_b = Path(temp_b)
@@ -269,8 +269,9 @@ def build(expected_head: str, output_root: Path) -> dict[str, Any]:
             "ga_eligible": False,
             "next_required": [
                 "Review this deterministic artifact set and its byte-for-byte reproducibility evidence.",
-                "Use the protected release-signing authority to create a new signed release manifest over the reviewed RC3 artifact set; do not reuse the stale RC2 operation-package binding.",
-                "Verify the signed manifest with the release public key before copying it into the Windows Authority media search roots.",
+                f"Freeze a reviewed {version} staging lock before any protected release signing is permitted.",
+                "Use only a protected release-signing authority whose public key is frozen by that reviewed staging lock.",
+                "Verify the signed manifest with the frozen release public key before Windows Authority intake.",
             ],
         }
         report_path = output / f"{name}-windows-authority-staging.json"

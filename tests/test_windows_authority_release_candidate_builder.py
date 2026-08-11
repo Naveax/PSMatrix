@@ -9,16 +9,18 @@ PYPROJECT = ROOT / "pyproject.toml"
 INIT = ROOT / "src" / "psmatrix" / "__init__.py"
 BUILDER = ROOT / "scripts" / "ga" / "build_windows_authority_release_candidate.py"
 SOURCE_WORKFLOW = ROOT / ".github" / "workflows" / "ga-pack03-windows-source-preflight.yml"
+FINAL_CONTRACT = ROOT / "ga-packs" / "03-authoritative-windows" / "final-release-source-promotion-contract.json"
 
 
 class WindowsAuthorityReleaseCandidateBuilderTests(unittest.TestCase):
-    def test_rc3_version_identity_is_consistent(self) -> None:
+    def test_current_release_candidate_version_identity_is_consistent(self) -> None:
         project = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
         project_version = project["project"]["version"]
         init_text = INIT.read_text(encoding="utf-8")
         match = re.search(r'^__version__\s*=\s*"([^"]+)"', init_text, re.MULTILINE)
         self.assertIsNotNone(match)
-        self.assertEqual(project_version, "2.0.0rc3")
+        expected = "2.0.0" if FINAL_CONTRACT.is_file() else "2.0.0rc4"
+        self.assertEqual(project_version, expected)
         self.assertEqual(match.group(1), project_version)
 
     def test_builder_is_deterministic_unsigned_and_fail_closed(self) -> None:
@@ -42,6 +44,7 @@ class WindowsAuthorityReleaseCandidateBuilderTests(unittest.TestCase):
             '"ga_eligible": False',
             "Release staging output must be outside the source checkout",
             "Release staging output must be empty",
+            "Freeze a reviewed {version} staging lock",
         )
         for value in required:
             with self.subTest(value=value):
@@ -60,12 +63,13 @@ class WindowsAuthorityReleaseCandidateBuilderTests(unittest.TestCase):
             '"signed_release_manifest_written": True',
             '"authoritative": True',
             '"ga_eligible": True',
+            "reviewed RC3 artifact set",
         )
         for value in forbidden:
             with self.subTest(value=value):
                 self.assertNotIn(value, text)
 
-    def test_source_preflight_tracks_rc3_builder(self) -> None:
+    def test_source_preflight_tracks_release_candidate_builder(self) -> None:
         text = SOURCE_WORKFLOW.read_text(encoding="utf-8")
         for value in (
             "scripts/ga/build_windows_authority_release_candidate.py",

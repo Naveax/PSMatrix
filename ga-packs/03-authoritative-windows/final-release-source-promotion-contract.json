@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-authority-final-release-source-promotion-contract",
+  "pack": "03-authoritative-windows",
+  "from_version": "2.0.0rc4",
+  "to_version": "2.0.0",
+  "rc4_hardened_source_head": "6019823c121752bb0660b306b95058d7a690172f",
+  "promotion": {
+    "separate_final_commit_required": true,
+    "exact_rc4_anchor_must_be_ancestor": true,
+    "rc4_evidence_may_be_relabelled_as_final": false,
+    "runtime_source_change_allowlist": [
+      "src/psmatrix/__init__.py"
+    ],
+    "changed_path_allowlist": [
+      ".github/workflows/ga-windows-authority-final-release-source-preflight.yml",
+      ".github/workflows/ga-windows-authority-final-staging-candidate-selfhosted.yml",
+      "ga-packs/03-authoritative-windows/final-release-source-promotion-contract.json",
+      "pyproject.toml",
+      "scripts/ga/build_windows_authority_final_release_candidate.py",
+      "src/psmatrix/__init__.py",
+      "tests/test_windows_authority_final_release_promotion.py",
+      "tests/test_windows_authority_rc4_authority_rotation.py",
+      "tests/test_windows_authority_release_candidate_builder.py"
+    ],
+    "final_lock_path": "ga-packs/03-authoritative-windows/final-release-lock.json",
+    "final_public_key_path": "release-assets/2.0.0/psmatrix-2.0.0-release-public.pem",
+    "final_lock_must_be_absent_in_preparation": true,
+    "final_public_authority_must_be_absent_in_preparation": true
+  },
+  "candidate_state": {
+    "status": "FINAL_RELEASE_SOURCE_PREPARATION",
+    "release_artifacts_signed": false,
+    "final_release_lock_written": false,
+    "final_windows_evidence_rebound": false,
+    "final_ga_evaluator_invoked": false,
+    "authoritative": false,
+    "ga_eligible": false
+  },
+  "next_required": [
+    "Build and review a deterministic unsigned 2.0.0 artifact set from an exact final release commit.",
+    "Create a separate reviewed final release lock and protected signing operation; do not reuse the RC4 lock as the final lock.",
+    "Rebind authoritative Windows evidence to the exact signed 2.0.0 release.",
+    "Invoke the existing Production GA evaluator only after the final signed release and final Windows evidence binding are both verified."
+  ]
+}

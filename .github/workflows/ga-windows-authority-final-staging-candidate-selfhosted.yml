@@ -1,0 +1,170 @@
+name: production-ga-windows-authority-final-staging-candidate-selfhosted
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_commit:
+        description: Exact reviewed PSMatrix 2.0.0 final release source commit; must equal this control head
+        required: true
+        type: string
+
+concurrency:
+  group: production-ga-windows-authority-final-staging-candidate-selfhosted
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  stage-final-release:
+    name: Build deterministic unsigned final 2.0.0 staging candidate on NAVEAX
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    env:
+      RELEASE_COMMIT: ${{ inputs.release_commit }}
+
+    steps:
+      - name: Initialize isolated final staging runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') {
+              throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) { throw 'RUNNER_TEMP is unavailable.' }
+          if ($env:RELEASE_COMMIT -cnotmatch '^[0-9a-f]{40}$') { throw 'release_commit must contain exactly 40 lowercase hexadecimal characters.' }
+          if ($env:RELEASE_COMMIT -ne $env:GITHUB_SHA.ToLowerInvariant()) { throw "release_commit must equal exact workflow control head $($env:GITHUB_SHA.ToLowerInvariant())." }
+          $stage = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-authority-final-staging-candidate'
+          $venv = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-authority-final-build-venv'
+          $scan = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-authority-final-staging-private-scan.json'
+          "PSMATRIX_FINAL_STAGE=$stage" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_FINAL_VENV=$venv" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_FINAL_SCAN=$scan" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Check out exact final release source with RC4 ancestry
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.release_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Verify exact clean final source and promotion boundary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $actual -ne $env:RELEASE_COMMIT) { throw "Exact final release checkout mismatch: $actual" }
+          if (-not [string]::IsNullOrWhiteSpace((git status --porcelain))) { throw 'Final release checkout is not clean.' }
+          $projectVersion = (python -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text(encoding='utf-8'))['project']['version'])").Trim()
+          $packageVersion = (python -c "import sys; sys.path.insert(0, 'src'); import psmatrix; print(psmatrix.__version__)").Trim()
+          if ($projectVersion -ne '2.0.0' -or $packageVersion -ne '2.0.0') { throw "Final version identity mismatch: project=$projectVersion package=$packageVersion" }
+          $contract = Get-Content 'ga-packs\03-authoritative-windows\final-release-source-promotion-contract.json' -Raw | ConvertFrom-Json
+          $anchor = [string]$contract.rc4_hardened_source_head
+          if ($anchor -cnotmatch '^[0-9a-f]{40}$') { throw 'Final promotion RC4 anchor is invalid.' }
+          git merge-base --is-ancestor $anchor $env:RELEASE_COMMIT
+          if ($LASTEXITCODE -ne 0) { throw 'Exact hardened RC4 source head is not an ancestor of the final release commit.' }
+          foreach ($path in @('ga-packs\03-authoritative-windows\final-release-lock.json','release-assets\2.0.0\psmatrix-2.0.0-release-public.pem')) {
+              if (Test-Path -LiteralPath $path -PathType Leaf) { throw "Final preparation branch contains active final authority material: $path" }
+          }
+          if (Test-Path -LiteralPath $env:PSMATRIX_FINAL_VENV) { Remove-Item $env:PSMATRIX_FINAL_VENV -Recurse -Force }
+          python -m venv $env:PSMATRIX_FINAL_VENV
+          if ($LASTEXITCODE -ne 0) { throw 'Isolated final Python venv creation failed.' }
+          $python = Join-Path $env:PSMATRIX_FINAL_VENV 'Scripts\python.exe'
+          if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw 'Isolated final Python executable is missing.' }
+          "PSMATRIX_FINAL_PYTHON=$python" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "final_release_source_head=$actual"
+          Write-Host "rc4_hardened_source_head=$anchor"
+
+      - name: Lock non-secret build backend
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & $env:PSMATRIX_FINAL_PYTHON -m pip install --disable-pip-version-check --no-input "pip==26.1.2" "setuptools==83.0.0"
+          if ($LASTEXITCODE -ne 0) { throw 'Locked final build backend installation failed.' }
+
+      - name: Deterministically build unsigned final 2.0.0 candidate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Test-Path -LiteralPath $env:PSMATRIX_FINAL_STAGE) { Remove-Item $env:PSMATRIX_FINAL_STAGE -Recurse -Force }
+          & $env:PSMATRIX_FINAL_PYTHON `
+            (Join-Path $env:GITHUB_WORKSPACE 'scripts\ga\build_windows_authority_final_release_candidate.py') `
+            --expected-head $env:RELEASE_COMMIT `
+            --output-root $env:PSMATRIX_FINAL_STAGE
+          if ($LASTEXITCODE -ne 0) { throw 'Deterministic final staging candidate build failed.' }
+
+      - name: Stream-scan every final staging byte for private authority material
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Test-Path -LiteralPath $env:PSMATRIX_FINAL_SCAN) { Remove-Item $env:PSMATRIX_FINAL_SCAN -Force }
+          & $env:PSMATRIX_FINAL_PYTHON `
+            (Join-Path $env:GITHUB_WORKSPACE 'scripts\ga\scan_private_key_material_streaming.py') `
+            --root $env:PSMATRIX_FINAL_STAGE `
+            --output $env:PSMATRIX_FINAL_SCAN
+          if ($LASTEXITCODE -ne 0) { throw 'Complete final staging private-key stream scan failed.' }
+          $scan = Get-Content $env:PSMATRIX_FINAL_SCAN -Raw | ConvertFrom-Json
+          if ([string]$scan.status -ne 'PASS' -or [bool]$scan.size_limit_applied -ne $false -or [int]$scan.private_key_markers_found -ne 0) {
+              throw 'Final staging private-key scan did not PASS without a size limit.'
+          }
+          Write-Host "final_staging_files_scanned=$($scan.file_count)"
+          Write-Host "final_staging_bytes_scanned=$($scan.byte_count)"
+
+      - name: Enforce unsigned final-release boundary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reportPath = Join-Path $env:PSMATRIX_FINAL_STAGE 'psmatrix-2.0.0-windows-authority-final-staging.json'
+          if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) { throw 'Final staging report is missing.' }
+          $report = Get-Content $reportPath -Raw | ConvertFrom-Json
+          if ([string]$report.kind -ne 'psmatrix.windows-authority-final-release-candidate-staging') { throw 'Final staging report kind mismatch.' }
+          if ([string]$report.status -ne 'READY_FOR_FINAL_RELEASE_LOCK_REVIEW') { throw 'Final staging report status mismatch.' }
+          if ([string]$report.version -ne '2.0.0' -or [string]$report.release_commit -ne $env:RELEASE_COMMIT) { throw 'Final staging report identity mismatch.' }
+          if ([bool]$report.rc4_anchor_is_ancestor -ne $true) { throw 'Final staging report lacks RC4 ancestry proof.' }
+          if (@($report.runtime_changed_paths).Count -ne 1 -or [string]$report.runtime_changed_paths[0] -ne 'src/psmatrix/__init__.py') { throw 'Final runtime-source change boundary mismatch.' }
+          if (@($report.artifacts).Count -ne 6) { throw "Expected exactly six final release artifacts; found $(@($report.artifacts).Count)." }
+          foreach ($field in @('private_key_read','release_artifacts_signed','final_release_lock_written','final_windows_evidence_rebound','final_ga_evaluator_invoked','rc4_evidence_relabelled_as_final','downloads_files','extracts_existing_operation_package','authoritative','ga_eligible')) {
+              if ([bool]$report.$field) { throw "Unsafe final staging field is true: $field" }
+          }
+          foreach ($entry in $report.reproducibility.PSObject.Properties) {
+              if ([bool]$entry.Value.reproducible -ne $true) { throw "Final reproducibility failed: $($entry.Name)" }
+          }
+          foreach ($entry in $report.verification.PSObject.Properties) {
+              if ([bool]$entry.Value.valid -ne $true) { throw "Final package verification failed: $($entry.Name)" }
+          }
+          Write-Host 'final_unsigned_prelock_staging=PASS'
+          Write-Host 'final_release_lock_written=false'
+          Write-Host 'release_artifacts_signed=false'
+          Write-Host 'final_windows_evidence_rebound=false'
+          Write-Host 'final_ga_evaluator_invoked=false'
+          Write-Host 'ga_eligible=false'
+
+      - name: Upload unsigned final release candidate for review
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-authority-final-unlocked-staging-candidate
+          path: ${{ env.PSMATRIX_FINAL_STAGE }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload final staging private-key scan
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-authority-final-staging-private-scan
+          path: ${{ env.PSMATRIX_FINAL_SCAN }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove isolated final build environment
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if (Test-Path -LiteralPath $env:PSMATRIX_FINAL_VENV) { Remove-Item $env:PSMATRIX_FINAL_VENV -Recurse -Force -ErrorAction SilentlyContinue }

@@ -1,0 +1,557 @@
+name: production-ga-final-evaluator
+
+on:
+  workflow_dispatch:
+    inputs:
+      validation_run_id:
+        description: Successful final validation-summary workflow run ID
+        required: true
+        type: string
+      release_signing_run_id:
+        description: Successful protected final release signing workflow run ID
+        required: true
+        type: string
+      windows_rebind_run_id:
+        description: Successful final Windows evidence rebind workflow run ID
+        required: true
+        type: string
+      full_matrix_run_id:
+        description: Successful final full runtime-matrix workflow run ID
+        required: true
+        type: string
+      oauth_run_id:
+        description: Successful final public OAuth proof workflow run ID
+        required: true
+        type: string
+      mtls_run_id:
+        description: Successful final public mTLS proof workflow run ID
+        required: true
+        type: string
+      otlp_run_id:
+        description: Successful final external OTLP proof workflow run ID
+        required: true
+        type: string
+      key_rotation_run_id:
+        description: Successful final key-rotation proof workflow run ID
+        required: true
+        type: string
+      recovery_run_id:
+        description: Successful final disaster-recovery proof workflow run ID
+        required: true
+        type: string
+      security_review_run_id:
+        description: Successful final security-review workflow run ID
+        required: true
+        type: string
+      vulnerability_scan_run_id:
+        description: Successful final vulnerability-scan workflow run ID
+        required: true
+        type: string
+
+concurrency:
+  group: production-ga-final-evaluator
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  evaluate-final-ga:
+    name: Assemble exact evidence and require 11/11 GA gates PASS
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 35
+    environment: production-ga-windows-lab
+    permissions:
+      contents: read
+      actions: read
+    env:
+      VALIDATION_RUN_ID: ${{ inputs.validation_run_id }}
+      RELEASE_SIGNING_RUN_ID: ${{ inputs.release_signing_run_id }}
+      WINDOWS_REBIND_RUN_ID: ${{ inputs.windows_rebind_run_id }}
+      FULL_MATRIX_RUN_ID: ${{ inputs.full_matrix_run_id }}
+      OAUTH_RUN_ID: ${{ inputs.oauth_run_id }}
+      MTLS_RUN_ID: ${{ inputs.mtls_run_id }}
+      OTLP_RUN_ID: ${{ inputs.otlp_run_id }}
+      KEY_ROTATION_RUN_ID: ${{ inputs.key_rotation_run_id }}
+      RECOVERY_RUN_ID: ${{ inputs.recovery_run_id }}
+      SECURITY_REVIEW_RUN_ID: ${{ inputs.security_review_run_id }}
+      VULNERABILITY_SCAN_RUN_ID: ${{ inputs.vulnerability_scan_run_id }}
+
+    steps:
+      - name: Validate trusted NAVEAX evaluator dispatch identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') {
+              throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS"
+          }
+          $names = @(
+            'VALIDATION_RUN_ID','RELEASE_SIGNING_RUN_ID','WINDOWS_REBIND_RUN_ID','FULL_MATRIX_RUN_ID',
+            'OAUTH_RUN_ID','MTLS_RUN_ID','OTLP_RUN_ID','KEY_ROTATION_RUN_ID','RECOVERY_RUN_ID',
+            'SECURITY_REVIEW_RUN_ID','VULNERABILITY_SCAN_RUN_ID'
+          )
+          $ids = @()
+          foreach ($name in $names) {
+              $value = [Environment]::GetEnvironmentVariable($name)
+              if ($value -cnotmatch '^[0-9]+$') { throw "$name must contain only decimal digits." }
+              $ids += $value
+          }
+          if (@($ids | Sort-Object -Unique).Count -ne 11) { throw 'All eleven final GA evidence run IDs must be distinct.' }
+          Write-Host 'final_ga_dispatch_identity=PASS'
+
+      - name: Check out exact final GA evaluator control
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Validate all producer source, runs, heads, and artifacts before downloads
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import urllib.request
+
+          root = pathlib.Path('control').resolve()
+          head = os.environ['GITHUB_SHA'].lower()
+          actual = subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'], text=True).strip().lower()
+          if actual != head:
+              raise SystemExit(f'exact evaluator control checkout mismatch: {actual} != {head}')
+          if subprocess.check_output(['git','-C',str(root),'status','--porcelain'], text=True).strip():
+              raise SystemExit('evaluator control checkout is dirty')
+          contract = json.loads((root / 'ga-packs/03-authoritative-windows/final-ga-evaluator-control-contract.json').read_text(encoding='utf-8'))
+          required = contract['required_gates']
+          run_env = {
+              'validation-summary': 'VALIDATION_RUN_ID',
+              'signed-release': 'RELEASE_SIGNING_RUN_ID',
+              'authoritative-windows': 'WINDOWS_REBIND_RUN_ID',
+              'complete-runtime-matrix': 'FULL_MATRIX_RUN_ID',
+              'public-oauth': 'OAUTH_RUN_ID',
+              'public-mtls': 'MTLS_RUN_ID',
+              'external-otlp': 'OTLP_RUN_ID',
+              'key-rotation': 'KEY_ROTATION_RUN_ID',
+              'disaster-recovery': 'RECOVERY_RUN_ID',
+              'security-review': 'SECURITY_REVIEW_RUN_ID',
+              'vulnerability-scan': 'VULNERABILITY_SCAN_RUN_ID',
+          }
+          if list(run_env) != required:
+              raise SystemExit('workflow run-input gate order differs from frozen final GA contract')
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {os.environ["GH_TOKEN"]}',
+              'X-GitHub-Api-Version': '2026-03-10',
+              'User-Agent': 'psmatrix-final-ga-evaluator',
+          }
+          def fetch(path):
+              request = urllib.request.Request(f'https://api.github.com/repos/Naveax/PSMatrix/{path}', headers=headers)
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+          provenance = {
+              'schema': 1,
+              'kind': 'psmatrix.final-ga-run-provenance',
+              'execution_control_head': head,
+              'runs': {},
+          }
+          for gate in required:
+              expected = contract['evidence_sources'][gate]
+              workflow_path = root / expected['workflow_path']
+              if not workflow_path.is_file():
+                  raise SystemExit(f'producer workflow source is missing at execution head: {gate}: {expected["workflow_path"]}')
+              workflow_text = workflow_path.read_text(encoding='utf-8')
+              if f'name: {expected["workflow"]}' not in workflow_text:
+                  raise SystemExit(f'producer workflow source identity mismatch: {gate}')
+              run_id = os.environ[run_env[gate]]
+              run = fetch(f'actions/runs/{run_id}')
+              if run.get('name') != expected['workflow']:
+                  raise SystemExit(f'workflow name mismatch for {gate}: {run.get("name")!r}')
+              if run.get('event') != 'workflow_dispatch':
+                  raise SystemExit(f'evidence run is not workflow_dispatch: {gate}')
+              if run.get('status') != 'completed' or run.get('conclusion') != 'success':
+                  raise SystemExit(f'evidence run is not completed successfully: {gate}')
+              if (run.get('head_sha') or '').lower() != head:
+                  raise SystemExit(f'evidence run does not share exact evaluator execution control head: {gate}')
+              artifacts = fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts', [])
+              matches = [item for item in artifacts if item.get('name') == expected['artifact'] and not item.get('expired')]
+              if len(matches) != 1:
+                  raise SystemExit(f'expected exactly one non-expired artifact for {gate}; found {len(matches)}')
+              provenance['runs'][gate] = {
+                  'run_id': run_id,
+                  'workflow': expected['workflow'],
+                  'artifact': expected['artifact'],
+                  'head_sha': head,
+                  'artifact_id': int(matches[0]['id']),
+              }
+              print(f'final_ga_upstream=PASS gate={gate} run_id={run_id} artifact_id={matches[0]["id"]}')
+          destination = pathlib.Path(os.environ['RUNNER_TEMP']) / 'psmatrix-final-ga-run-provenance.json'
+          destination.write_text(json.dumps(provenance, indent=2, sort_keys=False) + '\n', encoding='utf-8')
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as stream:
+              stream.write(f'PSMATRIX_FINAL_GA_PROVENANCE={destination}\n')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Final GA producer/run/artifact provenance validation failed.' }
+
+      - name: Download final validation summary evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-final-validation-summary
+          path: evidence/validation
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.validation_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Download protected final release
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-protected-release
+          path: evidence/release
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.release_signing_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Download final Windows evidence rebind
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-final-windows-evidence-rebind
+          path: evidence/windows
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.windows_rebind_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Download final full runtime matrix evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-final-full-runtime-matrix
+          path: evidence/full-matrix
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.full_matrix_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Download final public OAuth evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-final-public-oauth
+          path: evidence/oauth
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.oauth_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Download final public mTLS evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-final-public-mtls
+          path: evidence/mtls
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.mtls_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Download final external OTLP evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-final-external-otlp
+          path: evidence/otlp
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.otlp_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Download final key-rotation evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-final-key-rotation
+          path: evidence/key-rotation
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.key_rotation_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Download final disaster-recovery evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-final-disaster-recovery
+          path: evidence/recovery
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.recovery_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Download final security-review evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-final-security-review
+          path: evidence/security-review
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.security_review_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Download final vulnerability-scan evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-final-vulnerability-scan
+          path: evidence/vulnerability-scan
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.vulnerability_scan_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Materialize Windows lab public authority and evaluate all eleven gates
+        shell: pwsh
+        env:
+          WINDOWS_PUBLIC_KEY_PEM: ${{ secrets.PSMATRIX_WINDOWS_LAB_PUBLIC_KEY }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_PUBLIC_KEY_PEM) -or $env:WINDOWS_PUBLIC_KEY_PEM -notmatch '-----BEGIN PUBLIC KEY-----') {
+              throw 'PSMATRIX_WINDOWS_LAB_PUBLIC_KEY is missing from production-ga-windows-lab.'
+          }
+          $keyRoot = Join-Path $env:RUNNER_TEMP ('psmatrix-final-ga-windows-public-' + [Guid]::NewGuid().ToString('N'))
+          $output = Join-Path $env:RUNNER_TEMP 'psmatrix-2.0.0-final-ga-evaluation-candidate'
+          New-Item -ItemType Directory -Path $keyRoot | Out-Null
+          if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
+          $public = Join-Path $keyRoot 'windows-lab-public.pem'
+          try {
+              [IO.File]::WriteAllText($public,$env:WINDOWS_PUBLIC_KEY_PEM,[Text.UTF8Encoding]::new($false))
+              python (Join-Path $env:GITHUB_WORKSPACE 'control\scripts\ga\assemble_final_ga_evidence.py') `
+                --validation-root (Join-Path $env:GITHUB_WORKSPACE 'evidence\validation') `
+                --release-root (Join-Path $env:GITHUB_WORKSPACE 'evidence\release') `
+                --windows-root (Join-Path $env:GITHUB_WORKSPACE 'evidence\windows') `
+                --full-matrix-root (Join-Path $env:GITHUB_WORKSPACE 'evidence\full-matrix') `
+                --oauth-root (Join-Path $env:GITHUB_WORKSPACE 'evidence\oauth') `
+                --mtls-root (Join-Path $env:GITHUB_WORKSPACE 'evidence\mtls') `
+                --otlp-root (Join-Path $env:GITHUB_WORKSPACE 'evidence\otlp') `
+                --key-rotation-root (Join-Path $env:GITHUB_WORKSPACE 'evidence\key-rotation') `
+                --recovery-root (Join-Path $env:GITHUB_WORKSPACE 'evidence\recovery') `
+                --security-review-root (Join-Path $env:GITHUB_WORKSPACE 'evidence\security-review') `
+                --vulnerability-scan-root (Join-Path $env:GITHUB_WORKSPACE 'evidence\vulnerability-scan') `
+                --windows-public-key $public `
+                --provenance-json $env:PSMATRIX_FINAL_GA_PROVENANCE `
+                --output-root $output
+              if ($LASTEXITCODE -ne 0) { throw 'Final GA evidence assembly/evaluation failed.' }
+              "PSMATRIX_FINAL_GA_CANDIDATE=$output" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          } finally {
+              Remove-Item -LiteralPath $public -Force -ErrorAction SilentlyContinue
+              Remove-Item -LiteralPath $keyRoot -Recurse -Force -ErrorAction SilentlyContinue
+              Remove-Item Env:WINDOWS_PUBLIC_KEY_PEM -ErrorAction SilentlyContinue
+          }
+
+      - name: Enforce root-free 11-of-11 evaluation candidate boundary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $status = Get-Content (Join-Path $env:PSMATRIX_FINAL_GA_CANDIDATE 'final-ga-evaluator-candidate-status.json') -Raw | ConvertFrom-Json
+          $evaluation = Get-Content (Join-Path $env:PSMATRIX_FINAL_GA_CANDIDATE 'ga-evaluation.candidate.json') -Raw | ConvertFrom-Json
+          $gates = @($evaluation.gates)
+          if ([string]$status.status -ne 'ALL_11_GATES_PASS_ROOT_SIGNING_PENDING') { throw 'Final GA candidate status mismatch.' }
+          if ([int]$status.gate_count -ne 11 -or [bool]$status.all_required_gates_pass -ne $true) { throw 'Final GA candidate did not pass all eleven gates.' }
+          if ([string]$evaluation.status -ne 'PASS' -or $gates.Count -ne 11) { throw 'Final GA candidate evaluation is not exact 11-gate PASS.' }
+          $gateNames = @()
+          foreach ($gate in $gates) {
+              if ([string]$gate.status -ne 'PASS') { throw "Final GA candidate gate failed: $([string]$gate.gate)" }
+              $gateNames += [string]$gate.gate
+          }
+          if (@($gateNames | Sort-Object -Unique).Count -ne 11) { throw 'Final GA candidate gate names are duplicated or incomplete.' }
+          foreach ($field in @('root_private_key_read','final_ga_attestation_written','final_ga_attestation_verified','ga_eligible')) {
+              if ([bool]$status.$field) { throw "Unsafe pre-root-signing field is true: $field" }
+          }
+          if ([string]$status.private_key_scan.status -ne 'PASS' -or [bool]$status.private_key_scan.size_limit_applied) { throw 'Final GA candidate private-key scan boundary mismatch.' }
+          if ([int]$status.authority_closure.independent_role_key_count -ne 8) { throw 'Final GA policy authority-role independence closure is incomplete.' }
+          Write-Host 'final_ga_candidate_evaluation=PASS'
+          Write-Host 'required_gates_pass=11/11'
+          Write-Host 'independent_policy_authorities=8/8'
+          Write-Host 'root_private_key_read=false'
+          Write-Host 'final_ga_attestation_written=false'
+          Write-Host 'ga_eligible=false'
+
+      - name: Upload root-free final GA evaluation candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-2.0.0-final-ga-evaluation-candidate
+          path: ${{ env.PSMATRIX_FINAL_GA_CANDIDATE }}
+          if-no-files-found: error
+          retention-days: 30
+
+  sign-final-ga:
+    name: Re-evaluate 11/11 and sign with independent GA root
+    needs: evaluate-final-ga
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production-ga-root-signing
+    permissions:
+      contents: read
+      actions: read
+
+    steps:
+      - name: Check out exact GA signing control
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Download exact root-free evaluation candidate from this run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-final-ga-evaluation-candidate
+          path: candidate
+
+      - name: Verify candidate provenance and tree before root secret access
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path('candidate')
+          status = json.loads((root / 'final-ga-evaluator-candidate-status.json').read_text(encoding='utf-8'))
+          provenance = json.loads((root / 'audit/final-ga-run-provenance.json').read_text(encoding='utf-8'))
+          evaluation = json.loads((root / 'ga-evaluation.candidate.json').read_text(encoding='utf-8'))
+          gates = evaluation.get('gates')
+          if status.get('status') != 'ALL_11_GATES_PASS_ROOT_SIGNING_PENDING' or status.get('gate_count') != 11 or status.get('all_required_gates_pass') is not True:
+              raise SystemExit('root-free final GA candidate status mismatch')
+          if provenance.get('execution_control_head') != os.environ['GITHUB_SHA'].lower():
+              raise SystemExit('root-free candidate execution control head mismatch')
+          if evaluation.get('status') != 'PASS' or not isinstance(gates, list) or len(gates) != 11:
+              raise SystemExit('root-free candidate evaluation is not exact 11-gate PASS')
+          if any(not isinstance(item, dict) or item.get('status') != 'PASS' for item in gates):
+              raise SystemExit('root-free candidate contains a non-PASS gate')
+          entries = []
+          for path in sorted((item for item in root.rglob('*') if item.is_file()), key=lambda item: item.as_posix().casefold()):
+              entries.append(f'{path.relative_to(root).as_posix()}\0{hashlib.sha256(path.read_bytes()).hexdigest()}\0{path.stat().st_size}\n')
+          tree = hashlib.sha256(''.join(entries).encode()).hexdigest()
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as stream:
+              stream.write(f'PSMATRIX_FINAL_GA_INPUT_TREE_SHA256={tree}\n')
+          print(f'final_ga_input_tree_sha256={tree}')
+          PY
+
+      - name: Materialize independent GA root, re-evaluate, sign, and verify
+        shell: bash
+        env:
+          GA_ROOT_PRIVATE_KEY: ${{ secrets.PSMATRIX_GA_ROOT_PRIVATE_KEY }}
+          GA_ROOT_PUBLIC_KEY: ${{ secrets.PSMATRIX_GA_ROOT_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$GA_ROOT_PRIVATE_KEY" ]] || { echo 'PSMATRIX_GA_ROOT_PRIVATE_KEY is missing from production-ga-root-signing.' >&2; exit 1; }
+          [[ "$GA_ROOT_PUBLIC_KEY" == *'-----BEGIN PUBLIC KEY-----'* ]] || { echo 'PSMATRIX_GA_ROOT_PUBLIC_KEY is missing from production-ga-root-signing.' >&2; exit 1; }
+          key_root="$RUNNER_TEMP/psmatrix-final-ga-root-keys"
+          signed="$RUNNER_TEMP/psmatrix-2.0.0-final-ga-attestation"
+          rm -rf "$key_root" "$signed"
+          install -d -m 0700 "$key_root" "$signed"
+          printf '%s\n' "$GA_ROOT_PRIVATE_KEY" > "$key_root/root.private.pem"
+          printf '%s\n' "$GA_ROOT_PUBLIC_KEY" > "$key_root/root.public.pem"
+          chmod 0600 "$key_root/root.private.pem"
+          chmod 0644 "$key_root/root.public.pem"
+          try_cleanup() {
+            shred -u "$key_root/root.private.pem" 2>/dev/null || rm -f "$key_root/root.private.pem"
+            rm -f "$key_root/root.public.pem"
+            rmdir "$key_root" 2>/dev/null || true
+          }
+          trap try_cleanup EXIT
+
+          PYTHONPATH=control/src python -m psmatrix.cli ga sign \
+            --policy candidate/ga-policy.json \
+            --private-key "$key_root/root.private.pem" \
+            --public-key "$key_root/root.public.pem" \
+            --evaluation-output "$signed/ga-evaluation.root-signed.json" \
+            --output "$signed/psmatrix-2.0.0-final-ga.dsse.json"
+
+          PSMATRIX_GA_ROOT_PUBLIC_PATH="$key_root/root.public.pem" PSMATRIX_FINAL_GA_SIGNED="$signed" PYTHONPATH=control/src python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import shutil
+          from pathlib import Path
+          from psmatrix.ga import verify_ga_attestation
+          from psmatrix.signing import public_key_id
+          from psmatrix.util import atomic_write_json, read_json
+
+          candidate = Path('candidate')
+          signed = Path(os.environ['PSMATRIX_FINAL_GA_SIGNED'])
+          root_public = Path(os.environ['PSMATRIX_GA_ROOT_PUBLIC_PATH'])
+          evaluation = json.loads((signed / 'ga-evaluation.root-signed.json').read_text(encoding='utf-8'))
+          gates = evaluation.get('gates')
+          if evaluation.get('status') != 'PASS' or not isinstance(gates, list) or len(gates) != 11:
+              raise SystemExit('GA-root signing re-evaluation is not exact 11-gate PASS')
+          if any(not isinstance(item, dict) or item.get('status') != 'PASS' for item in gates):
+              raise SystemExit('GA-root signing re-evaluation contains a non-PASS gate')
+          envelope = read_json(signed / 'psmatrix-2.0.0-final-ga.dsse.json')
+          verification = verify_ga_attestation(envelope, public_key=root_public)
+          if verification.get('valid') is not True:
+              raise SystemExit('final GA DSSE verification did not PASS')
+          atomic_write_json(signed / 'psmatrix-2.0.0-final-ga-verification.json', verification)
+          root_copy = signed / 'psmatrix-2.0.0-ga-root-public.pem'
+          shutil.copyfile(root_public, root_copy)
+          release_public = candidate / 'keys/release.pem'
+          root_id = public_key_id(root_copy)
+          release_id = public_key_id(release_public)
+          if root_id == release_id:
+              raise SystemExit('GA root authority must remain independent from release authority')
+          status = {
+              'schema': 1,
+              'kind': 'psmatrix.final-ga-attestation-status',
+              'status': 'PASS',
+              'version': '2.0.0',
+              'execution_control_head': os.environ['GITHUB_SHA'].lower(),
+              'input_tree_sha256': os.environ['PSMATRIX_FINAL_GA_INPUT_TREE_SHA256'],
+              'required_gate_count': 11,
+              'all_required_gates_pass': True,
+              'root_key_id': root_id,
+              'release_key_id': release_id,
+              'root_release_authorities_independent': True,
+              'root_private_key_copied_to_output': False,
+              'final_ga_attestation_written': True,
+              'final_ga_attestation_verified': True,
+              'ga_eligible': True,
+          }
+          atomic_write_json(signed / 'final-ga-attestation-status.json', status)
+          shutil.copyfile(candidate / 'ga-policy.json', signed / 'ga-policy.json')
+          shutil.copyfile(candidate / 'audit/final-ga-run-provenance.json', signed / 'final-ga-run-provenance.json')
+          shutil.copyfile(candidate / 'final-ga-evaluator-candidate-status.json', signed / 'final-ga-evaluator-candidate-status.json')
+          markers = (b'-----BEGIN PRIVATE KEY-----', b'-----BEGIN RSA PRIVATE KEY-----', b'-----BEGIN EC PRIVATE KEY-----', b'-----BEGIN OPENSSH PRIVATE KEY-----', b'-----BEGIN ED25519 PRIVATE KEY-----')
+          for path in signed.rglob('*'):
+              if path.is_file() and any(marker in path.read_bytes() for marker in markers):
+                  raise SystemExit(f'private-key material found in final GA signed output: {path.name}')
+          sums = []
+          for path in sorted((item for item in signed.iterdir() if item.is_file()), key=lambda item: item.name):
+              if path.name == 'SHA256SUMS.txt':
+                  continue
+              sums.append(f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n')
+          (signed / 'SHA256SUMS.txt').write_text(''.join(sums), encoding='utf-8', newline='\n')
+          print('ga_root_release_authorities_independent=true')
+          print('root_signed_final_ga_evaluation=PASS')
+          print('required_gates_pass=11/11')
+          print('final_ga_attestation_verified=true')
+          print('ga_eligible=true')
+          PY
+          echo "PSMATRIX_FINAL_GA_SIGNED=$signed" >> "$GITHUB_ENV"
+
+      - name: Remove GA root private key
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          key_root="$RUNNER_TEMP/psmatrix-final-ga-root-keys"
+          shred -u "$key_root/root.private.pem" 2>/dev/null || rm -f "$key_root/root.private.pem"
+          rm -f "$key_root/root.public.pem"
+          rmdir "$key_root" 2>/dev/null || true
+
+      - name: Upload verified final GA attestation
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-2.0.0-final-ga-attestation
+          path: ${{ env.PSMATRIX_FINAL_GA_SIGNED }}
+          if-no-files-found: error
+          retention-days: 30

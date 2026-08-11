@@ -1,0 +1,276 @@
+name: production-ga-windows-authority-rc4-release-intake-selfhosted
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_commit:
+        description: Exact reviewed RC4 release source commit frozen by the active lock
+        required: true
+        type: string
+      signing_run_id:
+        description: Successful protected RC4 signing workflow run ID
+        required: true
+        type: string
+      signing_control_head:
+        description: Exact commit SHA containing the active RC4 lock that controlled signing
+        required: true
+        type: string
+
+concurrency:
+  group: production-ga-windows-authority-rc4-release-intake-selfhosted
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  intake-protected-rc4:
+    name: Intake exact protected RC4 release on Windows authority controller
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 30
+    environment: production-ga-windows-lab
+    permissions:
+      contents: read
+      actions: read
+    env:
+      PSMATRIX_WINDOWS_GA_ROOT: ${{ vars.PSMATRIX_WINDOWS_GA_ROOT }}
+      RELEASE_COMMIT: ${{ inputs.release_commit }}
+      SIGNING_RUN_ID: ${{ inputs.signing_run_id }}
+      SIGNING_CONTROL_HEAD: ${{ inputs.signing_control_head }}
+
+    steps:
+      - name: Initialize isolated RC4 intake workspace
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') {
+              throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_WINDOWS_GA_ROOT)) {
+              throw 'PSMATRIX_WINDOWS_GA_ROOT is missing from production-ga-windows-lab.'
+          }
+          if (-not [System.IO.Path]::IsPathRooted($env:PSMATRIX_WINDOWS_GA_ROOT)) {
+              throw 'PSMATRIX_WINDOWS_GA_ROOT must be an absolute path.'
+          }
+          $gaRoot = [System.IO.Path]::GetFullPath($env:PSMATRIX_WINDOWS_GA_ROOT)
+          if (-not (Test-Path -LiteralPath $gaRoot -PathType Container)) {
+              throw "PSMATRIX_WINDOWS_GA_ROOT does not exist: $gaRoot"
+          }
+          if ($env:RELEASE_COMMIT -cnotmatch '^[0-9a-f]{40}$') { throw 'release_commit must be 40 lowercase hexadecimal characters.' }
+          if ($env:SIGNING_CONTROL_HEAD -cnotmatch '^[0-9a-f]{40}$') { throw 'signing_control_head must be 40 lowercase hexadecimal characters.' }
+          if ($env:SIGNING_RUN_ID -cnotmatch '^[0-9]+$') { throw 'signing_run_id must contain only decimal digits.' }
+
+          $bundle = Join-Path $env:RUNNER_TEMP 'psmatrix-2.0.0rc4-protected-release-input'
+          $evidence = Join-Path $env:RUNNER_TEMP 'psmatrix-rc4-protected-release-intake-evidence'
+          foreach ($path in @($bundle,$evidence)) {
+              if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+              New-Item -ItemType Directory -Path $path -Force | Out-Null
+          }
+          "PSMATRIX_RC4_INTAKE_BUNDLE=$bundle" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_RC4_INTAKE_EVIDENCE=$evidence" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host 'rc4_intake_workspace=PASS'
+
+      - name: Check out exact intake controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.signing_control_head }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up controller Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Validate exact active RC4 lock before artifact download
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $head -ne $env:SIGNING_CONTROL_HEAD) { throw 'RC4 intake checkout does not equal signing_control_head.' }
+          if (-not [string]::IsNullOrWhiteSpace((git status --porcelain))) { throw 'RC4 intake control checkout is dirty.' }
+          $lockPath = Join-Path $env:GITHUB_WORKSPACE 'ga-packs\03-authoritative-windows\rc4-release-lock.json'
+          $publicPath = Join-Path $env:GITHUB_WORKSPACE 'release-assets\2.0.0rc4\psmatrix-2.0.0rc4-release-public.pem'
+          foreach ($path in @($lockPath,$publicPath)) {
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Committed RC4 authority material is missing: $path" }
+          }
+          $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+          if ([int]$lock.schema -ne 1 -or [string]$lock.kind -ne 'psmatrix.windows-authority-release-staging-lock' -or [string]$lock.pack -ne '03-authoritative-windows') { throw 'Committed RC4 lock identity mismatch.' }
+          if ([string]$lock.version -ne '2.0.0rc4' -or [string]$lock.release_commit -ne $env:RELEASE_COMMIT) { throw 'Committed RC4 lock version/release commit mismatch.' }
+          $publicSha = (Get-FileHash -LiteralPath $publicPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ([string]$lock.release_public_key.sha256 -ne $publicSha) { throw 'Committed RC4 public authority differs from lock digest.' }
+          $rotation = $lock.authority_rotation
+          if ([string]$rotation.reason -ne 'lost_previous_private_authority' -or [bool]$rotation.existing_candidate_mutated -ne $false -or [bool]$rotation.new_candidate -ne $true -or [bool]$rotation.review_required -ne $true) { throw 'Committed RC4 authority-rotation review metadata mismatch.' }
+          if ([bool]$lock.release_artifacts_signed -or [bool]$lock.authoritative -or [bool]$lock.ga_eligible) { throw 'Committed RC4 lock improperly claims signed/authority state.' }
+          "PSMATRIX_RC4_LOCK_PATH=$lockPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host 'committed_rc4_intake_lock=PASS'
+
+      - name: Validate protected RC4 signing run provenance before download
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import json
+          import os
+          import urllib.request
+
+          repo = 'Naveax/PSMatrix'
+          run_id = os.environ['SIGNING_RUN_ID']
+          expected_head = os.environ['SIGNING_CONTROL_HEAD'].lower()
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {os.environ["GH_TOKEN"]}',
+              'X-GitHub-Api-Version': '2026-03-10',
+              'User-Agent': 'psmatrix-rc4-protected-release-intake',
+          }
+          def fetch(path):
+              request = urllib.request.Request(f'https://api.github.com/repos/{repo}/{path}', headers=headers)
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+          run = fetch(f'actions/runs/{run_id}')
+          if run.get('name') != 'production-ga-windows-authority-rc4-release-sign-from-lock':
+              raise SystemExit(f'unexpected RC4 signing workflow name: {run.get("name")!r}')
+          if run.get('event') != 'workflow_dispatch':
+              raise SystemExit('protected RC4 signing run is not workflow_dispatch')
+          if run.get('status') != 'completed' or run.get('conclusion') != 'success':
+              raise SystemExit('protected RC4 signing run is not completed successfully')
+          if (run.get('head_sha') or '').lower() != expected_head:
+              raise SystemExit('protected RC4 signing run head does not equal signing_control_head')
+          artifacts = fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts', [])
+          matching = [item for item in artifacts if item.get('name') == 'psmatrix-2.0.0rc4-protected-release' and not item.get('expired')]
+          if len(matching) != 1:
+              raise SystemExit(f'expected exactly one non-expired protected RC4 release artifact; found {len(matching)}')
+          print(f'protected_rc4_signing_run_provenance=PASS artifact_id={matching[0].get("id")}')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Protected RC4 signing run provenance validation failed.' }
+
+      - name: Download exact protected RC4 release bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0rc4-protected-release
+          path: ${{ runner.temp }}\psmatrix-2.0.0rc4-protected-release-input
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.signing_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Verify protected RC4 bundle before GA-root mutation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ['PSMATRIX_RC4_INTAKE_BUNDLE']).resolve()
+          lock = json.loads(Path(os.environ['PSMATRIX_RC4_LOCK_PATH']).read_text(encoding='utf-8'))
+          inventory_path = root / 'psmatrix-2.0.0rc4-protected-release-bundle.json'
+          inventory = json.loads(inventory_path.read_text(encoding='utf-8'))
+          if inventory.get('schema') != 1 or inventory.get('kind') != 'psmatrix.windows-authority-protected-release-bundle' or inventory.get('status') != 'PASS':
+              raise SystemExit('protected RC4 bundle inventory identity/readiness mismatch')
+          if inventory.get('version') != '2.0.0rc4' or inventory.get('release_commit') != os.environ['RELEASE_COMMIT']:
+              raise SystemExit('protected RC4 bundle version/release commit mismatch')
+          if inventory.get('release_public_key_sha256') != lock['release_public_key']['sha256']:
+              raise SystemExit('protected RC4 bundle public authority digest mismatch')
+          if inventory.get('private_key_material_absent') is not True:
+              raise SystemExit('protected RC4 bundle does not prove private-key absence')
+          if inventory.get('authority_rotation_reviewed') is not True or inventory.get('authority_rotation_reason') != 'lost_previous_private_authority':
+              raise SystemExit('protected RC4 bundle lacks reviewed authority-rotation closure')
+          if inventory.get('release_authority_rotated_during_signing') is not False:
+              raise SystemExit('protected RC4 bundle reports signing-time authority rotation')
+          if inventory.get('authoritative') is not False or inventory.get('ga_eligible') is not False:
+              raise SystemExit('protected RC4 bundle improperly claims Windows GA authority')
+          expected = {item['name']: (item['sha256'], item['size']) for item in inventory.get('files', [])}
+          actual_names = {path.name for path in root.iterdir() if path.is_file()}
+          if set(expected) != actual_names:
+              raise SystemExit('protected RC4 bundle inventory file coverage mismatch')
+          for path in root.iterdir():
+              if not path.is_file():
+                  continue
+              digest, size = expected[path.name]
+              data = path.read_bytes()
+              if hashlib.sha256(data).hexdigest() != digest or len(data) != size:
+                  raise SystemExit(f'protected RC4 bundle file mismatch: {path.name}')
+          markers = (b'-----BEGIN PRIVATE KEY-----', b'-----BEGIN RSA PRIVATE KEY-----', b'-----BEGIN EC PRIVATE KEY-----', b'-----BEGIN OPENSSH PRIVATE KEY-----')
+          for path in root.rglob('*'):
+              if path.is_file() and any(marker in path.read_bytes() for marker in markers):
+                  raise SystemExit(f'private-key material found in protected RC4 bundle: {path.name}')
+          print('protected_rc4_bundle_pre_intake=PASS')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Protected RC4 bundle verification failed before GA-root intake.' }
+
+      - name: Intake exact protected RC4 release into canonical GA root
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & "$env:GITHUB_WORKSPACE\scripts\ga\Invoke-PSMatrixWindowsAuthorityProtectedReleaseIntakeV2.ps1" `
+              -SourceRoot $env:GITHUB_WORKSPACE `
+              -GaRoot $env:PSMATRIX_WINDOWS_GA_ROOT `
+              -BundleRoot $env:PSMATRIX_RC4_INTAKE_BUNDLE `
+              -ReleaseLockPath 'ga-packs\03-authoritative-windows\rc4-release-lock.json'
+          if ($LASTEXITCODE -ne 0) { throw 'Protected RC4 release intake orchestration failed.' }
+
+      - name: Enforce fail-closed RC4 intake result
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reportPath = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'windows-authority-protected-release-intake.json'
+          if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) { throw 'Protected RC4 intake report is missing.' }
+          $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+          if ([int]$report.schema -ne 2 -or [string]$report.kind -ne 'psmatrix.windows-authority-protected-release-intake') { throw 'Protected RC4 intake report identity mismatch.' }
+          if ([string]$report.status -ne 'RELEASE_CLOSURE_READY' -or [string]$report.version -ne '2.0.0rc4' -or [string]$report.release_commit -ne $env:RELEASE_COMMIT) { throw 'Protected RC4 intake readiness/version/commit mismatch.' }
+          if ([bool]$report.ready_for_release_artifact_recovery -ne $true -or [bool]$report.private_key_material_absent -ne $true) { throw 'Protected RC4 intake did not reach verified release closure.' }
+          if ([bool]$report.release_authority_rotation_reviewed -ne $true -or [string]$report.release_authority_rotation_reason -ne 'lost_previous_private_authority') { throw 'Protected RC4 intake reviewed-rotation state mismatch.' }
+          if ([bool]$report.release_authority_rotated -ne $false -or [bool]$report.release_authority_rotated_during_signing -ne $false) { throw 'Protected RC4 intake reports an unsafe authority rotation event.' }
+          if ([bool]$report.stale_rc2_operation_package_used -ne $false -or [bool]$report.broad_downloads_search_used -ne $false) { throw 'Protected RC4 intake used stale/broad material.' }
+          if ([bool]$report.media_manifest_materialized -ne $false -or [bool]$report.operation_package_rebuilt -ne $false) { throw 'Protected RC4 intake unexpectedly materialized downstream state.' }
+          if ([bool]$report.creates_virtual_machines -ne $false -or [bool]$report.creates_checkpoints -ne $false) { throw 'Protected RC4 intake unexpectedly changed Hyper-V state.' }
+          if ([bool]$report.authoritative -ne $false -or [bool]$report.ga_eligible -ne $false) { throw 'Protected RC4 intake improperly claims authority/GA eligibility.' }
+
+          $safe = [ordered]@{
+              schema = 1
+              kind = 'psmatrix.windows-authority-rc4-protected-release-intake-workflow-status'
+              status = 'PASS'
+              version = [string]$report.version
+              release_commit = [string]$report.release_commit
+              signing_run_id = [int64]$env:SIGNING_RUN_ID
+              signing_control_head = $env:SIGNING_CONTROL_HEAD
+              selected_manifest_sha256 = [string]$report.selected_manifest_sha256
+              release_authority_rotation_reviewed = $true
+              release_authority_rotation_reason = 'lost_previous_private_authority'
+              private_key_material_absent = $true
+              release_authority_rotated_during_signing = $false
+              media_manifest_materialized = $false
+              operation_package_rebuilt = $false
+              creates_virtual_machines = $false
+              creates_checkpoints = $false
+              authoritative = $false
+              ga_eligible = $false
+          }
+          [System.IO.File]::WriteAllText(
+              (Join-Path $env:PSMATRIX_RC4_INTAKE_EVIDENCE 'intake-status.json'),
+              (($safe | ConvertTo-Json -Depth 12) + [Environment]::NewLine),
+              [System.Text.UTF8Encoding]::new($false)
+          )
+          Write-Host 'protected_rc4_release_intake=PASS'
+
+      - name: Remove downloaded protected RC4 bundle from runner temp
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if (-not [string]::IsNullOrWhiteSpace($env:PSMATRIX_RC4_INTAKE_BUNDLE) -and (Test-Path -LiteralPath $env:PSMATRIX_RC4_INTAKE_BUNDLE)) {
+              Remove-Item -LiteralPath $env:PSMATRIX_RC4_INTAKE_BUNDLE -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload non-secret RC4 intake evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-authority-rc4-protected-release-intake
+          path: ${{ env.PSMATRIX_RC4_INTAKE_EVIDENCE }}
+          if-no-files-found: error
+          retention-days: 30

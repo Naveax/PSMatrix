@@ -1,0 +1,232 @@
+name: production-ga-final-public-oauth
+
+on:
+  workflow_dispatch:
+    inputs:
+      live_probe_run_id:
+        description: Successful shared final public-auth live-probe workflow run ID from this exact control head
+        required: true
+        type: string
+
+concurrency:
+  group: production-ga-final-public-oauth
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  produce-public-oauth:
+    name: Build and sign exact final public OAuth proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production-ga-deployment-signing
+    permissions:
+      contents: read
+      actions: read
+    env:
+      LIVE_PROBE_RUN_ID: ${{ inputs.live_probe_run_id }}
+
+    steps:
+      - name: Validate OAuth proof dispatch identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$LIVE_PROBE_RUN_ID" =~ ^[0-9]+$ ]] || { echo 'live_probe_run_id must contain only decimal digits.' >&2; exit 1; }
+          echo 'public_oauth_dispatch_identity=PASS'
+
+      - name: Check out exact deployment producer controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Validate exact shared live-probe run before download
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=control/src python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import urllib.request
+          from pathlib import Path
+
+          head=subprocess.check_output(['git','-C','control','rev-parse','HEAD'],text=True).strip().lower()
+          if head != os.environ['GITHUB_SHA'].lower():
+              raise SystemExit('OAuth proof control checkout is not exact GITHUB_SHA')
+          if subprocess.check_output(['git','-C','control','status','--porcelain'],text=True).strip():
+              raise SystemExit('OAuth proof control checkout is dirty')
+          contract=json.loads(Path('control/ga-packs/03-authoritative-windows/final-deployment-evidence-producer-contract.json').read_text(encoding='utf-8'))
+          if contract['oauth'].get('workflow')!='production-ga-final-public-oauth':
+              raise SystemExit('OAuth producer workflow contract mismatch')
+          run_id=os.environ['LIVE_PROBE_RUN_ID']
+          headers={'Accept':'application/vnd.github+json','Authorization':f'Bearer {os.environ["GH_TOKEN"]}','X-GitHub-Api-Version':'2026-03-10','User-Agent':'psmatrix-final-public-oauth'}
+          def fetch(path):
+              req=urllib.request.Request(f'https://api.github.com/repos/Naveax/PSMatrix/{path}',headers=headers)
+              with urllib.request.urlopen(req,timeout=30) as response:
+                  return json.load(response)
+          run=fetch(f'actions/runs/{run_id}')
+          if run.get('name')!='production-ga-final-public-auth-live-probe' or run.get('event')!='workflow_dispatch':
+              raise SystemExit('shared public-auth live-probe workflow identity mismatch')
+          if run.get('status')!='completed' or run.get('conclusion')!='success':
+              raise SystemExit('shared public-auth live-probe run is not completed successfully')
+          if (run.get('head_sha') or '').lower()!=head:
+              raise SystemExit('shared public-auth live-probe run does not share exact OAuth producer control head')
+          artifacts=fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts',[])
+          matches=[item for item in artifacts if item.get('name')=='psmatrix-2.0.0-final-public-auth-live-report' and not item.get('expired')]
+          if len(matches)!=1:
+              raise SystemExit(f'expected exactly one non-expired shared public-auth live-report artifact; found {len(matches)}')
+          print(f'public_oauth_live_probe_provenance=PASS run_id={run_id} artifact_id={matches[0].get("id")}')
+          PY
+
+      - name: Download exact shared public-auth live report
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-final-public-auth-live-report
+          path: live
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.live_probe_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Validate live report and frozen final-signing provenance before deployment-key access
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/psmatrix-final-public-oauth-unsigned"
+          rm -rf "$output"
+          mkdir -p "$output"
+          PYTHONPATH=control/src python control/scripts/ga/probe_final_public_auth.py proof-result \
+            --report live/public-auth-live-report.json \
+            --type public-oauth \
+            --output "$output/public-oauth-result.json"
+          PSMATRIX_OAUTH_UNSIGNED="$output" PYTHONPATH=control/src python - <<'PY'
+          import json
+          import os
+          import urllib.request
+          from pathlib import Path
+          from psmatrix.util import sha256_file
+
+          report_path=Path('live/public-auth-live-report.json')
+          report=json.loads(report_path.read_text(encoding='utf-8'))
+          result=json.loads((Path(os.environ['PSMATRIX_OAUTH_UNSIGNED'])/'public-oauth-result.json').read_text(encoding='utf-8'))
+          if report.get('status')!='PASS' or report.get('kind')!='psmatrix.public-auth-live-report':
+              raise SystemExit('shared public-auth live report identity/status mismatch')
+          if (report.get('oauth') or {}).get('endpoint')==(report.get('mtls') or {}).get('endpoint'):
+              raise SystemExit('shared live report reused one endpoint for OAuth and mTLS')
+          artifacts=result.get('artifacts') or []
+          expected=sha256_file(report_path)
+          if len(artifacts)!=1 or artifacts[0].get('name')!='public-auth-live-report.json' or artifacts[0].get('sha256')!=expected:
+              raise SystemExit('OAuth proof result does not bind the exact shared live report')
+          release_run=str(report.get('release_signing_run_id') or '')
+          if not release_run.isdecimal():
+              raise SystemExit('shared live report release-signing run ID is invalid')
+          headers={'Accept':'application/vnd.github+json','Authorization':f'Bearer {os.environ["GH_TOKEN"]}','X-GitHub-Api-Version':'2026-03-10','User-Agent':'psmatrix-final-public-oauth'}
+          def fetch(path):
+              req=urllib.request.Request(f'https://api.github.com/repos/Naveax/PSMatrix/{path}',headers=headers)
+              with urllib.request.urlopen(req,timeout=30) as response:
+                  return json.load(response)
+          run=fetch(f'actions/runs/{release_run}')
+          if run.get('name')!='production-ga-windows-authority-final-release-sign-from-lock' or run.get('event')!='workflow_dispatch':
+              raise SystemExit('live report final-signing workflow provenance mismatch')
+          if run.get('status')!='completed' or run.get('conclusion')!='success' or (run.get('head_sha') or '').lower()!=os.environ['GITHUB_SHA'].lower():
+              raise SystemExit('live report final-signing run is not a successful exact-head run')
+          artifacts=fetch(f'actions/runs/{release_run}/artifacts?per_page=100').get('artifacts',[])
+          matches=[item for item in artifacts if item.get('name')=='psmatrix-2.0.0-protected-release' and not item.get('expired')]
+          if len(matches)!=1:
+              raise SystemExit('live report final-signing run lacks one exact protected final release artifact')
+          print(f'public_oauth_pre_secret=PASS live_report_sha256={expected} release_run_id={release_run}')
+          PY
+          echo "PSMATRIX_OAUTH_UNSIGNED=$output" >> "$GITHUB_ENV"
+
+      - name: Materialize deployment authority, sign exact OAuth proof, verify, and remove private key
+        shell: bash
+        env:
+          DEPLOYMENT_PRIVATE_KEY: ${{ secrets.PSMATRIX_GA_DEPLOYMENT_PRIVATE_KEY }}
+          DEPLOYMENT_PUBLIC_KEY: ${{ secrets.PSMATRIX_GA_DEPLOYMENT_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$DEPLOYMENT_PRIVATE_KEY" ]] || { echo 'PSMATRIX_GA_DEPLOYMENT_PRIVATE_KEY is missing from production-ga-deployment-signing.' >&2; exit 1; }
+          [[ "$DEPLOYMENT_PUBLIC_KEY" == *'-----BEGIN PUBLIC KEY-----'* ]] || { echo 'PSMATRIX_GA_DEPLOYMENT_PUBLIC_KEY is missing from production-ga-deployment-signing.' >&2; exit 1; }
+          key_root="$RUNNER_TEMP/psmatrix-final-oauth-deployment-keys"
+          output="$RUNNER_TEMP/psmatrix-2.0.0-final-public-oauth"
+          rm -rf "$key_root" "$output"
+          install -d -m 0700 "$key_root" "$output"
+          printf '%s\n' "$DEPLOYMENT_PRIVATE_KEY" > "$key_root/deployment.private.pem"
+          printf '%s\n' "$DEPLOYMENT_PUBLIC_KEY" > "$key_root/deployment.public.pem"
+          chmod 0600 "$key_root/deployment.private.pem"
+          cleanup() {
+            shred -u "$key_root/deployment.private.pem" 2>/dev/null || rm -f "$key_root/deployment.private.pem"
+            rm -f "$key_root/deployment.public.pem"
+            rmdir "$key_root" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          cp "$PSMATRIX_OAUTH_UNSIGNED/public-oauth-result.json" "$output/public-oauth-result.json"
+          cp live/public-auth-live-report.json "$output/public-auth-live-report.json"
+          PYTHONPATH=control/src python -m psmatrix.cli ga proof-create \
+            --type public-oauth \
+            --input "$output/public-oauth-result.json" \
+            --private-key "$key_root/deployment.private.pem" \
+            --public-key "$key_root/deployment.public.pem" \
+            --output "$output/public-oauth.dsse.json"
+          PYTHONPATH=control/src python -m psmatrix.cli ga proof-verify \
+            --type public-oauth \
+            --attestation "$output/public-oauth.dsse.json" \
+            --public-key "$key_root/deployment.public.pem" >/dev/null
+          cp "$key_root/deployment.public.pem" "$output/deployment-public.pem"
+          PSMATRIX_OAUTH_SIGNED="$output" PYTHONPATH=control/src python - <<'PY'
+          import os
+          from pathlib import Path
+          from psmatrix.ga import verify_ga_proof
+          from psmatrix.signing import public_key_id
+          from psmatrix.util import atomic_write_json, read_json, sha256_file
+
+          root=Path(os.environ['PSMATRIX_OAUTH_SIGNED'])
+          verified=verify_ga_proof(read_json(root/'public-oauth.dsse.json'),expected_type='public-oauth',public_key=root/'deployment-public.pem')
+          result=verified.get('result')
+          if not isinstance(result, dict):
+              raise SystemExit('verified OAuth proof result payload is missing')
+          assertions=result.get('assertions') if isinstance(result.get('assertions'), dict) else {}
+          artifacts=result.get('artifacts') if isinstance(result.get('artifacts'), list) else []
+          live_sha=sha256_file(root/'public-auth-live-report.json')
+          if verified.get('valid') is not True or len(artifacts)!=1 or artifacts[0].get('name')!='public-auth-live-report.json' or artifacts[0].get('sha256')!=live_sha:
+              raise SystemExit('signed OAuth proof did not verify the exact shared live-report subject')
+          required=('external_probe','public_dns','public_tls','oauth_external','discovery_verified','audience_verified','scope_verified','token_expiry_verified','missing_token_rejected','wrong_audience_rejected','missing_scope_rejected','replay_protection_verified','rate_limiting_verified','release_commit_bound')
+          if any(assertions.get(name) is not True for name in required):
+              raise SystemExit('signed OAuth proof lacks one or more required PASS assertions')
+          status={
+              'schema':1,'kind':'psmatrix.final-public-oauth-producer-status','status':'PASS','version':'2.0.0',
+              'endpoint':assertions.get('endpoint'),'live_report_sha256':live_sha,
+              'release_commit':assertions.get('release_commit'),'release_manifest_sha256':assertions.get('release_manifest_sha256'),'release_wheel_sha256':assertions.get('release_wheel_sha256'),
+              'deployment_public_key_sha256':sha256_file(root/'deployment-public.pem'),'deployment_key_id':public_key_id(root/'deployment-public.pem'),
+              'proof_verified':True,'deployment_private_key_copied_to_output':False,'final_ga_evaluator_invoked':False,'ga_eligible':False,
+          }
+          atomic_write_json(root/'public-oauth-producer-status.json',status)
+          markers=(b'-----BEGIN PRIVATE KEY-----',b'-----BEGIN RSA PRIVATE KEY-----',b'-----BEGIN EC PRIVATE KEY-----',b'-----BEGIN OPENSSH PRIVATE KEY-----',b'-----BEGIN ED25519 PRIVATE KEY-----')
+          for path in root.rglob('*'):
+              if path.is_file() and any(marker in path.read_bytes() for marker in markers):
+                  raise SystemExit(f'private-key material found in signed OAuth output: {path.name}')
+          print('signed_public_oauth=PASS')
+          print('final_ga_evaluator_invoked=false')
+          print('ga_eligible=false')
+          PY
+          echo "PSMATRIX_OAUTH_SIGNED=$output" >> "$GITHUB_ENV"
+
+      - name: Upload final deployment-signed OAuth proof
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-2.0.0-final-public-oauth
+          path: ${{ env.PSMATRIX_OAUTH_SIGNED }}
+          if-no-files-found: error
+          retention-days: 30

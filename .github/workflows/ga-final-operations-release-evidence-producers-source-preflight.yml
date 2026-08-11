@@ -1,0 +1,211 @@
+name: production-ga-final-operations-release-evidence-producers-source-preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["final/2.0.0-operations-release-evidence-producers"]
+    paths:
+      - ".github/workflows/ga-final-operations-release-evidence-producers-source-preflight.yml"
+      - ".github/workflows/ga-final-external-otlp.yml"
+      - ".github/workflows/ga-final-key-rotation.yml"
+      - "ga-packs/03-authoritative-windows/final-operations-release-evidence-producer-contract.json"
+      - "scripts/ga/probe_final_external_otlp.py"
+      - "tests/test_final_operations_release_evidence_producers.py"
+  pull_request:
+    branches: ["final/2.0.0-deployment-evidence-producers-anchor-v2"]
+    paths:
+      - ".github/workflows/ga-final-operations-release-evidence-producers-source-preflight.yml"
+      - ".github/workflows/ga-final-external-otlp.yml"
+      - ".github/workflows/ga-final-key-rotation.yml"
+      - "ga-packs/03-authoritative-windows/final-operations-release-evidence-producer-contract.json"
+      - "scripts/ga/probe_final_external_otlp.py"
+      - "tests/test_final_operations_release_evidence_producers.py"
+
+concurrency:
+  group: production-ga-final-operations-release-evidence-producers-source-preflight-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  operations-release-producer-source-preflight:
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 50
+    permissions:
+      contents: read
+    env:
+      PYTHONPATH: ${{ github.workspace }}\src
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+      DEPLOYMENT_PRODUCER_ANCHOR: 2dcf33a91c118b62f0aa4364bccdbb13bc89942c
+      FINAL_RELEASE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
+
+    steps:
+      - name: Verify trusted NAVEAX source runner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') {
+              throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS"
+          }
+          Write-Host 'operations_release_producer_source_runner=PASS'
+
+      - name: Check out exact operations/release producer source with full history
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact six-path closure, authority contracts, and producer count
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($env:EXPECTED_HEAD -cnotmatch '^[0-9a-f]{40}$' -or $head -ne $env:EXPECTED_HEAD.ToLowerInvariant()) { throw "Exact operations/release producer head mismatch: $head / $env:EXPECTED_HEAD" }
+          if (-not [string]::IsNullOrWhiteSpace((git status --porcelain))) { throw 'Operations/release producer source checkout is dirty.' }
+          foreach ($sha in @($env:DEPLOYMENT_PRODUCER_ANCHOR,$env:FINAL_RELEASE_COMMIT)) {
+              git cat-file -e "$sha^{commit}"
+              if ($LASTEXITCODE -ne 0) { throw "Frozen source commit is unavailable: $sha" }
+          }
+          git merge-base --is-ancestor $env:DEPLOYMENT_PRODUCER_ANCHOR $head
+          if ($LASTEXITCODE -ne 0) { throw 'Corrected deployment producer anchor is not an ancestor.' }
+
+          $contract = Get-Content 'ga-packs\03-authoritative-windows\final-operations-release-evidence-producer-contract.json' -Raw | ConvertFrom-Json
+          if ([int]$contract.schema -ne 1 -or [string]$contract.kind -ne 'psmatrix.final-operations-release-evidence-producer-contract') { throw 'Operations/release producer contract identity mismatch.' }
+          if ([string]$contract.version -ne '2.0.0' -or [string]$contract.final_release_commit -ne $env:FINAL_RELEASE_COMMIT -or [string]$contract.deployment_producer_anchor -ne $env:DEPLOYMENT_PRODUCER_ANCHOR) { throw 'Operations/release producer frozen source identity mismatch.' }
+          if ([bool]$contract.control_source.runtime_source_changes_allowed) { throw 'Operations/release producer layer must not permit runtime source changes.' }
+          if ([string]$contract.external_otlp.authority -ne 'operations' -or [string]$contract.external_otlp.signing_environment -ne 'production-ga-operations-signing' -or [bool]$contract.external_otlp.private_key_allowed_in_probe_job) { throw 'External OTLP authority isolation mismatch.' }
+          if ([string]$contract.key_rotation.authority -ne 'release' -or [string]$contract.key_rotation.signing_environment -ne 'production-ga-release-signing' -or [string]$contract.key_rotation.private_signing_key_secret -ne 'PSMATRIX_RELEASE_PRIVATE_KEY' -or [bool]$contract.key_rotation.actual_release_authority_rotation_allowed) { throw 'Key-rotation release-authority boundary mismatch.' }
+          if (-not [bool]$contract.authority_closure.key_rotation_must_share_exact_release_authority_with_signed_release -or -not [bool]$contract.authority_closure.operations_and_release_must_be_independent) { throw 'Operations/release authority closure mismatch.' }
+
+          $changed = @((git diff --name-only "$env:DEPLOYMENT_PRODUCER_ANCHOR..$head") | ForEach-Object { $_.Trim().Replace('\','/') } | Where-Object { $_ } | Sort-Object -Unique)
+          $allowed = @($contract.control_source.changed_path_allowlist | ForEach-Object { ([string]$_).Replace('\','/') } | Sort-Object -Unique)
+          $delta = @(Compare-Object -ReferenceObject $allowed -DifferenceObject $changed)
+          if ($delta.Count -ne 0) { throw "Operations/release producer changed-path closure mismatch: $($delta | Out-String)" }
+          if ($changed.Count -ne 6) { throw "Expected exactly six operations/release producer changed paths; observed $($changed.Count)." }
+          $runtime = @($changed | Where-Object { $_ -like 'src/psmatrix/*' })
+          if ($runtime.Count -ne 0) { throw "Operations/release producer controls modified runtime source: $($runtime -join ',')" }
+
+          $otlp = Get-Content '.github\workflows\ga-final-external-otlp.yml' -Raw
+          $rotation = Get-Content '.github\workflows\ga-final-key-rotation.yml' -Raw
+          $probeJob = $otlp.Split('  sign-external-otlp:')[0]
+          if ($probeJob.Contains('PSMATRIX_GA_OPERATIONS_PRIVATE_KEY') -or $probeJob.Contains('PSMATRIX_GA_OPERATIONS_PUBLIC_KEY')) { throw 'External OTLP probe job must not access operations signing authority.' }
+          if ($otlp.Split('secrets.PSMATRIX_GA_OPERATIONS_PRIVATE_KEY').Count -ne 2) { throw 'External OTLP workflow must reference operations private key exactly once.' }
+          if ($rotation.Split('secrets.PSMATRIX_RELEASE_PRIVATE_KEY').Count -ne 2) { throw 'Key-rotation workflow must reference exact release private key exactly once.' }
+          if ($rotation.Contains('PSMATRIX_GA_RELEASE_PRIVATE_KEY')) { throw 'Key-rotation workflow invented a non-authoritative release private-key secret.' }
+
+          $evaluator = Get-Content 'ga-packs\03-authoritative-windows\final-ga-evaluator-control-contract.json' -Raw | ConvertFrom-Json
+          if ([string]$evaluator.evidence_sources.'external-otlp'.workflow -ne [string]$contract.external_otlp.workflow -or [string]$evaluator.evidence_sources.'external-otlp'.authority -ne 'operations') { throw 'Evaluator external-OTLP identity mismatch.' }
+          if ([string]$evaluator.evidence_sources.'key-rotation'.workflow -ne [string]$contract.key_rotation.workflow -or [string]$evaluator.evidence_sources.'key-rotation'.authority -ne 'release') { throw 'Evaluator key-rotation identity mismatch.' }
+          $gateNames = @($evaluator.required_gates | ForEach-Object { [string]$_ })
+          if ($gateNames.Count -ne 11) { throw 'Evaluator no longer has exactly eleven required gates.' }
+          $present = 0
+          $missing = @()
+          foreach ($gate in $gateNames) {
+              $entry = $evaluator.evidence_sources.$gate
+              $path = [string]$entry.workflow_path
+              if (Test-Path -LiteralPath $path -PathType Leaf) {
+                  $text = Get-Content -LiteralPath $path -Raw
+                  if (-not $text.Contains("name: $([string]$entry.workflow)")) { throw "Producer workflow identity mismatch: $gate / $path" }
+                  $present++
+              } else {
+                  $missing += $gate
+              }
+          }
+          if ($present -ne 8) { throw "This operations/release layer must expose exactly eight of eleven producer sources; observed $present." }
+          $expectedMissing = @('disaster-recovery','security-review','vulnerability-scan')
+          if (@(Compare-Object -ReferenceObject ($expectedMissing | Sort-Object) -DifferenceObject ($missing | Sort-Object)).Count -ne 0) { throw "Unexpected remaining producer gap: $($missing -join ',')" }
+          Write-Host "validated_exact_operations_release_producer_head=$head"
+          Write-Host 'operations_release_producer_control_changed_paths=6'
+          Write-Host 'runtime_source_changes=0'
+          Write-Host "evaluator_producer_sources_present=$present"
+          Write-Host 'evaluator_producer_sources_required=11'
+          Write-Host "evaluator_producer_sources_pending=$($missing -join ',')"
+
+      - name: Compile new operations/release producer controls
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m py_compile `
+            scripts/ga/probe_final_external_otlp.py `
+            tests/test_final_operations_release_evidence_producers.py
+          if ($LASTEXITCODE -ne 0) { throw 'Operations/release producer Python compile failed.' }
+          Write-Host 'operations_release_producer_compile=PASS'
+
+      - name: Run new and inherited final GA producer contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m unittest -v `
+            tests.test_final_operations_release_evidence_producers `
+            tests.test_final_deployment_evidence_producers `
+            tests.test_final_ci_evidence_producers `
+            tests.test_final_ga_evaluator_controls
+          if ($LASTEXITCODE -ne 0) { throw 'Operations/release producer source contract suite failed.' }
+          Write-Host 'operations_release_producer_source_contract=PASS'
+
+      - name: Parse production CLI surfaces without executing external probes or signing
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python scripts/ga/probe_final_external_otlp.py --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'External OTLP probe CLI parse failed.' }
+          python -m psmatrix.cli ops otlp-export --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'OTLP exporter CLI parse failed.' }
+          python -m psmatrix.cli ga proof-create --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'GA proof-create CLI parse failed.' }
+          python -m psmatrix.cli ga proof-verify --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'GA proof-verify CLI parse failed.' }
+          python -m psmatrix.cli ga key-rotation-drill --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'GA key-rotation-drill CLI parse failed.' }
+          Write-Host 'operations_release_producer_cli_parse=PASS'
+
+      - name: Scan every tracked source byte for exact PEM private-authority headers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import subprocess
+          from pathlib import Path
+          markers = {
+              b"-----BEGIN PRIVATE KEY-----",
+              b"-----BEGIN RSA PRIVATE KEY-----",
+              b"-----BEGIN EC PRIVATE KEY-----",
+              b"-----BEGIN OPENSSH PRIVATE KEY-----",
+              b"-----BEGIN ED25519 PRIVATE KEY-----",
+          }
+          root = Path.cwd().resolve()
+          tracked = [line for line in subprocess.check_output(["git", "ls-files"], text=True).splitlines() if line]
+          scanned = 0
+          total = 0
+          for relative in tracked:
+              path = root / relative
+              if not path.is_file():
+                  continue
+              scanned += 1
+              with path.open("rb") as handle:
+                  for raw_line in handle:
+                      total += len(raw_line)
+                      if raw_line.rstrip(b"\r\n").strip() in markers:
+                          raise SystemExit(f"tracked private-key PEM material detected: {relative}")
+          print(f"repository_private_authority_absence=PASS tracked_files={scanned} tracked_bytes={total} size_limit_applied=false")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Tracked-source private authority scan failed.' }
+
+      - name: Emit operations/release producer preparation summary
+        shell: pwsh
+        run: |
+          Write-Host "validated_exact_operations_release_producer_head=$env:EXPECTED_HEAD"
+          Write-Host 'evaluator_producer_sources_present=8'
+          Write-Host 'evaluator_producer_sources_required=11'
+          Write-Host 'external_otlp_producer_executed=false'
+          Write-Host 'key_rotation_producer_executed=false'
+          Write-Host 'external_otlp_probe_credentials_provisioned=UNVERIFIED_EXTERNAL'
+          Write-Host 'operations_authority_provisioned=UNVERIFIED_EXTERNAL'
+          Write-Host 'release_authority_private_half_provisioned=UNVERIFIED_EXTERNAL'
+          Write-Host 'operations_private_key_read=false'
+          Write-Host 'release_private_key_read=false'
+          Write-Host 'actual_release_authority_rotated=false'
+          Write-Host 'final_ga_evaluator_invoked=false'
+          Write-Host 'ga_eligible=false'

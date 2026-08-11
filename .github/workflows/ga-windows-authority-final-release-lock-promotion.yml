@@ -1,0 +1,194 @@
+name: production-ga-windows-authority-final-release-lock-promotion
+
+on:
+  workflow_dispatch:
+    inputs:
+      final_candidate_commit:
+        description: Exact frozen PSMatrix 2.0.0 final release source commit
+        required: true
+        type: string
+      review_run_id:
+        description: Successful final release-lock review workflow run ID
+        required: true
+        type: string
+      reviewed_draft_sha256:
+        description: Human-reviewed SHA-256 of final-release-lock.review-draft.json
+        required: true
+        type: string
+      reviewed_public_key_sha256:
+        description: Human-reviewed SHA-256 of the final release public authority
+        required: true
+        type: string
+
+concurrency:
+  group: production-ga-windows-authority-final-release-lock-promotion
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  promote-final-lock-candidate:
+    name: Build exact final active-lock repository commit candidate
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    env:
+      FINAL_CANDIDATE_COMMIT: ${{ inputs.final_candidate_commit }}
+      REVIEW_RUN_ID: ${{ inputs.review_run_id }}
+      REVIEWED_DRAFT_SHA256: ${{ inputs.reviewed_draft_sha256 }}
+      REVIEWED_PUBLIC_KEY_SHA256: ${{ inputs.reviewed_public_key_sha256 }}
+      PROMOTION_RUN_ID: ${{ github.run_id }}
+
+    steps:
+      - name: Validate final lock-promotion dispatch identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') {
+              throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS"
+          }
+          if ($env:FINAL_CANDIDATE_COMMIT -cnotmatch '^[0-9a-f]{40}$') { throw 'final_candidate_commit must be 40 lowercase hex characters.' }
+          foreach ($name in @('REVIEW_RUN_ID','PROMOTION_RUN_ID')) {
+              $value = [Environment]::GetEnvironmentVariable($name)
+              if ($value -cnotmatch '^[0-9]+$') { throw "$name must contain only decimal digits." }
+          }
+          if ($env:REVIEW_RUN_ID -eq $env:PROMOTION_RUN_ID) { throw 'Review and promotion run IDs must be distinct.' }
+          foreach ($name in @('REVIEWED_DRAFT_SHA256','REVIEWED_PUBLIC_KEY_SHA256')) {
+              $value = [Environment]::GetEnvironmentVariable($name)
+              if ($value -cnotmatch '^[0-9a-f]{64}$') { throw "$name must contain exactly 64 lowercase hexadecimal characters." }
+          }
+
+      - name: Check out exact promotion controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify clean promotion control and inactive final lock state
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $control = Join-Path $env:GITHUB_WORKSPACE 'control'
+          $head = (git -C $control rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($head -ne $env:GITHUB_SHA.ToLowerInvariant()) { throw 'Final lock-promotion control checkout is not exact GITHUB_SHA.' }
+          if (-not [string]::IsNullOrWhiteSpace((git -C $control status --porcelain))) { throw 'Final lock-promotion control checkout is dirty.' }
+          $contract = Get-Content (Join-Path $control 'ga-packs\03-authoritative-windows\final-release-lock-signing-control-contract.json') -Raw | ConvertFrom-Json
+          if ([string]$contract.final_release_commit -ne $env:FINAL_CANDIDATE_COMMIT) { throw 'Dispatch final candidate differs from frozen lock/signing contract.' }
+          foreach ($path in @(
+              (Join-Path $control 'ga-packs\03-authoritative-windows\final-release-lock.json'),
+              (Join-Path $control 'release-assets\2.0.0\psmatrix-2.0.0-release-public.pem')
+          )) {
+              if (Test-Path -LiteralPath $path -PathType Leaf) { throw "An active final lock/public authority already exists: $path" }
+          }
+          "PSMATRIX_FINAL_PROMOTION_CONTROL_HEAD=$head" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "final_promotion_control_head=$head"
+
+      - name: Validate exact final lock-review provenance before download
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import json
+          import os
+          import urllib.request
+
+          repo = 'Naveax/PSMatrix'
+          run_id = os.environ['REVIEW_RUN_ID']
+          control_head = os.environ['PSMATRIX_FINAL_PROMOTION_CONTROL_HEAD'].lower()
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {os.environ["GH_TOKEN"]}',
+              'X-GitHub-Api-Version': '2026-03-10',
+              'User-Agent': 'psmatrix-final-lock-promotion',
+          }
+          def fetch(path):
+              request = urllib.request.Request(f'https://api.github.com/repos/{repo}/{path}', headers=headers)
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+          run = fetch(f'actions/runs/{run_id}')
+          if run.get('name') != 'production-ga-windows-authority-final-release-lock-review':
+              raise SystemExit(f'unexpected final lock-review workflow name: {run.get("name")!r}')
+          if run.get('event') != 'workflow_dispatch' or run.get('status') != 'completed' or run.get('conclusion') != 'success':
+              raise SystemExit('final lock-review run is not a successful workflow_dispatch')
+          if (run.get('head_sha') or '').lower() != control_head:
+              raise SystemExit('final lock-review run did not execute from this exact promotion control head')
+          artifacts = fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts', [])
+          matches = [item for item in artifacts if item.get('name') == 'psmatrix-2.0.0-final-release-lock-review' and not item.get('expired')]
+          if len(matches) != 1:
+              raise SystemExit(f'expected exactly one non-expired final lock-review artifact; found {len(matches)}')
+          print(f'final_review_run_provenance=PASS run_id={run_id} artifact_id={matches[0].get("id")}')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Final lock-review provenance validation failed.' }
+
+      - name: Download exact human-reviewed final lock bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-final-release-lock-review
+          path: review
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.review_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Materialize exact final lock repository-commit candidate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:RUNNER_TEMP 'psmatrix-2.0.0-final-release-lock-promotion'
+          if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
+          & python `
+            (Join-Path $env:GITHUB_WORKSPACE 'control\scripts\ga\promote_windows_authority_final_release_lock.py') `
+            --review-root (Join-Path $env:GITHUB_WORKSPACE 'review') `
+            --output-root $output `
+            --final-candidate-commit $env:FINAL_CANDIDATE_COMMIT `
+            --promotion-control-head $env:PSMATRIX_FINAL_PROMOTION_CONTROL_HEAD `
+            --promotion-run-id $env:PROMOTION_RUN_ID `
+            --review-run-id $env:REVIEW_RUN_ID `
+            --reviewed-draft-sha256 $env:REVIEWED_DRAFT_SHA256 `
+            --reviewed-public-key-sha256 $env:REVIEWED_PUBLIC_KEY_SHA256
+          if ($LASTEXITCODE -ne 0) { throw 'Final release-lock promotion candidate build failed.' }
+          "PSMATRIX_FINAL_LOCK_PROMOTION=$output" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Enforce final lock promotion candidate boundary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reportPath = Join-Path $env:PSMATRIX_FINAL_LOCK_PROMOTION 'final-release-lock-promotion.json'
+          $lockPath = Join-Path $env:PSMATRIX_FINAL_LOCK_PROMOTION 'ga-packs\03-authoritative-windows\final-release-lock.json'
+          $publicPath = Join-Path $env:PSMATRIX_FINAL_LOCK_PROMOTION 'release-assets\2.0.0\psmatrix-2.0.0-release-public.pem'
+          foreach ($path in @($reportPath,$lockPath,$publicPath)) {
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Final lock-promotion output missing: $path" }
+          }
+          $report = Get-Content $reportPath -Raw | ConvertFrom-Json
+          $lock = Get-Content $lockPath -Raw | ConvertFrom-Json
+          if ([string]$report.status -ne 'READY_FOR_EXACT_REPOSITORY_COMMIT') { throw 'Final lock-promotion report status mismatch.' }
+          if ([string]$report.final_candidate_commit -ne $env:FINAL_CANDIDATE_COMMIT -or [string]$report.promotion_control_head -ne $env:PSMATRIX_FINAL_PROMOTION_CONTROL_HEAD) { throw 'Final lock-promotion identity mismatch.' }
+          if ([string]$report.promotion_run_id -ne $env:PROMOTION_RUN_ID -or [string]$report.review_run_id -ne $env:REVIEW_RUN_ID) { throw 'Final lock-promotion run provenance mismatch.' }
+          if ([string]$lock.kind -ne 'psmatrix.windows-authority-final-release-staging-lock' -or [string]$lock.version -ne '2.0.0' -or [string]$lock.release_commit -ne $env:FINAL_CANDIDATE_COMMIT) { throw 'Promoted final lock identity mismatch.' }
+          if ([string]$lock.promotion_state -ne 'READY_FOR_EXACT_REPOSITORY_COMMIT') { throw 'Promoted final lock is not repository-commit-ready.' }
+          if ([bool]$lock.promotion_evidence.human_review_bound -ne $true -or [bool]$lock.promotion_evidence.repository_commit_required -ne $true) { throw 'Promoted final lock lacks review/commit boundaries.' }
+          foreach ($value in @($report,$lock)) {
+              foreach ($field in @('release_artifacts_signed','final_windows_evidence_rebound','final_ga_evaluator_invoked','authoritative','ga_eligible')) {
+                  if ([bool]$value.$field) { throw "Unsafe final lock-promotion field is true: $field" }
+              }
+          }
+          if ([bool]$report.repository_mutated) { throw 'Promotion workflow must not mutate the repository.' }
+          Write-Host 'final_lock_promotion_candidate=PASS'
+          Write-Host 'repository_mutated=false'
+          Write-Host 'release_artifacts_signed=false'
+          Write-Host 'final_ga_evaluator_invoked=false'
+          Write-Host 'ga_eligible=false'
+
+      - name: Upload exact final lock repository-commit candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-2.0.0-final-release-lock-promotion-candidate
+          path: ${{ env.PSMATRIX_FINAL_LOCK_PROMOTION }}
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,200 @@
+name: production-ga-windows-authority-rc4-release-lock-promotion
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_commit:
+        description: Exact reviewed RC4 candidate commit from enrollment/staging/review
+        required: true
+        type: string
+      review_run_id:
+        description: Successful RC4 release-lock review workflow run ID
+        required: true
+        type: string
+      reviewed_draft_sha256:
+        description: Human-reviewed SHA-256 of rc4-release-lock.review-draft.json
+        required: true
+        type: string
+      reviewed_public_key_sha256:
+        description: Human-reviewed SHA-256 of the proposed RC4 release public key
+        required: true
+        type: string
+
+concurrency:
+  group: production-ga-windows-authority-rc4-release-lock-promotion
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  promote-lock-candidate:
+    name: Build exact RC4 active-lock repository commit candidate
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    env:
+      CANDIDATE_COMMIT: ${{ inputs.candidate_commit }}
+      REVIEW_RUN_ID: ${{ inputs.review_run_id }}
+      REVIEWED_DRAFT_SHA256: ${{ inputs.reviewed_draft_sha256 }}
+      REVIEWED_PUBLIC_KEY_SHA256: ${{ inputs.reviewed_public_key_sha256 }}
+      PROMOTION_RUN_ID: ${{ github.run_id }}
+
+    steps:
+      - name: Validate promotion dispatch inputs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') {
+              throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS"
+          }
+          if ($env:CANDIDATE_COMMIT -cnotmatch '^[0-9a-f]{40}$') { throw 'candidate_commit must be 40 lowercase hex characters.' }
+          foreach ($name in @('REVIEW_RUN_ID','PROMOTION_RUN_ID')) {
+              $value = [Environment]::GetEnvironmentVariable($name)
+              if ($value -cnotmatch '^[0-9]+$') { throw "$name must contain only decimal digits." }
+          }
+          if ($env:REVIEW_RUN_ID -eq $env:PROMOTION_RUN_ID) { throw 'Review and promotion run IDs must be distinct.' }
+          foreach ($name in @('REVIEWED_DRAFT_SHA256','REVIEWED_PUBLIC_KEY_SHA256')) {
+              $value = [Environment]::GetEnvironmentVariable($name)
+              if ($value -cnotmatch '^[0-9a-f]{64}$') { throw "$name must contain exactly 64 lowercase hexadecimal characters." }
+          }
+          Write-Host 'promotion_dispatch_identity=PASS'
+
+      - name: Check out promotion controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify clean control head and absence of an already active RC4 lock
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $control = Join-Path $env:GITHUB_WORKSPACE 'control'
+          $head = (git -C $control rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $head -cnotmatch '^[0-9a-f]{40}$' -or $head -ne $env:GITHUB_SHA.ToLowerInvariant()) { throw 'Promotion control checkout is not the exact workflow control head.' }
+          if (-not [string]::IsNullOrWhiteSpace((git -C $control status --porcelain))) { throw 'Promotion control checkout is dirty.' }
+          $activeLock = Join-Path $control 'ga-packs\03-authoritative-windows\rc4-release-lock.json'
+          if (Test-Path -LiteralPath $activeLock -PathType Leaf) {
+              throw 'An active RC4 release lock already exists; promotion candidate generation is no longer allowed from this workflow.'
+          }
+          "PSMATRIX_RC4_PROMOTION_CONTROL_HEAD=$head" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "promotion_control_head=$head"
+          Write-Host 'preexisting_active_rc4_lock=false'
+
+      - name: Validate review workflow provenance before download
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import json
+          import os
+          import urllib.request
+
+          repo = 'Naveax/PSMatrix'
+          run_id = os.environ['REVIEW_RUN_ID']
+          candidate = os.environ['CANDIDATE_COMMIT'].lower()
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {os.environ["GH_TOKEN"]}',
+              'X-GitHub-Api-Version': '2026-03-10',
+              'User-Agent': 'psmatrix-rc4-lock-promotion',
+          }
+
+          def fetch(path):
+              request = urllib.request.Request(f'https://api.github.com/repos/{repo}/{path}', headers=headers)
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+
+          run = fetch(f'actions/runs/{run_id}')
+          if run.get('name') != 'production-ga-windows-authority-rc4-release-lock-review':
+              raise SystemExit(f'unexpected review workflow name: {run.get("name")!r}')
+          if run.get('event') != 'workflow_dispatch':
+              raise SystemExit('RC4 lock-review run is not workflow_dispatch')
+          if run.get('status') != 'completed' or run.get('conclusion') != 'success':
+              raise SystemExit('RC4 lock-review run is not completed successfully')
+          if (run.get('head_sha') or '').lower() != candidate:
+              raise SystemExit('RC4 lock-review run did not execute from the exact reviewed candidate head')
+          artifacts = fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts', [])
+          matches = [item for item in artifacts if item.get('name') == 'psmatrix-2.0.0rc4-release-lock-review' and not item.get('expired')]
+          if len(matches) != 1:
+              raise SystemExit(f'expected exactly one non-expired RC4 lock-review artifact; found {len(matches)}')
+          print(f'review_run_provenance=PASS run_id={run_id} artifact_id={matches[0].get("id")}')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'RC4 lock-review provenance validation failed.' }
+
+      - name: Download exact reviewed RC4 lock bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0rc4-release-lock-review
+          path: review
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.review_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Materialize exact repository-commit candidate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:RUNNER_TEMP 'psmatrix-2.0.0rc4-release-lock-promotion'
+          if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
+          & python `
+              (Join-Path $env:GITHUB_WORKSPACE 'control\scripts\ga\promote_windows_authority_rc4_release_lock.py') `
+              --review-root (Join-Path $env:GITHUB_WORKSPACE 'review') `
+              --output-root $output `
+              --candidate-commit $env:CANDIDATE_COMMIT `
+              --promotion-control-head $env:PSMATRIX_RC4_PROMOTION_CONTROL_HEAD `
+              --promotion-run-id $env:PROMOTION_RUN_ID `
+              --review-run-id $env:REVIEW_RUN_ID `
+              --reviewed-draft-sha256 $env:REVIEWED_DRAFT_SHA256 `
+              --reviewed-public-key-sha256 $env:REVIEWED_PUBLIC_KEY_SHA256
+          if ($LASTEXITCODE -ne 0) { throw 'RC4 release-lock promotion candidate build failed.' }
+          "PSMATRIX_RC4_PROMOTION=$output" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Enforce promotion candidate boundary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reportPath = Join-Path $env:PSMATRIX_RC4_PROMOTION 'rc4-release-lock-promotion.json'
+          $lockPath = Join-Path $env:PSMATRIX_RC4_PROMOTION 'ga-packs\03-authoritative-windows\rc4-release-lock.json'
+          $publicPath = Join-Path $env:PSMATRIX_RC4_PROMOTION 'release-assets\2.0.0rc4\psmatrix-2.0.0rc4-release-public.pem'
+          foreach ($path in @($reportPath,$lockPath,$publicPath)) {
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "RC4 promotion output is missing: $path" }
+          }
+          $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+          $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+          if ([string]$report.status -ne 'READY_FOR_EXACT_REPOSITORY_COMMIT') { throw 'RC4 promotion report status mismatch.' }
+          if ([string]$report.candidate_commit -ne $env:CANDIDATE_COMMIT) { throw 'RC4 promotion report candidate mismatch.' }
+          if ([string]$report.promotion_control_head -ne $env:PSMATRIX_RC4_PROMOTION_CONTROL_HEAD) { throw 'RC4 promotion control-head mismatch.' }
+          if ([string]$report.promotion_run_id -ne $env:PROMOTION_RUN_ID -or [string]$report.review_run_id -ne $env:REVIEW_RUN_ID) { throw 'RC4 promotion run provenance mismatch.' }
+          if ([bool]$report.repository_mutated -or [bool]$report.release_artifacts_signed -or [bool]$report.authoritative -or [bool]$report.ga_eligible) { throw 'RC4 promotion report improperly claims mutation/signing/authority.' }
+          if ([string]$lock.promotion_state -ne 'READY_FOR_EXACT_REPOSITORY_COMMIT') { throw 'Promoted RC4 lock is not repository-commit-ready.' }
+          if ([string]$lock.release_commit -ne $env:CANDIDATE_COMMIT -or [string]$lock.version -ne '2.0.0rc4') { throw 'Promoted RC4 lock identity mismatch.' }
+          if ([bool]$lock.release_artifacts_signed -or [bool]$lock.authoritative -or [bool]$lock.ga_eligible) { throw 'Promoted RC4 lock improperly claims signed/authority state.' }
+          if ([string]$lock.promotion_evidence.promotion_run_id -ne $env:PROMOTION_RUN_ID -or [string]$lock.promotion_evidence.review_run_id -ne $env:REVIEW_RUN_ID -or [string]$lock.promotion_evidence.promotion_control_head -ne $env:PSMATRIX_RC4_PROMOTION_CONTROL_HEAD) { throw 'Promoted RC4 lock provenance mismatch.' }
+          if ([bool]$lock.promotion_evidence.human_review_bound -ne $true -or [bool]$lock.promotion_evidence.repository_commit_required -ne $true) { throw 'Promoted RC4 lock is missing review/commit boundaries.' }
+
+          $privateMarkers = @('-----BEGIN PRIVATE KEY-----','-----BEGIN RSA PRIVATE KEY-----','-----BEGIN EC PRIVATE KEY-----','-----BEGIN OPENSSH PRIVATE KEY-----')
+          foreach ($file in Get-ChildItem -LiteralPath $env:PSMATRIX_RC4_PROMOTION -Recurse -File) {
+              $text = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($file.FullName))
+              foreach ($marker in $privateMarkers) {
+                  if ($text.Contains($marker)) { throw "Private-key material found in RC4 promotion output: $($file.Name)" }
+              }
+          }
+          Write-Host 'rc4_lock_promotion_candidate=PASS'
+          Write-Host 'repository_mutated=false'
+          Write-Host 'release_artifacts_signed=false'
+
+      - name: Upload exact RC4 lock repository-commit candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-2.0.0rc4-release-lock-promotion-candidate
+          path: ${{ env.PSMATRIX_RC4_PROMOTION }}
+          if-no-files-found: error
+          retention-days: 30

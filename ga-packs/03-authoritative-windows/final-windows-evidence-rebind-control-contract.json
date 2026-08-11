@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-authority-final-windows-evidence-rebind-control-contract",
+  "pack": "03-authoritative-windows",
+  "rc4_release": {
+    "version": "2.0.0rc4",
+    "release_commit": "0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63",
+    "hardened_closure_workflow": "production-ga-windows-authority-rc4-candidate-closure-selfhosted",
+    "hardened_closure_artifact": "windows-authority-rc4-candidate-closure",
+    "certification_workflow": "production-ga-windows-authority-rc4-certification-campaign-selfhosted",
+    "certification_artifact": "windows-authority-rc4-certification-evidence"
+  },
+  "final_release": {
+    "version": "2.0.0",
+    "release_commit": "02cef95d40cf524ce00f9d917188343dc49e6f2c",
+    "protected_signing_workflow": "production-ga-windows-authority-final-release-sign-from-lock",
+    "protected_signing_artifact": "psmatrix-2.0.0-protected-release",
+    "release_manifest": "psmatrix-2.0.0-release.json",
+    "release_public_key": "psmatrix-2.0.0-release-public.pem"
+  },
+  "source_equivalence": {
+    "rc4_must_be_ancestor_of_final": true,
+    "runtime_changed_paths": ["src/psmatrix/__init__.py"],
+    "authoritative_fixture_changed_paths": [],
+    "normalized_init_must_match": true,
+    "rc4_version_literal": "2.0.0rc4",
+    "final_version_literal": "2.0.0"
+  },
+  "windows_authority": {
+    "protected_environment": "production-ga-windows-lab",
+    "required_runner_labels": ["self-hosted", "Windows", "X64", "psmatrix-hyperv"],
+    "private_key_secret": "PSMATRIX_WINDOWS_LAB_PRIVATE_KEY",
+    "public_key_secret": "PSMATRIX_WINDOWS_LAB_PUBLIC_KEY",
+    "required_runtimes": ["windows-powershell-4.0", "windows-powershell-5.0", "windows-powershell-5.1"],
+    "reuse_existing_campaign_records": true,
+    "rerun_campaign": false,
+    "contact_workers": false,
+    "create_or_mutate_virtual_machines": false
+  },
+  "output": {
+    "status": "FINAL_WINDOWS_EVIDENCE_REBOUND_GA_EVALUATOR_PENDING",
+    "authoritative_windows": true,
+    "release_bound": true,
+    "final_windows_evidence_rebound": true,
+    "campaigns_reused_without_rerun": true,
+    "final_ga_evaluator_invoked": false,
+    "ga_eligible": false
+  },
+  "control_source": {
+    "runtime_source_changes_allowed": false,
+    "changed_path_allowlist": [
+      ".github/workflows/ga-windows-authority-final-windows-evidence-rebind-source-preflight.yml",
+      ".github/workflows/ga-windows-authority-final-windows-evidence-rebind.yml",
+      "ga-packs/03-authoritative-windows/final-windows-evidence-rebind-control-contract.json",
+      "scripts/ga/rebind_windows_authority_final_release.py",
+      "tests/test_windows_authority_final_windows_evidence_rebind.py"
+    ]
+  }
+}

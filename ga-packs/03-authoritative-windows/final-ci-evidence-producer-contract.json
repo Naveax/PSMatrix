@@ -1,0 +1,80 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.final-ci-evidence-producer-contract",
+  "version": "2.0.0",
+  "final_release_commit": "02cef95d40cf524ce00f9d917188343dc49e6f2c",
+  "evaluator_anchor": "c5d4e14b36b84bddb7145762bbc4e4f1fe9a35f3",
+  "signed_release": {
+    "workflow": "production-ga-windows-authority-final-release-sign-from-lock",
+    "artifact": "psmatrix-2.0.0-protected-release",
+    "manifest": "psmatrix-2.0.0-release.json",
+    "public_key": "psmatrix-2.0.0-release-public.pem",
+    "signing_status": "psmatrix-2.0.0-protected-release-signing-status.json"
+  },
+  "validation_summary": {
+    "workflow": "production-ga-final-validation-summary",
+    "workflow_path": ".github/workflows/ga-final-validation-summary.yml",
+    "artifact": "psmatrix-2.0.0-final-validation-summary",
+    "summary": "validation-summary.json",
+    "attestation": "validation-summary.dsse.json",
+    "public_key": "ci-public.pem",
+    "rebuild_final_artifacts": true,
+    "offline_install_required": true,
+    "platform_neutral_suite_required": true,
+    "suite_skips_allowed": false
+  },
+  "full_runtime_matrix": {
+    "workflow": "production-ga-final-full-runtime-matrix",
+    "workflow_path": ".github/workflows/ga-final-full-runtime-matrix.yml",
+    "artifact": "psmatrix-2.0.0-final-full-runtime-matrix",
+    "report": "full-matrix-report.json",
+    "attestation": "full-matrix-report.dsse.json",
+    "release_binding": "full-matrix-release-binding.json",
+    "public_key": "ci-public.pem",
+    "canonical_target_count": 25,
+    "remote_target_count": 13,
+    "ready_target_count_required": 25,
+    "differential_mode": "strict",
+    "inline_allowances_allowed": false,
+    "nonempty_allowance_manifest_allowed": false,
+    "endpoint_environment": "production-ga-full-matrix",
+    "endpoint_root_variable": "PSMATRIX_FULL_MATRIX_ENDPOINT_ROOT",
+    "home_variable": "PSMATRIX_FULL_MATRIX_HOME",
+    "ambient_default_home_allowed": false,
+    "probe": "scripts/ga/full_matrix_probe.ps1"
+  },
+  "ci_authority": {
+    "environment": "production-ga-ci-signing",
+    "private_key_secret": "PSMATRIX_GA_CI_PRIVATE_KEY",
+    "public_key_secret": "PSMATRIX_GA_CI_PUBLIC_KEY",
+    "private_key_allowed_on_persistent_self_hosted_runner": false,
+    "validation_and_matrix_must_share_exact_authority": true
+  },
+  "execution": {
+    "release_run_must_be_successful_workflow_dispatch": true,
+    "release_run_must_share_exact_producer_control_head": true,
+    "release_artifact_must_be_unique_and_nonexpired": true,
+    "private_key_access_only_after_unsigned_evidence_is_complete": true,
+    "production_execution_is_not_source_validation": true
+  },
+  "control_source": {
+    "runtime_source_changes_allowed": false,
+    "changed_path_allowlist": [
+      ".github/workflows/ga-final-ci-evidence-producers-source-preflight.yml",
+      ".github/workflows/ga-final-full-runtime-matrix.yml",
+      ".github/workflows/ga-final-validation-summary.yml",
+      "ga-packs/03-authoritative-windows/final-ci-evidence-producer-contract.json",
+      "scripts/ga/build_final_validation_summary.py",
+      "scripts/ga/full_matrix_probe.ps1",
+      "tests/test_final_ci_evidence_producers.py"
+    ]
+  },
+  "preparation_state": {
+    "validation_producer_executed": false,
+    "full_matrix_producer_executed": false,
+    "ci_private_key_read": false,
+    "evaluator_producer_sources_present_after_this_layer": 4,
+    "evaluator_producer_sources_required": 11,
+    "ga_eligible": false
+  }
+}

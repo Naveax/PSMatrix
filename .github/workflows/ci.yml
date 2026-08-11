@@ -115,12 +115,22 @@ jobs:
           $linuxNativeModules = @(
               'test_integration.py'
           )
+          $packageVersion = (python -c "import psmatrix; print(psmatrix.__version__)").Trim()
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($packageVersion)) {
+              throw 'Unable to resolve package version for phase-specific CI selection.'
+          }
           $executedModules = 0
           $deferredModules = @()
+          $releaseCandidateDeferred = @()
           foreach ($file in $files) {
               if ($linuxNativeModules -contains $file.Name) {
                   $deferredModules += $file.Name
                   Write-Host "deferred_to_manual_linux_integration=$($file.Name)"
+                  continue
+              }
+              if ($packageVersion -ne '2.0.0rc4' -and $file.Name -like 'test_windows_authority_rc4_*.py') {
+                  $releaseCandidateDeferred += $file.Name
+                  Write-Host "deferred_to_rc4_release_preflight=$($file.Name) package_version=$packageVersion"
                   continue
               }
               $module = 'tests.' + [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
@@ -144,7 +154,12 @@ jobs:
           if ($deferredModules -notcontains 'test_integration.py') {
               throw 'Linux-native integration fixture was not explicitly deferred.'
           }
+          if ($packageVersion -eq '2.0.0' -and $releaseCandidateDeferred.Count -lt 1) {
+              throw 'Final-version CI expected RC4-only historical runtime modules to be explicitly deferred.'
+          }
           Write-Host "core_tests=PASS modules=$executedModules"
+          Write-Host "current_package_version=$packageVersion"
+          Write-Host "rc4_release_preflight_deferred_modules=$($releaseCandidateDeferred.Count)"
           Write-Host "manual_linux_modules=$($deferredModules -join ','),test_oci.py::integration-cases"
 
       - name: Run product doctor
@@ -162,6 +177,7 @@ jobs:
         shell: pwsh
         run: |
           Write-Host 'ci_policy=trusted-self-hosted-pr-and-main-platform-neutral-core-gate'
+          Write-Host 'release_candidate_runtime_policy=rc4-modules-deferred-on-non-rc4-source'
           Write-Host 'heavy_integration_policy=manual-full-workflow'
           Write-Host 'linux_native_fixture_policy=manual-linux-integration'
           Write-Host "run_id=$env:GITHUB_RUN_ID"

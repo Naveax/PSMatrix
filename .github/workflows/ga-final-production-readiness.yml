@@ -1,0 +1,433 @@
+name: production-ga-final-production-readiness
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: production-ga-final-production-readiness
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release-signing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production-ga-release-signing
+    steps:
+      - name: Emit release-signing receipt
+        shell: bash
+        env:
+          CHECK_SECRET_1: ${{ secrets.PSMATRIX_RELEASE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/readiness"
+          python - <<'PY'
+          import json, os
+          from datetime import UTC, datetime
+          from pathlib import Path
+          checks=[{"name":"PSMATRIX_RELEASE_PRIVATE_KEY","source":"secret","present":bool(os.environ.get("CHECK_SECRET_1"))}]
+          status="PASS" if all(item["present"] for item in checks) else "FAIL"
+          Path(os.environ["RUNNER_TEMP"],"readiness","production-ga-release-signing.json").write_text(json.dumps({"schema":1,"kind":"psmatrix.production-readiness-receipt","environment":"production-ga-release-signing","status":status,"checked_at":datetime.now(UTC).isoformat(),"checks":checks},sort_keys=True)+"\n",encoding="utf-8")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-readiness-release-signing
+          path: ${{ runner.temp }}/readiness/production-ga-release-signing.json
+          if-no-files-found: error
+          retention-days: 7
+
+  windows-lab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production-ga-windows-lab
+    steps:
+      - name: Emit Windows-lab receipt
+        shell: bash
+        env:
+          CHECK_SECRET_1: ${{ secrets.PSMATRIX_WINDOWS_LAB_PRIVATE_KEY }}
+          CHECK_SECRET_2: ${{ secrets.PSMATRIX_WINDOWS_LAB_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/readiness"
+          python - <<'PY'
+          import json, os
+          from datetime import UTC, datetime
+          from pathlib import Path
+          checks=[{"name":"PSMATRIX_WINDOWS_LAB_PRIVATE_KEY","source":"secret","present":bool(os.environ.get("CHECK_SECRET_1"))},{"name":"PSMATRIX_WINDOWS_LAB_PUBLIC_KEY","source":"secret","present":bool(os.environ.get("CHECK_SECRET_2"))}]
+          status="PASS" if all(item["present"] for item in checks) else "FAIL"
+          Path(os.environ["RUNNER_TEMP"],"readiness","production-ga-windows-lab.json").write_text(json.dumps({"schema":1,"kind":"psmatrix.production-readiness-receipt","environment":"production-ga-windows-lab","status":status,"checked_at":datetime.now(UTC).isoformat(),"checks":checks},sort_keys=True)+"\n",encoding="utf-8")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-readiness-windows-lab
+          path: ${{ runner.temp }}/readiness/production-ga-windows-lab.json
+          if-no-files-found: error
+          retention-days: 7
+
+  ci-signing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production-ga-ci-signing
+    steps:
+      - name: Emit CI-signing receipt
+        shell: bash
+        env:
+          CHECK_SECRET_1: ${{ secrets.PSMATRIX_GA_CI_PRIVATE_KEY }}
+          CHECK_SECRET_2: ${{ secrets.PSMATRIX_GA_CI_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/readiness"
+          python - <<'PY'
+          import json, os
+          from datetime import UTC, datetime
+          from pathlib import Path
+          checks=[{"name":"PSMATRIX_GA_CI_PRIVATE_KEY","source":"secret","present":bool(os.environ.get("CHECK_SECRET_1"))},{"name":"PSMATRIX_GA_CI_PUBLIC_KEY","source":"secret","present":bool(os.environ.get("CHECK_SECRET_2"))}]
+          status="PASS" if all(item["present"] for item in checks) else "FAIL"
+          Path(os.environ["RUNNER_TEMP"],"readiness","production-ga-ci-signing.json").write_text(json.dumps({"schema":1,"kind":"psmatrix.production-readiness-receipt","environment":"production-ga-ci-signing","status":status,"checked_at":datetime.now(UTC).isoformat(),"checks":checks},sort_keys=True)+"\n",encoding="utf-8")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-readiness-ci-signing
+          path: ${{ runner.temp }}/readiness/production-ga-ci-signing.json
+          if-no-files-found: error
+          retention-days: 7
+
+  full-matrix:
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 5
+    environment: production-ga-full-matrix
+    env:
+      CHECK_VAR_1: ${{ vars.PSMATRIX_FULL_MATRIX_ENDPOINT_ROOT }}
+      CHECK_VAR_2: ${{ vars.PSMATRIX_FULL_MATRIX_HOME }}
+    steps:
+      - name: Emit full-matrix path receipt
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') { throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS" }
+          New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP 'readiness') -Force | Out-Null
+          @'
+          import json, os
+          from datetime import UTC, datetime
+          from pathlib import Path
+          rows=[]
+          for name,key in (("PSMATRIX_FULL_MATRIX_ENDPOINT_ROOT","CHECK_VAR_1"),("PSMATRIX_FULL_MATRIX_HOME","CHECK_VAR_2")):
+              raw=os.environ.get(key,"")
+              rows.append({"name":name,"source":"var","present":bool(raw),"path_exists":bool(raw) and Path(raw).is_dir()})
+          status="PASS" if all(item["present"] and item["path_exists"] for item in rows) else "FAIL"
+          Path(os.environ["RUNNER_TEMP"],"readiness","production-ga-full-matrix.json").write_text(json.dumps({"schema":1,"kind":"psmatrix.production-readiness-receipt","environment":"production-ga-full-matrix","status":status,"checked_at":datetime.now(UTC).isoformat(),"checks":rows},sort_keys=True)+"\n",encoding="utf-8")
+          '@ | python -
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-readiness-full-matrix
+          path: ${{ runner.temp }}\readiness\production-ga-full-matrix.json
+          if-no-files-found: error
+          retention-days: 7
+
+  public-auth-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production-ga-public-auth-probe
+    env:
+      CHECK_SECRET_1: ${{ secrets.PSMATRIX_OAUTH_VALID_TOKEN }}
+      CHECK_SECRET_2: ${{ secrets.PSMATRIX_OAUTH_EXPIRED_TOKEN }}
+      CHECK_SECRET_3: ${{ secrets.PSMATRIX_OAUTH_WRONG_AUDIENCE_TOKEN }}
+      CHECK_SECRET_4: ${{ secrets.PSMATRIX_OAUTH_MISSING_SCOPE_TOKEN }}
+      CHECK_SECRET_5: ${{ secrets.PSMATRIX_OAUTH_REPLAY_TOKEN }}
+      CHECK_SECRET_6: ${{ secrets.PSMATRIX_OAUTH_RATE_LIMIT_TOKEN }}
+      CHECK_SECRET_7: ${{ secrets.PSMATRIX_MTLS_CURRENT_CERT }}
+      CHECK_SECRET_8: ${{ secrets.PSMATRIX_MTLS_CURRENT_KEY }}
+      CHECK_SECRET_9: ${{ secrets.PSMATRIX_MTLS_ROTATION_CERT }}
+      CHECK_SECRET_10: ${{ secrets.PSMATRIX_MTLS_ROTATION_KEY }}
+      CHECK_SECRET_11: ${{ secrets.PSMATRIX_MTLS_UNTRUSTED_CERT }}
+      CHECK_SECRET_12: ${{ secrets.PSMATRIX_MTLS_UNTRUSTED_KEY }}
+      CHECK_SECRET_13: ${{ secrets.PSMATRIX_MTLS_REVOKED_CERT }}
+      CHECK_SECRET_14: ${{ secrets.PSMATRIX_MTLS_REVOKED_KEY }}
+      CHECK_VAR_1: ${{ vars.PSMATRIX_OAUTH_ENDPOINT }}
+      CHECK_VAR_2: ${{ vars.PSMATRIX_OAUTH_DISCOVERY_URL }}
+      CHECK_VAR_3: ${{ vars.PSMATRIX_OAUTH_EXPECTED_ISSUER }}
+      CHECK_VAR_4: ${{ vars.PSMATRIX_MTLS_ENDPOINT }}
+      CHECK_VAR_5: ${{ vars.PSMATRIX_MTLS_FINGERPRINT_HEADER }}
+    steps:
+      - name: Emit public-auth receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/readiness"
+          python - <<'PY'
+          import json, os
+          from datetime import UTC, datetime
+          from pathlib import Path
+          secret_names=["PSMATRIX_OAUTH_VALID_TOKEN","PSMATRIX_OAUTH_EXPIRED_TOKEN","PSMATRIX_OAUTH_WRONG_AUDIENCE_TOKEN","PSMATRIX_OAUTH_MISSING_SCOPE_TOKEN","PSMATRIX_OAUTH_REPLAY_TOKEN","PSMATRIX_OAUTH_RATE_LIMIT_TOKEN","PSMATRIX_MTLS_CURRENT_CERT","PSMATRIX_MTLS_CURRENT_KEY","PSMATRIX_MTLS_ROTATION_CERT","PSMATRIX_MTLS_ROTATION_KEY","PSMATRIX_MTLS_UNTRUSTED_CERT","PSMATRIX_MTLS_UNTRUSTED_KEY","PSMATRIX_MTLS_REVOKED_CERT","PSMATRIX_MTLS_REVOKED_KEY"]
+          var_names=["PSMATRIX_OAUTH_ENDPOINT","PSMATRIX_OAUTH_DISCOVERY_URL","PSMATRIX_OAUTH_EXPECTED_ISSUER","PSMATRIX_MTLS_ENDPOINT","PSMATRIX_MTLS_FINGERPRINT_HEADER"]
+          rows=[]
+          for index,name in enumerate(secret_names,1): rows.append({"name":name,"source":"secret","present":bool(os.environ.get(f"CHECK_SECRET_{index}"))})
+          for index,name in enumerate(var_names,1): rows.append({"name":name,"source":"var","present":bool(os.environ.get(f"CHECK_VAR_{index}"))})
+          status="PASS" if all(item["present"] for item in rows) else "FAIL"
+          Path(os.environ["RUNNER_TEMP"],"readiness","production-ga-public-auth-probe.json").write_text(json.dumps({"schema":1,"kind":"psmatrix.production-readiness-receipt","environment":"production-ga-public-auth-probe","status":status,"checked_at":datetime.now(UTC).isoformat(),"checks":rows},sort_keys=True)+"\n",encoding="utf-8")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-readiness-public-auth-probe
+          path: ${{ runner.temp }}/readiness/production-ga-public-auth-probe.json
+          if-no-files-found: error
+          retention-days: 7
+
+  deployment-signing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production-ga-deployment-signing
+    steps:
+      - name: Emit deployment-signing receipt
+        shell: bash
+        env:
+          CHECK_SECRET_1: ${{ secrets.PSMATRIX_GA_DEPLOYMENT_PRIVATE_KEY }}
+          CHECK_SECRET_2: ${{ secrets.PSMATRIX_GA_DEPLOYMENT_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/readiness"
+          python - <<'PY'
+          import json, os
+          from datetime import UTC, datetime
+          from pathlib import Path
+          checks=[{"name":"PSMATRIX_GA_DEPLOYMENT_PRIVATE_KEY","source":"secret","present":bool(os.environ.get("CHECK_SECRET_1"))},{"name":"PSMATRIX_GA_DEPLOYMENT_PUBLIC_KEY","source":"secret","present":bool(os.environ.get("CHECK_SECRET_2"))}]
+          status="PASS" if all(item["present"] for item in checks) else "FAIL"
+          Path(os.environ["RUNNER_TEMP"],"readiness","production-ga-deployment-signing.json").write_text(json.dumps({"schema":1,"kind":"psmatrix.production-readiness-receipt","environment":"production-ga-deployment-signing","status":status,"checked_at":datetime.now(UTC).isoformat(),"checks":checks},sort_keys=True)+"\n",encoding="utf-8")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-readiness-deployment-signing
+          path: ${{ runner.temp }}/readiness/production-ga-deployment-signing.json
+          if-no-files-found: error
+          retention-days: 7
+
+  external-otlp-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production-ga-external-otlp-probe
+    env:
+      CHECK_SECRET_1: ${{ secrets.PSMATRIX_GA_EXTERNAL_OTLP_HEADERS_JSON }}
+      CHECK_VAR_1: ${{ vars.PSMATRIX_GA_EXTERNAL_OTLP_ENDPOINT }}
+    steps:
+      - name: Emit external-OTLP receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/readiness"
+          python - <<'PY'
+          import json, os
+          from datetime import UTC, datetime
+          from pathlib import Path
+          checks=[{"name":"PSMATRIX_GA_EXTERNAL_OTLP_HEADERS_JSON","source":"secret","present":bool(os.environ.get("CHECK_SECRET_1"))},{"name":"PSMATRIX_GA_EXTERNAL_OTLP_ENDPOINT","source":"var","present":bool(os.environ.get("CHECK_VAR_1"))}]
+          status="PASS" if all(item["present"] for item in checks) else "FAIL"
+          Path(os.environ["RUNNER_TEMP"],"readiness","production-ga-external-otlp-probe.json").write_text(json.dumps({"schema":1,"kind":"psmatrix.production-readiness-receipt","environment":"production-ga-external-otlp-probe","status":status,"checked_at":datetime.now(UTC).isoformat(),"checks":checks},sort_keys=True)+"\n",encoding="utf-8")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-readiness-external-otlp-probe
+          path: ${{ runner.temp }}/readiness/production-ga-external-otlp-probe.json
+          if-no-files-found: error
+          retention-days: 7
+
+  operations-signing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production-ga-operations-signing
+    steps:
+      - name: Emit operations-signing receipt
+        shell: bash
+        env:
+          CHECK_SECRET_1: ${{ secrets.PSMATRIX_GA_OPERATIONS_PRIVATE_KEY }}
+          CHECK_SECRET_2: ${{ secrets.PSMATRIX_GA_OPERATIONS_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/readiness"
+          python - <<'PY'
+          import json, os
+          from datetime import UTC, datetime
+          from pathlib import Path
+          checks=[{"name":"PSMATRIX_GA_OPERATIONS_PRIVATE_KEY","source":"secret","present":bool(os.environ.get("CHECK_SECRET_1"))},{"name":"PSMATRIX_GA_OPERATIONS_PUBLIC_KEY","source":"secret","present":bool(os.environ.get("CHECK_SECRET_2"))}]
+          status="PASS" if all(item["present"] for item in checks) else "FAIL"
+          Path(os.environ["RUNNER_TEMP"],"readiness","production-ga-operations-signing.json").write_text(json.dumps({"schema":1,"kind":"psmatrix.production-readiness-receipt","environment":"production-ga-operations-signing","status":status,"checked_at":datetime.now(UTC).isoformat(),"checks":checks},sort_keys=True)+"\n",encoding="utf-8")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-readiness-operations-signing
+          path: ${{ runner.temp }}/readiness/production-ga-operations-signing.json
+          if-no-files-found: error
+          retention-days: 7
+
+  recovery-signing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production-ga-recovery-signing
+    steps:
+      - name: Emit recovery-signing receipt
+        shell: bash
+        env:
+          CHECK_SECRET_1: ${{ secrets.PSMATRIX_GA_RECOVERY_PRIVATE_KEY }}
+          CHECK_SECRET_2: ${{ secrets.PSMATRIX_GA_RECOVERY_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/readiness"
+          python - <<'PY'
+          import json, os
+          from datetime import UTC, datetime
+          from pathlib import Path
+          checks=[{"name":"PSMATRIX_GA_RECOVERY_PRIVATE_KEY","source":"secret","present":bool(os.environ.get("CHECK_SECRET_1"))},{"name":"PSMATRIX_GA_RECOVERY_PUBLIC_KEY","source":"secret","present":bool(os.environ.get("CHECK_SECRET_2"))}]
+          status="PASS" if all(item["present"] for item in checks) else "FAIL"
+          Path(os.environ["RUNNER_TEMP"],"readiness","production-ga-recovery-signing.json").write_text(json.dumps({"schema":1,"kind":"psmatrix.production-readiness-receipt","environment":"production-ga-recovery-signing","status":status,"checked_at":datetime.now(UTC).isoformat(),"checks":checks},sort_keys=True)+"\n",encoding="utf-8")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-readiness-recovery-signing
+          path: ${{ runner.temp }}/readiness/production-ga-recovery-signing.json
+          if-no-files-found: error
+          retention-days: 7
+
+  security-review-signing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production-ga-security-review-signing
+    env:
+      CHECK_SECRET_1: ${{ secrets.PSMATRIX_GA_SECURITY_REVIEW_PRIVATE_KEY }}
+      CHECK_SECRET_2: ${{ secrets.PSMATRIX_GA_SECURITY_REVIEW_PUBLIC_KEY }}
+      CHECK_VAR_1: ${{ vars.PSMATRIX_GA_SECURITY_REVIEW_REPORT_JSON }}
+    steps:
+      - name: Emit security-review receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/readiness"
+          python - <<'PY'
+          import json, os
+          from datetime import UTC, datetime
+          from pathlib import Path
+          checks=[{"name":"PSMATRIX_GA_SECURITY_REVIEW_PRIVATE_KEY","source":"secret","present":bool(os.environ.get("CHECK_SECRET_1"))},{"name":"PSMATRIX_GA_SECURITY_REVIEW_PUBLIC_KEY","source":"secret","present":bool(os.environ.get("CHECK_SECRET_2"))},{"name":"PSMATRIX_GA_SECURITY_REVIEW_REPORT_JSON","source":"var","present":bool(os.environ.get("CHECK_VAR_1"))}]
+          status="PASS" if all(item["present"] for item in checks) else "FAIL"
+          Path(os.environ["RUNNER_TEMP"],"readiness","production-ga-security-review-signing.json").write_text(json.dumps({"schema":1,"kind":"psmatrix.production-readiness-receipt","environment":"production-ga-security-review-signing","status":status,"checked_at":datetime.now(UTC).isoformat(),"checks":checks},sort_keys=True)+"\n",encoding="utf-8")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-readiness-security-review-signing
+          path: ${{ runner.temp }}/readiness/production-ga-security-review-signing.json
+          if-no-files-found: error
+          retention-days: 7
+
+  vulnerability-scanner-signing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production-ga-vulnerability-scanner-signing
+    steps:
+      - name: Emit vulnerability-scanner receipt
+        shell: bash
+        env:
+          CHECK_SECRET_1: ${{ secrets.PSMATRIX_GA_VULNERABILITY_SCANNER_PRIVATE_KEY }}
+          CHECK_SECRET_2: ${{ secrets.PSMATRIX_GA_VULNERABILITY_SCANNER_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/readiness"
+          python - <<'PY'
+          import json, os
+          from datetime import UTC, datetime
+          from pathlib import Path
+          checks=[{"name":"PSMATRIX_GA_VULNERABILITY_SCANNER_PRIVATE_KEY","source":"secret","present":bool(os.environ.get("CHECK_SECRET_1"))},{"name":"PSMATRIX_GA_VULNERABILITY_SCANNER_PUBLIC_KEY","source":"secret","present":bool(os.environ.get("CHECK_SECRET_2"))}]
+          status="PASS" if all(item["present"] for item in checks) else "FAIL"
+          Path(os.environ["RUNNER_TEMP"],"readiness","production-ga-vulnerability-scanner-signing.json").write_text(json.dumps({"schema":1,"kind":"psmatrix.production-readiness-receipt","environment":"production-ga-vulnerability-scanner-signing","status":status,"checked_at":datetime.now(UTC).isoformat(),"checks":checks},sort_keys=True)+"\n",encoding="utf-8")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-readiness-vulnerability-scanner-signing
+          path: ${{ runner.temp }}/readiness/production-ga-vulnerability-scanner-signing.json
+          if-no-files-found: error
+          retention-days: 7
+
+  root-signing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production-ga-root-signing
+    steps:
+      - name: Emit root-signing receipt
+        shell: bash
+        env:
+          CHECK_SECRET_1: ${{ secrets.PSMATRIX_GA_ROOT_PRIVATE_KEY }}
+          CHECK_SECRET_2: ${{ secrets.PSMATRIX_GA_ROOT_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/readiness"
+          python - <<'PY'
+          import json, os
+          from datetime import UTC, datetime
+          from pathlib import Path
+          checks=[{"name":"PSMATRIX_GA_ROOT_PRIVATE_KEY","source":"secret","present":bool(os.environ.get("CHECK_SECRET_1"))},{"name":"PSMATRIX_GA_ROOT_PUBLIC_KEY","source":"secret","present":bool(os.environ.get("CHECK_SECRET_2"))}]
+          status="PASS" if all(item["present"] for item in checks) else "FAIL"
+          Path(os.environ["RUNNER_TEMP"],"readiness","production-ga-root-signing.json").write_text(json.dumps({"schema":1,"kind":"psmatrix.production-readiness-receipt","environment":"production-ga-root-signing","status":status,"checked_at":datetime.now(UTC).isoformat(),"checks":checks},sort_keys=True)+"\n",encoding="utf-8")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-readiness-root-signing
+          path: ${{ runner.temp }}/readiness/production-ga-root-signing.json
+          if-no-files-found: error
+          retention-days: 7
+
+  summarize-readiness:
+    needs: [release-signing, windows-lab, ci-signing, full-matrix, public-auth-probe, deployment-signing, external-otlp-probe, operations-signing, recovery-signing, security-review-signing, vulnerability-scanner-signing, root-signing]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact readiness controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download all boolean readiness receipts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: psmatrix-readiness-*
+          path: receipts
+          merge-multiple: true
+      - name: Assemble fail-closed production readiness summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/psmatrix-2.0.0-production-readiness"
+          rm -rf "$output" && mkdir -p "$output"
+          set +e
+          PYTHONPATH=control/src python control/scripts/ga/assemble_final_production_readiness.py --contract control/ga-packs/03-authoritative-windows/final-production-readiness-contract.json --receipts-dir receipts --output "$output/production-readiness-summary.json" --require-pass
+          rc=$?
+          set -e
+          [[ -f "$output/production-readiness-summary.json" ]] || { echo 'production readiness summary was not written.' >&2; exit 1; }
+          PSMATRIX_READINESS_OUTPUT="$output" python - <<'PY'
+          import json, os
+          from pathlib import Path
+          value=json.loads((Path(os.environ['PSMATRIX_READINESS_OUTPUT'])/'production-readiness-summary.json').read_text(encoding='utf-8'))
+          if value.get('producer_source_coverage')!=11 or value.get('environment_count')!=12:
+              raise SystemExit('production readiness summary cardinality mismatch')
+          for key in ('secret_values_observed','secret_hashes_observed','secret_lengths_observed','production_evidence_runs_complete','production_evaluator_ready','final_ga_evaluator_invoked','ga_eligible'):
+              if value.get(key) is not False:
+                  raise SystemExit(f'production readiness summary crossed forbidden boundary: {key}')
+          print(f'production_environment_readiness={value.get("status")} passed={value.get("environment_passed")}/12')
+          print('production_evidence_runs_complete=false')
+          print('production_evaluator_ready=false')
+          print('ga_eligible=false')
+          PY
+          echo "PSMATRIX_READINESS_OUTPUT=$output" >> "$GITHUB_ENV"
+          echo "PSMATRIX_READINESS_RC=$rc" >> "$GITHUB_ENV"
+      - name: Upload production readiness summary
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-2.0.0-production-readiness
+          path: ${{ env.PSMATRIX_READINESS_OUTPUT }}
+          if-no-files-found: error
+          retention-days: 30
+      - name: Fail if any required environment configuration is absent
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$PSMATRIX_READINESS_RC" == "0" ]] || { echo 'One or more Production GA environment prerequisites are not ready.' >&2; exit 1; }
+          echo 'production_environment_readiness=PASS'

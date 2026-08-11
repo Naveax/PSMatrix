@@ -1,0 +1,17 @@
+name: legacy-rc4-candidate-closure-source-contract-sentinel
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  legacy-candidate-closure-disabled:
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Legacy RC4 candidate closure intentionally disabled
+        run: |
+          echo "This legacy RC4 candidate-closure workflow is intentionally disabled."
+          echo "Use ga-windows-authority-rc4-candidate-closure-hardened-selfhosted.yml for the production path."

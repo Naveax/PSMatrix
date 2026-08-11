@@ -1,0 +1,246 @@
+name: production-ga-final-public-auth-live-probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_signing_run_id:
+        description: Successful protected final 2.0.0 signing workflow run ID from this exact control head
+        required: true
+        type: string
+
+concurrency:
+  group: production-ga-final-public-auth-live-probe
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  probe-public-auth:
+    name: Probe final public OAuth and mTLS from one external observation root
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: production-ga-public-auth-probe
+    permissions:
+      contents: read
+      actions: read
+    env:
+      RELEASE_SIGNING_RUN_ID: ${{ inputs.release_signing_run_id }}
+      OAUTH_ENDPOINT: ${{ vars.PSMATRIX_OAUTH_ENDPOINT }}
+      OAUTH_DISCOVERY_URL: ${{ vars.PSMATRIX_OAUTH_DISCOVERY_URL }}
+      OAUTH_EXPECTED_ISSUER: ${{ vars.PSMATRIX_OAUTH_EXPECTED_ISSUER }}
+      OAUTH_REQUEST_METHOD: ${{ vars.PSMATRIX_OAUTH_REQUEST_METHOD }}
+      OAUTH_REQUEST_BODY: ${{ vars.PSMATRIX_OAUTH_REQUEST_BODY }}
+      OAUTH_RATE_LIMIT_ATTEMPTS: ${{ vars.PSMATRIX_OAUTH_RATE_LIMIT_ATTEMPTS }}
+      MTLS_ENDPOINT: ${{ vars.PSMATRIX_MTLS_ENDPOINT }}
+      MTLS_REQUEST_METHOD: ${{ vars.PSMATRIX_MTLS_REQUEST_METHOD }}
+      MTLS_REQUEST_BODY: ${{ vars.PSMATRIX_MTLS_REQUEST_BODY }}
+      MTLS_FINGERPRINT_HEADER: ${{ vars.PSMATRIX_MTLS_FINGERPRINT_HEADER }}
+      PUBLIC_AUTH_TIMEOUT_SECONDS: ${{ vars.PSMATRIX_PUBLIC_AUTH_TIMEOUT_SECONDS }}
+
+    steps:
+      - name: Validate public-auth probe dispatch variables
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_SIGNING_RUN_ID" =~ ^[0-9]+$ ]] || { echo 'release_signing_run_id must contain only decimal digits.' >&2; exit 1; }
+          for name in OAUTH_ENDPOINT OAUTH_DISCOVERY_URL OAUTH_EXPECTED_ISSUER MTLS_ENDPOINT MTLS_FINGERPRINT_HEADER; do
+            value="${!name:-}"
+            [[ -n "$value" ]] || { echo "$name is missing from production-ga-public-auth-probe." >&2; exit 1; }
+          done
+          [[ "$OAUTH_ENDPOINT" != "$MTLS_ENDPOINT" ]] || { echo 'OAuth and mTLS endpoints must be different.' >&2; exit 1; }
+          echo 'public_auth_probe_dispatch=PASS'
+
+      - name: Check out exact deployment producer controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Validate exact protected final-signing provenance before download
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=control/src python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import urllib.request
+          from pathlib import Path
+
+          head = subprocess.check_output(['git','-C','control','rev-parse','HEAD'], text=True).strip().lower()
+          if head != os.environ['GITHUB_SHA'].lower():
+              raise SystemExit('public-auth probe control checkout is not exact GITHUB_SHA')
+          if subprocess.check_output(['git','-C','control','status','--porcelain'], text=True).strip():
+              raise SystemExit('public-auth probe control checkout is dirty')
+          contract = json.loads(Path('control/ga-packs/03-authoritative-windows/final-deployment-evidence-producer-contract.json').read_text(encoding='utf-8'))
+          if contract.get('final_release_commit') != '02cef95d40cf524ce00f9d917188343dc49e6f2c':
+              raise SystemExit('public-auth producer contract final release commit mismatch')
+          if contract['shared_live_probe'].get('workflow') != 'production-ga-final-public-auth-live-probe':
+              raise SystemExit('shared live-probe workflow contract mismatch')
+          run_id = os.environ['RELEASE_SIGNING_RUN_ID']
+          headers = {
+              'Accept':'application/vnd.github+json',
+              'Authorization':f'Bearer {os.environ["GH_TOKEN"]}',
+              'X-GitHub-Api-Version':'2026-03-10',
+              'User-Agent':'psmatrix-final-public-auth-probe',
+          }
+          def fetch(path):
+              req=urllib.request.Request(f'https://api.github.com/repos/Naveax/PSMatrix/{path}',headers=headers)
+              with urllib.request.urlopen(req,timeout=30) as response:
+                  return json.load(response)
+          run=fetch(f'actions/runs/{run_id}')
+          if run.get('name')!='production-ga-windows-authority-final-release-sign-from-lock':
+              raise SystemExit(f'unexpected final-signing workflow: {run.get("name")!r}')
+          if run.get('event')!='workflow_dispatch' or run.get('status')!='completed' or run.get('conclusion')!='success':
+              raise SystemExit('final-signing run is not a successful workflow_dispatch')
+          if (run.get('head_sha') or '').lower()!=head:
+              raise SystemExit('final-signing run does not share exact deployment producer control head')
+          artifacts=fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts',[])
+          matches=[item for item in artifacts if item.get('name')=='psmatrix-2.0.0-protected-release' and not item.get('expired')]
+          if len(matches)!=1:
+              raise SystemExit(f'expected exactly one non-expired protected final release artifact; found {len(matches)}')
+          print(f'public_auth_release_provenance=PASS run_id={run_id} artifact_id={matches[0].get("id")}')
+          PY
+
+      - name: Download exact protected final release
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-protected-release
+          path: signed-release
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.release_signing_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Materialize bounded probe credentials, execute live probe, and remove secrets
+        shell: bash
+        env:
+          OAUTH_VALID_TOKEN: ${{ secrets.PSMATRIX_OAUTH_VALID_TOKEN }}
+          OAUTH_EXPIRED_TOKEN: ${{ secrets.PSMATRIX_OAUTH_EXPIRED_TOKEN }}
+          OAUTH_WRONG_AUDIENCE_TOKEN: ${{ secrets.PSMATRIX_OAUTH_WRONG_AUDIENCE_TOKEN }}
+          OAUTH_MISSING_SCOPE_TOKEN: ${{ secrets.PSMATRIX_OAUTH_MISSING_SCOPE_TOKEN }}
+          OAUTH_REPLAY_TOKEN: ${{ secrets.PSMATRIX_OAUTH_REPLAY_TOKEN }}
+          OAUTH_RATE_LIMIT_TOKEN: ${{ secrets.PSMATRIX_OAUTH_RATE_LIMIT_TOKEN }}
+          MTLS_CURRENT_CERT: ${{ secrets.PSMATRIX_MTLS_CURRENT_CERT }}
+          MTLS_CURRENT_KEY: ${{ secrets.PSMATRIX_MTLS_CURRENT_KEY }}
+          MTLS_ROTATION_CERT: ${{ secrets.PSMATRIX_MTLS_ROTATION_CERT }}
+          MTLS_ROTATION_KEY: ${{ secrets.PSMATRIX_MTLS_ROTATION_KEY }}
+          MTLS_UNTRUSTED_CERT: ${{ secrets.PSMATRIX_MTLS_UNTRUSTED_CERT }}
+          MTLS_UNTRUSTED_KEY: ${{ secrets.PSMATRIX_MTLS_UNTRUSTED_KEY }}
+          MTLS_REVOKED_CERT: ${{ secrets.PSMATRIX_MTLS_REVOKED_CERT }}
+          MTLS_REVOKED_KEY: ${{ secrets.PSMATRIX_MTLS_REVOKED_KEY }}
+        run: |
+          set -euo pipefail
+          secret_names=(
+            OAUTH_VALID_TOKEN OAUTH_EXPIRED_TOKEN OAUTH_WRONG_AUDIENCE_TOKEN OAUTH_MISSING_SCOPE_TOKEN OAUTH_REPLAY_TOKEN OAUTH_RATE_LIMIT_TOKEN
+            MTLS_CURRENT_CERT MTLS_CURRENT_KEY MTLS_ROTATION_CERT MTLS_ROTATION_KEY MTLS_UNTRUSTED_CERT MTLS_UNTRUSTED_KEY MTLS_REVOKED_CERT MTLS_REVOKED_KEY
+          )
+          for name in "${secret_names[@]}"; do
+            [[ -n "${!name:-}" ]] || { echo "$name is missing from production-ga-public-auth-probe." >&2; exit 1; }
+          done
+          key_root="$RUNNER_TEMP/psmatrix-final-public-auth-probe-secrets"
+          output="$RUNNER_TEMP/psmatrix-2.0.0-final-public-auth-live-report"
+          rm -rf "$key_root" "$output"
+          install -d -m 0700 "$key_root" "$output"
+          cleanup() {
+            find "$key_root" -type f -exec shred -u {} \; 2>/dev/null || rm -rf "$key_root"
+            rm -rf "$key_root"
+          }
+          trap cleanup EXIT
+          write_secret() { local env_name="$1"; local file="$2"; printf '%s\n' "${!env_name}" > "$key_root/$file"; chmod 0600 "$key_root/$file"; }
+          write_secret OAUTH_VALID_TOKEN oauth-valid.token
+          write_secret OAUTH_EXPIRED_TOKEN oauth-expired.token
+          write_secret OAUTH_WRONG_AUDIENCE_TOKEN oauth-wrong-audience.token
+          write_secret OAUTH_MISSING_SCOPE_TOKEN oauth-missing-scope.token
+          write_secret OAUTH_REPLAY_TOKEN oauth-replay.token
+          write_secret OAUTH_RATE_LIMIT_TOKEN oauth-rate-limit.token
+          write_secret MTLS_CURRENT_CERT mtls-current.crt
+          write_secret MTLS_CURRENT_KEY mtls-current.key
+          write_secret MTLS_ROTATION_CERT mtls-rotation.crt
+          write_secret MTLS_ROTATION_KEY mtls-rotation.key
+          write_secret MTLS_UNTRUSTED_CERT mtls-untrusted.crt
+          write_secret MTLS_UNTRUSTED_KEY mtls-untrusted.key
+          write_secret MTLS_REVOKED_CERT mtls-revoked.crt
+          write_secret MTLS_REVOKED_KEY mtls-revoked.key
+
+          oauth_method="${OAUTH_REQUEST_METHOD:-POST}"
+          mtls_method="${MTLS_REQUEST_METHOD:-POST}"
+          attempts="${OAUTH_RATE_LIMIT_ATTEMPTS:-8}"
+          timeout="${PUBLIC_AUTH_TIMEOUT_SECONDS:-10}"
+          report="$output/public-auth-live-report.json"
+          PYTHONPATH=control/src python control/scripts/ga/probe_final_public_auth.py live-report \
+            --signed-root signed-release \
+            --release-signing-run-id "$RELEASE_SIGNING_RUN_ID" \
+            --oauth-endpoint "$OAUTH_ENDPOINT" \
+            --oauth-discovery-url "$OAUTH_DISCOVERY_URL" \
+            --oauth-expected-issuer "$OAUTH_EXPECTED_ISSUER" \
+            --oauth-method "$oauth_method" \
+            --oauth-body "${OAUTH_REQUEST_BODY:-}" \
+            --oauth-valid-token "$key_root/oauth-valid.token" \
+            --oauth-expired-token "$key_root/oauth-expired.token" \
+            --oauth-wrong-audience-token "$key_root/oauth-wrong-audience.token" \
+            --oauth-missing-scope-token "$key_root/oauth-missing-scope.token" \
+            --oauth-replay-token "$key_root/oauth-replay.token" \
+            --oauth-rate-limit-token "$key_root/oauth-rate-limit.token" \
+            --oauth-rate-limit-attempts "$attempts" \
+            --mtls-endpoint "$MTLS_ENDPOINT" \
+            --mtls-method "$mtls_method" \
+            --mtls-body "${MTLS_REQUEST_BODY:-}" \
+            --mtls-fingerprint-header "$MTLS_FINGERPRINT_HEADER" \
+            --mtls-current-cert "$key_root/mtls-current.crt" \
+            --mtls-current-key "$key_root/mtls-current.key" \
+            --mtls-rotation-cert "$key_root/mtls-rotation.crt" \
+            --mtls-rotation-key "$key_root/mtls-rotation.key" \
+            --mtls-untrusted-cert "$key_root/mtls-untrusted.crt" \
+            --mtls-untrusted-key "$key_root/mtls-untrusted.key" \
+            --mtls-revoked-cert "$key_root/mtls-revoked.crt" \
+            --mtls-revoked-key "$key_root/mtls-revoked.key" \
+            --timeout "$timeout" \
+            --output "$report"
+
+          PSMATRIX_PUBLIC_AUTH_REPORT="$report" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          report_path=Path(os.environ['PSMATRIX_PUBLIC_AUTH_REPORT'])
+          raw=report_path.read_bytes()
+          value=json.loads(raw.decode('utf-8'))
+          if value.get('status')!='PASS' or value.get('kind')!='psmatrix.public-auth-live-report':
+              raise SystemExit('public-auth live report status/identity mismatch')
+          if value.get('secrets_in_report') is not False or value.get('private_keys_in_report') is not False:
+              raise SystemExit('public-auth live report secret boundary mismatch')
+          if value.get('release_signing_run_id')!=os.environ['RELEASE_SIGNING_RUN_ID']:
+              raise SystemExit('public-auth live report release run provenance mismatch')
+          if (value.get('oauth') or {}).get('endpoint')==(value.get('mtls') or {}).get('endpoint'):
+              raise SystemExit('public-auth live report reused one endpoint for OAuth and mTLS')
+          secret_names=(
+              'OAUTH_VALID_TOKEN','OAUTH_EXPIRED_TOKEN','OAUTH_WRONG_AUDIENCE_TOKEN','OAUTH_MISSING_SCOPE_TOKEN','OAUTH_REPLAY_TOKEN','OAUTH_RATE_LIMIT_TOKEN',
+              'MTLS_CURRENT_CERT','MTLS_CURRENT_KEY','MTLS_ROTATION_CERT','MTLS_ROTATION_KEY','MTLS_UNTRUSTED_CERT','MTLS_UNTRUSTED_KEY','MTLS_REVOKED_CERT','MTLS_REVOKED_KEY',
+          )
+          for name in secret_names:
+              secret=os.environ.get(name,'').encode('utf-8')
+              if secret and secret in raw:
+                  raise SystemExit(f'probe secret leaked into public-auth live report: {name}')
+          markers=(b'-----BEGIN PRIVATE KEY-----',b'-----BEGIN RSA PRIVATE KEY-----',b'-----BEGIN EC PRIVATE KEY-----',b'-----BEGIN OPENSSH PRIVATE KEY-----',b'-----BEGIN ED25519 PRIVATE KEY-----')
+          if any(marker in raw for marker in markers):
+              raise SystemExit('private-key PEM material leaked into public-auth live report')
+          print('public_auth_live_report=PASS secret_material_absent=true')
+          PY
+          echo "PSMATRIX_PUBLIC_AUTH_LIVE_OUTPUT=$output" >> "$GITHUB_ENV"
+
+      - name: Upload shared final public-auth live report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-2.0.0-final-public-auth-live-report
+          path: ${{ env.PSMATRIX_PUBLIC_AUTH_LIVE_OUTPUT }}
+          if-no-files-found: error
+          retention-days: 14

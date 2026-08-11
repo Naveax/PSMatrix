@@ -16,15 +16,19 @@ class WindowsAuthorityProtectedReleaseImportTests(unittest.TestCase):
             "verify_certification_kit",
             "verify_provisioning_kit",
             "rc3-release-lock.json",
+            "--release-lock",
+            "Release lock must resolve inside the source checkout",
             "psmatrix.windows-authority-protected-release-bundle",
             "private_key_material_absent",
             "release_authority_rotated",
+            "release_authority_rotation_reviewed",
+            "release_authority_rotated_during_signing",
             "stale_rc2_operation_package_used",
             "reviewed_artifact_lock_verified",
+            "release_lock_path",
             "IMPORTED_VERIFIED",
             'ga / "media" / "release" / version',
             "Run media inventory with an explicit isolated SearchRoot",
-            "Do not include the broad Downloads root",
         )
         for value in required:
             with self.subTest(value=value):
@@ -44,6 +48,11 @@ class WindowsAuthorityProtectedReleaseImportTests(unittest.TestCase):
         for value in forbidden:
             with self.subTest(value=value):
                 self.assertNotIn(value, text)
+
+    def test_default_lock_path_remains_historical_rc3_for_backward_compatibility(self) -> None:
+        text = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('source / "ga-packs" / "03-authoritative-windows" / "rc3-release-lock.json"', text)
+        self.assertIn("release_lock: Path | None = None", text)
 
     def test_source_preflight_tracks_protected_release_importer(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")

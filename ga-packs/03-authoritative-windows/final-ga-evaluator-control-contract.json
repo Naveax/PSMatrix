@@ -1,0 +1,165 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.final-ga-evaluator-control-contract",
+  "version": "2.0.0",
+  "pack": "03-authoritative-windows",
+  "final_release_commit": "02cef95d40cf524ce00f9d917188343dc49e6f2c",
+  "required_gates": [
+    "validation-summary",
+    "signed-release",
+    "authoritative-windows",
+    "complete-runtime-matrix",
+    "public-oauth",
+    "public-mtls",
+    "external-otlp",
+    "key-rotation",
+    "disaster-recovery",
+    "security-review",
+    "vulnerability-scan"
+  ],
+  "evidence_sources": {
+    "validation-summary": {
+      "workflow": "production-ga-final-validation-summary",
+      "workflow_path": ".github/workflows/ga-final-validation-summary.yml",
+      "artifact": "psmatrix-2.0.0-final-validation-summary",
+      "authority": "ci",
+      "files": ["validation-summary.json", "validation-summary.dsse.json", "ci-public.pem"]
+    },
+    "signed-release": {
+      "workflow": "production-ga-windows-authority-final-release-sign-from-lock",
+      "workflow_path": ".github/workflows/ga-windows-authority-final-release-sign-from-lock.yml",
+      "artifact": "psmatrix-2.0.0-protected-release",
+      "authority": "release",
+      "files": [
+        "psmatrix-2.0.0-release.json",
+        "psmatrix-2.0.0-release-public.pem",
+        "psmatrix-2.0.0-py3-none-any.whl",
+        "psmatrix-2.0.0-source.tar.gz",
+        "psmatrix-2.0.0-source.zip",
+        "psmatrix-2.0.0-windows-certification-kit.zip",
+        "psmatrix-2.0.0-windows-provisioning-kit.zip",
+        "psmatrix-2.0.0-windows-workers.zip",
+        "psmatrix-2.0.0-protected-release-signing-status.json"
+      ]
+    },
+    "authoritative-windows": {
+      "workflow": "production-ga-windows-authority-final-windows-evidence-rebind",
+      "workflow_path": ".github/workflows/ga-windows-authority-final-windows-evidence-rebind.yml",
+      "artifact": "psmatrix-2.0.0-final-windows-evidence-rebind",
+      "authority": "windows-lab",
+      "files": [
+        "windows-release-binding.json",
+        "windows-authoritative.dsse.json",
+        "authoritative-matrix-verification.json",
+        "final-windows-evidence-rebind-status.json"
+      ],
+      "public_key_from_environment": "PSMATRIX_WINDOWS_LAB_PUBLIC_KEY"
+    },
+    "complete-runtime-matrix": {
+      "workflow": "production-ga-final-full-runtime-matrix",
+      "workflow_path": ".github/workflows/ga-final-full-runtime-matrix.yml",
+      "artifact": "psmatrix-2.0.0-final-full-runtime-matrix",
+      "authority": "ci",
+      "files": ["full-matrix-report.json", "full-matrix-report.dsse.json", "ci-public.pem"]
+    },
+    "public-oauth": {
+      "workflow": "production-ga-final-public-oauth",
+      "workflow_path": ".github/workflows/ga-final-public-oauth.yml",
+      "artifact": "psmatrix-2.0.0-final-public-oauth",
+      "authority": "deployment",
+      "files": ["public-oauth.dsse.json", "deployment-public.pem"]
+    },
+    "public-mtls": {
+      "workflow": "production-ga-final-public-mtls",
+      "workflow_path": ".github/workflows/ga-final-public-mtls.yml",
+      "artifact": "psmatrix-2.0.0-final-public-mtls",
+      "authority": "deployment",
+      "files": ["public-mtls.dsse.json", "deployment-public.pem"]
+    },
+    "external-otlp": {
+      "workflow": "production-ga-final-external-otlp",
+      "workflow_path": ".github/workflows/ga-final-external-otlp.yml",
+      "artifact": "psmatrix-2.0.0-final-external-otlp",
+      "authority": "operations",
+      "files": ["external-otlp.dsse.json", "operations-public.pem"]
+    },
+    "key-rotation": {
+      "workflow": "production-ga-final-key-rotation",
+      "workflow_path": ".github/workflows/ga-final-key-rotation.yml",
+      "artifact": "psmatrix-2.0.0-final-key-rotation",
+      "authority": "release",
+      "files": ["key-rotation.dsse.json", "release-public.pem"]
+    },
+    "disaster-recovery": {
+      "workflow": "production-ga-final-disaster-recovery",
+      "workflow_path": ".github/workflows/ga-final-disaster-recovery.yml",
+      "artifact": "psmatrix-2.0.0-final-disaster-recovery",
+      "authority": "recovery",
+      "files": ["recovery.dsse.json", "recovery-public.pem"]
+    },
+    "security-review": {
+      "workflow": "production-ga-final-security-review",
+      "workflow_path": ".github/workflows/ga-final-security-review.yml",
+      "artifact": "psmatrix-2.0.0-final-security-review",
+      "authority": "security-review",
+      "files": ["security-review.dsse.json", "security-review-public.pem"]
+    },
+    "vulnerability-scan": {
+      "workflow": "production-ga-final-vulnerability-scan",
+      "workflow_path": ".github/workflows/ga-final-vulnerability-scan.yml",
+      "artifact": "psmatrix-2.0.0-final-vulnerability-scan",
+      "authority": "vulnerability-scanner",
+      "files": ["vulnerability-scan.dsse.json", "vulnerability-scanner-public.pem"]
+    }
+  },
+  "authority_closure": {
+    "ci_must_match_across": ["validation-summary", "complete-runtime-matrix"],
+    "deployment_must_match_across": ["public-oauth", "public-mtls"],
+    "release_must_match_across": ["signed-release", "key-rotation"],
+    "independent_policy_roles_required": [
+      "release",
+      "ci",
+      "windows-lab",
+      "deployment",
+      "operations",
+      "recovery",
+      "security-review",
+      "vulnerability-scanner"
+    ],
+    "windows_public_key_environment": "production-ga-windows-lab",
+    "windows_public_key_secret": "PSMATRIX_WINDOWS_LAB_PUBLIC_KEY",
+    "root_signing_environment": "production-ga-root-signing",
+    "root_private_key_secret": "PSMATRIX_GA_ROOT_PRIVATE_KEY",
+    "root_public_key_secret": "PSMATRIX_GA_ROOT_PUBLIC_KEY",
+    "root_private_key_allowed_in_evaluation_job": false,
+    "root_release_authorities_must_be_independent_after_signing": true
+  },
+  "execution": {
+    "all_evidence_runs_must_be_workflow_dispatch": true,
+    "all_evidence_runs_must_be_completed_successfully": true,
+    "all_evidence_runs_must_share_execution_control_head": true,
+    "all_evidence_run_ids_must_be_distinct": true,
+    "exactly_one_nonexpired_expected_artifact_per_run": true,
+    "producer_workflow_source_must_exist_at_execution_head": true,
+    "first_evaluation_must_pass_all_11_gates": true,
+    "root_signing_job_must_reevaluate_all_11_gates": true,
+    "final_attestation_must_verify_all_11_gates": true
+  },
+  "control_source": {
+    "runtime_source_changes_allowed": false,
+    "changed_path_allowlist": [
+      ".github/workflows/ga-final-evaluator-source-preflight.yml",
+      ".github/workflows/ga-final-evaluator.yml",
+      "ga-packs/03-authoritative-windows/final-ga-evaluator-control-contract.json",
+      "scripts/ga/assemble_final_ga_evidence.py",
+      "tests/test_final_ga_evaluator_controls.py"
+    ]
+  },
+  "preparation_state": {
+    "production_evaluator_executed": false,
+    "ga_root_private_key_read": false,
+    "final_ga_attestation_written": false,
+    "final_ga_attestation_verified": false,
+    "ga_eligible": false
+  }
+}

@@ -1,0 +1,108 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.final-operations-release-evidence-producer-contract",
+  "version": "2.0.0",
+  "final_release_commit": "02cef95d40cf524ce00f9d917188343dc49e6f2c",
+  "deployment_producer_anchor": "2dcf33a91c118b62f0aa4364bccdbb13bc89942c",
+  "signed_release": {
+    "workflow": "production-ga-windows-authority-final-release-sign-from-lock",
+    "artifact": "psmatrix-2.0.0-protected-release",
+    "manifest": "psmatrix-2.0.0-release.json",
+    "public_key": "psmatrix-2.0.0-release-public.pem",
+    "wheel": "psmatrix-2.0.0-py3-none-any.whl",
+    "signing_status": "psmatrix-2.0.0-protected-release-signing-status.json"
+  },
+  "external_otlp": {
+    "workflow": "production-ga-final-external-otlp",
+    "workflow_path": ".github/workflows/ga-final-external-otlp.yml",
+    "artifact": "psmatrix-2.0.0-final-external-otlp",
+    "proof": "external-otlp.dsse.json",
+    "proof_result": "external-otlp-result.json",
+    "live_report": "external-otlp-live-report.json",
+    "public_key": "operations-public.pem",
+    "authority": "operations",
+    "probe_environment": "production-ga-external-otlp-probe",
+    "signing_environment": "production-ga-operations-signing",
+    "endpoint_variable": "PSMATRIX_GA_EXTERNAL_OTLP_ENDPOINT",
+    "timeout_variable": "PSMATRIX_GA_EXTERNAL_OTLP_TIMEOUT_SECONDS",
+    "auth_headers_secret": "PSMATRIX_GA_EXTERNAL_OTLP_HEADERS_JSON",
+    "private_signing_key_secret": "PSMATRIX_GA_OPERATIONS_PRIVATE_KEY",
+    "public_signing_key_secret": "PSMATRIX_GA_OPERATIONS_PUBLIC_KEY",
+    "request_path": "/v1/metrics",
+    "public_https_required": true,
+    "globally_routable_addresses_required": true,
+    "system_tls_trust_required": true,
+    "authenticated_export_required": true,
+    "unauthenticated_rejection_required": true,
+    "successful_exports_required": 2,
+    "secret_values_allowed_in_artifact": false,
+    "private_key_allowed_in_probe_job": false,
+    "required_assertions": [
+      "external_probe",
+      "public_dns",
+      "public_tls",
+      "collector_external",
+      "authenticated_tls",
+      "unauthenticated_request_rejected",
+      "credential_leak_absent",
+      "private_key_leak_absent",
+      "source_body_leak_absent",
+      "absolute_path_leak_absent",
+      "release_commit_bound"
+    ]
+  },
+  "key_rotation": {
+    "workflow": "production-ga-final-key-rotation",
+    "workflow_path": ".github/workflows/ga-final-key-rotation.yml",
+    "artifact": "psmatrix-2.0.0-final-key-rotation",
+    "proof": "key-rotation.dsse.json",
+    "public_key": "release-public.pem",
+    "authority": "release",
+    "signing_environment": "production-ga-release-signing",
+    "private_signing_key_secret": "PSMATRIX_RELEASE_PRIVATE_KEY",
+    "public_key_source": "signed final release artifact",
+    "actual_release_authority_rotation_allowed": false,
+    "bounded_temporary_trust_drill_required": true,
+    "required_assertions": [
+      "old_signature_rejected",
+      "new_signature_accepted",
+      "old_key_retired",
+      "revocation_enforced"
+    ],
+    "minimum_trust_generation": 2
+  },
+  "authority_closure": {
+    "operations_and_release_must_be_independent": true,
+    "key_rotation_must_share_exact_release_authority_with_signed_release": true,
+    "operations_private_key_allowed_in_probe_job": false,
+    "release_private_key_access_only_after_signed_release_validation": true
+  },
+  "execution": {
+    "release_run_must_be_successful_workflow_dispatch": true,
+    "release_run_must_share_exact_control_head": true,
+    "release_artifact_must_be_unique_and_nonexpired": true,
+    "private_key_access_only_after_unsigned_evidence_is_complete": true,
+    "production_execution_is_not_source_validation": true
+  },
+  "control_source": {
+    "runtime_source_changes_allowed": false,
+    "changed_path_allowlist": [
+      ".github/workflows/ga-final-operations-release-evidence-producers-source-preflight.yml",
+      ".github/workflows/ga-final-external-otlp.yml",
+      ".github/workflows/ga-final-key-rotation.yml",
+      "ga-packs/03-authoritative-windows/final-operations-release-evidence-producer-contract.json",
+      "scripts/ga/probe_final_external_otlp.py",
+      "tests/test_final_operations_release_evidence_producers.py"
+    ]
+  },
+  "preparation_state": {
+    "external_otlp_producer_executed": false,
+    "key_rotation_producer_executed": false,
+    "operations_private_key_read": false,
+    "release_private_key_read": false,
+    "actual_release_authority_rotated": false,
+    "evaluator_producer_sources_present_after_this_layer": 8,
+    "evaluator_producer_sources_required": 11,
+    "ga_eligible": false
+  }
+}

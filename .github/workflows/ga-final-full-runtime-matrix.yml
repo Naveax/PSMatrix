@@ -1,0 +1,407 @@
+name: production-ga-final-full-runtime-matrix
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_signing_run_id:
+        description: Successful protected final 2.0.0 signing workflow run ID from this exact control head
+        required: true
+        type: string
+
+concurrency:
+  group: production-ga-final-full-runtime-matrix
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  run-full-matrix:
+    name: Execute exact canonical 25-target final matrix
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 180
+    environment: production-ga-full-matrix
+    permissions:
+      contents: read
+      actions: read
+    env:
+      RELEASE_SIGNING_RUN_ID: ${{ inputs.release_signing_run_id }}
+      FINAL_RELEASE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
+      FULL_MATRIX_ENDPOINT_ROOT: ${{ vars.PSMATRIX_FULL_MATRIX_ENDPOINT_ROOT }}
+      PSMATRIX_HOME: ${{ vars.PSMATRIX_FULL_MATRIX_HOME }}
+
+    steps:
+      - name: Validate trusted NAVEAX matrix dispatch identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') {
+              throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS"
+          }
+          if ($env:RELEASE_SIGNING_RUN_ID -cnotmatch '^[0-9]+$') { throw 'release_signing_run_id must contain only decimal digits.' }
+          if ([string]::IsNullOrWhiteSpace($env:FULL_MATRIX_ENDPOINT_ROOT)) { throw 'PSMATRIX_FULL_MATRIX_ENDPOINT_ROOT is missing from production-ga-full-matrix.' }
+          if (-not (Test-Path -LiteralPath $env:FULL_MATRIX_ENDPOINT_ROOT -PathType Container)) { throw "Full-matrix endpoint root is missing: $env:FULL_MATRIX_ENDPOINT_ROOT" }
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_HOME)) { throw 'PSMATRIX_FULL_MATRIX_HOME is missing from production-ga-full-matrix.' }
+          if (-not (Test-Path -LiteralPath $env:PSMATRIX_HOME -PathType Container)) { throw "Dedicated full-matrix PSMatrix home is missing: $env:PSMATRIX_HOME" }
+          Write-Host "full_matrix_home=$env:PSMATRIX_HOME"
+          Write-Host 'final_full_matrix_dispatch_identity=PASS'
+
+      - name: Check out exact producer controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify exact producer control and frozen matrix contract
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $control = Join-Path $env:GITHUB_WORKSPACE 'control'
+          $head = (git -C $control rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($head -ne $env:GITHUB_SHA.ToLowerInvariant()) { throw 'Full-matrix producer control checkout is not exact GITHUB_SHA.' }
+          if (-not [string]::IsNullOrWhiteSpace((git -C $control status --porcelain))) { throw 'Full-matrix producer control checkout is dirty.' }
+          $contract = Get-Content (Join-Path $control 'ga-packs\03-authoritative-windows\final-ci-evidence-producer-contract.json') -Raw | ConvertFrom-Json
+          if ([string]$contract.final_release_commit -ne $env:FINAL_RELEASE_COMMIT) { throw 'CI producer contract final release commit mismatch.' }
+          if ([string]$contract.full_runtime_matrix.workflow -ne 'production-ga-final-full-runtime-matrix') { throw 'Full-matrix producer workflow identity mismatch.' }
+          if ([int]$contract.full_runtime_matrix.canonical_target_count -ne 25 -or [int]$contract.full_runtime_matrix.remote_target_count -ne 13 -or [int]$contract.full_runtime_matrix.ready_target_count_required -ne 25) { throw 'Full-matrix canonical target contract mismatch.' }
+          if ([string]$contract.full_runtime_matrix.differential_mode -ne 'strict') { throw 'Full-matrix contract is not strict differential.' }
+          if ([string]$contract.full_runtime_matrix.home_variable -ne 'PSMATRIX_FULL_MATRIX_HOME' -or [bool]$contract.full_runtime_matrix.ambient_default_home_allowed) { throw 'Full-matrix explicit home contract mismatch.' }
+          Write-Host "full_matrix_control_head=$head"
+
+      - name: Validate exact protected final-signing run before download
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import json
+          import os
+          import urllib.request
+
+          run_id = os.environ['RELEASE_SIGNING_RUN_ID']
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {os.environ["GH_TOKEN"]}',
+              'X-GitHub-Api-Version': '2026-03-10',
+              'User-Agent': 'psmatrix-final-full-matrix',
+          }
+          def fetch(path):
+              request = urllib.request.Request(f'https://api.github.com/repos/Naveax/PSMatrix/{path}', headers=headers)
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+          run = fetch(f'actions/runs/{run_id}')
+          if run.get('name') != 'production-ga-windows-authority-final-release-sign-from-lock':
+              raise SystemExit(f'unexpected release-signing workflow: {run.get("name")!r}')
+          if run.get('event') != 'workflow_dispatch' or run.get('status') != 'completed' or run.get('conclusion') != 'success':
+              raise SystemExit('release-signing run is not a successful workflow_dispatch')
+          if (run.get('head_sha') or '').lower() != os.environ['GITHUB_SHA'].lower():
+              raise SystemExit('release-signing run does not share exact full-matrix producer control head')
+          artifacts = fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts', [])
+          matches = [item for item in artifacts if item.get('name') == 'psmatrix-2.0.0-protected-release' and not item.get('expired')]
+          if len(matches) != 1:
+              raise SystemExit(f'expected exactly one non-expired protected final release artifact; found {len(matches)}')
+          print(f'full_matrix_release_provenance=PASS run_id={run_id} artifact_id={matches[0].get("id")}')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Protected final release provenance validation failed.' }
+
+      - name: Download exact protected final release
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-protected-release
+          path: signed-release
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.release_signing_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Materialize isolated canonical matrix spec and complete endpoint bundle
+        shell: pwsh
+        env:
+          PSMATRIX_MATRIX_ROOT: ${{ runner.temp }}\psmatrix-final-full-matrix-spec
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $matrixRoot = $env:PSMATRIX_MATRIX_ROOT
+          if (Test-Path -LiteralPath $matrixRoot) { Remove-Item -LiteralPath $matrixRoot -Recurse -Force }
+          New-Item -ItemType Directory -Path $matrixRoot | Out-Null
+          $spec = Join-Path $matrixRoot 'psmatrix.full.json'
+          $env:PYTHONPATH = (Join-Path $env:GITHUB_WORKSPACE 'control\src')
+          python -m psmatrix.cli full init --output $spec
+          if ($LASTEXITCODE -ne 0) { throw 'Canonical full-matrix spec initialization failed.' }
+          @'
+          import json
+          import os
+          import shutil
+          from pathlib import Path
+
+          root = Path(os.environ['PSMATRIX_MATRIX_ROOT']).resolve()
+          source = Path(os.environ['FULL_MATRIX_ENDPOINT_ROOT']).resolve()
+          if not source.is_dir() or source.is_symlink():
+              raise SystemExit(f'full-matrix endpoint bundle root is missing or unsafe: {source}')
+          for item in source.rglob('*'):
+              if item.is_symlink():
+                  raise SystemExit(f'full-matrix endpoint bundle contains a symlink: {item.relative_to(source)}')
+          destination = root / 'endpoints'
+          if destination.exists():
+              raise SystemExit(f'canonical endpoint destination already exists: {destination}')
+          shutil.copytree(source, destination, symlinks=False)
+
+          spec_path = root / 'psmatrix.full.json'
+          value = json.loads(spec_path.read_text(encoding='utf-8'))
+          targets = value.get('targets') or []
+          remote = [item for item in targets if isinstance(item, dict) and item.get('kind') == 'remote']
+          if len(targets) != 25 or len(remote) != 13:
+              raise SystemExit(f'canonical matrix cardinality mismatch: targets={len(targets)} remote={len(remote)}')
+          value.setdefault('differential', {})['mode'] = 'strict'
+          value['differential']['allow'] = []
+          value.setdefault('requirements', {})['require_complete'] = True
+          spec_path.write_text(json.dumps(value, indent=2, sort_keys=False) + '\n', encoding='utf-8')
+          for item in remote:
+              relative = Path(str(item['endpoint']))
+              candidate = (root / relative).resolve()
+              try:
+                  candidate.relative_to(root)
+              except ValueError:
+                  raise SystemExit(f'remote endpoint escapes matrix root: {relative}')
+              if not candidate.is_file() or candidate.is_symlink():
+                  raise SystemExit(f'required remote endpoint is missing or unsafe: {relative}')
+          allowance = root / 'psmatrix.differences.json'
+          data = json.loads(allowance.read_text(encoding='utf-8'))
+          if data.get('rules') not in ([], None):
+              raise SystemExit('canonical GA matrix difference allowance manifest is not empty')
+          print('endpoint_bundle_copy=PASS method=shutil.copytree symlinks=false')
+          print('canonical_matrix_spec=PASS targets=25 remote=13 differential=strict')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Canonical full-matrix endpoint/spec materialization failed.' }
+          "PSMATRIX_FINAL_MATRIX_ROOT=$matrixRoot" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Require all twenty-five matrix targets READY before execution
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $plan = Join-Path $env:PSMATRIX_FINAL_MATRIX_ROOT 'full-matrix-plan.json'
+          $env:PYTHONPATH = (Join-Path $env:GITHUB_WORKSPACE 'control\src')
+          python -m psmatrix.cli full plan --spec (Join-Path $env:PSMATRIX_FINAL_MATRIX_ROOT 'psmatrix.full.json') --output $plan
+          if ($LASTEXITCODE -ne 0) { throw 'Canonical full-matrix readiness plan is not READY.' }
+          $value = Get-Content $plan -Raw | ConvertFrom-Json
+          $ready = @($value.targets | Where-Object { [string]$_.status -eq 'READY' }).Count
+          if ([string]$value.status -ne 'READY' -or [int]$value.coverage.declared -ne 25 -or $ready -ne 25 -or @($value.coverage.missing_required).Count -ne 0) {
+              throw "Production full matrix requires 25/25 READY targets; ready=$ready status=$($value.status)"
+          }
+          Write-Host 'full_matrix_plan=PASS ready=25/25'
+
+      - name: Execute strict canonical twenty-five-target matrix
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $report = Join-Path $env:RUNNER_TEMP 'psmatrix-final-full-matrix-report.json'
+          $env:PYTHONPATH = (Join-Path $env:GITHUB_WORKSPACE 'control\src')
+          python -m psmatrix.cli full test `
+            (Join-Path $env:GITHUB_WORKSPACE 'control\scripts\ga\full_matrix_probe.ps1') `
+            --spec (Join-Path $env:PSMATRIX_FINAL_MATRIX_ROOT 'psmatrix.full.json') `
+            --root (Join-Path $env:GITHUB_WORKSPACE 'control') `
+            --differential strict `
+            --timeout 1800 `
+            --jobs 8 `
+            --report-json $report
+          if ($LASTEXITCODE -ne 0) { throw 'Strict canonical twenty-five-target matrix execution failed.' }
+          python -c "import json,sys;from pathlib import Path;sys.path.insert(0,str(Path(r'$env:GITHUB_WORKSPACE')/'control'/'src'));from psmatrix.full_matrix_ga import validate_canonical_full_matrix_report;value=json.loads(Path(r'$report').read_text(encoding='utf-8'));print(json.dumps(validate_canonical_full_matrix_report(value),sort_keys=True))"
+          if ($LASTEXITCODE -ne 0) { throw 'Canonical GA full-matrix report validation failed.' }
+          "PSMATRIX_FINAL_MATRIX_REPORT=$report" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Bind exact matrix report to signed final release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:RUNNER_TEMP 'psmatrix-final-full-matrix-unsigned'
+          if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
+          New-Item -ItemType Directory -Path $output | Out-Null
+          $binding = Join-Path $output 'full-matrix-release-binding.json'
+          $env:PYTHONPATH = (Join-Path $env:GITHUB_WORKSPACE 'control\src')
+          python -m psmatrix.cli full release-binding `
+            --release-manifest (Join-Path $env:GITHUB_WORKSPACE 'signed-release\psmatrix-2.0.0-release.json') `
+            --artifact-dir (Join-Path $env:GITHUB_WORKSPACE 'signed-release') `
+            --release-public-key (Join-Path $env:GITHUB_WORKSPACE 'signed-release\psmatrix-2.0.0-release-public.pem') `
+            --release-commit $env:FINAL_RELEASE_COMMIT `
+            --output $binding
+          if ($LASTEXITCODE -ne 0) { throw 'Final full-matrix release binding failed.' }
+          Copy-Item -LiteralPath $env:PSMATRIX_FINAL_MATRIX_REPORT -Destination (Join-Path $output 'full-matrix-report.json')
+          Copy-Item -LiteralPath (Join-Path $env:PSMATRIX_FINAL_MATRIX_ROOT 'full-matrix-plan.json') -Destination (Join-Path $output 'full-matrix-plan.json')
+          "PSMATRIX_FINAL_MATRIX_UNSIGNED=$output" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Enforce unsigned full-matrix boundary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ['PSMATRIX_FINAL_MATRIX_UNSIGNED'])
+          report = json.loads((root / 'full-matrix-report.json').read_text(encoding='utf-8'))
+          matrix = report.get('matrix') or {}
+          coverage = matrix.get('coverage') or {}
+          if report.get('schema') != 8 or report.get('status') != 'PASS':
+              raise SystemExit('unsigned full-matrix report identity/status mismatch')
+          if matrix.get('full') is not True or matrix.get('require_complete') is not True or matrix.get('differential_mode') != 'strict':
+              raise SystemExit('unsigned full-matrix strict/complete boundary mismatch')
+          if int(coverage.get('declared') or 0) != 25 or int(coverage.get('passed') or 0) != 25 or int(coverage.get('incomplete') or 0) != 0 or int(coverage.get('failed') or 0) != 0:
+              raise SystemExit('unsigned full-matrix coverage is not exact 25 PASS')
+          if len(report.get('targets') or []) != 25:
+              raise SystemExit('unsigned full-matrix target result count is not 25')
+          markers = (b'-----BEGIN PRIVATE KEY-----', b'-----BEGIN RSA PRIVATE KEY-----', b'-----BEGIN EC PRIVATE KEY-----', b'-----BEGIN OPENSSH PRIVATE KEY-----', b'-----BEGIN ED25519 PRIVATE KEY-----')
+          for path in root.rglob('*'):
+              if path.is_file() and any(marker in path.read_bytes() for marker in markers):
+                  raise SystemExit(f'private-key material found in unsigned full-matrix output: {path.name}')
+          print('unsigned_full_matrix=PASS targets=25 passed=25')
+          print('ci_private_key_read=false')
+          print('ga_eligible=false')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Unsigned full-matrix boundary check failed.' }
+
+      - name: Upload unsigned full-matrix evidence for protected CI signing
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-2.0.0-final-full-runtime-matrix-unsigned
+          path: ${{ env.PSMATRIX_FINAL_MATRIX_UNSIGNED }}
+          if-no-files-found: error
+          retention-days: 7
+
+  sign-full-matrix:
+    name: Sign exact full-matrix report with protected CI authority
+    needs: run-full-matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production-ga-ci-signing
+    permissions:
+      contents: read
+      actions: read
+
+    steps:
+      - name: Check out exact producer controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Download exact unsigned matrix candidate from this run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-final-full-runtime-matrix-unsigned
+          path: unsigned
+
+      - name: Validate matrix candidate before CI private-key access
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=control/src python - <<'PY'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+          from psmatrix.full_matrix_ga import validate_canonical_full_matrix_report, load_full_matrix_release_binding
+
+          head = subprocess.check_output(['git', '-C', 'control', 'rev-parse', 'HEAD'], text=True).strip().lower()
+          if head != os.environ['GITHUB_SHA'].lower():
+              raise SystemExit('CI matrix-signing control checkout mismatch')
+          report = json.loads(Path('unsigned/full-matrix-report.json').read_text(encoding='utf-8'))
+          validate_canonical_full_matrix_report(report)
+          binding = load_full_matrix_release_binding(Path('unsigned/full-matrix-release-binding.json'))
+          if binding.get('release_version') != '2.0.0' or binding.get('release_commit') != '02cef95d40cf524ce00f9d917188343dc49e6f2c':
+              raise SystemExit('unsigned full-matrix release binding identity mismatch')
+          print('full_matrix_candidate_pre_secret=PASS')
+          PY
+
+      - name: Materialize CI authority, sign exact matrix, verify, and remove private key
+        shell: bash
+        env:
+          CI_PRIVATE_KEY: ${{ secrets.PSMATRIX_GA_CI_PRIVATE_KEY }}
+          CI_PUBLIC_KEY: ${{ secrets.PSMATRIX_GA_CI_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$CI_PRIVATE_KEY" ]] || { echo 'PSMATRIX_GA_CI_PRIVATE_KEY is missing from production-ga-ci-signing.' >&2; exit 1; }
+          [[ "$CI_PUBLIC_KEY" == *'-----BEGIN PUBLIC KEY-----'* ]] || { echo 'PSMATRIX_GA_CI_PUBLIC_KEY is missing from production-ga-ci-signing.' >&2; exit 1; }
+          key_root="$RUNNER_TEMP/psmatrix-final-matrix-ci-keys"
+          output="$RUNNER_TEMP/psmatrix-2.0.0-final-full-runtime-matrix"
+          rm -rf "$key_root" "$output"
+          install -d -m 0700 "$key_root" "$output"
+          printf '%s\n' "$CI_PRIVATE_KEY" > "$key_root/ci.private.pem"
+          printf '%s\n' "$CI_PUBLIC_KEY" > "$key_root/ci.public.pem"
+          chmod 0600 "$key_root/ci.private.pem"
+          cleanup() {
+            shred -u "$key_root/ci.private.pem" 2>/dev/null || rm -f "$key_root/ci.private.pem"
+            rm -f "$key_root/ci.public.pem"
+            rmdir "$key_root" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          cp unsigned/full-matrix-report.json "$output/full-matrix-report.json"
+          cp unsigned/full-matrix-release-binding.json "$output/full-matrix-release-binding.json"
+          cp unsigned/full-matrix-plan.json "$output/full-matrix-plan.json"
+          PYTHONPATH=control/src python -m psmatrix.cli full attest \
+            --report "$output/full-matrix-report.json" \
+            --release-binding "$output/full-matrix-release-binding.json" \
+            --private-key "$key_root/ci.private.pem" \
+            --public-key "$key_root/ci.public.pem" \
+            --output "$output/full-matrix-report.dsse.json"
+          PYTHONPATH=control/src python -m psmatrix.cli full verify-attestation \
+            --report "$output/full-matrix-report.json" \
+            --attestation "$output/full-matrix-report.dsse.json" \
+            --public-key "$key_root/ci.public.pem" >/dev/null
+          cp "$key_root/ci.public.pem" "$output/ci-public.pem"
+          PSMATRIX_MATRIX_SIGNED="$output" PYTHONPATH=control/src python - <<'PY'
+          import os
+          from pathlib import Path
+          from psmatrix.full_matrix_ga import verify_full_matrix_ga_attestation
+          from psmatrix.signing import public_key_id
+          from psmatrix.util import read_json, sha256_file, atomic_write_json
+
+          root = Path(os.environ['PSMATRIX_MATRIX_SIGNED'])
+          verified = verify_full_matrix_ga_attestation(read_json(root / 'full-matrix-report.dsse.json'), report_path=root / 'full-matrix-report.json', public_key=root / 'ci-public.pem')
+          if verified.get('valid') is not True or verified.get('targets') != 25:
+              raise SystemExit('signed full-matrix attestation verification failed')
+          binding = verified.get('release_binding') or {}
+          if binding.get('release_version') != '2.0.0' or binding.get('release_commit') != '02cef95d40cf524ce00f9d917188343dc49e6f2c':
+              raise SystemExit('signed full-matrix final release binding mismatch')
+          status = {
+              'schema': 1,
+              'kind': 'psmatrix.final-full-runtime-matrix-producer-status',
+              'status': 'PASS',
+              'version': '2.0.0',
+              'targets': 25,
+              'passed': 25,
+              'release_bound': True,
+              'report_sha256': sha256_file(root / 'full-matrix-report.json'),
+              'attestation_sha256': sha256_file(root / 'full-matrix-report.dsse.json'),
+              'ci_public_key_sha256': sha256_file(root / 'ci-public.pem'),
+              'ci_key_id': public_key_id(root / 'ci-public.pem'),
+              'attestation_verified': True,
+              'ci_private_key_copied_to_output': False,
+              'final_ga_evaluator_invoked': False,
+              'ga_eligible': False,
+          }
+          atomic_write_json(root / 'full-matrix-producer-status.json', status)
+          markers = (b'-----BEGIN PRIVATE KEY-----', b'-----BEGIN RSA PRIVATE KEY-----', b'-----BEGIN EC PRIVATE KEY-----', b'-----BEGIN OPENSSH PRIVATE KEY-----', b'-----BEGIN ED25519 PRIVATE KEY-----')
+          for path in root.rglob('*'):
+              if path.is_file() and any(marker in path.read_bytes() for marker in markers):
+                  raise SystemExit(f'private-key material found in signed full-matrix output: {path.name}')
+          print('signed_full_runtime_matrix=PASS targets=25')
+          print('final_ga_evaluator_invoked=false')
+          print('ga_eligible=false')
+          PY
+          echo "PSMATRIX_FINAL_MATRIX_SIGNED=$output" >> "$GITHUB_ENV"
+
+      - name: Upload final CI-signed full runtime matrix
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-2.0.0-final-full-runtime-matrix
+          path: ${{ env.PSMATRIX_FINAL_MATRIX_SIGNED }}
+          if-no-files-found: error
+          retention-days: 30

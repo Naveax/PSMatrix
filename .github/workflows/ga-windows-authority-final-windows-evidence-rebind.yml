@@ -1,0 +1,273 @@
+name: production-ga-windows-authority-final-windows-evidence-rebind
+
+on:
+  workflow_dispatch:
+    inputs:
+      rc4_control_head:
+        description: Exact active RC4 lock/control commit used by campaign and hardened closure runs
+        required: true
+        type: string
+      rc4_closure_run_id:
+        description: Successful hardened RC4 candidate-closure workflow run ID
+        required: true
+        type: string
+      rc4_campaign_run_id:
+        description: Successful RC4 certification-campaign workflow run ID frozen by the closure
+        required: true
+        type: string
+      final_signing_run_id:
+        description: Successful protected final 2.0.0 signing workflow run ID
+        required: true
+        type: string
+
+concurrency:
+  group: production-ga-windows-authority-final-windows-evidence-rebind
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  rebind-final-windows-evidence:
+    name: Rebind verified RC4 campaign records to exact signed final 2.0.0
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 30
+    environment: production-ga-windows-lab
+    permissions:
+      contents: read
+      actions: read
+    env:
+      RC4_CONTROL_HEAD: ${{ inputs.rc4_control_head }}
+      RC4_CLOSURE_RUN_ID: ${{ inputs.rc4_closure_run_id }}
+      RC4_CAMPAIGN_RUN_ID: ${{ inputs.rc4_campaign_run_id }}
+      FINAL_SIGNING_RUN_ID: ${{ inputs.final_signing_run_id }}
+      RC4_RELEASE_COMMIT: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
+      FINAL_RELEASE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
+
+    steps:
+      - name: Validate trusted NAVEAX rebind dispatch identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') {
+              throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS"
+          }
+          foreach ($name in @('RC4_CONTROL_HEAD','RC4_RELEASE_COMMIT','FINAL_RELEASE_COMMIT')) {
+              $value = [Environment]::GetEnvironmentVariable($name)
+              if ($value -cnotmatch '^[0-9a-f]{40}$') { throw "$name must be 40 lowercase hexadecimal characters." }
+          }
+          foreach ($name in @('RC4_CLOSURE_RUN_ID','RC4_CAMPAIGN_RUN_ID','FINAL_SIGNING_RUN_ID')) {
+              $value = [Environment]::GetEnvironmentVariable($name)
+              if ($value -cnotmatch '^[0-9]+$') { throw "$name must contain only decimal digits." }
+          }
+          $ids = @($env:RC4_CLOSURE_RUN_ID,$env:RC4_CAMPAIGN_RUN_ID,$env:FINAL_SIGNING_RUN_ID)
+          if (@($ids | Sort-Object -Unique).Count -ne 3) { throw 'Closure, campaign, and final signing run IDs must be distinct.' }
+          if ($env:GITHUB_SHA.ToLowerInvariant() -eq $env:RC4_CONTROL_HEAD) { throw 'Final lock/rebind control head must be distinct from the RC4 lock/control head.' }
+
+      - name: Check out exact final rebind/lock control
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: control
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out exact RC4 active control
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.rc4_control_head }}
+          path: rc4-control
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out exact RC4 release source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
+          path: rc4-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out exact final release source with full lineage
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: 02cef95d40cf524ce00f9d917188343dc49e6f2c
+          path: final-source
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify active final lock, exact source lineage, and RC4 control ancestry
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $control = Join-Path $env:GITHUB_WORKSPACE 'control'
+          $rc4Control = Join-Path $env:GITHUB_WORKSPACE 'rc4-control'
+          $rc4Source = Join-Path $env:GITHUB_WORKSPACE 'rc4-source'
+          $finalSource = Join-Path $env:GITHUB_WORKSPACE 'final-source'
+          if ((git -C $control rev-parse HEAD).Trim().ToLowerInvariant() -ne $env:GITHUB_SHA.ToLowerInvariant()) { throw 'Final rebind control checkout mismatch.' }
+          if ((git -C $rc4Control rev-parse HEAD).Trim().ToLowerInvariant() -ne $env:RC4_CONTROL_HEAD) { throw 'RC4 active control checkout mismatch.' }
+          if ((git -C $rc4Source rev-parse HEAD).Trim().ToLowerInvariant() -ne $env:RC4_RELEASE_COMMIT) { throw 'RC4 release source checkout mismatch.' }
+          if ((git -C $finalSource rev-parse HEAD).Trim().ToLowerInvariant() -ne $env:FINAL_RELEASE_COMMIT) { throw 'Final release source checkout mismatch.' }
+          foreach ($root in @($control,$rc4Control,$rc4Source,$finalSource)) {
+              if (-not [string]::IsNullOrWhiteSpace((git -C $root status --porcelain))) { throw "Dirty checkout: $root" }
+          }
+          foreach ($path in @(
+              (Join-Path $control 'ga-packs\03-authoritative-windows\final-release-lock.json'),
+              (Join-Path $control 'release-assets\2.0.0\psmatrix-2.0.0-release-public.pem'),
+              (Join-Path $rc4Control 'ga-packs\03-authoritative-windows\rc4-release-lock.json'),
+              (Join-Path $rc4Control 'release-assets\2.0.0rc4\psmatrix-2.0.0rc4-release-public.pem')
+          )) {
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required active release authority material is missing: $path" }
+          }
+          $finalLock = Get-Content (Join-Path $control 'ga-packs\03-authoritative-windows\final-release-lock.json') -Raw | ConvertFrom-Json
+          if ([string]$finalLock.version -ne '2.0.0' -or [string]$finalLock.release_commit -ne $env:FINAL_RELEASE_COMMIT) { throw 'Active final lock identity mismatch.' }
+          $rc4Lock = Get-Content (Join-Path $rc4Control 'ga-packs\03-authoritative-windows\rc4-release-lock.json') -Raw | ConvertFrom-Json
+          if ([string]$rc4Lock.version -ne '2.0.0rc4' -or [string]$rc4Lock.release_commit -ne $env:RC4_RELEASE_COMMIT) { throw 'Active RC4 lock identity mismatch.' }
+          git -C $finalSource merge-base --is-ancestor $env:RC4_RELEASE_COMMIT $env:FINAL_RELEASE_COMMIT
+          if ($LASTEXITCODE -ne 0) { throw 'RC4 release source is not an ancestor of final release source.' }
+          Write-Host 'active_release_locks=PASS'
+          Write-Host 'rc4_final_source_lineage=PASS'
+
+      - name: Validate exact upstream run and artifact provenance before download
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import json
+          import os
+          import urllib.request
+
+          repo = 'Naveax/PSMatrix'
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {os.environ["GH_TOKEN"]}',
+              'X-GitHub-Api-Version': '2026-03-10',
+              'User-Agent': 'psmatrix-final-windows-rebind',
+          }
+          def fetch(path):
+              request = urllib.request.Request(f'https://api.github.com/repos/{repo}/{path}', headers=headers)
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+          expected = (
+              (os.environ['RC4_CLOSURE_RUN_ID'], 'production-ga-windows-authority-rc4-candidate-closure-selfhosted', 'windows-authority-rc4-candidate-closure', os.environ['RC4_CONTROL_HEAD']),
+              (os.environ['RC4_CAMPAIGN_RUN_ID'], 'production-ga-windows-authority-rc4-certification-campaign-selfhosted', 'windows-authority-rc4-certification-evidence', os.environ['RC4_CONTROL_HEAD']),
+              (os.environ['FINAL_SIGNING_RUN_ID'], 'production-ga-windows-authority-final-release-sign-from-lock', 'psmatrix-2.0.0-protected-release', os.environ['GITHUB_SHA'].lower()),
+          )
+          for run_id, workflow, artifact, expected_head in expected:
+              run = fetch(f'actions/runs/{run_id}')
+              if run.get('name') != workflow or run.get('event') != 'workflow_dispatch':
+                  raise SystemExit(f'workflow identity mismatch for run {run_id}')
+              if run.get('status') != 'completed' or run.get('conclusion') != 'success':
+                  raise SystemExit(f'workflow run {run_id} is not completed successfully')
+              if (run.get('head_sha') or '').lower() != expected_head.lower():
+                  raise SystemExit(f'workflow control head mismatch for run {run_id}')
+              artifacts = fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts', [])
+              matches = [item for item in artifacts if item.get('name') == artifact and not item.get('expired')]
+              if len(matches) != 1:
+                  raise SystemExit(f'expected one non-expired {artifact!r} artifact for run {run_id}; found {len(matches)}')
+              print(f'final_rebind_upstream=PASS run_id={run_id} artifact_id={matches[0].get("id")}')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Final Windows rebind upstream provenance validation failed.' }
+
+      - name: Download exact hardened RC4 closure
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-authority-rc4-candidate-closure
+          path: rc4-closure
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.rc4_closure_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Download exact RC4 campaign evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-authority-rc4-certification-evidence
+          path: rc4-campaign
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.rc4_campaign_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Download exact protected final release
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-protected-release
+          path: final-signed
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.final_signing_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Materialize Windows lab authority and perform final evidence rebind
+        shell: pwsh
+        env:
+          LAB_PRIVATE_KEY_PEM: ${{ secrets.PSMATRIX_WINDOWS_LAB_PRIVATE_KEY }}
+          LAB_PUBLIC_KEY_PEM: ${{ secrets.PSMATRIX_WINDOWS_LAB_PUBLIC_KEY }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:LAB_PRIVATE_KEY_PEM) -or $env:LAB_PRIVATE_KEY_PEM -notmatch '-----BEGIN .*PRIVATE KEY-----') { throw 'Windows lab private key is missing.' }
+          if ([string]::IsNullOrWhiteSpace($env:LAB_PUBLIC_KEY_PEM) -or $env:LAB_PUBLIC_KEY_PEM -notmatch '-----BEGIN PUBLIC KEY-----') { throw 'Windows lab public key is missing.' }
+          $keyRoot = Join-Path $env:RUNNER_TEMP ('psmatrix-final-rebind-keys-' + [Guid]::NewGuid().ToString('N'))
+          $output = Join-Path $env:RUNNER_TEMP 'psmatrix-final-windows-evidence-rebind'
+          New-Item -ItemType Directory -Path $keyRoot | Out-Null
+          if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
+          $private = Join-Path $keyRoot 'lab-private.pem'
+          $public = Join-Path $keyRoot 'lab-public.pem'
+          try {
+              [IO.File]::WriteAllText($private,$env:LAB_PRIVATE_KEY_PEM,[Text.UTF8Encoding]::new($false))
+              [IO.File]::WriteAllText($public,$env:LAB_PUBLIC_KEY_PEM,[Text.UTF8Encoding]::new($false))
+              python (Join-Path $env:GITHUB_WORKSPACE 'control\scripts\ga\rebind_windows_authority_final_release.py') `
+                --rc4-closure-root (Join-Path $env:GITHUB_WORKSPACE 'rc4-closure') `
+                --rc4-campaign-root (Join-Path $env:GITHUB_WORKSPACE 'rc4-campaign') `
+                --final-signed-root (Join-Path $env:GITHUB_WORKSPACE 'final-signed') `
+                --rc4-source-root (Join-Path $env:GITHUB_WORKSPACE 'rc4-source') `
+                --final-source-root (Join-Path $env:GITHUB_WORKSPACE 'final-source') `
+                --lab-private-key $private `
+                --lab-public-key $public `
+                --output-root $output
+              if ($LASTEXITCODE -ne 0) { throw 'Final Windows evidence rebind builder failed.' }
+              "PSMATRIX_FINAL_WINDOWS_REBIND=$output" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          } finally {
+              Remove-Item -LiteralPath $private -Force -ErrorAction SilentlyContinue
+              Remove-Item -LiteralPath $public -Force -ErrorAction SilentlyContinue
+              Remove-Item -LiteralPath $keyRoot -Recurse -Force -ErrorAction SilentlyContinue
+              Remove-Item Env:LAB_PRIVATE_KEY_PEM -ErrorAction SilentlyContinue
+              Remove-Item Env:LAB_PUBLIC_KEY_PEM -ErrorAction SilentlyContinue
+          }
+
+      - name: Independently enforce final rebind boundary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $statusPath = Join-Path $env:PSMATRIX_FINAL_WINDOWS_REBIND 'final-windows-evidence-rebind-status.json'
+          $bindingPath = Join-Path $env:PSMATRIX_FINAL_WINDOWS_REBIND 'windows-release-binding.json'
+          $matrixPath = Join-Path $env:PSMATRIX_FINAL_WINDOWS_REBIND 'windows-authoritative.dsse.json'
+          $verificationPath = Join-Path $env:PSMATRIX_FINAL_WINDOWS_REBIND 'authoritative-matrix-verification.json'
+          foreach ($path in @($statusPath,$bindingPath,$matrixPath,$verificationPath)) {
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Final rebind output is missing: $path" }
+          }
+          $status = Get-Content $statusPath -Raw | ConvertFrom-Json
+          if ([string]$status.status -ne 'FINAL_WINDOWS_EVIDENCE_REBOUND_GA_EVALUATOR_PENDING') { throw 'Final rebind status mismatch.' }
+          if ([string]$status.rc4_release_commit -ne $env:RC4_RELEASE_COMMIT -or [string]$status.final_release_commit -ne $env:FINAL_RELEASE_COMMIT) { throw 'Final rebind release identity mismatch.' }
+          foreach ($field in @('campaign_records_reused_byte_equivalent','campaigns_reused_without_rerun','final_signed_release_verified','final_release_artifacts_signed','authoritative_windows','release_bound','final_windows_evidence_rebound')) {
+              if ([bool]$status.$field -ne $true) { throw "Required final rebind success field is false: $field" }
+          }
+          foreach ($field in @('workers_contacted','virtual_machines_created_or_mutated','rc4_evidence_relabelled_as_final','final_ga_evaluator_invoked','ga_eligible')) {
+              if ([bool]$status.$field -ne $false) { throw "Unsafe final rebind field is true: $field" }
+          }
+          if (@($status.source_equivalence.runtime_changed_paths).Count -ne 1 -or [string]$status.source_equivalence.runtime_changed_paths[0] -ne 'src/psmatrix/__init__.py') { throw 'Final rebind runtime-source equivalence mismatch.' }
+          if (@($status.source_equivalence.authoritative_fixture_changed_paths).Count -ne 0) { throw 'Authoritative Windows fixtures changed between RC4 and final.' }
+          Write-Host 'final_windows_evidence_rebind=PASS'
+          Write-Host 'campaigns_reused_without_rerun=true'
+          Write-Host 'workers_contacted=false'
+          Write-Host 'virtual_machines_created_or_mutated=false'
+          Write-Host 'final_ga_evaluator_invoked=false'
+          Write-Host 'ga_eligible=false'
+
+      - name: Upload final Windows evidence rebind
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-2.0.0-final-windows-evidence-rebind
+          path: ${{ env.PSMATRIX_FINAL_WINDOWS_REBIND }}
+          if-no-files-found: error
+          retention-days: 30

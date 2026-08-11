@@ -1,0 +1,157 @@
+name: production-ga-windows-authority-rc4-candidate-closure-source-preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "release/**"
+    paths:
+      - ".github/workflows/ga-windows-authority-rc4-candidate-closure-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-rc4-candidate-closure-selfhosted.yml"
+      - "scripts/ga/build_windows_authority_rc4_candidate_closure.py"
+      - "ga-packs/03-authoritative-windows/rc4-candidate-closure-workflow-contract.json"
+      - "tests/test_windows_authority_rc4_candidate_closure.py"
+      - "src/psmatrix/ga.py"
+      - "src/psmatrix/lab_provisioning.py"
+  pull_request:
+    branches:
+      - "release/**"
+    paths:
+      - ".github/workflows/ga-windows-authority-rc4-candidate-closure-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-rc4-candidate-closure-selfhosted.yml"
+      - "scripts/ga/build_windows_authority_rc4_candidate_closure.py"
+      - "ga-packs/03-authoritative-windows/rc4-candidate-closure-workflow-contract.json"
+      - "tests/test_windows_authority_rc4_candidate_closure.py"
+      - "src/psmatrix/ga.py"
+      - "src/psmatrix/lab_provisioning.py"
+
+concurrency:
+  group: production-ga-windows-authority-rc4-candidate-closure-source-preflight-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  candidate-closure-source-preflight:
+    name: RC4 authoritative candidate closure source contract
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      PYTHONPATH: ${{ github.workspace }}\src
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+
+    steps:
+      - name: Verify trusted runner assignment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') { throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS" }
+          Write-Host 'rc4_candidate_closure_runner=PASS'
+
+      - name: Check out exact candidate-closure source revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify exact clean RC4 candidate source and no active authority material
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:EXPECTED_HEAD -cnotmatch '^[0-9a-f]{40}$') { throw 'Expected candidate-closure source head is not a full lowercase Git SHA.' }
+          $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $head -ne $env:EXPECTED_HEAD.ToLowerInvariant()) { throw "Candidate-closure checkout is not exact: actual=$head expected=$env:EXPECTED_HEAD" }
+          if (-not [string]::IsNullOrWhiteSpace((git status --porcelain))) { throw 'Candidate-closure source checkout is dirty.' }
+          $project = (python -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text(encoding='utf-8'))['project']['version'])").Trim()
+          $package = (python -c "import psmatrix; print(psmatrix.__version__)").Trim()
+          if ($project -ne '2.0.0rc4' -or $package -ne '2.0.0rc4') { throw "Expected exact RC4 package identity; project=$project package=$package" }
+          foreach ($path in @('ga-packs\03-authoritative-windows\rc4-release-lock.json','release-assets\2.0.0rc4\psmatrix-2.0.0rc4-release-public.pem')) {
+              if (Test-Path -LiteralPath (Join-Path $env:GITHUB_WORKSPACE $path) -PathType Leaf) { throw "RC4 preparation branch must not contain active authority material: $path" }
+          }
+          Write-Host "rc4_candidate_closure_source_head=$head"
+          Write-Host 'active_rc4_lock_present=false'
+          Write-Host 'active_rc4_public_authority_present=false'
+
+      - name: Compile RC4 candidate closure and cumulative contract tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & python -m py_compile `
+              scripts/ga/build_windows_authority_rc4_candidate_closure.py `
+              tests/test_windows_authority_release_candidate_builder.py `
+              tests/test_windows_authority_rc4_authority_rotation.py `
+              tests/test_windows_authority_rc4_authority_rotation_runtime.py `
+              tests/test_windows_authority_rc4_lock_promotion_signing.py `
+              tests/test_windows_authority_protected_release_import.py `
+              tests/test_windows_authority_rc4_protected_release_intake.py `
+              tests/test_windows_authority_rc4_media_readiness.py `
+              tests/test_windows_authority_provisioning_manifest_workflow.py `
+              tests/test_windows_authority_rc4_provisioning_manifest.py `
+              tests/test_windows_authority_rc4_operation_package.py `
+              tests/test_windows_authority_rc4_hyperv_provisioning.py `
+              tests/test_windows_authority_rc4_image_identity_measurement.py `
+              tests/test_windows_authority_rc4_certification_campaign.py `
+              tests/test_windows_authority_rc4_candidate_closure.py
+          if ($LASTEXITCODE -ne 0) { throw 'RC4 candidate-closure Python compile failed.' }
+          Write-Host 'rc4_candidate_closure_compile=PASS'
+
+      - name: Run cumulative RC4 authority through candidate-closure contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & python -m unittest -v `
+              tests.test_windows_authority_release_candidate_builder `
+              tests.test_windows_authority_rc4_authority_rotation `
+              tests.test_windows_authority_rc4_authority_rotation_runtime `
+              tests.test_windows_authority_rc4_lock_promotion_signing `
+              tests.test_windows_authority_protected_release_import `
+              tests.test_windows_authority_rc4_protected_release_intake `
+              tests.test_windows_authority_rc4_media_readiness `
+              tests.test_windows_authority_provisioning_manifest_workflow `
+              tests.test_windows_authority_rc4_provisioning_manifest `
+              tests.test_windows_authority_rc4_operation_package `
+              tests.test_windows_authority_rc4_hyperv_provisioning `
+              tests.test_windows_authority_rc4_image_identity_measurement `
+              tests.test_windows_authority_rc4_certification_campaign `
+              tests.test_windows_authority_rc4_candidate_closure
+          if ($LASTEXITCODE -ne 0) { throw 'RC4 candidate-closure cumulative contract tests failed.' }
+          Write-Host 'rc4_candidate_closure_contract=PASS'
+          Write-Host 'final_ga_evaluator_invoked=false'
+          Write-Host 'candidate_ga_eligible=false'
+
+      - name: Enforce no tracked private authority material
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $markers = @('-----BEGIN PRIVATE KEY-----','-----BEGIN RSA PRIVATE KEY-----','-----BEGIN EC PRIVATE KEY-----','-----BEGIN OPENSSH PRIVATE KEY-----','-----BEGIN ED25519 PRIVATE KEY-----')
+          $tracked = @(git ls-files)
+          if ($LASTEXITCODE -ne 0 -or $tracked.Count -eq 0) { throw 'Unable to enumerate tracked repository files.' }
+          foreach ($relative in $tracked) {
+              $path = Join-Path $env:GITHUB_WORKSPACE $relative
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+              $file = Get-Item -LiteralPath $path
+              if ($file.Length -gt 1048576) { continue }
+              try { $text = [System.IO.File]::ReadAllText($file.FullName) } catch { continue }
+              foreach ($marker in $markers) {
+                  if ([regex]::IsMatch($text,'(?m)^'+[regex]::Escape($marker)+'\r?$')) { throw "Tracked private-key PEM material detected: $relative" }
+              }
+          }
+          Write-Host "repository_private_authority_absence=PASS tracked_files=$($tracked.Count)"
+
+      - name: Emit candidate-closure source-preflight summary
+        shell: pwsh
+        run: |
+          Write-Host "validated_exact_rc4_head=$env:EXPECTED_HEAD"
+          Write-Host 'rc4_candidate=2.0.0rc4'
+          Write-Host 'candidate_closure_built=false'
+          Write-Host 'production_inputs_mutated=false'
+          Write-Host 'workers_contacted=false'
+          Write-Host 'certification_campaign_executed=false'
+          Write-Host 'final_ga_evaluator_invoked=false'
+          Write-Host 'authoritative=false'
+          Write-Host 'ga_eligible=false'

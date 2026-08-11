@@ -1,0 +1,200 @@
+name: production-ga-final-production-bootstrap-source-preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["final/2.0.0-production-bootstrap-controls", "main"]
+    paths:
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/ga-final-production-bootstrap-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-provisioning-handoff-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-rc4-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-rc4-candidate-closure-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-rc4-candidate-closure-hardening-source-preflight.yml"
+      - "ga-packs/03-authoritative-windows/final-production-bootstrap-contract.json"
+      - "scripts/ga/validate_final_production_bootstrap.py"
+      - "tests/test_final_production_bootstrap_contract.py"
+  pull_request:
+    branches: ["final/2.0.0-execution-control-integration-v4"]
+    paths:
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/ga-final-production-bootstrap-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-provisioning-handoff-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-rc4-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-rc4-candidate-closure-source-preflight.yml"
+      - ".github/workflows/ga-windows-authority-rc4-candidate-closure-hardening-source-preflight.yml"
+      - "ga-packs/03-authoritative-windows/final-production-bootstrap-contract.json"
+      - "scripts/ga/validate_final_production_bootstrap.py"
+      - "tests/test_final_production_bootstrap_contract.py"
+
+concurrency:
+  group: production-ga-final-production-bootstrap-source-preflight-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  final-production-bootstrap-source-preflight:
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      PYTHONPATH: ${{ github.workspace }}\src
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+      EXECUTION_CONTROL_HEAD: 49080a038bcf02ea328d862904e43af4fcf540db
+      READINESS_SOURCE_HEAD: 6bfedb4979d0832daf01f3f452144f7bb7f830d6
+      PRODUCER_SOURCE_ANCHOR: 89372d9432433237abdf677900093b399c4d0868
+      FINAL_RELEASE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
+
+    steps:
+      - name: Verify trusted NAVEAX source runner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') {
+              throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS"
+          }
+          Write-Host 'final_production_bootstrap_source_runner=PASS'
+
+      - name: Check out exact production bootstrap source with full history
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact nine-path bootstrap source closure and ancestry
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($env:EXPECTED_HEAD -cnotmatch '^[0-9a-f]{40}$' -or $head -ne $env:EXPECTED_HEAD.ToLowerInvariant()) {
+              throw "Exact production bootstrap head mismatch: $head / $env:EXPECTED_HEAD"
+          }
+          if (-not [string]::IsNullOrWhiteSpace((git status --porcelain))) {
+              throw 'Production bootstrap source checkout is dirty.'
+          }
+          foreach ($sha in @($env:EXECUTION_CONTROL_HEAD,$env:READINESS_SOURCE_HEAD,$env:PRODUCER_SOURCE_ANCHOR,$env:FINAL_RELEASE_COMMIT)) {
+              git cat-file -e "$sha^{commit}"
+              if ($LASTEXITCODE -ne 0) { throw "Frozen production bootstrap source commit is unavailable: $sha" }
+          }
+          git merge-base --is-ancestor $env:EXECUTION_CONTROL_HEAD $head
+          if ($LASTEXITCODE -ne 0) { throw 'Execution-control head is not an ancestor of production bootstrap head.' }
+          $contract = Get-Content 'ga-packs\03-authoritative-windows\final-production-bootstrap-contract.json' -Raw | ConvertFrom-Json
+          if ([int]$contract.schema -ne 1 -or [string]$contract.kind -ne 'psmatrix.final-production-bootstrap-contract' -or [string]$contract.version -ne '2.0.0') {
+              throw 'Production bootstrap contract identity mismatch.'
+          }
+          if ([string]$contract.execution_control_head -ne $env:EXECUTION_CONTROL_HEAD -or [string]$contract.readiness_source_head -ne $env:READINESS_SOURCE_HEAD -or [string]$contract.producer_source_anchor -ne $env:PRODUCER_SOURCE_ANCHOR -or [string]$contract.final_release_commit -ne $env:FINAL_RELEASE_COMMIT) {
+              throw 'Production bootstrap frozen source identity mismatch.'
+          }
+          $changed = @((git diff --name-only "$env:EXECUTION_CONTROL_HEAD..$head") | ForEach-Object { $_.Trim().Replace('\','/') } | Where-Object { $_ } | Sort-Object -Unique)
+          $allowed = @($contract.control_source.changed_path_allowlist | ForEach-Object { ([string]$_).Replace('\','/') } | Sort-Object -Unique)
+          if (@(Compare-Object -ReferenceObject $allowed -DifferenceObject $changed).Count -ne 0) {
+              throw "Production bootstrap changed-path closure mismatch. changed=$($changed -join ',')"
+          }
+          if ($changed.Count -ne 9) { throw "Expected exactly nine production bootstrap paths; observed $($changed.Count)." }
+          if (@($changed | Where-Object { $_ -like 'src/psmatrix/*' }).Count -ne 0) { throw 'Production bootstrap layer modified runtime source.' }
+          if (@($contract.required_dispatch_workflow_paths).Count -ne 19) { throw 'Production bootstrap dispatch registration set is not exact 19.' }
+          if (@($contract.legacy_phase_preflight_paths).Count -ne 4) { throw 'Legacy phase preflight set is not exact four.' }
+          if (@($contract.bootstrap_sequence).Count -ne 10) { throw 'Production bootstrap sequence is not exact ten stages.' }
+          Write-Host "validated_exact_production_bootstrap_head=$head"
+          Write-Host 'production_bootstrap_changed_paths=9'
+          Write-Host 'runtime_source_changes=0'
+          Write-Host 'required_dispatch_workflow_paths=19'
+          Write-Host 'legacy_phase_preflights=4'
+          Write-Host 'bootstrap_stages=10'
+
+      - name: Compile production bootstrap controls
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m py_compile scripts/ga/validate_final_production_bootstrap.py tests/test_final_production_bootstrap_contract.py
+          if ($LASTEXITCODE -ne 0) { throw 'Production bootstrap Python compile failed.' }
+          Write-Host 'final_production_bootstrap_compile=PASS'
+
+      - name: Validate source bootstrap mapping and default branch registration
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = "$env:RUNNER_TEMP\final-production-bootstrap-validation.json"
+          $args = @('scripts/ga/validate_final_production_bootstrap.py','--repo-root','.','--inspect-default-branch','--output',$output)
+          $postPublication = $env:GITHUB_EVENT_NAME -eq 'push' -and $env:GITHUB_REF -eq 'refs/heads/main'
+          if ($postPublication) {
+              $args += '--require-default-branch-registration'
+          }
+          & python @args
+          if ($LASTEXITCODE -ne 0) { throw 'Final production bootstrap validator failed.' }
+          $value = Get-Content $output -Raw | ConvertFrom-Json
+          Write-Host "default_branch=$($value.default_branch)"
+          Write-Host "default_branch_dispatch_paths_present=$($value.default_branch_registration.present)"
+          Write-Host "default_branch_dispatch_paths_required=$($value.default_branch_registration.required)"
+          Write-Host "default_branch_dispatch_surface_ready=$($value.default_branch_dispatch_surface_ready.ToString().ToLowerInvariant())"
+          Write-Host "legacy_phase_preflights=$($value.legacy_phase_preflights)"
+          Write-Host "legacy_phase_preflight_default_branch_triggers=$($value.legacy_phase_preflight_default_branch_triggers)"
+          Write-Host "main_ci_rc4_phase_hygiene=$($value.main_ci_rc4_phase_hygiene.ToString().ToLowerInvariant())"
+          Write-Host "post_publication_registration_enforced=$($postPublication.ToString().ToLowerInvariant())"
+          Write-Host 'final_production_bootstrap_validator=PASS'
+
+      - name: Run bootstrap and inherited final control suites
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m unittest -v tests.test_final_production_bootstrap_contract tests.test_final_execution_control_contract tests.test_final_production_readiness_controls tests.test_final_security_vulnerability_evidence_producers tests.test_final_ga_evaluator_controls
+          if ($LASTEXITCODE -ne 0) { throw 'Final production bootstrap contract suite failed.' }
+          Write-Host 'final_production_bootstrap_contract_suite=PASS'
+
+      - name: Scan tracked source for private authority material
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import subprocess
+          from pathlib import Path
+          markers = {
+              b"-----BEGIN PRIVATE KEY-----",
+              b"-----BEGIN RSA PRIVATE KEY-----",
+              b"-----BEGIN EC PRIVATE KEY-----",
+              b"-----BEGIN OPENSSH PRIVATE KEY-----",
+              b"-----BEGIN ED25519 PRIVATE KEY-----",
+          }
+          root = Path.cwd().resolve()
+          tracked = [line for line in subprocess.check_output(["git", "ls-files"], text=True).splitlines() if line]
+          scanned = 0
+          total = 0
+          for relative in tracked:
+              path = root / relative
+              if not path.is_file():
+                  continue
+              scanned += 1
+              with path.open("rb") as handle:
+                  for raw_line in handle:
+                      total += len(raw_line)
+                      if raw_line.rstrip(b"\r\n").strip() in markers:
+                          raise SystemExit(f"tracked private-key PEM material detected: {relative}")
+          print(f"repository_private_authority_absence=PASS tracked_files={scanned} tracked_bytes={total} size_limit_applied=false")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Tracked-source private authority scan failed.' }
+
+      - name: Emit production bootstrap source preparation summary
+        shell: pwsh
+        run: |
+          Write-Host "validated_exact_production_bootstrap_head=$env:EXPECTED_HEAD"
+          Write-Host 'production_bootstrap_changed_paths=9'
+          Write-Host 'required_dispatch_workflow_paths=19'
+          Write-Host 'legacy_phase_preflights=4'
+          Write-Host 'legacy_phase_preflight_default_branch_triggers=0'
+          Write-Host 'main_ci_rc4_phase_hygiene=true'
+          Write-Host 'post_publication_default_branch_registration_gate_required=true'
+          Write-Host 'bootstrap_stages=10'
+          Write-Host 'default_branch=main'
+          Write-Host 'default_branch_publication_required=true'
+          Write-Host 'readiness_source_preflight_observed_success=false'
+          Write-Host 'production_readiness_executed=false'
+          Write-Host 'active_final_lock_present=false'
+          Write-Host 'final_public_authority_present=false'
+          Write-Host 'signed_release_executed=false'
+          Write-Host 'production_evidence_runs_complete=false'
+          Write-Host 'final_ga_evaluator_invoked=false'
+          Write-Host 'ga_eligible=false'

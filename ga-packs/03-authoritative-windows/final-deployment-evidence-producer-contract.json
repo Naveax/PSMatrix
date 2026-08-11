@@ -1,0 +1,146 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.final-deployment-evidence-producer-contract",
+  "version": "2.0.0",
+  "final_release_commit": "02cef95d40cf524ce00f9d917188343dc49e6f2c",
+  "ci_producer_anchor": "89866c0e7eaf0aa10c25fdbbc900e2f5bdaea97e",
+  "signed_release": {
+    "workflow": "production-ga-windows-authority-final-release-sign-from-lock",
+    "artifact": "psmatrix-2.0.0-protected-release",
+    "manifest": "psmatrix-2.0.0-release.json",
+    "public_key": "psmatrix-2.0.0-release-public.pem",
+    "signing_status": "psmatrix-2.0.0-protected-release-signing-status.json"
+  },
+  "shared_live_probe": {
+    "workflow": "production-ga-final-public-auth-live-probe",
+    "workflow_path": ".github/workflows/ga-final-public-auth-live-probe.yml",
+    "artifact": "psmatrix-2.0.0-final-public-auth-live-report",
+    "report": "public-auth-live-report.json",
+    "environment": "production-ga-public-auth-probe",
+    "runner": "ubuntu-latest",
+    "oauth_endpoint_variable": "PSMATRIX_OAUTH_ENDPOINT",
+    "oauth_discovery_variable": "PSMATRIX_OAUTH_DISCOVERY_URL",
+    "oauth_expected_issuer_variable": "PSMATRIX_OAUTH_EXPECTED_ISSUER",
+    "oauth_request_method_variable": "PSMATRIX_OAUTH_REQUEST_METHOD",
+    "oauth_request_body_variable": "PSMATRIX_OAUTH_REQUEST_BODY",
+    "oauth_rate_limit_attempts_variable": "PSMATRIX_OAUTH_RATE_LIMIT_ATTEMPTS",
+    "mtls_endpoint_variable": "PSMATRIX_MTLS_ENDPOINT",
+    "mtls_request_method_variable": "PSMATRIX_MTLS_REQUEST_METHOD",
+    "mtls_request_body_variable": "PSMATRIX_MTLS_REQUEST_BODY",
+    "mtls_fingerprint_header_variable": "PSMATRIX_MTLS_FINGERPRINT_HEADER",
+    "timeout_variable": "PSMATRIX_PUBLIC_AUTH_TIMEOUT_SECONDS",
+    "oauth_token_secrets": [
+      "PSMATRIX_OAUTH_VALID_TOKEN",
+      "PSMATRIX_OAUTH_EXPIRED_TOKEN",
+      "PSMATRIX_OAUTH_WRONG_AUDIENCE_TOKEN",
+      "PSMATRIX_OAUTH_MISSING_SCOPE_TOKEN",
+      "PSMATRIX_OAUTH_REPLAY_TOKEN",
+      "PSMATRIX_OAUTH_RATE_LIMIT_TOKEN"
+    ],
+    "mtls_keypair_secrets": [
+      "PSMATRIX_MTLS_CURRENT_CERT",
+      "PSMATRIX_MTLS_CURRENT_KEY",
+      "PSMATRIX_MTLS_ROTATION_CERT",
+      "PSMATRIX_MTLS_ROTATION_KEY",
+      "PSMATRIX_MTLS_UNTRUSTED_CERT",
+      "PSMATRIX_MTLS_UNTRUSTED_KEY",
+      "PSMATRIX_MTLS_REVOKED_CERT",
+      "PSMATRIX_MTLS_REVOKED_KEY"
+    ],
+    "max_rate_limit_attempts": 32,
+    "public_dns_required": true,
+    "globally_routable_addresses_required": true,
+    "system_server_tls_trust_required": true,
+    "separate_oauth_and_mtls_endpoints_required": true,
+    "private_probe_material_allowed_in_artifact": false
+  },
+  "oauth": {
+    "workflow": "production-ga-final-public-oauth",
+    "workflow_path": ".github/workflows/ga-final-public-oauth.yml",
+    "artifact": "psmatrix-2.0.0-final-public-oauth",
+    "proof": "public-oauth.dsse.json",
+    "proof_result": "public-oauth-result.json",
+    "public_key": "deployment-public.pem",
+    "required_assertions": [
+      "external_probe",
+      "public_dns",
+      "public_tls",
+      "oauth_external",
+      "discovery_verified",
+      "audience_verified",
+      "scope_verified",
+      "token_expiry_verified",
+      "missing_token_rejected",
+      "wrong_audience_rejected",
+      "missing_scope_rejected",
+      "replay_protection_verified",
+      "rate_limiting_verified",
+      "release_commit_bound"
+    ]
+  },
+  "mtls": {
+    "workflow": "production-ga-final-public-mtls",
+    "workflow_path": ".github/workflows/ga-final-public-mtls.yml",
+    "artifact": "psmatrix-2.0.0-final-public-mtls",
+    "proof": "public-mtls.dsse.json",
+    "proof_result": "public-mtls-result.json",
+    "public_key": "deployment-public.pem",
+    "required_assertions": [
+      "external_probe",
+      "public_dns",
+      "public_tls",
+      "client_certificate_required",
+      "untrusted_client_rejected",
+      "certificate_rotation_ready",
+      "revoked_client_rejected",
+      "tls_passthrough_verified",
+      "release_commit_bound"
+    ]
+  },
+  "cross_gate": {
+    "same_live_report_sha256_required": true,
+    "different_public_endpoints_required": true,
+    "same_deployment_authority_required": true,
+    "same_release_commit_required": true,
+    "same_release_manifest_sha256_required": true,
+    "same_release_wheel_sha256_required": true,
+    "deployed_version": "2.0.0"
+  },
+  "deployment_authority": {
+    "environment": "production-ga-deployment-signing",
+    "private_key_secret": "PSMATRIX_GA_DEPLOYMENT_PRIVATE_KEY",
+    "public_key_secret": "PSMATRIX_GA_DEPLOYMENT_PUBLIC_KEY",
+    "private_key_allowed_in_live_probe": false,
+    "oauth_and_mtls_must_share_exact_authority": true
+  },
+  "execution": {
+    "release_run_must_be_successful_workflow_dispatch": true,
+    "release_run_must_share_exact_control_head": true,
+    "live_probe_run_must_be_successful_workflow_dispatch": true,
+    "live_probe_run_must_share_exact_control_head": true,
+    "live_report_artifact_must_be_unique_and_nonexpired": true,
+    "proof_private_key_access_only_after_live_report_validation": true,
+    "production_execution_is_not_source_validation": true
+  },
+  "control_source": {
+    "runtime_source_changes_allowed": false,
+    "changed_path_allowlist": [
+      ".github/workflows/ga-final-deployment-evidence-producers-source-preflight.yml",
+      ".github/workflows/ga-final-public-auth-live-probe.yml",
+      ".github/workflows/ga-final-public-mtls.yml",
+      ".github/workflows/ga-final-public-oauth.yml",
+      "ga-packs/03-authoritative-windows/final-deployment-evidence-producer-contract.json",
+      "scripts/ga/probe_final_public_auth.py",
+      "tests/test_final_deployment_evidence_producers.py"
+    ]
+  },
+  "preparation_state": {
+    "live_probe_executed": false,
+    "oauth_producer_executed": false,
+    "mtls_producer_executed": false,
+    "deployment_private_key_read": false,
+    "evaluator_producer_sources_present_after_this_layer": 6,
+    "evaluator_producer_sources_required": 11,
+    "ga_eligible": false
+  }
+}

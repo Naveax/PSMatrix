@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-authority-hyperv-provisioning-workflow-contract",
+  "pack": "03-authoritative-windows",
+  "release_version": "2.0.0rc4",
+  "workflow": "production-ga-windows-authority-rc4-provision-selfhosted",
+  "protected_environment": "production-ga-windows-lab",
+  "required_runner_labels": ["self-hosted", "Windows", "X64", "psmatrix-hyperv"],
+  "inputs": {
+    "release_commit_required": true,
+    "control_head_required": true,
+    "operation_run_id_required": true,
+    "operation_run_attempt_required": true,
+    "provision_timeout_seconds_required": true
+  },
+  "provenance": {
+    "control_head_must_equal_workflow_sha": true,
+    "active_rc4_release_lock_required": true,
+    "active_lock_sha256_recomputed": true,
+    "active_lock_release_commit_must_match": true,
+    "reviewed_authority_rotation_required": true,
+    "release_authority_rotated_during_signing": false,
+    "operation_root_is_run_and_attempt_scoped": true,
+    "operation_metadata_status_required": "READY_FOR_WINDOWS_HOST",
+    "operation_metadata_active_lock_sha256_must_match": true,
+    "operation_binding_status_required": "PASS",
+    "operation_binding_ready_for_release_artifact_recovery": true,
+    "operation_zip_sha256_recomputed": true,
+    "provisioning_manifest_sha256_recomputed": true
+  },
+  "product_execution": {
+    "signed_release_wheel_installed_offline": true,
+    "exact_release_source_checkout_required": true,
+    "lab_plan_command_required": true,
+    "lab_provision_command_required": true,
+    "protected_hyperv_host_endpoint_required": true
+  },
+  "vm_set": {
+    "exact_runtime_ids": [
+      "windows-powershell-4.0",
+      "windows-powershell-5.0",
+      "windows-powershell-5.1"
+    ],
+    "vm_count": 3,
+    "generation": 2,
+    "checkpoint_name": "psmatrix-clean",
+    "checkpoint_count": 3
+  },
+  "output": {
+    "status": "VM_SET_PROVISIONED_OS_MEASUREMENT_PENDING",
+    "actual_os_identity_measured": false,
+    "endpoint_manifests_written": false,
+    "image_manifests_written": false,
+    "runs_authoritative_campaign": false,
+    "authoritative": false,
+    "ga_eligible": false
+  },
+  "safety": {
+    "uses_historical_rc2_operation_package": false,
+    "release_private_key_required": false,
+    "windows_lab_private_key_required": false,
+    "detailed_provisioning_report_uploaded": false,
+    "uploads_sanitized_status_only": true,
+    "creates_virtual_machines": true,
+    "creates_checkpoints": true,
+    "runs_authoritative_campaign": false,
+    "authoritative": false,
+    "ga_eligible": false
+  }
+}

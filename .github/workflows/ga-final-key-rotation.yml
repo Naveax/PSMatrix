@@ -1,0 +1,195 @@
+name: production-ga-final-key-rotation
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_signing_run_id:
+        description: Successful protected final 2.0.0 signing workflow run ID from this exact control head
+        required: true
+        type: string
+
+concurrency:
+  group: production-ga-final-key-rotation
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  produce-key-rotation:
+    name: Run bounded rotation/revocation drill and sign with exact release authority
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production-ga-release-signing
+    permissions:
+      contents: read
+      actions: read
+    env:
+      RELEASE_SIGNING_RUN_ID: ${{ inputs.release_signing_run_id }}
+
+    steps:
+      - name: Validate key-rotation dispatch identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_SIGNING_RUN_ID" =~ ^[0-9]+$ ]] || { echo 'release_signing_run_id must contain only decimal digits.' >&2; exit 1; }
+          [[ "$RELEASE_SIGNING_RUN_ID" != "$GITHUB_RUN_ID" ]] || { echo 'release signing and key-rotation run IDs must be distinct.' >&2; exit 1; }
+          echo 'key_rotation_dispatch_identity=PASS'
+
+      - name: Check out exact operations/release producer controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Validate exact protected final release run before release-key access
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=control/src python - <<'PY'
+          import json, os, subprocess, urllib.request
+          from pathlib import Path
+          head=subprocess.check_output(['git','-C','control','rev-parse','HEAD'],text=True).strip().lower()
+          if head!=os.environ['GITHUB_SHA'].lower():
+              raise SystemExit('key-rotation control checkout is not exact GITHUB_SHA')
+          if subprocess.check_output(['git','-C','control','status','--porcelain'],text=True).strip():
+              raise SystemExit('key-rotation control checkout is dirty')
+          contract=json.loads(Path('control/ga-packs/03-authoritative-windows/final-operations-release-evidence-producer-contract.json').read_text(encoding='utf-8'))
+          rotation=contract.get('key_rotation') or {}
+          if rotation.get('workflow')!='production-ga-final-key-rotation' or rotation.get('authority')!='release':
+              raise SystemExit('key-rotation workflow/authority contract mismatch')
+          if rotation.get('actual_release_authority_rotation_allowed') is not False:
+              raise SystemExit('key-rotation contract must forbid actual release authority rotation')
+          run_id=os.environ['RELEASE_SIGNING_RUN_ID']
+          headers={'Accept':'application/vnd.github+json','Authorization':f'Bearer {os.environ["GH_TOKEN"]}','X-GitHub-Api-Version':'2026-03-10','User-Agent':'psmatrix-final-key-rotation'}
+          def fetch(path):
+              request=urllib.request.Request(f'https://api.github.com/repos/Naveax/PSMatrix/{path}',headers=headers)
+              with urllib.request.urlopen(request,timeout=30) as response:
+                  return json.load(response)
+          run=fetch(f'actions/runs/{run_id}')
+          if run.get('name')!='production-ga-windows-authority-final-release-sign-from-lock' or run.get('event')!='workflow_dispatch':
+              raise SystemExit('key-rotation final-signing workflow provenance mismatch')
+          if run.get('status')!='completed' or run.get('conclusion')!='success':
+              raise SystemExit('key-rotation final-signing run is not completed successfully')
+          if (run.get('head_sha') or '').lower()!=head:
+              raise SystemExit('key-rotation final-signing run does not share exact control head')
+          artifacts=fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts',[])
+          matches=[item for item in artifacts if item.get('name')=='psmatrix-2.0.0-protected-release' and not item.get('expired')]
+          if len(matches)!=1:
+              raise SystemExit(f'expected exactly one non-expired protected final release artifact; found {len(matches)}')
+          print(f'key_rotation_release_provenance=PASS run_id={run_id} artifact_id={matches[0].get("id")}')
+          PY
+
+      - name: Download exact protected final release
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-protected-release
+          path: signed-release
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.release_signing_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Revalidate exact signed release authority before private-key access
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=control/src python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from psmatrix.release import verify_release_manifest
+          from psmatrix.signing import public_key_id
+          from psmatrix.util import sha256_file
+          release=Path('signed-release')
+          manifest=release/'psmatrix-2.0.0-release.json'
+          public=release/'psmatrix-2.0.0-release-public.pem'
+          status_path=release/'psmatrix-2.0.0-protected-release-signing-status.json'
+          verified=verify_release_manifest(manifest,release,signing_public_key=public)
+          if verified.get('valid') is not True or verified.get('version')!='2.0.0':
+              raise SystemExit('protected final release verification failed before key-rotation drill')
+          status=json.loads(status_path.read_text(encoding='utf-8'))
+          if status.get('release_artifacts_signed') is not True or status.get('version')!='2.0.0':
+              raise SystemExit('protected final release signing status is not final/signed')
+          key_id=public_key_id(public)
+          with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as stream:
+              stream.write(f'EXPECTED_RELEASE_KEY_ID={key_id}\n')
+              stream.write(f'EXPECTED_RELEASE_PUBLIC_SHA256={sha256_file(public)}\n')
+          print(f'key_rotation_release_pre_secret=PASS key_id={key_id}')
+          PY
+
+      - name: Materialize exact release private authority, run bounded drill, verify, and remove private key
+        shell: bash
+        env:
+          RELEASE_PRIVATE_KEY: ${{ secrets.PSMATRIX_RELEASE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$RELEASE_PRIVATE_KEY" ]] || { echo 'PSMATRIX_RELEASE_PRIVATE_KEY is missing from production-ga-release-signing.' >&2; exit 1; }
+          key_root="$RUNNER_TEMP/psmatrix-final-key-rotation-release-key"
+          output="$RUNNER_TEMP/psmatrix-2.0.0-final-key-rotation"
+          rm -rf "$key_root" "$output"
+          install -d -m 0700 "$key_root" "$output"
+          printf '%s\n' "$RELEASE_PRIVATE_KEY" > "$key_root/release.private.pem"
+          chmod 0600 "$key_root/release.private.pem"
+          cleanup() {
+            shred -u "$key_root/release.private.pem" 2>/dev/null || rm -f "$key_root/release.private.pem"
+            rmdir "$key_root" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          cp signed-release/psmatrix-2.0.0-release-public.pem "$output/release-public.pem"
+          PYTHONPATH=control/src python -m psmatrix.cli ga key-rotation-drill \
+            --private-key "$key_root/release.private.pem" \
+            --public-key "$output/release-public.pem" \
+            --output "$output/key-rotation.dsse.json"
+          PYTHONPATH=control/src python -m psmatrix.cli ga proof-verify \
+            --type key-rotation \
+            --attestation "$output/key-rotation.dsse.json" \
+            --public-key "$output/release-public.pem" >/dev/null
+          PSMATRIX_ROTATION_OUTPUT="$output" PYTHONPATH=control/src python - <<'PY'
+          import os
+          from pathlib import Path
+          from psmatrix.ga import verify_ga_proof
+          from psmatrix.signing import public_key_id
+          from psmatrix.util import atomic_write_json, read_json, sha256_file
+          root=Path(os.environ['PSMATRIX_ROTATION_OUTPUT'])
+          public=root/'release-public.pem'
+          if public_key_id(public)!=os.environ['EXPECTED_RELEASE_KEY_ID'] or sha256_file(public)!=os.environ['EXPECTED_RELEASE_PUBLIC_SHA256']:
+              raise SystemExit('key-rotation output release authority differs from protected final release authority')
+          verified=verify_ga_proof(read_json(root/'key-rotation.dsse.json'),public_key=public,expected_type='key-rotation')
+          result=verified.get('result')
+          if not isinstance(result,dict):
+              raise SystemExit('verified key-rotation result payload is missing')
+          assertions=result.get('assertions') if isinstance(result.get('assertions'),dict) else {}
+          required=('old_signature_rejected','new_signature_accepted','old_key_retired','revocation_enforced')
+          if verified.get('valid') is not True or any(assertions.get(name) is not True for name in required):
+              raise SystemExit('bounded key-rotation drill lacks required PASS assertions')
+          if int(assertions.get('trust_generation') or 0)<2:
+              raise SystemExit('bounded key-rotation drill did not advance trust generation')
+          if set(verified.get('key_ids') or [])!={os.environ['EXPECTED_RELEASE_KEY_ID']}:
+              raise SystemExit('key-rotation proof was not signed exclusively by exact release authority')
+          status={'schema':1,'kind':'psmatrix.final-key-rotation-producer-status','status':'PASS','version':'2.0.0','release_key_id':os.environ['EXPECTED_RELEASE_KEY_ID'],'release_public_key_sha256':os.environ['EXPECTED_RELEASE_PUBLIC_SHA256'],'proof_verified':True,'bounded_temporary_trust_drill':True,'actual_release_authority_rotated':False,'release_private_key_copied_to_output':False,'final_ga_evaluator_invoked':False,'ga_eligible':False}
+          atomic_write_json(root/'key-rotation-producer-status.json',status)
+          markers=(b'-----BEGIN PRIVATE KEY-----',b'-----BEGIN RSA PRIVATE KEY-----',b'-----BEGIN EC PRIVATE KEY-----',b'-----BEGIN OPENSSH PRIVATE KEY-----',b'-----BEGIN ED25519 PRIVATE KEY-----')
+          for path in root.rglob('*'):
+              if path.is_file() and any(marker in path.read_bytes() for marker in markers):
+                  raise SystemExit(f'private-key material found in key-rotation output: {path.name}')
+          print('signed_key_rotation=PASS exact_release_authority=true actual_release_authority_rotated=false')
+          print('final_ga_evaluator_invoked=false')
+          print('ga_eligible=false')
+          PY
+          echo "PSMATRIX_ROTATION_OUTPUT=$output" >> "$GITHUB_ENV"
+
+      - name: Upload final release-authority key-rotation proof
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-2.0.0-final-key-rotation
+          path: ${{ env.PSMATRIX_ROTATION_OUTPUT }}
+          if-no-files-found: error
+          retention-days: 30

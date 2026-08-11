@@ -1,0 +1,122 @@
+name: production-ga-windows-authority-rc4-candidate-closure-selfhosted
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_commit: {required: true, type: string}
+      control_head: {required: true, type: string}
+      operation_run_id: {required: true, type: string}
+      operation_run_attempt: {required: true, default: "1", type: string}
+      provisioning_run_id: {required: true, type: string}
+      provisioning_run_attempt: {required: true, default: "1", type: string}
+      measurement_run_id: {required: true, type: string}
+      measurement_run_attempt: {required: true, default: "1", type: string}
+      campaign_run_id: {required: true, type: string}
+      campaign_run_attempt: {required: true, default: "1", type: string}
+
+concurrency:
+  group: production-ga-windows-authority-rc4-candidate-closure-selfhosted
+  cancel-in-progress: false
+permissions:
+  contents: read
+
+jobs:
+  candidate-closure:
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 90
+    environment: production-ga-windows-lab
+    permissions:
+      contents: read
+    env:
+      PSMATRIX_WINDOWS_GA_ROOT: ${{ vars.PSMATRIX_WINDOWS_GA_ROOT }}
+      RELEASE_COMMIT: ${{ inputs.release_commit }}
+      CONTROL_HEAD: ${{ inputs.control_head }}
+      OPERATION_RUN_ID: ${{ inputs.operation_run_id }}
+      OPERATION_RUN_ATTEMPT: ${{ inputs.operation_run_attempt }}
+      PROVISIONING_RUN_ID: ${{ inputs.provisioning_run_id }}
+      PROVISIONING_RUN_ATTEMPT: ${{ inputs.provisioning_run_attempt }}
+      MEASUREMENT_RUN_ID: ${{ inputs.measurement_run_id }}
+      MEASUREMENT_RUN_ATTEMPT: ${{ inputs.measurement_run_attempt }}
+      CAMPAIGN_RUN_ID: ${{ inputs.campaign_run_id }}
+      CAMPAIGN_RUN_ATTEMPT: ${{ inputs.campaign_run_attempt }}
+    steps:
+      - name: Initialize hardened fail-closed closure workspace
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') { throw 'Expected NAVEAX Windows runner.' }
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_WINDOWS_GA_ROOT) -or -not [System.IO.Path]::IsPathRooted($env:PSMATRIX_WINDOWS_GA_ROOT)) { throw 'PSMATRIX_WINDOWS_GA_ROOT is missing or not absolute.' }
+          $ga = [System.IO.Path]::GetFullPath($env:PSMATRIX_WINDOWS_GA_ROOT)
+          if (-not (Test-Path -LiteralPath $ga -PathType Container)) { throw "GA root is missing: $ga" }
+          foreach ($pair in @(@('release_commit',$env:RELEASE_COMMIT),@('control_head',$env:CONTROL_HEAD))) { if ([string]$pair[1] -cnotmatch '^[0-9a-f]{40}$') { throw "$($pair[0]) must be a full lowercase Git SHA." } }
+          if ($env:CONTROL_HEAD -ne $env:GITHUB_SHA.ToLowerInvariant()) { throw 'control_head must equal GITHUB_SHA.' }
+          foreach ($name in @('OPERATION_RUN_ID','OPERATION_RUN_ATTEMPT','PROVISIONING_RUN_ID','PROVISIONING_RUN_ATTEMPT','MEASUREMENT_RUN_ID','MEASUREMENT_RUN_ATTEMPT','CAMPAIGN_RUN_ID','CAMPAIGN_RUN_ATTEMPT')) { if ([Environment]::GetEnvironmentVariable($name) -notmatch '^[1-9][0-9]*$') { throw "$name must be positive decimal." } }
+          $roots = @{
+            operation = Join-Path $ga ('operation\2.0.0rc4\run-{0}-attempt-{1}' -f $env:OPERATION_RUN_ID,$env:OPERATION_RUN_ATTEMPT)
+            provisioning = Join-Path $ga ('provisioning\2.0.0rc4\run-{0}-attempt-{1}' -f $env:PROVISIONING_RUN_ID,$env:PROVISIONING_RUN_ATTEMPT)
+            measurement = Join-Path $ga ('measurement\2.0.0rc4\run-{0}-attempt-{1}' -f $env:MEASUREMENT_RUN_ID,$env:MEASUREMENT_RUN_ATTEMPT)
+            campaign = Join-Path $ga ('campaign\2.0.0rc4\run-{0}-attempt-{1}' -f $env:CAMPAIGN_RUN_ID,$env:CAMPAIGN_RUN_ATTEMPT)
+          }
+          foreach ($path in $roots.Values) { if (-not (Test-Path -LiteralPath $path -PathType Container)) { throw "Required evidence root missing: $path" } }
+          $out = Join-Path $ga ('closure\2.0.0rc4\run-{0}-attempt-{1}' -f $env:GITHUB_RUN_ID,$env:GITHUB_RUN_ATTEMPT)
+          if (Test-Path -LiteralPath $out) { throw "Closure output already exists: $out" }
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          $audit = Join-Path $env:RUNNER_TEMP 'psmatrix-rc4-candidate-closure-hardened-audit'
+          if (Test-Path -LiteralPath $audit) { Remove-Item -LiteralPath $audit -Recurse -Force }
+          New-Item -ItemType Directory -Path $audit -Force | Out-Null
+          "CLOSURE_GA=$ga" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "CLOSURE_OPERATION=$($roots.operation)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "CLOSURE_PROVISIONING=$($roots.provisioning)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "CLOSURE_MEASUREMENT=$($roots.measurement)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "CLOSURE_CAMPAIGN=$($roots.campaign)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "CLOSURE_BASE=$(Join-Path $out 'candidate.base.json')" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "CLOSURE_SCAN=$(Join-Path $out 'candidate.private-scan.json')" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "CLOSURE_HARDENED=$(Join-Path $out 'candidate.hardened.json')" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "CLOSURE_AUDIT=$audit" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with: {ref: "${{ inputs.control_head }}", path: control, fetch-depth: 1, persist-credentials: false}
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with: {ref: "${{ inputs.release_commit }}", path: release-source, fetch-depth: 1, persist-credentials: false}
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with: {python-version: "3.13"}
+      - name: Verify exact checkouts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $control = Join-Path $env:GITHUB_WORKSPACE 'control'; $release = Join-Path $env:GITHUB_WORKSPACE 'release-source'
+          if ((git -C $control rev-parse HEAD).Trim().ToLowerInvariant() -ne $env:CONTROL_HEAD) { throw 'Control checkout mismatch.' }
+          if ((git -C $release rev-parse HEAD).Trim().ToLowerInvariant() -ne $env:RELEASE_COMMIT) { throw 'Release checkout mismatch.' }
+          if (-not [string]::IsNullOrWhiteSpace((git -C $control status --porcelain)) -or -not [string]::IsNullOrWhiteSpace((git -C $release status --porcelain))) { throw 'Checkout is dirty.' }
+          "CLOSURE_CONTROL=$control" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "CLOSURE_RELEASE=$release" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Build hardened closure with complete streaming rescan
+        shell: pwsh
+        env:
+          LAB_PUBLIC_KEY_PEM: ${{ secrets.PSMATRIX_WINDOWS_LAB_PUBLIC_KEY }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:LAB_PUBLIC_KEY_PEM) -or $env:LAB_PUBLIC_KEY_PEM -notmatch '-----BEGIN PUBLIC KEY-----') { throw 'Windows lab public key missing.' }
+          $dir = Join-Path $env:RUNNER_TEMP ('psmatrix-closure-pub-' + [Guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $dir | Out-Null
+          $pub = Join-Path $dir 'lab-public.pem'
+          try {
+            [IO.File]::WriteAllText($pub,$env:LAB_PUBLIC_KEY_PEM,[Text.UTF8Encoding]::new($false))
+            python "$env:CLOSURE_CONTROL\scripts\ga\build_windows_authority_rc4_candidate_closure_hardened.py" --source-root "$env:CLOSURE_CONTROL" --release-source "$env:CLOSURE_RELEASE" --ga-root "$env:CLOSURE_GA" --release-commit "$env:RELEASE_COMMIT" --release-lock "ga-packs\03-authoritative-windows\rc4-release-lock.json" --lab-public-key "$pub" --operation-root "$env:CLOSURE_OPERATION" --provisioning-root "$env:CLOSURE_PROVISIONING" --measurement-root "$env:CLOSURE_MEASUREMENT" --campaign-root "$env:CLOSURE_CAMPAIGN" --operation-run-id $env:OPERATION_RUN_ID --operation-run-attempt $env:OPERATION_RUN_ATTEMPT --provisioning-run-id $env:PROVISIONING_RUN_ID --provisioning-run-attempt $env:PROVISIONING_RUN_ATTEMPT --measurement-run-id $env:MEASUREMENT_RUN_ID --measurement-run-attempt $env:MEASUREMENT_RUN_ATTEMPT --campaign-run-id $env:CAMPAIGN_RUN_ID --campaign-run-attempt $env:CAMPAIGN_RUN_ATTEMPT --base-output "$env:CLOSURE_BASE" --scan-report "$env:CLOSURE_SCAN" --output "$env:CLOSURE_HARDENED"
+            if ($LASTEXITCODE -ne 0) { throw "Hardened closure failed: $LASTEXITCODE" }
+          } finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue; Remove-Item Env:LAB_PUBLIC_KEY_PEM -ErrorAction SilentlyContinue }
+      - name: Revalidate hardened closure
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $value = Get-Content $env:CLOSURE_HARDENED -Raw | ConvertFrom-Json; $scan = Get-Content $env:CLOSURE_SCAN -Raw | ConvertFrom-Json
+          if ([string]$value.kind -ne 'psmatrix.windows-authority-rc4-candidate-closure-hardened' -or [string]$value.status -ne 'AUTHORITATIVE_RC4_EVIDENCE_READY_FINAL_RELEASE_PENDING') { throw 'Hardened closure identity/status invalid.' }
+          if ([bool]$value.authoritative_windows -ne $true -or [bool]$value.release_bound -ne $true -or [bool]$value.final_release_required -ne $true -or [string]$value.final_release_version_required -ne '2.0.0' -or [bool]$value.final_ga_evaluator_invoked -ne $false -or [bool]$value.ga_eligible -ne $false) { throw 'Final-release-pending boundary invalid.' }
+          if ([string]$scan.status -ne 'PASS' -or [bool]$scan.size_limit_applied -ne $false -or [bool]$scan.tree_stable_during_closure -ne $true -or [int]$scan.private_key_markers_found -ne 0) { throw 'Complete streaming private-key rescan did not PASS.' }
+          if ([string]$scan.pre_scan_tree_sha256 -ne [string]$scan.post_scan_tree_sha256 -or [string]$value.campaign_evidence_tree_sha256 -ne [string]$scan.post_scan_tree_sha256) { throw 'Campaign evidence tree changed during hardened closure.' }
+          if ([string]$value.base_candidate_closure_sha256 -ne (Get-FileHash $env:CLOSURE_BASE -Algorithm SHA256).Hash.ToLowerInvariant()) { throw 'Base closure SHA stale.' }
+          if ([string]$value.campaign_streaming_private_key_rescan_sha256 -ne (Get-FileHash $env:CLOSURE_SCAN -Algorithm SHA256).Hash.ToLowerInvariant()) { throw 'Streaming scan SHA stale.' }
+          Copy-Item $env:CLOSURE_BASE (Join-Path $env:CLOSURE_AUDIT 'candidate.base.json'); Copy-Item $env:CLOSURE_SCAN (Join-Path $env:CLOSURE_AUDIT 'candidate.private-scan.json'); Copy-Item $env:CLOSURE_HARDENED (Join-Path $env:CLOSURE_AUDIT 'candidate.hardened.json')
+          Write-Host "hardened_campaign_evidence_files_scanned=$($scan.file_count)"; Write-Host "hardened_campaign_evidence_bytes_scanned=$($scan.byte_count)"
+      - name: Upload hardened candidate closure audit
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with: {name: windows-authority-rc4-candidate-closure, path: "${{ runner.temp }}\\psmatrix-rc4-candidate-closure-hardened-audit", if-no-files-found: error, retention-days: 90}
