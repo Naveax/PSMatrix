@@ -4,13 +4,18 @@ import argparse
 import hashlib
 import json
 import re
-import shutil
 import ssl
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+ROOT = Path(__file__).resolve().parents[2]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from psmatrix.pki import PKIError, verify_key_pair
 
 
 class PublicAuthProvisioningError(RuntimeError):
@@ -66,38 +71,6 @@ def _https_url(value: Any, *, name: str) -> str:
     return text
 
 
-def _openssl_public_from_certificate(certificate: Path) -> bytes:
-    executable = shutil.which("openssl")
-    if executable is None:
-        raise PublicAuthProvisioningError("OpenSSL is required to validate mTLS cert/key identity")
-    completed = subprocess.run(
-        [executable, "x509", "-in", str(certificate), "-pubkey", "-noout"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-        timeout=20,
-    )
-    if completed.returncode != 0:
-        raise PublicAuthProvisioningError(f"invalid mTLS certificate: {certificate.name}")
-    return completed.stdout.replace(b"\r\n", b"\n").strip()
-
-
-def _openssl_public_from_private(private_key: Path) -> bytes:
-    executable = shutil.which("openssl")
-    if executable is None:
-        raise PublicAuthProvisioningError("OpenSSL is required to validate mTLS cert/key identity")
-    completed = subprocess.run(
-        [executable, "pkey", "-in", str(private_key), "-pubout"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-        timeout=20,
-    )
-    if completed.returncode != 0:
-        raise PublicAuthProvisioningError(f"invalid mTLS private key: {private_key.name}")
-    return completed.stdout.replace(b"\r\n", b"\n").strip()
-
-
 def validate_material(material_root: Path) -> dict[str, Any]:
     root = material_root.resolve()
     if not root.is_dir() or root.is_symlink():
@@ -146,8 +119,10 @@ def validate_material(material_root: Path) -> dict[str, Any]:
         if digest in cert_digests:
             raise PublicAuthProvisioningError("mTLS fixture certificates must be distinct")
         cert_digests.add(digest)
-        if _openssl_public_from_certificate(cert) != _openssl_public_from_private(key):
-            raise PublicAuthProvisioningError(f"mTLS certificate/private-key mismatch: {prefix}")
+        try:
+            verify_key_pair(cert, key)
+        except PKIError as exc:
+            raise PublicAuthProvisioningError(f"mTLS certificate/private-key mismatch or invalid material: {prefix}") from exc
 
     return {
         "schema": 1,
