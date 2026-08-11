@@ -30,7 +30,7 @@ class ProductionGALocalProvisioningWorkspaceTests(unittest.TestCase):
     def test_default_rerun_refuses_silent_authority_rotation(self)->None:
         with tempfile.TemporaryDirectory(prefix="psmatrix-local-ga-workspace-") as temporary:
             workspace=Path(temporary)/"workspace"; first=self._run(workspace); second=self._run(workspace)
-            self.assertEqual(first.returncode,0,first.stdout); self.assertNotEqual(second.returncode,0); self.assertIn("already exists",second.stdout.lower())
+            self.assertEqual(first.returncode,0,first.stdout); self.assertNotEqual(second.returncode,0); self.assertIn("refusing to overwrite an existing signing key",second.stdout.lower())
 
     def test_explicit_force_can_rebuild_workspace_but_never_claim_readiness(self)->None:
         with tempfile.TemporaryDirectory(prefix="psmatrix-local-ga-workspace-") as temporary:
