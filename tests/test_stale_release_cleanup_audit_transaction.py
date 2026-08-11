@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -82,6 +84,85 @@ class StaleReleaseCleanupAuditTransactionTests(unittest.TestCase):
             self.module._finalize_reserved_output(reservation, value)
             expected = json.dumps(value, indent=2, sort_keys=True) + "\n"
             self.assertEqual(output.read_text(encoding="utf-8"), expected)
+
+    def test_second_finalize_failure_removes_both_reserved_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            operation = root / "operation.json"
+            verification = root / "verification.json"
+            first = self.module._reserve_output(operation, "cleanup operation output")
+            second = self.module._reserve_output(
+                verification, "cleanup verification output"
+            )
+            original = self.module._finalize_reserved_output
+            calls = 0
+
+            def flaky_finalize(reservation, value):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise self.module.StaleReleaseWorkCleanupOperationError(
+                        "forced second finalize failure"
+                    )
+                return original(reservation, value)
+
+            with (
+                patch.object(
+                    self.module,
+                    "_finalize_reserved_output",
+                    side_effect=flaky_finalize,
+                ),
+                self.assertRaises(self.module.StaleReleaseWorkCleanupOperationError),
+            ):
+                self.module._finalize_reserved_outputs(
+                    [
+                        (first, {"status": "PASS", "which": "operation"}),
+                        (second, {"status": "PASS", "which": "verification"}),
+                    ]
+                )
+
+            self.assertFalse(operation.exists())
+            self.assertFalse(verification.exists())
+
+    def test_second_execute_reservation_failure_cleans_first_before_operation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            closure = root / "closure.json"
+            immutable = root / "immutable.json"
+            closure.write_text("{}\n", encoding="utf-8")
+            immutable.write_text("{}\n", encoding="utf-8")
+            operation = root / "operation.json"
+            verification = root / "verification.json"
+            verification.write_text("preserve\n", encoding="utf-8")
+            argv = [
+                str(SCRIPT),
+                "--release-closure",
+                str(closure),
+                "--immutable-release-verification",
+                str(immutable),
+                "--repository",
+                "Naveax/PSMatrix",
+                "--gh",
+                "gh",
+                "--execute",
+                "--output",
+                str(operation),
+                "--verification-output",
+                str(verification),
+            ]
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(
+                    self.module,
+                    "run_operation",
+                    side_effect=AssertionError("reservation failure reached operation"),
+                ),
+                patch.object(sys, "stderr", new_callable=io.StringIO),
+            ):
+                self.assertEqual(self.module.main(), 1)
+
+            self.assertFalse(operation.exists())
+            self.assertEqual(verification.read_text(encoding="utf-8"), "preserve\n")
 
     def test_audit_finalize_failure_rolls_back_deleted_refs(self) -> None:
         branches = [{"name": "main"}, {"name": "prod/old-one"}]
