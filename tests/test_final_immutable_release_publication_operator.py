@@ -205,9 +205,24 @@ class FinalImmutableReleasePublicationOperatorTests(unittest.TestCase):
         rollback.assert_not_called()
         self.assertFalse(receipt["immutable_releases_initially_enabled"])
         self.assertTrue(receipt["immutable_releases_changed_by_operation"])
+        self.assertFalse(receipt["post_publish_reconciled_after_client_error"])
         self.assertTrue(receipt["release_published"])
         self.assertTrue(receipt["release_immutable"])
         self.assertFalse(receipt["release_closed"])
+
+    def test_enable_failure_enters_prepublish_rollback(self) -> None:
+        plan = self.plan()
+        with (
+            patch.object(self.module, "_remote_absent", side_effect=[True, True]),
+            patch.object(self.module, "_immutable_enabled", return_value=False),
+            patch.object(self.module, "_enable_immutable", side_effect=self.module.FinalImmutableReleasePublicationError("verification lost")),
+            patch.object(self.module, "_create_draft") as create,
+            patch.object(self.module, "_rollback_pre_publish") as rollback,
+            self.assertRaises(self.module.FinalImmutableReleasePublicationError),
+        ):
+            self.module.execute_plan(plan, "gh")
+        create.assert_not_called()
+        rollback.assert_called_once_with("gh", plan, draft_created=False, immutable_changed=True)
 
     def test_prepublish_failure_invokes_transactional_rollback(self) -> None:
         plan = self.plan()
@@ -234,6 +249,7 @@ class FinalImmutableReleasePublicationOperatorTests(unittest.TestCase):
         plan = self.plan()
         with (
             patch.object(self.module, "_rollback_draft") as draft_rollback,
+            patch.object(self.module, "_immutable_enabled", return_value=True),
             patch.object(self.module, "_disable_immutable") as disable,
         ):
             self.module._rollback_pre_publish("gh", plan, draft_created=True, immutable_changed=True)
@@ -242,10 +258,22 @@ class FinalImmutableReleasePublicationOperatorTests(unittest.TestCase):
 
         with (
             patch.object(self.module, "_rollback_draft") as draft_rollback,
+            patch.object(self.module, "_immutable_enabled") as enabled,
             patch.object(self.module, "_disable_immutable") as disable,
         ):
             self.module._rollback_pre_publish("gh", plan, draft_created=True, immutable_changed=False)
         draft_rollback.assert_called_once_with("gh", plan)
+        enabled.assert_not_called()
+        disable.assert_not_called()
+
+    def test_rollback_accepts_already_restored_immutable_setting(self) -> None:
+        plan = self.plan()
+        with (
+            patch.object(self.module, "_rollback_draft"),
+            patch.object(self.module, "_immutable_enabled", return_value=False),
+            patch.object(self.module, "_disable_immutable") as disable,
+        ):
+            self.module._rollback_pre_publish("gh", plan, draft_created=True, immutable_changed=True)
         disable.assert_not_called()
 
     def test_ambiguous_unconfirmed_draft_is_never_deleted(self) -> None:
@@ -260,25 +288,42 @@ class FinalImmutableReleasePublicationOperatorTests(unittest.TestCase):
         rollback.assert_not_called()
         disable.assert_not_called()
 
-    def test_post_publish_verification_failure_never_attempts_rollback(self) -> None:
+    def test_post_publish_client_error_reconciles_exact_remote_state(self) -> None:
         plan = self.plan()
         remote = self.remote_assets(plan)
-        bad_published = self.published(plan)
-        bad_published["isImmutable"] = False
         with (
             patch.object(self.module, "_remote_absent", side_effect=[True, True]),
             patch.object(self.module, "_immutable_enabled", return_value=True),
-            patch.object(self.module, "_enable_immutable") as enable,
             patch.object(self.module, "_create_draft"),
-            patch.object(self.module, "_view_release", side_effect=[self.draft(plan), bad_published]),
+            patch.object(self.module, "_view_release", return_value=self.draft(plan)),
             patch.object(self.module, "_upload_asset"),
             patch.object(self.module, "_list_assets", return_value=remote),
-            patch.object(self.module, "_publish"),
+            patch.object(self.module, "_publish", side_effect=self.module.FinalImmutableReleasePublicationError("client lost response")),
+            patch.object(self.module, "_verify_published_remote", return_value=None) as reconcile,
+            patch.object(self.module, "_rollback_pre_publish") as rollback,
+        ):
+            receipt = self.module.execute_plan(plan, "gh")
+        reconcile.assert_called_once_with("gh", plan, 77)
+        rollback.assert_not_called()
+        self.assertTrue(receipt["post_publish_reconciled_after_client_error"])
+        self.assertTrue(receipt["release_published"])
+
+    def test_post_publish_unverifiable_state_never_attempts_rollback(self) -> None:
+        plan = self.plan()
+        remote = self.remote_assets(plan)
+        with (
+            patch.object(self.module, "_remote_absent", side_effect=[True, True]),
+            patch.object(self.module, "_immutable_enabled", return_value=True),
+            patch.object(self.module, "_create_draft"),
+            patch.object(self.module, "_view_release", return_value=self.draft(plan)),
+            patch.object(self.module, "_upload_asset"),
+            patch.object(self.module, "_list_assets", return_value=remote),
+            patch.object(self.module, "_publish", side_effect=self.module.FinalImmutableReleasePublicationError("publish uncertain")),
+            patch.object(self.module, "_verify_published_remote", side_effect=self.module.FinalImmutableReleasePublicationError("remote not published")),
             patch.object(self.module, "_rollback_pre_publish") as rollback,
             self.assertRaises(self.module.FinalImmutableReleasePublicationError),
         ):
             self.module.execute_plan(plan, "gh")
-        enable.assert_not_called()
         rollback.assert_not_called()
 
     def test_preexisting_release_blocks_before_setting_or_mutation(self) -> None:
@@ -304,6 +349,7 @@ class FinalImmutableReleasePublicationOperatorTests(unittest.TestCase):
         self.assertIn("--draft=false", text)
         self.assertIn("_verify_remote_assets", text)
         self.assertIn("_rollback_pre_publish", text)
+        self.assertIn("_verify_published_remote", text)
         self.assertNotIn("--clobber", text)
         self.assertNotIn("shell=True", text)
 
