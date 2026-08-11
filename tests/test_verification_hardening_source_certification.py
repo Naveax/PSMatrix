@@ -52,8 +52,15 @@ class VerificationHardeningSourceCertificationTests(unittest.TestCase):
 
     def clean_scan(self) -> dict[str, object]:
         scanner = self.module._load_private_scanner()
+        scanner.assert_clean_working_tree(self.root, "git")
+        before = scanner.repository_head(self.root, "git")
         value = scanner.scan(self.root, scanner.tracked_files(self.root, "git"))
-        value["repository_head"] = self.git("rev-parse", "HEAD").strip().lower()
+        scanner.assert_clean_working_tree(self.root, "git")
+        after = scanner.repository_head(self.root, "git")
+        self.assertEqual(before, after)
+        value["repository_head"] = after
+        value["working_tree_clean_verified"] = True
+        value["repository_head_stable_during_scan"] = True
         return value
 
     def commit_file(self, relative: str, content: str = "ok\n") -> None:
@@ -70,10 +77,17 @@ class VerificationHardeningSourceCertificationTests(unittest.TestCase):
         self.assertEqual(value["delta_file_count"], 1)
         self.assertEqual(value["files"][0]["path"], "scripts/ga/new-hardening.py")
         self.assertEqual(len(value["files"][0]["sha256"]), 64)
-        self.assertEqual(value["private_material_scan_repository_head"], self.git("rev-parse", "HEAD").strip().lower())
+        self.assertEqual(
+            value["private_material_scan_repository_head"],
+            self.git("rev-parse", "HEAD").strip().lower(),
+        )
         self.assertTrue(value["private_material_scan_independently_reverified"])
+        self.assertTrue(value["private_material_scan_working_tree_clean_verified"])
+        self.assertTrue(value["private_material_scan_repository_head_stable_during_scan"])
         self.assertTrue(value["boundaries"]["private_material_scan_head_bound"])
         self.assertTrue(value["boundaries"]["private_material_scan_independently_reverified"])
+        self.assertTrue(value["boundaries"]["private_material_scan_working_tree_clean_verified"])
+        self.assertTrue(value["boundaries"]["private_material_scan_repository_head_stable_during_scan"])
         self.assertEqual(value["boundaries"]["runtime_source_changes"], 0)
         self.assertEqual(value["boundaries"]["baseline_files_modified"], 0)
         self.assertFalse(value["boundaries"]["ga_eligible"])
@@ -112,6 +126,23 @@ class VerificationHardeningSourceCertificationTests(unittest.TestCase):
                 with self.assertRaises(self.module.HardeningSourceCertificationError):
                     self.module.certify(self.root, self.baseline, scan)
 
+    def test_clean_tree_and_stable_head_provenance_are_required(self) -> None:
+        self.commit_file("scripts/ga/new-hardening.py")
+        for field in (
+            "working_tree_clean_verified",
+            "repository_head_stable_during_scan",
+        ):
+            with self.subTest(field=field, mode="missing"):
+                scan = self.clean_scan()
+                scan.pop(field)
+                with self.assertRaises(self.module.HardeningSourceCertificationError):
+                    self.module.certify(self.root, self.baseline, scan)
+            with self.subTest(field=field, mode="false"):
+                scan = self.clean_scan()
+                scan[field] = False
+                with self.assertRaises(self.module.HardeningSourceCertificationError):
+                    self.module.certify(self.root, self.baseline, scan)
+
     def test_correct_head_but_fabricated_scan_receipt_fails_closed(self) -> None:
         self.commit_file("scripts/ga/new-hardening.py")
         for field, value in (
@@ -130,6 +161,13 @@ class VerificationHardeningSourceCertificationTests(unittest.TestCase):
         with self.assertRaises(self.module.HardeningSourceCertificationError):
             self.module.certify(self.root, self.baseline, scan)
 
+    def test_dirty_working_tree_blocks_independent_revalidation(self) -> None:
+        self.commit_file("scripts/ga/new-hardening.py")
+        scan = self.clean_scan()
+        (self.root / "untracked.txt").write_text("dirty\n", encoding="utf-8")
+        with self.assertRaises(self.module.HardeningSourceCertificationError):
+            self.module.certify(self.root, self.baseline, scan)
+
     def test_repository_source_freezes_real_publication_baseline(self) -> None:
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("3ffc6b6d7cd58d64224f780aa819b50f50f72491", text)
@@ -142,6 +180,8 @@ class VerificationHardeningSourceCertificationTests(unittest.TestCase):
         self.assertIn("private_material_scan_head_bound", text)
         self.assertIn("private_material_scan_independently_reverified", text)
         self.assertIn("private_material_scan_repository_head", text)
+        self.assertIn("private_material_scan_working_tree_clean_verified", text)
+        self.assertIn("private_material_scan_repository_head_stable_during_scan", text)
         self.assertIn("ga_eligible", text)
 
 
