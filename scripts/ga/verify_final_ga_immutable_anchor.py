@@ -12,31 +12,31 @@ ANCHOR = "final/2.0.0-ga-publication-anchor"
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 
 
-class FinalGAImmutableAnchorError(RuntimeError):
+class FinalGAAnchorTargetError(RuntimeError):
     pass
 
 
 def verify(release_closure: dict[str, Any], ref: dict[str, Any], anchor: str = ANCHOR) -> dict[str, Any]:
     if release_closure.get("schema") != 1 or release_closure.get("kind") != "psmatrix.release-closure-readiness" or release_closure.get("version") != "2.0.0" or release_closure.get("status") != "READY_FOR_RELEASE_CLOSURE":
-        raise FinalGAImmutableAnchorError("release-closure readiness identity/status mismatch")
+        raise FinalGAAnchorTargetError("release-closure readiness identity/status mismatch")
     if release_closure.get("precondition_count") != 5 or release_closure.get("preconditions_passed") != 5 or release_closure.get("final_ga_attestation_verified") is not True or release_closure.get("ga_eligible") is not True or release_closure.get("release_closed") is not False:
-        raise FinalGAImmutableAnchorError("release-closure readiness does not prove exact five-precondition post-GA state")
+        raise FinalGAAnchorTargetError("release-closure readiness does not prove exact five-precondition post-GA state")
     if release_closure.get("final_immutable_ga_anchor_created") is not False:
-        raise FinalGAImmutableAnchorError("release-closure input must precede immutable GA anchor verification")
+        raise FinalGAAnchorTargetError("release-closure input must precede final anchor target/enforcement verification")
     expected_head = str(release_closure.get("execution_head") or "").lower()
     if SHA40.fullmatch(expected_head) is None:
-        raise FinalGAImmutableAnchorError("release-closure execution head is invalid")
+        raise FinalGAAnchorTargetError("release-closure execution head is invalid")
     if anchor != ANCHOR:
-        raise FinalGAImmutableAnchorError(f"final GA anchor name is frozen to {ANCHOR}")
+        raise FinalGAAnchorTargetError(f"final GA anchor name is frozen to {ANCHOR}")
     expected_ref = f"refs/heads/{ANCHOR}"
     if not isinstance(ref, dict) or ref.get("ref") != expected_ref:
-        raise FinalGAImmutableAnchorError("GitHub ref identity mismatch")
+        raise FinalGAAnchorTargetError("GitHub ref identity mismatch")
     obj = ref.get("object") if isinstance(ref.get("object"), dict) else {}
     if obj.get("type") != "commit" or str(obj.get("sha") or "").lower() != expected_head:
-        raise FinalGAImmutableAnchorError("final GA anchor does not point to the exact release execution head commit")
+        raise FinalGAAnchorTargetError("final GA anchor does not point to the exact release execution head commit")
     return {
         "schema": 1,
-        "kind": "psmatrix.final-ga-immutable-anchor-verification",
+        "kind": "psmatrix.final-ga-anchor-target-verification",
         "version": "2.0.0",
         "status": "PASS",
         "anchor": ANCHOR,
@@ -44,9 +44,11 @@ def verify(release_closure: dict[str, Any], ref: dict[str, Any], anchor: str = A
         "execution_head": expected_head,
         "github_ref_verified": True,
         "exact_commit_target_verified": True,
+        "immutability_enforcement_verified": False,
         "final_ga_attestation_verified": True,
         "ga_eligible": True,
-        "final_immutable_ga_anchor_created": True,
+        "final_ga_anchor_target_verified": True,
+        "final_immutable_ga_anchor_created": False,
         "release_closed": False,
     }
 
@@ -54,15 +56,15 @@ def verify(release_closure: dict[str, Any], ref: dict[str, Any], anchor: str = A
 def _gh_json(gh: str, endpoint: str) -> Any:
     completed = subprocess.run([gh, "api", endpoint], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, check=False)
     if completed.returncode != 0:
-        raise FinalGAImmutableAnchorError(f"gh api failed for {endpoint}: {completed.stderr.strip()}")
+        raise FinalGAAnchorTargetError(f"gh api failed for {endpoint}: {completed.stderr.strip()}")
     try:
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
-        raise FinalGAImmutableAnchorError("gh api returned invalid JSON") from exc
+        raise FinalGAAnchorTargetError("gh api returned invalid JSON") from exc
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Verify the post-GA immutable publication anchor through the exact GitHub branch ref API target")
+    parser = argparse.ArgumentParser(description="Verify the exact post-GA publication anchor target without overclaiming immutability enforcement")
     parser.add_argument("--release-closure", type=Path, required=True)
     parser.add_argument("--repository", default="Naveax/PSMatrix")
     parser.add_argument("--anchor", default=ANCHOR)
@@ -76,12 +78,14 @@ def main() -> int:
         value = verify(closure, ref, args.anchor)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        print(f"final_ga_immutable_anchor_verification=PASS anchor={value['anchor']} head={value['execution_head']}")
-        print("final_immutable_ga_anchor_created=true")
+        print(f"final_ga_anchor_target_verification=PASS anchor={value['anchor']} head={value['execution_head']}")
+        print("final_ga_anchor_target_verified=true")
+        print("immutability_enforcement_verified=false")
+        print("final_immutable_ga_anchor_created=false")
         print("release_closed=false")
         return 0
-    except (OSError, json.JSONDecodeError, subprocess.SubprocessError, FinalGAImmutableAnchorError, TypeError, ValueError) as exc:
-        print(f"final GA immutable anchor verification failed: {exc}", file=sys.stderr)
+    except (OSError, json.JSONDecodeError, subprocess.SubprocessError, FinalGAAnchorTargetError, TypeError, ValueError) as exc:
+        print(f"final GA anchor target verification failed: {exc}", file=sys.stderr)
         return 1
 
 
