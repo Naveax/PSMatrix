@@ -158,6 +158,17 @@ def verify(
         raise FinalReleaseClosureError(
             "immutable release verification does not prove publication receipt output reservation before mutation"
         )
+    if (
+        cleanup.get("cleanup_audit_outputs_reserved_before_mutation") is not True
+        or cleanup.get("cleanup_audit_outputs_finalized_inside_rollback_boundary") is not True
+    ):
+        raise FinalReleaseClosureError(
+            "cleanup verification does not prove audit output reservation and finalization inside the rollback transaction"
+        )
+    if final_scan.get("cleanup_audit_transaction_verified") is not True:
+        raise FinalReleaseClosureError(
+            "final repository scan does not prove cleanup audit transaction binding"
+        )
     value = _original_verify(
         release_closure,
         immutable_release,
@@ -171,6 +182,7 @@ def verify(
         )
     result = dict(value)
     result["publication_receipt_output_reserved_before_mutation"] = True
+    result["cleanup_audit_transaction_verified"] = True
     return result
 
 
@@ -209,6 +221,7 @@ def main() -> int:
         print("github_release_attestation_verified=true")
         print("post_ga_receipts_bound_before_final_scan=true")
         print("publication_receipt_output_reserved_before_mutation=true")
+        print("cleanup_audit_transaction_verified=true")
         print("final_ga_attestation_verified=true")
         print("ga_eligible=true")
         print("release_closed=true")
