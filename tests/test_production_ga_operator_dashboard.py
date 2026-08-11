@@ -10,6 +10,8 @@ SINGLE_GATES = (
     "validation-summary", "signed-release", "authoritative-windows", "complete-runtime-matrix",
     "external-otlp", "key-rotation", "disaster-recovery", "security-review", "vulnerability-scan",
 )
+HEAD = "a" * 40
+REPO_HEAD = "b" * 40
 
 
 def load():
@@ -66,10 +68,28 @@ class ProductionGAOperatorDashboardTests(unittest.TestCase):
         return {"schema": 1, "kind": "psmatrix.final-ga-attestation-content-operation", "version": "2.0.0", "status": "PASS", "exact_api_artifact_id_used": True, "safe_extraction_verified": True, "semantic_verifier_repository_owned": True, "semantic_verification_mutated_tree": False, "final_ga_attestation_verified": True, "ga_eligible": True}
 
     def release(self) -> dict:
-        return {"schema": 1, "kind": "psmatrix.release-closure-readiness", "version": "2.0.0", "status": "READY_FOR_RELEASE_CLOSURE", "precondition_count": 5, "preconditions_passed": 5, "final_ga_attestation_verified": True, "ga_eligible": True, "release_closed": False}
+        return {"schema": 1, "kind": "psmatrix.release-closure-readiness", "version": "2.0.0", "status": "READY_FOR_RELEASE_CLOSURE", "execution_head": HEAD, "precondition_count": 5, "preconditions_passed": 5, "final_ga_attestation_verified": True, "ga_eligible": True, "release_closed": False}
+
+    def immutable(self) -> dict:
+        return {"schema": 1, "kind": "psmatrix.final-immutable-release-verification", "version": "2.0.0", "status": "PASS", "tag": "v2.0.0", "release_id": 77, "release_execution_control_head": HEAD, "release_tag_created": True, "release_published": True, "final_immutable_ga_anchor_created": True, "final_ga_attestation_verified": True, "ga_eligible": True, "release_closed": False}
+
+    def documentation(self) -> dict:
+        return {"schema": 1, "kind": "psmatrix.final-documentation-state-verification", "version": "2.0.0", "status": "PASS", "execution_control_head": HEAD, "documentation_repository_head": REPO_HEAD, "release_tag": "v2.0.0", "release_id": 77, "documentation_final_state_closed": True, "release_immutable": True, "final_ga_attestation_verified": True, "ga_eligible": True, "release_closed": False}
+
+    def cleanup(self) -> dict:
+        return {"schema": 1, "kind": "psmatrix.release-stale-work-cleanup-verification", "version": "2.0.0", "status": "PASS", "repository": "Naveax/PSMatrix", "release_execution_head": HEAD, "release_tag": "v2.0.0", "stale_branch_count": 0, "stale_open_pr_count": 0, "stale_branch_pr_cleanup_completed": True, "immutable_release_verified_before_cleanup": True, "ga_eligible": True, "release_closed": False}
+
+    def scan(self) -> dict:
+        return {"schema": 1, "kind": "psmatrix.final-repository-private-material-scan-certification", "version": "2.0.0", "status": "PASS", "repository_head": REPO_HEAD, "release_execution_head": HEAD, "release_closure_ready": True, "finding_count": 0, "working_tree_clean": True, "final_repo_secret_scan_completed": True, "release_closed": False}
+
+    def final_release(self) -> dict:
+        return {"schema": 1, "kind": "psmatrix.final-release-closure-verification", "version": "2.0.0", "status": "RELEASE_CLOSED", "repository": "Naveax/PSMatrix", "release_execution_control_head": HEAD, "precondition_count": 5, "preconditions_passed": 5, "post_ga_operation_count": 6, "post_ga_operations_passed": 6, "final_ga_attestation_verified": True, "ga_eligible": True, "release_closed": True}
 
     def base_kwargs(self) -> dict:
         return {"readiness_verification": self.readiness(), "lock_verification": self.lock(), "evidence_api_verification": self.api()}
+
+    def post_ga_base(self) -> dict:
+        return {"content_closure": self.content(), "content_closure_verification": self.closure_verification(), "evaluator_verification": self.evaluator(), "final_attestation_operation": self.attestation(), "release_closure": self.release(), **self.base_kwargs()}
 
     def test_zero_of_forty_one_stays_in_provisioning(self) -> None:
         value = self.module.build(self.inventory(0), self.summary(False))
@@ -134,12 +154,46 @@ class ProductionGAOperatorDashboardTests(unittest.TestCase):
         self.assertTrue(value["ga_eligible"])
         self.assertFalse(value["release_closed"])
 
-    def test_release_readiness_reaches_final_operations_without_false_closure(self) -> None:
-        value = self.module.build(self.inventory(), self.summary(), content_closure=self.content(), content_closure_verification=self.closure_verification(), evaluator_verification=self.evaluator(), final_attestation_operation=self.attestation(), release_closure=self.release(), **self.base_kwargs())
-        self.assertEqual(value["stage"], "READY_FOR_RELEASE_CLOSURE_OPERATIONS")
+    def test_release_readiness_now_advances_to_immutable_release(self) -> None:
+        value = self.module.build(self.inventory(), self.summary(), **self.post_ga_base())
+        self.assertEqual(value["stage"], "PUBLISH_AND_VERIFY_IMMUTABLE_RELEASE")
         self.assertTrue(value["release_closure_ready"])
-        self.assertTrue(value["ga_eligible"])
         self.assertFalse(value["release_closed"])
+
+    def test_immutable_release_advances_to_documentation(self) -> None:
+        value = self.module.build(self.inventory(), self.summary(), immutable_release_verification=self.immutable(), **self.post_ga_base())
+        self.assertEqual(value["stage"], "VERIFY_FINAL_DOCUMENTATION_STATE")
+        self.assertTrue(value["immutable_release_verified"])
+
+    def test_documentation_advances_to_cleanup(self) -> None:
+        value = self.module.build(self.inventory(), self.summary(), immutable_release_verification=self.immutable(), documentation_verification=self.documentation(), **self.post_ga_base())
+        self.assertEqual(value["stage"], "CLEAN_AND_VERIFY_STALE_RELEASE_WORK")
+        self.assertTrue(value["documentation_final_state_closed"])
+
+    def test_cleanup_advances_to_final_repository_scan(self) -> None:
+        value = self.module.build(self.inventory(), self.summary(), immutable_release_verification=self.immutable(), documentation_verification=self.documentation(), cleanup_verification=self.cleanup(), **self.post_ga_base())
+        self.assertEqual(value["stage"], "RUN_AND_VERIFY_FINAL_REPOSITORY_SCAN")
+        self.assertTrue(value["stale_branch_pr_cleanup_completed"])
+
+    def test_final_scan_advances_to_final_release_closure(self) -> None:
+        value = self.module.build(self.inventory(), self.summary(), immutable_release_verification=self.immutable(), documentation_verification=self.documentation(), cleanup_verification=self.cleanup(), final_repository_scan=self.scan(), **self.post_ga_base())
+        self.assertEqual(value["stage"], "VERIFY_FINAL_RELEASE_CLOSURE")
+        self.assertTrue(value["final_repo_secret_scan_completed"])
+        self.assertFalse(value["release_closed"])
+
+    def test_final_release_verification_is_only_dashboard_release_closed_state(self) -> None:
+        value = self.module.build(self.inventory(), self.summary(), immutable_release_verification=self.immutable(), documentation_verification=self.documentation(), cleanup_verification=self.cleanup(), final_repository_scan=self.scan(), final_release_verification=self.final_release(), **self.post_ga_base())
+        self.assertEqual(value["stage"], "RELEASE_CLOSED")
+        self.assertTrue(value["final_release_closure_verified"])
+        self.assertTrue(value["ga_eligible"])
+        self.assertTrue(value["release_closed"])
+
+    def test_cleanup_wrong_repository_never_advances(self) -> None:
+        cleanup = self.cleanup()
+        cleanup["repository"] = "someone-else/PSMatrix"
+        value = self.module.build(self.inventory(), self.summary(), immutable_release_verification=self.immutable(), documentation_verification=self.documentation(), cleanup_verification=cleanup, **self.post_ga_base())
+        self.assertEqual(value["stage"], "CLEAN_AND_VERIFY_STALE_RELEASE_WORK")
+        self.assertFalse(value["stale_branch_pr_cleanup_completed"])
 
     def test_bad_inventory_cardinality_fails_closed(self) -> None:
         inventory = self.inventory()
