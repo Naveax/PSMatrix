@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -66,11 +67,22 @@ class FinalEvidenceContentClosureReceiptVerificationTests(unittest.TestCase):
         with self.assertRaises(self.module.EvidenceContentClosureReceiptVerificationError):
             self.module.verify({}, {}, self.bindings, {}, dict(expected))
 
-    def test_source_uses_repository_owned_builder_and_canonical_digest(self) -> None:
+    def test_file_sha256_binds_exact_input_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "closure.json"
+            path.write_bytes(b'{"a":1}\n')
+            first = self.module._file_sha256(path)
+            path.write_bytes(b'{"a":1}  \n')
+            second = self.module._file_sha256(path)
+        self.assertEqual(len(first), 64)
+        self.assertNotEqual(first, second)
+
+    def test_source_uses_repository_owned_builder_and_canonical_and_file_digests(self) -> None:
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("build_final_evidence_content_closure.py", text)
         self.assertIn("closure_exactly_recomputed", text)
         self.assertIn("closure_canonical_sha256", text)
+        self.assertIn("content_closure_file_sha256", text)
         self.assertIn("source_binding_receipt_count", text)
         self.assertIn("ga_eligible", text)
 
