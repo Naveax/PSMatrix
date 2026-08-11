@@ -56,11 +56,26 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def _reject_symlink_components(path: Path, label: str) -> None:
+    expanded = path.expanduser()
+    parts = expanded.parts
+    if expanded.is_absolute():
+        current = Path(expanded.anchor)
+        start = 1
+    else:
+        current = Path(".")
+        start = 0
+    for part in parts[start:]:
+        current = current / part
+        if current.is_symlink():
+            raise OperatorDashboardInputManifestError(
+                f"{label} may not traverse a symlink component"
+            )
+
+
 def _read_json(path: Path, label: str) -> dict[str, Any]:
-    original = path.expanduser()
-    if original.is_symlink():
-        raise OperatorDashboardInputManifestError(f"{label} may not be a symlink")
-    resolved = original.resolve()
+    _reject_symlink_components(path, label)
+    resolved = path.expanduser().resolve()
     if not resolved.is_file():
         raise OperatorDashboardInputManifestError(f"{label} is missing or unsafe")
     try:
@@ -73,10 +88,8 @@ def _read_json(path: Path, label: str) -> dict[str, Any]:
 
 
 def _external_receipt_root(path: Path) -> Path:
-    original = path.expanduser()
-    if original.is_symlink():
-        raise OperatorDashboardInputManifestError("receipt root may not be a symlink")
-    resolved = original.resolve()
+    _reject_symlink_components(path, "receipt root")
+    resolved = path.expanduser().resolve()
     repo = ROOT.resolve()
     if not resolved.is_dir():
         raise OperatorDashboardInputManifestError("receipt root is missing or unsafe")
