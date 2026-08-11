@@ -17,14 +17,31 @@ class FinalGAEvaluatorRunError(RuntimeError):
     pass
 
 
-def verify(run_id: int, execution_head: str, evidence_verification: dict[str, Any], run: dict[str, Any], artifacts: list[dict[str, Any]]) -> dict[str, Any]:
+def verify(run_id: int, execution_head: str, content_closure: dict[str, Any], run: dict[str, Any], artifacts: list[dict[str, Any]]) -> dict[str, Any]:
     execution_head = execution_head.lower()
     if type(run_id) is not int or run_id <= 0 or SHA40.fullmatch(execution_head) is None:
         raise FinalGAEvaluatorRunError("invalid evaluator run ID or execution head")
-    if evidence_verification.get("schema") != 1 or evidence_verification.get("kind") != "psmatrix.final-ga-evidence-api-verification" or evidence_verification.get("version") != "2.0.0" or evidence_verification.get("status") != "PASS" or evidence_verification.get("verified_gate_count") != 11 or evidence_verification.get("ready_for_final_ga_evaluator_dispatch") is not True:
-        raise FinalGAEvaluatorRunError("eleven-gate evidence API verification must PASS before evaluator-run verification")
-    if evidence_verification.get("execution_head") != execution_head:
-        raise FinalGAEvaluatorRunError("evidence verification execution head differs from evaluator head")
+    if content_closure.get("schema") != 1 or content_closure.get("kind") != "psmatrix.final-ga-evidence-content-closure" or content_closure.get("version") != "2.0.0" or content_closure.get("status") != "PASS":
+        raise FinalGAEvaluatorRunError("final 11/11 evidence content closure must PASS before evaluator-run verification")
+    required_true = (
+        "all_api_artifact_origins_verified",
+        "all_materialized_trees_verified",
+        "all_repository_owned_semantic_verifiers_passed",
+        "all_gate_contents_verified",
+        "public_auth_cross_gate_semantics_verified",
+        "all_runs_distinct",
+        "all_artifacts_distinct",
+        "ready_for_final_ga_evaluator_dispatch",
+    )
+    if content_closure.get("required_gate_count") != 11 or content_closure.get("api_verified_gate_count") != 11 or content_closure.get("content_verified_gate_count") != 11 or any(content_closure.get(field) is not True for field in required_true):
+        raise FinalGAEvaluatorRunError("final evidence content closure is incomplete")
+    if content_closure.get("final_ga_evaluator_invoked") is not False or content_closure.get("ga_root_private_key_read") is not False or content_closure.get("ga_eligible") is not False:
+        raise FinalGAEvaluatorRunError("pre-evaluator content closure crossed forbidden boundary")
+    if content_closure.get("execution_head") != execution_head:
+        raise FinalGAEvaluatorRunError("evidence content closure execution head differs from evaluator head")
+    gates = content_closure.get("gates")
+    if not isinstance(gates, list) or len(gates) != 11 or len({row.get("gate") for row in gates if isinstance(row, dict)}) != 11:
+        raise FinalGAEvaluatorRunError("evidence content closure gate rows are incomplete")
     if run.get("id") != run_id or run.get("name") != WORKFLOW:
         raise FinalGAEvaluatorRunError("final evaluator run identity mismatch")
     if run.get("event") != "workflow_dispatch" or run.get("status") != "completed" or run.get("conclusion") != "success":
@@ -45,7 +62,9 @@ def verify(run_id: int, execution_head: str, evidence_verification: dict[str, An
         "run_id": run_id,
         "execution_head": execution_head,
         "workflow": WORKFLOW,
-        "verified_gate_count_before_dispatch": 11,
+        "api_verified_gate_count_before_dispatch": 11,
+        "content_verified_gate_count_before_dispatch": 11,
+        "content_closure_required": True,
         "final_ga_evaluator_run_verified": True,
         "ga_root_signing_run_completed": True,
         "final_attestation_artifact": ARTIFACT,
@@ -67,24 +86,25 @@ def _gh_json(gh: str, endpoint: str) -> Any:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Verify final GA evaluator/root-signing run provenance after 11/11 evidence verification")
+    parser = argparse.ArgumentParser(description="Verify final GA evaluator/root-signing run provenance after exact 11/11 evidence content closure")
     parser.add_argument("--run-id", type=int, required=True)
     parser.add_argument("--execution-head", required=True)
-    parser.add_argument("--evidence-verification", type=Path, required=True)
+    parser.add_argument("--content-closure", type=Path, required=True)
     parser.add_argument("--repository", default="Naveax/PSMatrix")
     parser.add_argument("--gh", default="gh")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
-        evidence = json.loads(args.evidence_verification.read_text(encoding="utf-8"))
+        content_closure = json.loads(args.content_closure.read_text(encoding="utf-8"))
         run = _gh_json(args.gh, f"repos/{args.repository}/actions/runs/{args.run_id}")
         listing = _gh_json(args.gh, f"repos/{args.repository}/actions/runs/{args.run_id}/artifacts?per_page=100")
         if not isinstance(listing, dict) or not isinstance(listing.get("artifacts"), list):
             raise FinalGAEvaluatorRunError("invalid final evaluator artifact listing")
-        value = verify(args.run_id, args.execution_head, evidence, run, listing["artifacts"])
+        value = verify(args.run_id, args.execution_head, content_closure, run, listing["artifacts"])
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print("final_ga_evaluator_run_api_verification=PASS")
+        print("content_verified_gate_count_before_dispatch=11")
         print("ga_root_signing_run_completed=true")
         print("final_attestation_content_verified=false")
         print("ga_eligible=false")
