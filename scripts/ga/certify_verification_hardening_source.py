@@ -155,14 +155,14 @@ def _reverify_private_scan(root: Path, head: str, supplied: dict[str, Any]) -> d
                 "independent private-material re-scan HEAD differs from certified HEAD before scan"
             )
         scanner.assert_clean_working_tree(root, "git")
-        fresh = scanner.scan(root, scanner.tracked_files(root, "git"))
+        fresh = scanner.scan_git_head(root, "git", head_before)
         scanner.assert_clean_working_tree(root, "git")
         head_after = scanner.repository_head(root, "git")
     except HardeningSourceCertificationError:
         raise
     except Exception as exc:
         raise HardeningSourceCertificationError(
-            f"independent repository private-material re-scan failed: {exc}"
+            f"independent repository private-material Git-object re-scan failed: {exc}"
         ) from exc
     if head_after != head_before or head_after != head:
         raise HardeningSourceCertificationError(
@@ -176,14 +176,22 @@ def _reverify_private_scan(root: Path, head: str, supplied: dict[str, Any]) -> d
     fresh["repository_head"] = head_after
     fresh["working_tree_clean_verified"] = True
     fresh["repository_head_stable_during_scan"] = True
+    if fresh.get("tracked_blob_authority_verified") is not True:
+        raise HardeningSourceCertificationError(
+            "independent private-material scan did not prove exact Git-blob authority"
+        )
     if fresh != supplied:
         raise HardeningSourceCertificationError(
-            "supplied private-material scan receipt differs from independent exact-head clean-tree re-scan"
+            "supplied private-material scan receipt differs from independent exact-head clean-tree Git-object re-scan"
         )
     return fresh
 
 
 def certify(root: Path, baseline: str, private_scan: dict[str, Any]) -> dict[str, Any]:
+    if private_scan.get("tracked_blob_authority_verified") is not True:
+        raise HardeningSourceCertificationError(
+            "private-material scan must prove exact Git-blob authority"
+        )
     if private_scan.get("working_tree_clean_verified") is not True:
         raise HardeningSourceCertificationError(
             "private-material scan must prove a clean working tree"
@@ -196,8 +204,10 @@ def certify(root: Path, baseline: str, private_scan: dict[str, Any]) -> dict[str
     _impl.SCANNER_PATH = SCANNER_PATH
     _impl._reverify_private_scan = _reverify_private_scan
     value = _impl.certify(root, baseline, private_scan)
+    value["private_material_scan_tracked_blob_authority_verified"] = True
     value["private_material_scan_working_tree_clean_verified"] = True
     value["private_material_scan_repository_head_stable_during_scan"] = True
+    value["boundaries"]["private_material_scan_tracked_blob_authority_verified"] = True
     value["boundaries"]["private_material_scan_working_tree_clean_verified"] = True
     value["boundaries"]["private_material_scan_repository_head_stable_during_scan"] = True
     return value
@@ -222,6 +232,7 @@ def main() -> int:
         print(f"private_material_scan_repository_head={value['private_material_scan_repository_head']}")
         print("private_material_scan_head_bound=true")
         print("private_material_scan_independently_reverified=true")
+        print("private_material_scan_tracked_blob_authority_verified=true")
         print("private_material_scan_working_tree_clean_verified=true")
         print("private_material_scan_repository_head_stable_during_scan=true")
         print("runtime_source_changes=0")

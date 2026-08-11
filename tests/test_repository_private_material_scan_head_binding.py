@@ -46,12 +46,12 @@ class RepositoryPrivateMaterialScanHeadBindingTests(unittest.TestCase):
             with self.assertRaises(self.module.RepositoryPrivateMaterialScanError):
                 self.module.assert_clean_working_tree(root, "git")
 
-    def test_cli_checks_clean_tree_and_stable_head_before_output(self) -> None:
+    def test_cli_checks_clean_tree_stable_head_and_git_blob_authority_before_output(self) -> None:
         text = SCRIPT.read_text(encoding="utf-8")
         main = text[text.index("def main()") :]
         before = main.index("head_before = repository_head(root, args.git)")
         first_clean = main.index("assert_clean_working_tree(root, args.git)")
-        scan = main.index("value = scan(root, tracked_files(root, args.git))")
+        scan = main.index("value = scan_git_head(root, args.git, head_before)")
         second_clean = main.index("assert_clean_working_tree(root, args.git)", first_clean + 1)
         after = main.index("head_after = repository_head(root, args.git)")
         compare = main.index("if head_after != head_before:")
@@ -68,6 +68,7 @@ class RepositoryPrivateMaterialScanHeadBindingTests(unittest.TestCase):
         self.assertLess(bind, clean_flag)
         self.assertLess(clean_flag, stable_flag)
         self.assertLess(stable_flag, write)
+        self.assertIn('print("tracked_blob_authority_verified=true")', main)
 
     def git(self, root: Path, *args: str) -> str:
         completed = subprocess.run(
