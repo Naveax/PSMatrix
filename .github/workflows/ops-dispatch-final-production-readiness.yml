@@ -25,17 +25,16 @@ jobs:
       TARGET_WORKFLOW: ga-final-production-readiness.yml
       STATUS_CONTEXT: production-readiness/operator-dispatch
     steps:
-      - name: Dispatch exactly one readiness workflow on immutable publication ref
+      - name: Discover or dispatch exactly one readiness run
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           python - <<'PY'
-          import datetime as dt
+          import base64
           import json
           import os
-          import time
           import urllib.parse
           import urllib.request
 
@@ -58,46 +57,40 @@ jobs:
           req=urllib.request.Request(marker_url,headers=headers)
           with urllib.request.urlopen(req,timeout=30) as response:
               marker=json.load(response)
-          import base64
           text=base64.b64decode(marker['content']).decode('utf-8')
           required=f'target={target_sha}\nref={target_ref}\nproduction_readiness_only=true\n'
           if text != required:
               raise SystemExit('operator marker content mismatch')
 
-          started=dt.datetime.now(dt.timezone.utc)
-          dispatch_url=f'{api}/repos/{repo}/actions/workflows/{workflow}/dispatches'
-          payload=json.dumps({'ref':target_ref}).encode()
-          req=urllib.request.Request(dispatch_url,data=payload,method='POST',headers=headers)
+          runs_url=f'{api}/repos/{repo}/actions/workflows/{workflow}/runs?event=workflow_dispatch&per_page=50'
+          req=urllib.request.Request(runs_url,headers=headers)
           with urllib.request.urlopen(req,timeout=30) as response:
-              if response.status != 204:
-                  raise SystemExit(f'unexpected dispatch status: {response.status}')
-          print(f'production_readiness_dispatch_request=PASS ref={target_ref}')
+              listing=json.load(response)
+          matches=[
+              item for item in listing.get('workflow_runs',[])
+              if item.get('event')=='workflow_dispatch'
+              and (item.get('head_sha') or '').lower()==target_sha
+              and item.get('head_branch')==target_ref
+          ]
+          matches.sort(key=lambda item:int(item['id']), reverse=True)
 
-          runs_url=f'{api}/repos/{repo}/actions/workflows/{workflow}/runs?event=workflow_dispatch&per_page=30'
-          run=None
-          for _ in range(30):
-              req=urllib.request.Request(runs_url,headers=headers)
+          if matches:
+              run=matches[0]
+              print(f'production_readiness_dispatch_reused=true run_id={run["id"]}')
+          else:
+              dispatch_url=f'{api}/repos/{repo}/actions/workflows/{workflow}/dispatches'
+              payload=json.dumps({'ref':target_ref}).encode()
+              req=urllib.request.Request(dispatch_url,data=payload,method='POST',headers=headers)
               with urllib.request.urlopen(req,timeout=30) as response:
-                  value=json.load(response)
-              candidates=[]
-              for item in value.get('workflow_runs',[]):
-                  if item.get('event')!='workflow_dispatch':
-                      continue
-                  if (item.get('head_sha') or '').lower()!=target_sha:
-                      continue
-                  if item.get('head_branch')!=target_ref:
-                      continue
-                  created=dt.datetime.fromisoformat(item['created_at'].replace('Z','+00:00'))
-                  if created < started-dt.timedelta(seconds=10):
-                      continue
-                  candidates.append(item)
-              if candidates:
-                  candidates.sort(key=lambda x:x['id'],reverse=True)
-                  run=candidates[0]
-                  break
-              time.sleep(2)
-          if run is None:
-              raise SystemExit('dispatched readiness run was not observable')
+                  if response.status != 200:
+                      raise SystemExit(f'unexpected dispatch status: {response.status}')
+                  run=json.load(response)
+              run_id=run.get('workflow_run_id')
+              run_url=run.get('html_url')
+              if type(run_id) is not int or not run_url:
+                  raise SystemExit(f'workflow dispatch response missing run identity: {run}')
+              run={'id':run_id,'html_url':run_url,'head_sha':target_sha,'head_branch':target_ref,'event':'workflow_dispatch'}
+              print(f'production_readiness_dispatch_reused=false run_id={run_id}')
 
           run_id=int(run['id'])
           run_url=run['html_url']
