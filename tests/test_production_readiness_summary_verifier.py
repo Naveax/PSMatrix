@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -40,6 +41,23 @@ class ProductionReadinessSummaryVerifierTests(unittest.TestCase):
         self.run["readiness_pass_observed"] = False
         with self.assertRaises(module.ReadinessSummaryVerificationError):
             module.verify(self.summary, self.contract, self.run)
+
+    def test_raw_file_sha256_changes_when_only_file_bytes_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "summary.json"
+            path.write_bytes(b'{"a":1}\n')
+            first = module._file_sha256(path)
+            path.write_bytes(b'{"a":1}  \n')
+            second = module._file_sha256(path)
+        self.assertEqual(len(first), 64)
+        self.assertNotEqual(first, second)
+
+    def test_source_emits_exact_summary_file_digest_and_size(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("summary_file_sha256", text)
+        self.assertIn("summary_file_size", text)
+        self.assertIn("_file_sha256(summary_path)", text)
+        self.assertIn("readiness summary file is missing or unsafe", text)
 
 
 if __name__ == "__main__":
