@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -108,6 +110,106 @@ def tracked_files(root: Path, git: str) -> list[str]:
     return values
 
 
+def _reject_symlink_components(path: Path, label: str) -> None:
+    expanded = path.expanduser()
+    parts = expanded.parts
+    if expanded.is_absolute():
+        current = Path(expanded.anchor)
+        start = 1
+    else:
+        current = Path(".")
+        start = 0
+    for part in parts[start:]:
+        current = current / part
+        if current.is_symlink():
+            raise RepositoryPrivateMaterialScanError(
+                f"{label} may not traverse a symlink component"
+            )
+
+
+def _write_private_material_scan_receipt(path: Path, value: dict[str, Any]) -> Path:
+    _reject_symlink_components(path, "private-material scan output")
+    absolute = path.expanduser().absolute()
+    if absolute.exists():
+        raise RepositoryPrivateMaterialScanError(
+            "private-material scan output must not already exist"
+        )
+    parent = absolute.parent
+    _reject_symlink_components(parent, "private-material scan output parent")
+    resolved_parent = parent.resolve()
+    if not resolved_parent.is_dir():
+        raise RepositoryPrivateMaterialScanError(
+            "private-material scan output parent must already exist"
+        )
+    candidate = resolved_parent / absolute.name
+
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    try:
+        fd = os.open(candidate, flags, 0o600)
+    except FileExistsError as exc:
+        raise RepositoryPrivateMaterialScanError(
+            "private-material scan output appeared before exclusive creation"
+        ) from exc
+    except OSError as exc:
+        raise RepositoryPrivateMaterialScanError(
+            f"private-material scan output could not be created: {exc}"
+        ) from exc
+
+    info = os.fstat(fd)
+    identity = (int(info.st_dev), int(info.st_ino))
+    handle = None
+    success = False
+    try:
+        handle = os.fdopen(fd, "r+", encoding="utf-8", newline="\n")
+        path_info = os.lstat(candidate)
+        if (
+            not stat.S_ISREG(path_info.st_mode)
+            or (int(path_info.st_dev), int(path_info.st_ino)) != identity
+        ):
+            raise RepositoryPrivateMaterialScanError(
+                "private-material scan output path does not name the exclusively created file"
+            )
+        payload = json.dumps(value, indent=2, sort_keys=True) + "\n"
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+        handle.seek(0)
+        if handle.read() != payload:
+            raise RepositoryPrivateMaterialScanError(
+                "private-material scan output read-back verification failed"
+            )
+        path_info = os.lstat(candidate)
+        if (
+            not stat.S_ISREG(path_info.st_mode)
+            or (int(path_info.st_dev), int(path_info.st_ino)) != identity
+        ):
+            raise RepositoryPrivateMaterialScanError(
+                "private-material scan output path identity changed during write"
+            )
+        success = True
+        return candidate
+    finally:
+        if handle is not None:
+            handle.close()
+        else:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if not success:
+            try:
+                path_info = os.lstat(candidate)
+                if (
+                    stat.S_ISREG(path_info.st_mode)
+                    and (int(path_info.st_dev), int(path_info.st_ino)) == identity
+                ):
+                    candidate.unlink()
+            except OSError:
+                pass
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Fail closed on tracked private-key material and high-confidence GitHub tokens without emitting secret values")
     parser.add_argument("--root", type=Path, default=Path("."))
@@ -118,8 +220,7 @@ def main() -> int:
         root = args.root.expanduser().resolve()
         value = scan(root, tracked_files(root, args.git))
         if args.output is not None:
-            args.output.parent.mkdir(parents=True, exist_ok=True)
-            args.output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            _write_private_material_scan_receipt(args.output, value)
         print(f"repository_private_material_scan={value['status']} files={value['tracked_file_count']} findings={value['finding_count']}")
         print("secret_values_emitted=false")
         print("secret_hashes_emitted=false")
