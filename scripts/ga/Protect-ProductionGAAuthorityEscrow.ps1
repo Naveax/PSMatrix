@@ -339,97 +339,110 @@ if ($Protect) {
 
 $destination = Resolve-ExternalDirectoryPath -Path $DestinationRoot -Label 'Restored authority root' -RepositoryRoot $repositoryRoot
 Assert-EmptyOrAbsentDirectory -Path $destination -Label 'Restored authority root'
-$escrowManifestPath = Join-Path $escrow $EscrowManifestName
-$escrowManifest = Read-JsonObject -Path $escrowManifestPath -Label 'Production GA DPAPI escrow manifest'
-if ($escrowManifest.schema -ne 1 -or
-    $escrowManifest.kind -ne 'psmatrix.production-ga-dpapi-authority-escrow' -or
-    $escrowManifest.version -ne $Version -or
-    $escrowManifest.status -ne 'PASS' -or
-    $escrowManifest.repository -ne $Repository -or
-    $escrowManifest.dpapi_scope -ne 'CurrentUser' -or
-    [int]$escrowManifest.authority_count -ne 9 -or
-    [int]$escrowManifest.readiness_secret_check_count -ne 17 -or
-    $escrowManifest.safety.dpapi_round_trip_verified -ne $true -or
-    $escrowManifest.safety.private_key_values_serialized -ne $false -or
-    $escrowManifest.safety.private_key_hashes_serialized -ne $false -or
-    $escrowManifest.safety.private_key_lengths_serialized -ne $false) {
-    throw 'Production GA DPAPI escrow manifest identity/safety mismatch.'
-}
-$escrowRows = @($escrowManifest.authorities)
-if ($escrowRows.Count -ne 9) { throw 'Production GA DPAPI escrow must contain exactly nine authority rows.' }
-$roles = @($escrowRows | ForEach-Object { [string]$_.role })
-if (@($roles | Sort-Object -Unique).Count -ne 9 -or
-    (@($roles | Sort-Object) -join "`n") -ne (@($ExpectedRoles | Sort-Object) -join "`n")) {
-    throw 'Production GA DPAPI escrow authority role set mismatch.'
-}
-
-$authorityManifestCopy = Join-Path $escrow ([string]$escrowManifest.authority_manifest_file)
-Assert-SafeFile -Path $authorityManifestCopy -Label 'Escrow authority manifest copy'
-if ((Get-Sha256Hex -Path $authorityManifestCopy) -ne [string]$escrowManifest.authority_manifest_sha256) {
-    throw 'Escrow authority manifest copy SHA-256 mismatch.'
-}
-$originalManifest = Read-JsonObject -Path $authorityManifestCopy -Label 'Escrow original authority manifest'
-$originalRows = Assert-AuthorityManifest -Manifest $originalManifest
-$originalByRole = @{}
-foreach ($row in $originalRows) { $originalByRole[[string]$row.role] = $row }
-
-foreach ($row in $escrowRows) {
-    $role = [string]$row.role
-    if (-not $originalByRole.ContainsKey($role)) { throw "Escrow role is absent from original authority manifest: $role" }
-    $original = $originalByRole[$role]
-    if ([string]$row.environment -ne [string]$original.environment -or
-        [string]$row.private_secret -ne [string]$original.private_secret -or
-        [string]$row.public_key_sha256 -ne [string]$original.public_key_sha256) {
-        throw "$role escrow metadata differs from the original authority manifest."
+$restoreSucceeded = $false
+try {
+    $escrowManifestPath = Join-Path $escrow $EscrowManifestName
+    $escrowManifest = Read-JsonObject -Path $escrowManifestPath -Label 'Production GA DPAPI escrow manifest'
+    if ($escrowManifest.schema -ne 1 -or
+        $escrowManifest.kind -ne 'psmatrix.production-ga-dpapi-authority-escrow' -or
+        $escrowManifest.version -ne $Version -or
+        $escrowManifest.status -ne 'PASS' -or
+        $escrowManifest.repository -ne $Repository -or
+        $escrowManifest.dpapi_scope -ne 'CurrentUser' -or
+        [int]$escrowManifest.authority_count -ne 9 -or
+        [int]$escrowManifest.readiness_secret_check_count -ne 17 -or
+        $escrowManifest.safety.dpapi_round_trip_verified -ne $true -or
+        $escrowManifest.safety.private_key_values_serialized -ne $false -or
+        $escrowManifest.safety.private_key_hashes_serialized -ne $false -or
+        $escrowManifest.safety.private_key_lengths_serialized -ne $false) {
+        throw 'Production GA DPAPI escrow manifest identity/safety mismatch.'
+    }
+    $escrowRows = @($escrowManifest.authorities)
+    if ($escrowRows.Count -ne 9) { throw 'Production GA DPAPI escrow must contain exactly nine authority rows.' }
+    $roles = @($escrowRows | ForEach-Object { [string]$_.role })
+    if (@($roles | Sort-Object -Unique).Count -ne 9 -or
+        (@($roles | Sort-Object) -join "`n") -ne (@($ExpectedRoles | Sort-Object) -join "`n")) {
+        throw 'Production GA DPAPI escrow authority role set mismatch.'
     }
 
-    $encryptedPath = Resolve-ManifestFile -Root $escrow -Name ([string]$row.encrypted_private_file) -Label "$role encrypted authority"
-    $publicEscrowPath = Resolve-ManifestFile -Root $escrow -Name ([string]$row.public_file) -Label "$role escrow public authority"
-    Assert-SafeFile -Path $encryptedPath -Label "$role encrypted authority"
-    Assert-SafeFile -Path $publicEscrowPath -Label "$role escrow public authority"
-    if ((Get-Sha256Hex -Path $publicEscrowPath) -ne [string]$row.public_key_sha256) { throw "$role escrow public authority SHA-256 mismatch." }
-
-    $protected = [IO.File]::ReadAllBytes($encryptedPath)
-    $plain = $null
-    try {
-        $plain = Unprotect-CurrentUserBytes -Bytes $protected -Role $role
-        $privateDestination = Resolve-ManifestFile -Root $destination -Name ([string]$original.private_file) -Label "$role restored private authority"
-        [IO.File]::WriteAllBytes($privateDestination, $plain)
-        $publicDestination = Resolve-ManifestFile -Root $destination -Name ([string]$original.public_file) -Label "$role restored public authority"
-        [IO.File]::WriteAllBytes($publicDestination, [IO.File]::ReadAllBytes($publicEscrowPath))
-        if ((Get-Sha256Hex -Path $publicDestination) -ne [string]$original.public_key_sha256) { throw "$role restored public authority SHA-256 mismatch." }
+    $authorityManifestCopy = Join-Path $escrow ([string]$escrowManifest.authority_manifest_file)
+    Assert-SafeFile -Path $authorityManifestCopy -Label 'Escrow authority manifest copy'
+    if ((Get-Sha256Hex -Path $authorityManifestCopy) -ne [string]$escrowManifest.authority_manifest_sha256) {
+        throw 'Escrow authority manifest copy SHA-256 mismatch.'
     }
-    finally {
-        if ($null -ne $plain) { [Array]::Clear($plain, 0, $plain.Length) }
-        if ($null -ne $protected) { [Array]::Clear($protected, 0, $protected.Length) }
+    $originalManifest = Read-JsonObject -Path $authorityManifestCopy -Label 'Escrow original authority manifest'
+    $originalRows = Assert-AuthorityManifest -Manifest $originalManifest
+    $originalByRole = @{}
+    foreach ($row in $originalRows) { $originalByRole[[string]$row.role] = $row }
+
+    foreach ($row in $escrowRows) {
+        $role = [string]$row.role
+        if (-not $originalByRole.ContainsKey($role)) { throw "Escrow role is absent from original authority manifest: $role" }
+        $original = $originalByRole[$role]
+        if ([string]$row.environment -ne [string]$original.environment -or
+            [string]$row.private_secret -ne [string]$original.private_secret -or
+            [string]$row.public_key_sha256 -ne [string]$original.public_key_sha256) {
+            throw "$role escrow metadata differs from the original authority manifest."
+        }
+
+        $encryptedPath = Resolve-ManifestFile -Root $escrow -Name ([string]$row.encrypted_private_file) -Label "$role encrypted authority"
+        $publicEscrowPath = Resolve-ManifestFile -Root $escrow -Name ([string]$row.public_file) -Label "$role escrow public authority"
+        Assert-SafeFile -Path $encryptedPath -Label "$role encrypted authority"
+        Assert-SafeFile -Path $publicEscrowPath -Label "$role escrow public authority"
+        if ((Get-Sha256Hex -Path $publicEscrowPath) -ne [string]$row.public_key_sha256) { throw "$role escrow public authority SHA-256 mismatch." }
+
+        $protected = [IO.File]::ReadAllBytes($encryptedPath)
+        $plain = $null
+        try {
+            $plain = Unprotect-CurrentUserBytes -Bytes $protected -Role $role
+            $privateDestination = Resolve-ManifestFile -Root $destination -Name ([string]$original.private_file) -Label "$role restored private authority"
+            [IO.File]::WriteAllBytes($privateDestination, $plain)
+            $publicDestination = Resolve-ManifestFile -Root $destination -Name ([string]$original.public_file) -Label "$role restored public authority"
+            [IO.File]::WriteAllBytes($publicDestination, [IO.File]::ReadAllBytes($publicEscrowPath))
+            if ((Get-Sha256Hex -Path $publicDestination) -ne [string]$original.public_key_sha256) { throw "$role restored public authority SHA-256 mismatch." }
+        }
+        finally {
+            if ($null -ne $plain) { [Array]::Clear($plain, 0, $plain.Length) }
+            if ($null -ne $protected) { [Array]::Clear($protected, 0, $protected.Length) }
+        }
+    }
+
+    $restoredManifestPath = Join-Path $destination $ManifestName
+    [IO.File]::WriteAllBytes($restoredManifestPath, [IO.File]::ReadAllBytes($authorityManifestCopy))
+    if ((Get-Sha256Hex -Path $restoredManifestPath) -ne [string]$escrowManifest.authority_manifest_sha256) {
+        throw 'Restored authority manifest SHA-256 mismatch.'
+    }
+
+    $report = [ordered]@{
+        schema = 1
+        kind = 'psmatrix.production-ga-dpapi-authority-escrow-operation'
+        version = $Version
+        status = 'PASS'
+        action = 'restore'
+        authority_count = 9
+        readiness_secret_check_count = 17
+        restored_authority_root = $destination
+        dpapi_scope = 'CurrentUser'
+        restore_rollback_completed = $false
+        private_key_values_serialized = $false
+        private_key_hashes_serialized = $false
+        private_key_lengths_serialized = $false
+        github_environment_mutation_executed = $false
+        production_readiness_claimed = $false
+        ga_eligible = $false
+    }
+    Write-JsonObject -Path $reportPath -Value $report
+    $restoreSucceeded = $true
+}
+finally {
+    if (-not $restoreSucceeded -and (Test-Path -LiteralPath $destination)) {
+        Remove-Item -LiteralPath $destination -Recurse -Force
+        Write-Host 'restore_rollback_completed=true'
     }
 }
 
-$restoredManifestPath = Join-Path $destination $ManifestName
-[IO.File]::WriteAllBytes($restoredManifestPath, [IO.File]::ReadAllBytes($authorityManifestCopy))
-if ((Get-Sha256Hex -Path $restoredManifestPath) -ne [string]$escrowManifest.authority_manifest_sha256) {
-    throw 'Restored authority manifest SHA-256 mismatch.'
-}
-
-$report = [ordered]@{
-    schema = 1
-    kind = 'psmatrix.production-ga-dpapi-authority-escrow-operation'
-    version = $Version
-    status = 'PASS'
-    action = 'restore'
-    authority_count = 9
-    readiness_secret_check_count = 17
-    restored_authority_root = $destination
-    dpapi_scope = 'CurrentUser'
-    private_key_values_serialized = $false
-    private_key_hashes_serialized = $false
-    private_key_lengths_serialized = $false
-    github_environment_mutation_executed = $false
-    production_readiness_claimed = $false
-    ga_eligible = $false
-}
-Write-JsonObject -Path $reportPath -Value $report
 Write-Host 'production_ga_authority_dpapi_escrow=PASS action=restore authorities=9 checks=17'
+Write-Host 'restore_rollback_completed=false'
 Write-Host 'private_key_values_serialized=false'
 Write-Host 'private_key_hashes_serialized=false'
 Write-Host 'private_key_lengths_serialized=false'
