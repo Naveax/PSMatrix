@@ -34,6 +34,7 @@ class StaleReleaseWorkCleanupVerificationTests(unittest.TestCase):
             "version": "2.0.0",
             "status": "PASS",
             "tag": "v2.0.0",
+            "release_execution_control_head": "a" * 40,
             "final_immutable_ga_anchor_created": True,
             "release_published": True,
             "release_closed": False,
@@ -47,6 +48,7 @@ class StaleReleaseWorkCleanupVerificationTests(unittest.TestCase):
     def test_clean_release_work_set_passes(self) -> None:
         value = self.module.verify(self.closure, self.release, self.clean_branches, [])
         self.assertEqual(value["status"], "PASS")
+        self.assertEqual(value["release_execution_head"], "a" * 40)
         self.assertEqual(value["stale_branch_count"], 0)
         self.assertEqual(value["stale_open_pr_count"], 0)
         self.assertTrue(value["stale_branch_pr_cleanup_completed"])
@@ -69,12 +71,25 @@ class StaleReleaseWorkCleanupVerificationTests(unittest.TestCase):
         with self.assertRaises(self.module.StaleReleaseWorkCleanupError):
             self.module.verify(self.closure, self.release, branches, [])
 
+    def test_release_and_immutable_receipt_heads_must_match(self) -> None:
+        release = dict(self.release)
+        release["release_execution_control_head"] = "b" * 40
+        with self.assertRaises(self.module.StaleReleaseWorkCleanupError):
+            self.module.verify(self.closure, release, self.clean_branches, [])
+
+    def test_invalid_execution_head_is_rejected(self) -> None:
+        release = dict(self.release)
+        release["release_execution_control_head"] = "not-a-sha"
+        with self.assertRaises(self.module.StaleReleaseWorkCleanupError):
+            self.module.verify(self.closure, release, self.clean_branches, [])
+
     def test_source_uses_bounded_pagination_and_never_deletes(self) -> None:
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("per_page=100", text)
         self.assertIn("page > 100", text)
         self.assertIn("STALE_PREFIXES", text)
         self.assertIn("ALLOWED_BRANCHES", text)
+        self.assertIn("release_execution_control_head", text)
         self.assertIn("stale_branch_pr_cleanup_completed", text)
         self.assertNotIn("git push --delete", text)
         self.assertNotIn("DELETE", text)

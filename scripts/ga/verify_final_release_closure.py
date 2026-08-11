@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+REPOSITORY = "Naveax/PSMatrix"
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -41,8 +42,8 @@ def verify(
 
     if cleanup.get("schema") != 1 or cleanup.get("kind") != "psmatrix.release-stale-work-cleanup-verification" or cleanup.get("version") != "2.0.0" or cleanup.get("status") != "PASS":
         raise FinalReleaseClosureError("stale release-work cleanup verification identity/status mismatch")
-    if cleanup.get("release_execution_head") != execution_head or cleanup.get("release_tag") != immutable_release.get("tag") or cleanup.get("stale_branch_count") != 0 or cleanup.get("stale_open_pr_count") != 0 or cleanup.get("stale_branch_pr_cleanup_completed") is not True or cleanup.get("immutable_release_verified_before_cleanup") is not True or cleanup.get("ga_eligible") is not True or cleanup.get("release_closed") is not False:
-        raise FinalReleaseClosureError("stale release-work cleanup is incomplete or release identity drifted")
+    if cleanup.get("repository") != REPOSITORY or cleanup.get("release_execution_head") != execution_head or cleanup.get("release_tag") != immutable_release.get("tag") or cleanup.get("stale_branch_count") != 0 or cleanup.get("stale_open_pr_count") != 0 or cleanup.get("stale_branch_pr_cleanup_completed") is not True or cleanup.get("immutable_release_verified_before_cleanup") is not True or cleanup.get("ga_eligible") is not True or cleanup.get("release_closed") is not False:
+        raise FinalReleaseClosureError("stale release-work cleanup is incomplete, repository-unbound, or release identity drifted")
 
     if final_scan.get("schema") != 1 or final_scan.get("kind") != "psmatrix.final-repository-private-material-scan-certification" or final_scan.get("version") != "2.0.0" or final_scan.get("status") != "PASS":
         raise FinalReleaseClosureError("final repository private-material scan certification identity/status mismatch")
@@ -70,6 +71,7 @@ def verify(
         "kind": "psmatrix.final-release-closure-verification",
         "version": "2.0.0",
         "status": "RELEASE_CLOSED",
+        "repository": REPOSITORY,
         "release_execution_control_head": execution_head,
         "final_repository_head": scan_head,
         "release_tag": immutable_release["tag"],
@@ -118,7 +120,7 @@ def main() -> int:
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        print(f"final_release_closure=RELEASE_CLOSED tag={value['release_tag']} repo_head={value['final_repository_head']}")
+        print(f"final_release_closure=RELEASE_CLOSED repository={REPOSITORY} tag={value['release_tag']} repo_head={value['final_repository_head']}")
         print("preconditions=5/5")
         print("post_ga_operations=6/6")
         print("final_ga_attestation_verified=true")
