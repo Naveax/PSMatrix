@@ -51,15 +51,10 @@ class VerificationHardeningSourceCertificationTests(unittest.TestCase):
         return completed.stdout
 
     def clean_scan(self) -> dict[str, object]:
-        return {
-            "schema": 1,
-            "kind": "psmatrix.repository-private-material-scan",
-            "status": "PASS",
-            "finding_count": 0,
-            "secret_values_emitted": False,
-            "secret_hashes_emitted": False,
-            "repository_head": self.git("rev-parse", "HEAD").strip().lower(),
-        }
+        scanner = self.module._load_private_scanner()
+        value = scanner.scan(self.root, scanner.tracked_files(self.root, "git"))
+        value["repository_head"] = self.git("rev-parse", "HEAD").strip().lower()
+        return value
 
     def commit_file(self, relative: str, content: str = "ok\n") -> None:
         path = self.root / relative
@@ -76,7 +71,9 @@ class VerificationHardeningSourceCertificationTests(unittest.TestCase):
         self.assertEqual(value["files"][0]["path"], "scripts/ga/new-hardening.py")
         self.assertEqual(len(value["files"][0]["sha256"]), 64)
         self.assertEqual(value["private_material_scan_repository_head"], self.git("rev-parse", "HEAD").strip().lower())
+        self.assertTrue(value["private_material_scan_independently_reverified"])
         self.assertTrue(value["boundaries"]["private_material_scan_head_bound"])
+        self.assertTrue(value["boundaries"]["private_material_scan_independently_reverified"])
         self.assertEqual(value["boundaries"]["runtime_source_changes"], 0)
         self.assertEqual(value["boundaries"]["baseline_files_modified"], 0)
         self.assertFalse(value["boundaries"]["ga_eligible"])
@@ -115,14 +112,35 @@ class VerificationHardeningSourceCertificationTests(unittest.TestCase):
                 with self.assertRaises(self.module.HardeningSourceCertificationError):
                     self.module.certify(self.root, self.baseline, scan)
 
+    def test_correct_head_but_fabricated_scan_receipt_fails_closed(self) -> None:
+        self.commit_file("scripts/ga/new-hardening.py")
+        for field, value in (
+            ("tracked_file_count", 999999),
+            ("scanned_classes", []),
+            ("secret_lengths_emitted", True),
+        ):
+            with self.subTest(field=field):
+                scan = self.clean_scan()
+                scan[field] = value
+                with self.assertRaises(self.module.HardeningSourceCertificationError):
+                    self.module.certify(self.root, self.baseline, scan)
+
+        scan = self.clean_scan()
+        scan["fabricated_extra_field"] = True
+        with self.assertRaises(self.module.HardeningSourceCertificationError):
+            self.module.certify(self.root, self.baseline, scan)
+
     def test_repository_source_freezes_real_publication_baseline(self) -> None:
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("3ffc6b6d7cd58d64224f780aa819b50f50f72491", text)
+        self.assertIn("scan_repository_private_material.py", text)
+        self.assertIn("_reverify_private_scan", text)
         self.assertIn("runtime_source_changes", text)
         self.assertIn("baseline_files_modified", text)
         self.assertIn("baseline_files_deleted", text)
         self.assertIn("private_material_scan_pass", text)
         self.assertIn("private_material_scan_head_bound", text)
+        self.assertIn("private_material_scan_independently_reverified", text)
         self.assertIn("private_material_scan_repository_head", text)
         self.assertIn("ga_eligible", text)
 
