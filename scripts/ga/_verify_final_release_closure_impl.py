@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+LIBRARY_ONLY_MESSAGE = "internal GA implementation is library-only; use the public entrypoint"
+if __name__ == "__main__":
+    raise SystemExit(LIBRARY_ONLY_MESSAGE)
+
 import argparse
 import json
 import re
