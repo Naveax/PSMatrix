@@ -57,8 +57,11 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def _read_json(path: Path, label: str) -> dict[str, Any]:
-    resolved = path.expanduser().resolve()
-    if not resolved.is_file() or resolved.is_symlink():
+    original = path.expanduser()
+    if original.is_symlink():
+        raise OperatorDashboardInputManifestError(f"{label} may not be a symlink")
+    resolved = original.resolve()
+    if not resolved.is_file():
         raise OperatorDashboardInputManifestError(f"{label} is missing or unsafe")
     try:
         value = json.loads(resolved.read_text(encoding="utf-8"), object_pairs_hook=_unique_object)
@@ -70,9 +73,12 @@ def _read_json(path: Path, label: str) -> dict[str, Any]:
 
 
 def _external_receipt_root(path: Path) -> Path:
-    resolved = path.expanduser().resolve()
+    original = path.expanduser()
+    if original.is_symlink():
+        raise OperatorDashboardInputManifestError("receipt root may not be a symlink")
+    resolved = original.resolve()
     repo = ROOT.resolve()
-    if not resolved.is_dir() or resolved.is_symlink():
+    if not resolved.is_dir():
         raise OperatorDashboardInputManifestError("receipt root is missing or unsafe")
     try:
         resolved.relative_to(repo)
@@ -87,14 +93,20 @@ def _resolve_relative_file(root: Path, raw: Any, role: str) -> Path:
     if "\\" in raw or raw.startswith("/") or WINDOWS_ABSOLUTE.match(raw):
         raise OperatorDashboardInputManifestError(f"manifest path must be relative POSIX syntax: {role}")
     pure = PurePosixPath(raw)
-    if pure.is_absolute() or any(part in ("", ".", "..") for part in pure.parts):
+    if pure.is_absolute() or pure.as_posix() != raw or any(part in ("", ".", "..") for part in pure.parts):
         raise OperatorDashboardInputManifestError(f"manifest path escapes or is non-canonical: {role}")
-    candidate = (root / Path(*pure.parts)).resolve()
+
+    lexical = root
+    for part in pure.parts:
+        lexical = lexical / part
+        if lexical.is_symlink():
+            raise OperatorDashboardInputManifestError(f"receipt path traverses a symlink: {role}")
+    candidate = lexical.resolve()
     try:
         candidate.relative_to(root)
     except ValueError as exc:
         raise OperatorDashboardInputManifestError(f"manifest path escapes receipt root: {role}") from exc
-    if not candidate.is_file() or candidate.is_symlink():
+    if not candidate.is_file():
         raise OperatorDashboardInputManifestError(f"receipt file is missing or unsafe: {role}")
     return candidate
 
@@ -121,16 +133,22 @@ def _validate_manifest(value: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
 def render(manifest: dict[str, Any], receipt_root: Path) -> dict[str, Any]:
     required, optional, singles = _validate_manifest(manifest)
     root = _external_receipt_root(receipt_root)
-    used: dict[Path, str] = {}
+    used: list[tuple[Path, str]] = []
 
     def load_role(raw: Any, role: str) -> dict[str, Any]:
         path = _resolve_relative_file(root, raw, role)
-        previous = used.get(path)
-        if previous is not None:
-            raise OperatorDashboardInputManifestError(
-                f"one receipt file may not satisfy multiple dashboard roles: {previous},{role}"
-            )
-        used[path] = role
+        for previous_path, previous_role in used:
+            try:
+                same = path.samefile(previous_path)
+            except OSError as exc:
+                raise OperatorDashboardInputManifestError(
+                    f"unable to compare receipt file identity: {role}"
+                ) from exc
+            if same:
+                raise OperatorDashboardInputManifestError(
+                    f"one physical receipt file may not satisfy multiple dashboard roles: {previous_role},{role}"
+                )
+        used.append((path, role))
         return _read_json(path, f"dashboard receipt {role}")
 
     required_values = {key: load_role(required[key], key) for key in REQUIRED_KEYS}
