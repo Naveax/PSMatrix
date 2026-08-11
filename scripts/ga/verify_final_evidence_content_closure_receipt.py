@@ -43,6 +43,14 @@ def _digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def verify(api: dict[str, Any], contract: dict[str, Any], single_bindings: list[dict[str, Any]], public_binding: dict[str, Any], closure: dict[str, Any]) -> dict[str, Any]:
     if len(single_bindings) != 9:
         raise EvidenceContentClosureReceiptVerificationError(f"exactly nine single-gate binding receipts are required; observed {len(single_bindings)}")
@@ -92,12 +100,15 @@ def main() -> int:
         contract = _read(args.contract, "final evaluator contract")
         bindings = [_read(path, f"single binding {index}") for index, path in enumerate(args.binding, start=1)]
         public_binding = _read(args.public_auth_binding, "public-auth binding")
-        closure = _read(args.content_closure, "content closure")
+        closure_path = args.content_closure.expanduser().resolve()
+        closure = _read(closure_path, "content closure")
         value = verify(api, contract, bindings, public_binding, closure)
+        value["content_closure_file_sha256"] = _file_sha256(closure_path)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print("final_ga_evidence_content_closure_verification=PASS gates=11/11 source_receipts=10")
         print("closure_exactly_recomputed=true")
+        print(f"content_closure_file_sha256={value['content_closure_file_sha256']}")
         print("ready_for_final_ga_evaluator_dispatch=true")
         print("ga_eligible=false")
         return 0
