@@ -1,0 +1,122 @@
+name: operator-dispatch-final-production-readiness
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - ".github/psmatrix-production-readiness-dispatch-trigger.txt"
+
+concurrency:
+  group: operator-dispatch-final-production-readiness
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+  statuses: write
+
+jobs:
+  dispatch-readiness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      TARGET_REF: final/2.0.0-production-control-plane-publication-anchor
+      TARGET_SHA: 3ffc6b6d7cd58d64224f780aa819b50f50f72491
+      TARGET_WORKFLOW: ga-final-production-readiness.yml
+      STATUS_CONTEXT: production-readiness/operator-dispatch
+    steps:
+      - name: Dispatch exactly one readiness workflow on immutable publication ref
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import datetime as dt
+          import json
+          import os
+          import time
+          import urllib.parse
+          import urllib.request
+
+          api=os.environ['GITHUB_API_URL']
+          repo=os.environ['GITHUB_REPOSITORY']
+          token=os.environ['GH_TOKEN']
+          target_ref=os.environ['TARGET_REF']
+          target_sha=os.environ['TARGET_SHA'].lower()
+          workflow=os.environ['TARGET_WORKFLOW']
+          context=os.environ['STATUS_CONTEXT']
+          headers={
+              'Accept':'application/vnd.github+json',
+              'Authorization':f'Bearer {token}',
+              'X-GitHub-Api-Version':'2026-03-10',
+              'Content-Type':'application/json',
+              'User-Agent':'psmatrix-final-readiness-operator',
+          }
+
+          marker_url=f'{api}/repos/{repo}/contents/.github/psmatrix-production-readiness-dispatch-trigger.txt?ref={urllib.parse.quote(os.environ["GITHUB_HEAD_REF"], safe="")}'
+          req=urllib.request.Request(marker_url,headers=headers)
+          with urllib.request.urlopen(req,timeout=30) as response:
+              marker=json.load(response)
+          import base64
+          text=base64.b64decode(marker['content']).decode('utf-8')
+          required=f'target={target_sha}\nref={target_ref}\nproduction_readiness_only=true\n'
+          if text != required:
+              raise SystemExit('operator marker content mismatch')
+
+          started=dt.datetime.now(dt.timezone.utc)
+          dispatch_url=f'{api}/repos/{repo}/actions/workflows/{workflow}/dispatches'
+          payload=json.dumps({'ref':target_ref}).encode()
+          req=urllib.request.Request(dispatch_url,data=payload,method='POST',headers=headers)
+          with urllib.request.urlopen(req,timeout=30) as response:
+              if response.status != 204:
+                  raise SystemExit(f'unexpected dispatch status: {response.status}')
+          print(f'production_readiness_dispatch_request=PASS ref={target_ref}')
+
+          runs_url=f'{api}/repos/{repo}/actions/workflows/{workflow}/runs?event=workflow_dispatch&per_page=30'
+          run=None
+          for _ in range(30):
+              req=urllib.request.Request(runs_url,headers=headers)
+              with urllib.request.urlopen(req,timeout=30) as response:
+                  value=json.load(response)
+              candidates=[]
+              for item in value.get('workflow_runs',[]):
+                  if item.get('event')!='workflow_dispatch':
+                      continue
+                  if (item.get('head_sha') or '').lower()!=target_sha:
+                      continue
+                  if item.get('head_branch')!=target_ref:
+                      continue
+                  created=dt.datetime.fromisoformat(item['created_at'].replace('Z','+00:00'))
+                  if created < started-dt.timedelta(seconds=10):
+                      continue
+                  candidates.append(item)
+              if candidates:
+                  candidates.sort(key=lambda x:x['id'],reverse=True)
+                  run=candidates[0]
+                  break
+              time.sleep(2)
+          if run is None:
+              raise SystemExit('dispatched readiness run was not observable')
+
+          run_id=int(run['id'])
+          run_url=run['html_url']
+          status_payload=json.dumps({
+              'state':'success',
+              'target_url':run_url,
+              'description':f'production readiness dispatched; run_id={run_id}',
+              'context':context,
+          }).encode()
+          status_url=f'{api}/repos/{repo}/statuses/{target_sha}'
+          req=urllib.request.Request(status_url,data=status_payload,method='POST',headers=headers)
+          with urllib.request.urlopen(req,timeout=30) as response:
+              status=json.load(response)
+          if status.get('state')!='success' or status.get('context')!=context:
+              raise SystemExit('operator dispatch status publication mismatch')
+          print(f'production_readiness_run_id={run_id}')
+          print(f'production_readiness_run_url={run_url}')
+          print('signed_release_executed=false')
+          print('production_evidence_runs_complete=false')
+          print('final_ga_evaluator_invoked=false')
+          print('ga_eligible=false')
+          PY
