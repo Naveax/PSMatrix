@@ -1,0 +1,297 @@
+name: production-ga-readiness-exact-head-certification-bridge
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/ga-readiness-exact-head-certification-bridge.yml"
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/ga-readiness-exact-head-certification-bridge.yml"
+
+concurrency:
+  group: production-ga-readiness-exact-head-certification-bridge
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  certify-production-readiness-exact-head:
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 60
+    env:
+      PYTHONPATH: ${{ github.workspace }}\src
+      EXPECTED_HEAD: 6bfedb4979d0832daf01f3f452144f7bb7f830d6
+      PRODUCER_SOURCE_ANCHOR: 89372d9432433237abdf677900093b399c4d0868
+      FINAL_RELEASE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
+      STATUS_CONTEXT: production-readiness/source-preflight
+
+    steps:
+      - name: Verify trusted NAVEAX certification runner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') {
+            throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS"
+          }
+          Write-Host 'production_readiness_bridge_runner=PASS'
+
+      - name: Check out frozen production-readiness exact head
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: 6bfedb4979d0832daf01f3f452144f7bb7f830d6
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Publish pending exact-head certification status
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json, os, urllib.request
+          payload=json.dumps({
+              'state':'pending',
+              'target_url':f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+              'description':'NAVEAX exact-head source preflight certification queued',
+              'context':os.environ['STATUS_CONTEXT'],
+          }).encode()
+          request=urllib.request.Request(
+              f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}/statuses/{os.environ['EXPECTED_HEAD']}",
+              data=payload,method='POST',headers={
+                  'Accept':'application/vnd.github+json',
+                  'Authorization':f"Bearer {os.environ['GH_TOKEN']}",
+                  'X-GitHub-Api-Version':'2026-03-10',
+                  'Content-Type':'application/json',
+                  'User-Agent':'psmatrix-readiness-certification-bridge',
+              })
+          with urllib.request.urlopen(request,timeout=30) as response: value=json.load(response)
+          if value.get('state')!='pending' or value.get('context')!=os.environ['STATUS_CONTEXT']:
+              raise SystemExit('pending certification status publication failed')
+          print('production_readiness_bridge_status=PENDING')
+          '@ | python -
+
+      - name: Verify exact five-path readiness source closure and producer wiring
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json, os, re, subprocess
+          from pathlib import Path
+
+          def git(*args):
+              return subprocess.check_output(['git',*args],text=True).strip()
+
+          head=git('rev-parse','HEAD').lower()
+          expected=os.environ['EXPECTED_HEAD'].lower()
+          anchor=os.environ['PRODUCER_SOURCE_ANCHOR'].lower()
+          final_commit=os.environ['FINAL_RELEASE_COMMIT'].lower()
+          if not re.fullmatch(r'[0-9a-f]{40}',expected) or head!=expected:
+              raise SystemExit(f'Exact production-readiness head mismatch: {head} / {expected}')
+          if git('status','--porcelain'):
+              raise SystemExit('Production-readiness source checkout is dirty.')
+          for sha in (anchor,final_commit):
+              subprocess.check_call(['git','cat-file','-e',f'{sha}^{{commit}}'])
+          subprocess.check_call(['git','merge-base','--is-ancestor',anchor,head])
+
+          contract_path=Path('ga-packs/03-authoritative-windows/final-production-readiness-contract.json')
+          contract=json.loads(contract_path.read_text(encoding='utf-8'))
+          if contract.get('schema')!=1 or contract.get('kind')!='psmatrix.final-production-readiness-contract' or contract.get('version')!='2.0.0':
+              raise SystemExit('Production-readiness contract identity mismatch.')
+          if contract.get('producer_source_anchor')!=anchor or contract.get('final_release_commit')!=final_commit:
+              raise SystemExit('Production-readiness frozen source identity mismatch.')
+          if (contract.get('control_source') or {}).get('runtime_source_changes_allowed') is not False:
+              raise SystemExit('Production-readiness controls must not modify runtime source.')
+
+          summary=contract.get('summary_contract') or {}
+          if summary.get('required_environment_count')!=12 or summary.get('producer_source_coverage_required')!=11 or summary.get('environment_readiness_is_not_ga_readiness') is not True:
+              raise SystemExit('Production-readiness summary boundary mismatch.')
+          receipt=contract.get('receipt_contract') or {}
+          if receipt.get('secret_values_allowed') is not False or receipt.get('secret_hashes_allowed') is not False or receipt.get('secret_lengths_allowed') is not False:
+              raise SystemExit('Production-readiness receipt contract permits secret-derived data.')
+          if sorted(receipt.get('allowed_check_fields') or [])!=['name','path_exists','present','source']:
+              raise SystemExit('Production-readiness receipt allowed-field set mismatch.')
+
+          environments=contract.get('environments') or []
+          names=[str(item.get('name') or '') for item in environments if isinstance(item,dict)]
+          if len(environments)!=12 or len(names)!=12 or len(set(names))!=12 or any(not name for name in names):
+              raise SystemExit('Production-readiness environment set mismatch.')
+          full=[item for item in environments if item.get('name')=='production-ga-full-matrix']
+          if len(full)!=1 or full[0].get('runner')!='NAVEAX' or sorted(full[0].get('path_vars') or [])!=['PSMATRIX_FULL_MATRIX_ENDPOINT_ROOT','PSMATRIX_FULL_MATRIX_HOME']:
+              raise SystemExit('Full-matrix readiness path/runner contract mismatch.')
+          public_auth=[item for item in environments if item.get('name')=='production-ga-public-auth-probe']
+          required_public_auth=['PSMATRIX_OAUTH_ENDPOINT','PSMATRIX_OAUTH_DISCOVERY_URL','PSMATRIX_OAUTH_EXPECTED_ISSUER','PSMATRIX_MTLS_ENDPOINT','PSMATRIX_MTLS_FINGERPRINT_HEADER']
+          if len(public_auth)!=1 or public_auth[0].get('required_vars')!=required_public_auth:
+              raise SystemExit('Public-auth readiness variables differ from required live-probe variables.')
+
+          changed=sorted({line.replace('\\','/') for line in git('diff','--name-only',f'{anchor}..{head}').splitlines() if line.strip()})
+          allowed=sorted(str(item).replace('\\','/') for item in (contract.get('control_source') or {}).get('changed_path_allowlist') or [])
+          if changed!=allowed or len(changed)!=5:
+              raise SystemExit(f'Production-readiness changed-path closure mismatch: expected={allowed} actual={changed}')
+          if any(path.startswith('src/psmatrix/') for path in changed):
+              raise SystemExit('Production-readiness controls modified runtime source.')
+
+          workflow=Path('.github/workflows/ga-final-production-readiness.yml').read_text(encoding='utf-8')
+          if 'name: production-ga-final-production-readiness' not in workflow:
+              raise SystemExit('Production-readiness workflow identity mismatch.')
+          dollar=chr(36)
+          for environment in environments:
+              name=str(environment['name'])
+              needle=f'environment: {name}'
+              if workflow.count(needle)!=1:
+                  raise SystemExit(f'Production-readiness workflow must reference environment exactly once: {name}')
+              producer_path=Path(str(environment.get('producer_workflow_path') or ''))
+              if not producer_path.is_file():
+                  raise SystemExit(f'Production-readiness producer source is missing: {name} / {producer_path}')
+              producer=producer_path.read_text(encoding='utf-8')
+              if needle not in producer:
+                  raise SystemExit(f'Production-readiness producer source does not bind expected environment: {name} / {producer_path}')
+              for secret in environment.get('required_secrets') or []:
+                  reference=dollar+'{{ secrets.'+str(secret)+' }}'
+                  if workflow.count(reference)!=1 or reference not in producer:
+                      raise SystemExit(f'Production-readiness secret is not grounded exactly once: {name} / {secret}')
+              for variable in environment.get('required_vars') or []:
+                  reference=dollar+'{{ vars.'+str(variable)+' }}'
+                  if workflow.count(reference)!=1 or reference not in producer:
+                      raise SystemExit(f'Production-readiness variable is not grounded exactly once: {name} / {variable}')
+
+          forbidden=('toJSON(secrets)','toJson(secrets)','hashlib.sha256(os.environ','len(os.environ','"value":os.environ','"sha256":','"length":','echo $CHECK_SECRET_','Write-Host $env:CHECK_SECRET_')
+          if any(item in workflow for item in forbidden):
+              raise SystemExit('Production-readiness workflow contains forbidden secret-derived output pattern.')
+          if workflow.count('runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]')!=1 or "RUNNER_NAME -ne 'NAVEAX'" not in workflow:
+              raise SystemExit('Production-readiness workflow NAVEAX boundary mismatch.')
+          if 'pattern: psmatrix-readiness-*' not in workflow or 'merge-multiple: true' not in workflow or '--require-pass' not in workflow:
+              raise SystemExit('Production-readiness aggregator wiring is incomplete.')
+
+          evaluator=json.loads(Path('ga-packs/03-authoritative-windows/final-ga-evaluator-control-contract.json').read_text(encoding='utf-8'))
+          gates=evaluator.get('required_gates') or []
+          if len(gates)!=11:
+              raise SystemExit('Evaluator no longer has exactly eleven required gates.')
+          for gate in gates:
+              entry=(evaluator.get('evidence_sources') or {}).get(gate) or {}
+              path=Path(str(entry.get('workflow_path') or ''))
+              if not path.is_file():
+                  raise SystemExit(f'Required producer source is missing after readiness layer: {gate} / {path}')
+              if f"name: {entry.get('workflow')}" not in path.read_text(encoding='utf-8'):
+                  raise SystemExit(f'Producer workflow identity mismatch after readiness layer: {gate} / {path}')
+
+          print(f'validated_exact_production_readiness_head={head}')
+          print('production_readiness_control_changed_paths=5')
+          print('runtime_source_changes=0')
+          print('readiness_producer_source_crosscheck=PASS environments=12')
+          print('evaluator_producer_sources_present=11')
+          print('evaluator_producer_sources_required=11')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Production-readiness exact source closure validation failed.' }
+
+      - name: Compile readiness controls
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          python -m py_compile scripts/ga/assemble_final_production_readiness.py tests/test_final_production_readiness_controls.py
+          if ($LASTEXITCODE -ne 0) { throw 'Production-readiness Python compile failed.' }
+          Write-Host 'production_readiness_compile=PASS'
+
+      - name: Run readiness and inherited final producer contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          python -m unittest -v tests.test_final_production_readiness_controls tests.test_final_security_vulnerability_evidence_producers tests.test_final_ga_evaluator_controls
+          if ($LASTEXITCODE -ne 0) { throw 'Production-readiness source contract suite failed.' }
+          Write-Host 'production_readiness_source_contract=PASS'
+
+      - name: Parse readiness assembler without environment execution
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          python scripts/ga/assemble_final_production_readiness.py --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Production-readiness assembler CLI parse failed.' }
+          Write-Host 'production_readiness_cli_parse=PASS'
+
+      - name: Scan every tracked source byte for exact PEM private-authority headers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import subprocess
+          from pathlib import Path
+          markers={b"-----BEGIN PRIVATE KEY-----",b"-----BEGIN RSA PRIVATE KEY-----",b"-----BEGIN EC PRIVATE KEY-----",b"-----BEGIN OPENSSH PRIVATE KEY-----",b"-----BEGIN ED25519 PRIVATE KEY-----"}
+          root=Path.cwd().resolve(); scanned=0; total=0
+          for relative in subprocess.check_output(['git','ls-files'],text=True).splitlines():
+              if not relative: continue
+              path=root/relative
+              if not path.is_file(): continue
+              scanned+=1
+              with path.open('rb') as handle:
+                  for raw_line in handle:
+                      total+=len(raw_line)
+                      if raw_line.rstrip(b'\r\n').strip() in markers:
+                          raise SystemExit(f'tracked private-key PEM material detected: {relative}')
+          print(f'repository_private_authority_absence=PASS tracked_files={scanned} tracked_bytes={total} size_limit_applied=false')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Tracked-source private authority scan failed.' }
+
+      - name: Publish failed exact-head certification status
+        if: ${{ failure() }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference='Continue'
+          @'
+          import json, os, urllib.request
+          payload=json.dumps({
+              'state':'failure',
+              'target_url':f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+              'description':'NAVEAX exact-head source preflight certification failed',
+              'context':os.environ['STATUS_CONTEXT'],
+          }).encode()
+          request=urllib.request.Request(
+              f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}/statuses/{os.environ['EXPECTED_HEAD']}",
+              data=payload,method='POST',headers={
+                  'Accept':'application/vnd.github+json','Authorization':f"Bearer {os.environ['GH_TOKEN']}",
+                  'X-GitHub-Api-Version':'2026-03-10','Content-Type':'application/json',
+                  'User-Agent':'psmatrix-readiness-certification-bridge',
+              })
+          try:
+              urllib.request.urlopen(request,timeout=30).read()
+          except Exception as exc:
+              print(f'certification failure status publication warning: {exc}')
+          '@ | python -
+
+      - name: Publish successful exact-head certification status
+        if: ${{ success() }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json, os, urllib.request
+          payload=json.dumps({
+              'state':'success',
+              'target_url':f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+              'description':'NAVEAX exact-head source preflight certified',
+              'context':os.environ['STATUS_CONTEXT'],
+          }).encode()
+          request=urllib.request.Request(
+              f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}/statuses/{os.environ['EXPECTED_HEAD']}",
+              data=payload,method='POST',headers={
+                  'Accept':'application/vnd.github+json','Authorization':f"Bearer {os.environ['GH_TOKEN']}",
+                  'X-GitHub-Api-Version':'2026-03-10','Content-Type':'application/json',
+                  'User-Agent':'psmatrix-readiness-certification-bridge',
+              })
+          with urllib.request.urlopen(request,timeout=30) as response: value=json.load(response)
+          if value.get('state')!='success' or value.get('context')!=os.environ['STATUS_CONTEXT']:
+              raise SystemExit('success certification status publication failed')
+          print('production_readiness_commit_status=SUCCESS context=production-readiness/source-preflight')
+          print('readiness_workflow_executed=false')
+          print('environment_receipts_observed=false')
+          print('production_evidence_runs_complete=false')
+          print('final_ga_evaluator_invoked=false')
+          print('ga_eligible=false')
+          '@ | python -
