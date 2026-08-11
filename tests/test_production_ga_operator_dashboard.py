@@ -188,12 +188,29 @@ class ProductionGAOperatorDashboardTests(unittest.TestCase):
         self.assertTrue(value["ga_eligible"])
         self.assertTrue(value["release_closed"])
 
+    def test_final_receipt_alone_cannot_flip_release_closed(self) -> None:
+        value = self.module.build(self.inventory(), self.summary(), final_release_verification=self.final_release(), **self.post_ga_base())
+        self.assertEqual(value["stage"], "PUBLISH_AND_VERIFY_IMMUTABLE_RELEASE")
+        self.assertFalse(value["immutable_release_verified"])
+        self.assertFalse(value["final_release_closure_verified"])
+        self.assertFalse(value["release_closed"])
+
+    def test_final_scan_must_match_documentation_repository_head(self) -> None:
+        scan = self.scan()
+        scan["repository_head"] = "c" * 40
+        value = self.module.build(self.inventory(), self.summary(), immutable_release_verification=self.immutable(), documentation_verification=self.documentation(), cleanup_verification=self.cleanup(), final_repository_scan=scan, final_release_verification=self.final_release(), **self.post_ga_base())
+        self.assertEqual(value["stage"], "RUN_AND_VERIFY_FINAL_REPOSITORY_SCAN")
+        self.assertFalse(value["final_repo_secret_scan_completed"])
+        self.assertFalse(value["final_release_closure_verified"])
+        self.assertFalse(value["release_closed"])
+
     def test_cleanup_wrong_repository_never_advances(self) -> None:
         cleanup = self.cleanup()
         cleanup["repository"] = "someone-else/PSMatrix"
         value = self.module.build(self.inventory(), self.summary(), immutable_release_verification=self.immutable(), documentation_verification=self.documentation(), cleanup_verification=cleanup, **self.post_ga_base())
         self.assertEqual(value["stage"], "CLEAN_AND_VERIFY_STALE_RELEASE_WORK")
         self.assertFalse(value["stale_branch_pr_cleanup_completed"])
+        self.assertFalse(value["release_closed"])
 
     def test_bad_inventory_cardinality_fails_closed(self) -> None:
         inventory = self.inventory()
