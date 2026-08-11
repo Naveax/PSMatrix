@@ -1,0 +1,19 @@
+{
+  "actions": {
+    "actions/checkout": {
+      "commit": "11d5960a326750d5838078e36cf38b85af677262",
+      "major_family": "v4"
+    },
+    "actions/setup-python": {
+      "commit": "a26af69be951a213d495a4c3e4e4022e16d87065",
+      "major_family": "v5"
+    },
+    "actions/upload-artifact": {
+      "commit": "ea165f8d65b6e75b540449e92b4886f43607fa02",
+      "major_family": "v4"
+    }
+  },
+  "kind": "psmatrix.verification-hardening-action-lock",
+  "schema": 1,
+  "version": "2.0.0"
+}
