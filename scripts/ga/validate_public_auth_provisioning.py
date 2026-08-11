@@ -1,0 +1,196 @@
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+import shutil
+import ssl
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+
+
+class PublicAuthProvisioningError(RuntimeError):
+    pass
+
+
+TOKEN_NAMES = (
+    "PSMATRIX_OAUTH_VALID_TOKEN",
+    "PSMATRIX_OAUTH_EXPIRED_TOKEN",
+    "PSMATRIX_OAUTH_WRONG_AUDIENCE_TOKEN",
+    "PSMATRIX_OAUTH_MISSING_SCOPE_TOKEN",
+    "PSMATRIX_OAUTH_REPLAY_TOKEN",
+    "PSMATRIX_OAUTH_RATE_LIMIT_TOKEN",
+)
+PAIR_PREFIXES = (
+    "PSMATRIX_MTLS_CURRENT",
+    "PSMATRIX_MTLS_ROTATION",
+    "PSMATRIX_MTLS_UNTRUSTED",
+    "PSMATRIX_MTLS_REVOKED",
+)
+VAR_NAMES = (
+    "PSMATRIX_OAUTH_ENDPOINT",
+    "PSMATRIX_OAUTH_DISCOVERY_URL",
+    "PSMATRIX_OAUTH_EXPECTED_ISSUER",
+    "PSMATRIX_MTLS_ENDPOINT",
+    "PSMATRIX_MTLS_FINGERPRINT_HEADER",
+)
+_HEADER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,127}$")
+_PRIVATE_MARKERS = (
+    "-----BEGIN PRIVATE KEY-----",
+    "-----BEGIN RSA PRIVATE KEY-----",
+    "-----BEGIN EC PRIVATE KEY-----",
+)
+
+
+def _safe_file(path: Path, *, label: str, maximum: int = 1_000_000) -> bytes:
+    if not path.is_file() or path.is_symlink():
+        raise PublicAuthProvisioningError(f"missing or unsafe {label}: {path.name}")
+    size = path.stat().st_size
+    if size <= 0 or size > maximum:
+        raise PublicAuthProvisioningError(f"invalid {label} size: {path.name}")
+    data = path.read_bytes()
+    if b"\x00" in data:
+        raise PublicAuthProvisioningError(f"NUL byte in {label}: {path.name}")
+    return data
+
+
+def _https_url(value: Any, *, name: str) -> str:
+    text = str(value or "").strip()
+    parsed = urlparse(text)
+    if parsed.scheme.lower() != "https" or not parsed.netloc or parsed.username or parsed.password:
+        raise PublicAuthProvisioningError(f"{name} must be an HTTPS URL without embedded credentials")
+    return text
+
+
+def _openssl_public_from_certificate(certificate: Path) -> bytes:
+    executable = shutil.which("openssl")
+    if executable is None:
+        raise PublicAuthProvisioningError("OpenSSL is required to validate mTLS cert/key identity")
+    completed = subprocess.run(
+        [executable, "x509", "-in", str(certificate), "-pubkey", "-noout"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=20,
+    )
+    if completed.returncode != 0:
+        raise PublicAuthProvisioningError(f"invalid mTLS certificate: {certificate.name}")
+    return completed.stdout.replace(b"\r\n", b"\n").strip()
+
+
+def _openssl_public_from_private(private_key: Path) -> bytes:
+    executable = shutil.which("openssl")
+    if executable is None:
+        raise PublicAuthProvisioningError("OpenSSL is required to validate mTLS cert/key identity")
+    completed = subprocess.run(
+        [executable, "pkey", "-in", str(private_key), "-pubout"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=20,
+    )
+    if completed.returncode != 0:
+        raise PublicAuthProvisioningError(f"invalid mTLS private key: {private_key.name}")
+    return completed.stdout.replace(b"\r\n", b"\n").strip()
+
+
+def validate_material(material_root: Path) -> dict[str, Any]:
+    root = material_root.resolve()
+    if not root.is_dir() or root.is_symlink():
+        raise PublicAuthProvisioningError("public-auth material root is missing or unsafe")
+    secrets = root / "secrets"
+    if not secrets.is_dir() or secrets.is_symlink():
+        raise PublicAuthProvisioningError("public-auth secrets directory is missing or unsafe")
+    vars_path = root / "vars.json"
+    raw_vars = json.loads(_safe_file(vars_path, label="public-auth vars JSON").decode("utf-8"))
+    if not isinstance(raw_vars, dict):
+        raise PublicAuthProvisioningError("public-auth vars JSON root must be an object")
+    if set(raw_vars) != set(VAR_NAMES):
+        raise PublicAuthProvisioningError("public-auth vars JSON must contain exactly the five required variables")
+
+    for name in VAR_NAMES[:4]:
+        _https_url(raw_vars[name], name=name)
+    header = str(raw_vars["PSMATRIX_MTLS_FINGERPRINT_HEADER"] or "").strip()
+    if _HEADER_RE.fullmatch(header) is None:
+        raise PublicAuthProvisioningError("PSMATRIX_MTLS_FINGERPRINT_HEADER is invalid")
+
+    token_digests: set[bytes] = set()
+    for name in TOKEN_NAMES:
+        data = _safe_file(secrets / f"{name}.txt", label=f"OAuth token {name}", maximum=262_144).strip()
+        if not data:
+            raise PublicAuthProvisioningError(f"OAuth token is empty: {name}")
+        digest = hashlib.sha256(data).digest()
+        if digest in token_digests:
+            raise PublicAuthProvisioningError("OAuth fixture tokens must be distinct")
+        token_digests.add(digest)
+
+    cert_digests: set[bytes] = set()
+    for prefix in PAIR_PREFIXES:
+        cert = secrets / f"{prefix}_CERT.pem"
+        key = secrets / f"{prefix}_KEY.pem"
+        cert_text = _safe_file(cert, label=f"certificate {prefix}").decode("utf-8")
+        key_text = _safe_file(key, label=f"private key {prefix}").decode("utf-8")
+        if "-----BEGIN CERTIFICATE-----" not in cert_text:
+            raise PublicAuthProvisioningError(f"certificate PEM marker missing: {prefix}")
+        if not any(marker in key_text for marker in _PRIVATE_MARKERS):
+            raise PublicAuthProvisioningError(f"private-key PEM marker missing: {prefix}")
+        try:
+            der = ssl.PEM_cert_to_DER_cert(cert_text)
+        except ValueError as exc:
+            raise PublicAuthProvisioningError(f"invalid certificate PEM: {prefix}") from exc
+        digest = hashlib.sha256(der).digest()
+        if digest in cert_digests:
+            raise PublicAuthProvisioningError("mTLS fixture certificates must be distinct")
+        cert_digests.add(digest)
+        if _openssl_public_from_certificate(cert) != _openssl_public_from_private(key):
+            raise PublicAuthProvisioningError(f"mTLS certificate/private-key mismatch: {prefix}")
+
+    return {
+        "schema": 1,
+        "kind": "psmatrix.production-ga-public-auth-provisioning-validation",
+        "version": "2.0.0",
+        "status": "PASS",
+        "environment": "production-ga-public-auth-probe",
+        "required_check_count": 19,
+        "oauth_token_count": len(TOKEN_NAMES),
+        "mtls_pair_count": len(PAIR_PREFIXES),
+        "variable_count": len(VAR_NAMES),
+        "validated_names": {
+            "secrets": list(TOKEN_NAMES)
+            + [f"{prefix}_CERT" for prefix in PAIR_PREFIXES]
+            + [f"{prefix}_KEY" for prefix in PAIR_PREFIXES],
+            "vars": list(VAR_NAMES),
+        },
+        "safety": {
+            "secret_values_serialized": False,
+            "secret_hashes_serialized": False,
+            "secret_lengths_serialized": False,
+            "certificate_hashes_serialized": False,
+        },
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Validate PSMatrix Production GA OAuth/mTLS provisioning material without serializing secrets")
+    parser.add_argument("--material-root", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    try:
+        result = validate_material(args.material_root)
+        output = args.output.resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        print("production_ga_public_auth_provisioning=PASS checks=19 tokens=6 mtls_pairs=4 vars=5")
+        print("secret_values_serialized=false")
+        return 0
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, PublicAuthProvisioningError, TypeError, ValueError) as exc:
+        print(f"Production GA public-auth provisioning validation failed: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
