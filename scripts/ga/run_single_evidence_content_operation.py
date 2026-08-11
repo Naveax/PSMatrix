@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -22,6 +21,14 @@ ALLOWED_FLAGS = {
     "disaster-recovery": (),
     "security-review": ("--release-public-key",),
     "vulnerability-scan": ("--release-public-key", "--security-review-public-key"),
+}
+SUPPORT_DESTS = {
+    "--active-lock": "active_lock",
+    "--run-verification": "run_verification",
+    "--lab-public-key": "lab_public_key",
+    "--release-public-key": "release_public_key",
+    "--protected-release-public-key": "protected_release_public_key",
+    "--security-review-public-key": "security_review_public_key",
 }
 
 
@@ -77,6 +84,22 @@ def validate_verifier_args(gate: str, args: list[str]) -> list[str]:
     return normalized
 
 
+def build_verifier_args(gate: str, support: dict[str, Path | None]) -> list[str]:
+    expected = ALLOWED_FLAGS.get(gate)
+    if expected is None:
+        raise SingleEvidenceContentOperationError(f"unsupported single-artifact evidence gate: {gate}")
+    unknown = sorted(flag for flag, value in support.items() if value is not None and flag not in expected)
+    if unknown:
+        raise SingleEvidenceContentOperationError(f"support option is not allowed for {gate}: {','.join(unknown)}")
+    values: list[str] = []
+    for flag in expected:
+        path = support.get(flag)
+        if path is None:
+            raise SingleEvidenceContentOperationError(f"required support option is missing for {gate}: {flag}")
+        values.extend([flag, str(path)])
+    return validate_verifier_args(gate, values)
+
+
 def _run(command: list[str], label: str) -> None:
     completed = subprocess.run(command, cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300, check=False)
     if completed.returncode != 0:
@@ -86,7 +109,8 @@ def _run(command: list[str], label: str) -> None:
 def run_operation(api_verification: Path, gate: str, workspace: Path, verifier_args: list[str], repository: str, gh: str) -> dict[str, Any]:
     if gate not in ALLOWED_FLAGS:
         raise SingleEvidenceContentOperationError(f"unsupported single-artifact evidence gate: {gate}")
-    if not api_verification.resolve().is_file() or api_verification.resolve().is_symlink():
+    api_path = api_verification.expanduser().resolve()
+    if not api_path.is_file() or api_path.is_symlink():
         raise SingleEvidenceContentOperationError("evidence API verification is missing or unsafe")
     normalized_args = validate_verifier_args(gate, verifier_args)
     root = _external_workspace(workspace)
@@ -97,7 +121,7 @@ def run_operation(api_verification: Path, gate: str, workspace: Path, verifier_a
     _run([
         sys.executable,
         str(MATERIALIZER),
-        "--api-verification", str(api_verification.resolve()),
+        "--api-verification", str(api_path),
         "--gate", gate,
         "--destination", str(materialized),
         "--receipt", str(materialization_receipt),
@@ -112,8 +136,7 @@ def run_operation(api_verification: Path, gate: str, workspace: Path, verifier_a
         "--gate", gate,
         "--bundle-root", str(materialized),
     ]
-    for index in range(0, len(normalized_args), 2):
-        binder_command.extend(["--verifier-arg", normalized_args[index], "--verifier-arg", normalized_args[index + 1]])
+    binder_command.extend(f"--verifier-arg={token}" for token in normalized_args)
     binder_command.extend(["--output", str(binding_receipt)])
     _run(binder_command, "content semantic binding")
 
@@ -144,13 +167,20 @@ def main() -> int:
     parser.add_argument("--api-verification", type=Path, required=True)
     parser.add_argument("--gate", required=True)
     parser.add_argument("--workspace", type=Path, required=True)
-    parser.add_argument("--verifier-arg", action="append", default=[])
+    parser.add_argument("--active-lock", type=Path)
+    parser.add_argument("--run-verification", type=Path)
+    parser.add_argument("--lab-public-key", type=Path)
+    parser.add_argument("--release-public-key", type=Path)
+    parser.add_argument("--protected-release-public-key", type=Path)
+    parser.add_argument("--security-review-public-key", type=Path)
     parser.add_argument("--repository", default="Naveax/PSMatrix")
     parser.add_argument("--gh", default="gh")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
-        value = run_operation(args.api_verification, args.gate, args.workspace, list(args.verifier_arg), args.repository, args.gh)
+        support = {flag: getattr(args, dest) for flag, dest in SUPPORT_DESTS.items()}
+        verifier_args = build_verifier_args(args.gate, support)
+        value = run_operation(args.api_verification, args.gate, args.workspace, verifier_args, args.repository, args.gh)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(f"single_evidence_content_operation=PASS gate={value['gate']} run={value['run_id']} artifact_id={value['artifact_id']}")
