@@ -20,6 +20,7 @@ function Read-JsonObject([string]$Path, [string]$Label) {
     return $value
 }
 
+$readinessSummaryPath = [IO.Path]::GetFullPath($ReadinessSummary)
 $readiness = Read-JsonObject $ReadinessVerification 'Verified Production readiness receipt'
 if ($readiness.schema -ne 1 -or $readiness.kind -ne 'psmatrix.production-readiness-summary-verification' -or $readiness.version -ne '2.0.0' -or $readiness.status -ne 'PASS') {
     throw 'Verified Production readiness receipt identity/status mismatch.'
@@ -32,6 +33,15 @@ foreach ($name in @('production_evidence_runs_complete','final_ga_evaluator_invo
 }
 $readinessHead = [string]$readiness.exact_head
 if ($readinessHead -cnotmatch '^[0-9a-f]{40}$') { throw 'Verified readiness receipt exact head is invalid.' }
+$expectedReadinessSha = [string]$readiness.summary_file_sha256
+$expectedReadinessSize = [long]$readiness.summary_file_size
+if ($expectedReadinessSha -cnotmatch '^[0-9a-f]{64}$' -or $expectedReadinessSize -le 0) { throw 'Verified readiness receipt raw-summary byte binding is invalid.' }
+if (-not (Test-Path -LiteralPath $readinessSummaryPath -PathType Leaf)) { throw 'Readiness summary file is missing.' }
+$readinessItem = Get-Item -LiteralPath $readinessSummaryPath -Force
+if ($readinessItem.LinkType) { throw 'Readiness summary file must not be a symlink.' }
+$actualReadinessSha = (Get-FileHash -LiteralPath $readinessSummaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$actualReadinessSize = [long]$readinessItem.Length
+if ($actualReadinessSha -ne $expectedReadinessSha -or $actualReadinessSize -ne $expectedReadinessSize) { throw 'Readiness summary file bytes differ from the exact verified readiness receipt.' }
 
 $closurePath = [IO.Path]::GetFullPath($ContentClosure)
 $closure = Read-JsonObject $closurePath 'Final GA evidence content closure'
@@ -105,7 +115,7 @@ try {
         Mode = 'post-readiness'
         Workflow = '.github/workflows/ga-final-evaluator.yml'
         InputsJson = $inputsPath
-        ReadinessSummary = [IO.Path]::GetFullPath($ReadinessSummary)
+        ReadinessSummary = $readinessSummaryPath
         Repository = $Repository
         Ref = $Ref
     }
@@ -120,6 +130,7 @@ finally {
 
 Write-Host 'final_ga_evaluator_content_closure_handoff=PASS'
 Write-Host 'verified_readiness=12/12 checks=41/41'
+Write-Host 'readiness_summary_file_digest_bound=true'
 Write-Host 'verified_evidence_content=11/11'
 Write-Host 'content_closure_exactly_rederived=true'
 Write-Host 'content_closure_file_digest_bound=true'
