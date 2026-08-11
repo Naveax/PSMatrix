@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -246,6 +248,91 @@ def _read(path: Path, label: str) -> dict[str, Any]:
     return value
 
 
+def _write_final_repository_scan_receipt(
+    path: Path,
+    value: dict[str, Any],
+) -> Path:
+    _reject_symlink_components(path, "final repository scan output")
+    absolute = path.expanduser().absolute()
+    if absolute.exists():
+        raise FinalRepositoryScanCertificationError(
+            "final repository scan output must not already exist"
+        )
+    parent = absolute.parent
+    _reject_symlink_components(parent, "final repository scan output parent")
+    resolved_parent = parent.resolve()
+    if not resolved_parent.is_dir():
+        raise FinalRepositoryScanCertificationError(
+            "final repository scan output parent must already exist"
+        )
+    candidate = resolved_parent / absolute.name
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    try:
+        fd = os.open(candidate, flags, 0o600)
+    except FileExistsError as exc:
+        raise FinalRepositoryScanCertificationError(
+            "final repository scan output appeared before exclusive creation"
+        ) from exc
+    except OSError as exc:
+        raise FinalRepositoryScanCertificationError(
+            f"final repository scan output could not be created: {exc}"
+        ) from exc
+
+    info = os.fstat(fd)
+    identity = (int(info.st_dev), int(info.st_ino))
+    handle = None
+    success = False
+    try:
+        handle = os.fdopen(fd, "r+", encoding="utf-8", newline="\n")
+        path_info = os.lstat(candidate)
+        if (
+            not stat.S_ISREG(path_info.st_mode)
+            or (int(path_info.st_dev), int(path_info.st_ino)) != identity
+        ):
+            raise FinalRepositoryScanCertificationError(
+                "final repository scan output path does not name the exclusively created file"
+            )
+        payload = json.dumps(value, indent=2, sort_keys=True) + "\n"
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+        handle.seek(0)
+        if handle.read() != payload:
+            raise FinalRepositoryScanCertificationError(
+                "final repository scan output read-back verification failed"
+            )
+        path_info = os.lstat(candidate)
+        if (
+            not stat.S_ISREG(path_info.st_mode)
+            or (int(path_info.st_dev), int(path_info.st_ino)) != identity
+        ):
+            raise FinalRepositoryScanCertificationError(
+                "final repository scan output path identity changed during write"
+            )
+        success = True
+        return candidate
+    finally:
+        if handle is not None:
+            handle.close()
+        else:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if not success:
+            try:
+                path_info = os.lstat(candidate)
+                if (
+                    stat.S_ISREG(path_info.st_mode)
+                    and (int(path_info.st_dev), int(path_info.st_ino)) == identity
+                ):
+                    candidate.unlink()
+            except OSError:
+                pass
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run a bounded preflight repository scan or bind the final zero-finding scan to exact post-GA documentation and cleanup receipts"
@@ -288,11 +375,7 @@ def main() -> int:
             )
 
         value = certify(args.root, release, documentation, cleanup)
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(
-            json.dumps(value, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        _write_final_repository_scan_receipt(args.output, value)
         mode = "FINAL" if value["final_repo_secret_scan_completed"] else "PREFLIGHT"
         print(
             f"final_repository_private_material_scan={mode}_PASS "
