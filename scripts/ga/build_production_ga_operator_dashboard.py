@@ -62,6 +62,7 @@ def build(
     evaluator_verification: dict[str, Any] | None = None,
     final_attestation_operation: dict[str, Any] | None = None,
     release_closure: dict[str, Any] | None = None,
+    authority_escrow_operation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if inventory.get("schema") != 1 or inventory.get("kind") != "psmatrix.production-ga-environment-inventory-audit" or inventory.get("version") != "2.0.0":
         raise OperatorDashboardError("environment inventory identity mismatch")
@@ -80,12 +81,14 @@ def build(
     evaluator_verification = _optional(evaluator_verification, "psmatrix.final-ga-evaluator-run-api-verification")
     final_attestation_operation = _optional(final_attestation_operation, "psmatrix.final-ga-attestation-content-operation")
     release_closure = _optional(release_closure, "psmatrix.release-closure-readiness")
+    authority_escrow_operation = _optional(authority_escrow_operation, "psmatrix.production-ga-dpapi-authority-escrow-operation")
 
     present = inventory.get("present_check_count")
     missing = inventory.get("missing_check_count")
     if type(present) is not int or type(missing) is not int or present < 0 or missing < 0 or present + missing != 41:
         raise OperatorDashboardError("environment inventory counts are invalid")
 
+    authority_escrow_pass = authority_escrow_operation is not None and authority_escrow_operation.get("status") == "PASS" and authority_escrow_operation.get("action") == "protect" and authority_escrow_operation.get("authority_count") == 9 and authority_escrow_operation.get("readiness_secret_check_count") == 17 and authority_escrow_operation.get("dpapi_scope") == "CurrentUser" and authority_escrow_operation.get("dpapi_round_trip_verified") is True and authority_escrow_operation.get("plaintext_private_keys_removed") is True and authority_escrow_operation.get("private_key_values_serialized") is False and authority_escrow_operation.get("private_key_hashes_serialized") is False and authority_escrow_operation.get("private_key_lengths_serialized") is False and authority_escrow_operation.get("github_environment_mutation_executed") is False and authority_escrow_operation.get("ga_eligible") is False
     raw_readiness_pass = readiness_summary.get("status") == "PASS" and readiness_summary.get("environment_passed") == 12 and readiness_summary.get("environment_failed") == 0 and readiness_summary.get("environment_readiness") is True
     readiness_verified = readiness_verification is not None and readiness_verification.get("status") == "PASS" and readiness_verification.get("verified_environment_count") == 12 and readiness_verification.get("verified_check_count") == 41 and readiness_verification.get("summary_content_verified") is True and readiness_verification.get("production_readiness_verified") is True and readiness_verification.get("ga_eligible") is False
     lock_pass = lock_verification is not None and lock_verification.get("status") == "PASS" and lock_verification.get("repository_target_content_verified") is True and lock_verification.get("release_signing_executed") is False and lock_verification.get("ga_eligible") is False
@@ -101,7 +104,10 @@ def build(
 
     if present < 41:
         stage = "PROVISION_ENVIRONMENTS"
-        next_action = "Provision missing Production GA environment secret/variable names using validated external material, then rerun the names-only inventory audit."
+        if authority_escrow_pass:
+            next_action = "Authority DPAPI escrow is verified with plaintext private keys removed. Provision missing Production GA environment secret/variable names using validated external material, then rerun the names-only inventory audit."
+        else:
+            next_action = "Provision missing Production GA environment secret/variable names using validated external material, then rerun the names-only inventory audit. If the final nine-authority workspace has been generated, protect it with CurrentUser DPAPI and remove plaintext private keys before continuing."
     elif not raw_readiness_pass or not readiness_verified:
         stage = "RUN_AND_VERIFY_PRODUCTION_READINESS"
         next_action = "Run production-ga-final-production-readiness on the immutable publication ref, require real 12/12 PASS, then verify the downloaded 41-check summary content."
@@ -147,6 +153,7 @@ def build(
         "stage": stage,
         "next_action": next_action,
         "environment_inventory": {"present": present, "missing": missing, "complete": present == 41},
+        "production_ga_authority_dpapi_escrow_pass": authority_escrow_pass,
         "production_readiness_summary_pass": raw_readiness_pass,
         "production_readiness_content_verified": readiness_verified,
         "final_lock_content_verification_pass": lock_pass,
@@ -189,6 +196,7 @@ def main() -> int:
     parser.add_argument("--evaluator-verification", type=Path)
     parser.add_argument("--final-attestation-operation", type=Path)
     parser.add_argument("--release-closure", type=Path)
+    parser.add_argument("--authority-escrow-operation", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
@@ -206,10 +214,12 @@ def main() -> int:
             _read(args.evaluator_verification),
             _read(args.final_attestation_operation),
             _read(args.release_closure),
+            _read(args.authority_escrow_operation),
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(f"production_ga_operator_stage={value['stage']}")
+        print(f"production_ga_authority_dpapi_escrow_pass={str(value['production_ga_authority_dpapi_escrow_pass']).lower()}")
         print(f"final_evidence_content_closure_reverified={str(value['final_evidence_content_closure_reverified']).lower()}")
         print(f"final_ga_attestation_verified={str(value['final_ga_attestation_verified']).lower()}")
         print(f"ga_eligible={str(value['ga_eligible']).lower()}")
