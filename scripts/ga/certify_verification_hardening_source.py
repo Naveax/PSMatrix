@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -30,15 +32,121 @@ HardeningSourceCertificationError = _impl.HardeningSourceCertificationError
 ALLOWED_WORKFLOWS = _impl.ALLOWED_WORKFLOWS
 REQUIRED_HARDENING_PATHS = set(_impl.REQUIRED_HARDENING_PATHS)
 _load_private_scanner = _impl._load_private_scanner
-_read_json_object = _impl._read_json_object
-_write_source_certification_receipt = _impl._write_source_certification_receipt
 
 
-def _reverify_private_scan(
-    root: Path,
-    head: str,
-    supplied: dict[str, Any],
-) -> dict[str, Any]:
+def _reject_symlink_components(path: Path, label: str) -> None:
+    expanded = path.expanduser()
+    parts = expanded.parts
+    if expanded.is_absolute():
+        current = Path(expanded.anchor)
+        start = 1
+    else:
+        current = Path(".")
+        start = 0
+    for part in parts[start:]:
+        current = current / part
+        if current.is_symlink():
+            raise HardeningSourceCertificationError(
+                f"{label} may not traverse a symlink component"
+            )
+
+
+def _read_json_object(path: Path, label: str) -> dict[str, Any]:
+    _reject_symlink_components(path, label)
+    resolved = path.expanduser().resolve()
+    if not resolved.is_file():
+        raise HardeningSourceCertificationError(f"{label} is missing or unsafe")
+    try:
+        value = json.loads(resolved.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HardeningSourceCertificationError(f"{label} JSON is invalid") from exc
+    if not isinstance(value, dict):
+        raise HardeningSourceCertificationError(f"{label} root must be object")
+    return value
+
+
+def _write_source_certification_receipt(path: Path, value: dict[str, Any]) -> Path:
+    _reject_symlink_components(path, "source certification output")
+    absolute = path.expanduser().absolute()
+    if absolute.exists():
+        raise HardeningSourceCertificationError(
+            "source certification output must not already exist"
+        )
+    parent = absolute.parent
+    _reject_symlink_components(parent, "source certification output parent")
+    resolved_parent = parent.resolve()
+    if not resolved_parent.is_dir():
+        raise HardeningSourceCertificationError(
+            "source certification output parent must already exist"
+        )
+    candidate = resolved_parent / absolute.name
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    try:
+        fd = os.open(candidate, flags, 0o600)
+    except FileExistsError as exc:
+        raise HardeningSourceCertificationError(
+            "source certification output appeared before exclusive creation"
+        ) from exc
+    except OSError as exc:
+        raise HardeningSourceCertificationError(
+            f"source certification output could not be created: {exc}"
+        ) from exc
+    info = os.fstat(fd)
+    identity = (int(info.st_dev), int(info.st_ino))
+    handle = None
+    success = False
+    try:
+        handle = os.fdopen(fd, "r+", encoding="utf-8", newline="\n")
+        path_info = os.lstat(candidate)
+        if (
+            not stat.S_ISREG(path_info.st_mode)
+            or (int(path_info.st_dev), int(path_info.st_ino)) != identity
+        ):
+            raise HardeningSourceCertificationError(
+                "source certification output path does not name the exclusively created file"
+            )
+        payload = json.dumps(value, indent=2, sort_keys=True) + "\n"
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+        handle.seek(0)
+        if handle.read() != payload:
+            raise HardeningSourceCertificationError(
+                "source certification output read-back verification failed"
+            )
+        path_info = os.lstat(candidate)
+        if (
+            not stat.S_ISREG(path_info.st_mode)
+            or (int(path_info.st_dev), int(path_info.st_ino)) != identity
+        ):
+            raise HardeningSourceCertificationError(
+                "source certification output path identity changed during write"
+            )
+        success = True
+        return candidate
+    finally:
+        if handle is not None:
+            handle.close()
+        else:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if not success:
+            try:
+                path_info = os.lstat(candidate)
+                if (
+                    stat.S_ISREG(path_info.st_mode)
+                    and (int(path_info.st_dev), int(path_info.st_ino)) == identity
+                ):
+                    candidate.unlink()
+            except OSError:
+                pass
+
+
+def _reverify_private_scan(root: Path, head: str, supplied: dict[str, Any]) -> dict[str, Any]:
     scanner = _load_private_scanner()
     try:
         head_before = scanner.repository_head(root, "git")
@@ -56,7 +164,6 @@ def _reverify_private_scan(
         raise HardeningSourceCertificationError(
             f"independent repository private-material re-scan failed: {exc}"
         ) from exc
-
     if head_after != head_before or head_after != head:
         raise HardeningSourceCertificationError(
             "repository HEAD changed during independent private-material re-scan"
@@ -65,7 +172,6 @@ def _reverify_private_scan(
         raise HardeningSourceCertificationError(
             "repository-owned private-material scanner returned an invalid receipt"
         )
-
     fresh = dict(fresh)
     fresh["repository_head"] = head_after
     fresh["working_tree_clean_verified"] = True
@@ -86,7 +192,6 @@ def certify(root: Path, baseline: str, private_scan: dict[str, Any]) -> dict[str
         raise HardeningSourceCertificationError(
             "private-material scan must prove repository HEAD stability during scan"
         )
-
     _impl.REQUIRED_HARDENING_PATHS = REQUIRED_HARDENING_PATHS
     _impl.SCANNER_PATH = SCANNER_PATH
     _impl._reverify_private_scan = _reverify_private_scan
@@ -111,14 +216,10 @@ def main() -> int:
         private_scan = _read_json_object(args.private_scan, "private-material scan")
         value = certify(args.root, args.baseline, private_scan)
         _write_source_certification_receipt(args.output, value)
-        print(
-            f"verification_hardening_source_certification=PASS files={value['delta_file_count']}"
-        )
+        print(f"verification_hardening_source_certification=PASS files={value['delta_file_count']}")
         print(f"baseline={value['baseline_commit']}")
         print(f"certified_head={value['certified_head']}")
-        print(
-            f"private_material_scan_repository_head={value['private_material_scan_repository_head']}"
-        )
+        print(f"private_material_scan_repository_head={value['private_material_scan_repository_head']}")
         print("private_material_scan_head_bound=true")
         print("private_material_scan_independently_reverified=true")
         print("private_material_scan_working_tree_clean_verified=true")
