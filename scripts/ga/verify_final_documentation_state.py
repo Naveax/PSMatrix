@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -128,6 +130,95 @@ def _read(path: Path, label: str) -> dict[str, Any]:
     return value
 
 
+def _write_final_documentation_verification_receipt(
+    path: Path,
+    value: dict[str, Any],
+) -> Path:
+    _reject_symlink_components(path, "final documentation verification output")
+    absolute = path.expanduser().absolute()
+    if absolute.exists():
+        raise FinalDocumentationStateError(
+            "final documentation verification output must not already exist"
+        )
+
+    parent = absolute.parent
+    _reject_symlink_components(parent, "final documentation verification output parent")
+    resolved_parent = parent.resolve()
+    if not resolved_parent.is_dir():
+        raise FinalDocumentationStateError(
+            "final documentation verification output parent must already exist"
+        )
+    candidate = resolved_parent / absolute.name
+
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    try:
+        fd = os.open(candidate, flags, 0o600)
+    except FileExistsError as exc:
+        raise FinalDocumentationStateError(
+            "final documentation verification output appeared before exclusive creation"
+        ) from exc
+    except OSError as exc:
+        raise FinalDocumentationStateError(
+            f"final documentation verification output could not be created: {exc}"
+        ) from exc
+
+    info = os.fstat(fd)
+    identity = (int(info.st_dev), int(info.st_ino))
+    handle = None
+    success = False
+    try:
+        handle = os.fdopen(fd, "r+", encoding="utf-8", newline="\n")
+        path_info = os.lstat(candidate)
+        if (
+            not stat.S_ISREG(path_info.st_mode)
+            or (int(path_info.st_dev), int(path_info.st_ino)) != identity
+        ):
+            raise FinalDocumentationStateError(
+                "final documentation verification output path does not name the exclusively created file"
+            )
+
+        payload = json.dumps(value, indent=2, sort_keys=True) + "\n"
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+        handle.seek(0)
+        if handle.read() != payload:
+            raise FinalDocumentationStateError(
+                "final documentation verification output read-back verification failed"
+            )
+
+        path_info = os.lstat(candidate)
+        if (
+            not stat.S_ISREG(path_info.st_mode)
+            or (int(path_info.st_dev), int(path_info.st_ino)) != identity
+        ):
+            raise FinalDocumentationStateError(
+                "final documentation verification output path identity changed during write"
+            )
+        success = True
+        return candidate
+    finally:
+        if handle is not None:
+            handle.close()
+        else:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if not success:
+            try:
+                path_info = os.lstat(candidate)
+                if (
+                    stat.S_ISREG(path_info.st_mode)
+                    and (int(path_info.st_dev), int(path_info.st_ino)) == identity
+                ):
+                    candidate.unlink()
+            except OSError:
+                pass
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Verify a final 2.0.0 GA documentation closure record against the independently verified asset-bound immutable release")
     parser.add_argument("--documentation-record", type=Path, required=True)
@@ -141,8 +232,7 @@ def main() -> int:
             _read(args.immutable_release_verification, "immutable release verification"),
             args.repository_head,
         )
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        _write_final_documentation_verification_receipt(args.output, value)
         print(f"final_documentation_state_verification=PASS documents={value['document_count']} head={value['documentation_repository_head']}")
         print("immutable_release_asset_set_verified=true")
         print("immutable_release_attestation_verified=true")
