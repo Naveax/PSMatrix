@@ -48,6 +48,11 @@ class FinalAttestationContentOperationTests(unittest.TestCase):
         with self.assertRaises(self.module.FinalAttestationContentOperationError):
             self.module.validate_run_verification(self.receipt)
 
+    def test_invalid_evaluator_run_id_fails_closed(self) -> None:
+        self.receipt["run_id"] = 0
+        with self.assertRaises(self.module.FinalAttestationContentOperationError):
+            self.module.validate_run_verification(self.receipt)
+
     def test_already_ga_eligible_run_receipt_is_rejected(self) -> None:
         self.receipt["final_attestation_content_verified"] = True
         self.receipt["ga_eligible"] = True
@@ -58,15 +63,18 @@ class FinalAttestationContentOperationTests(unittest.TestCase):
         with self.assertRaises(self.module.FinalAttestationContentOperationError):
             self.module._external_workspace(ROOT / ".tmp-final-attestation")
 
-    def test_source_uses_exact_artifact_id_safe_extract_and_independent_verifier(self) -> None:
+    def test_source_uses_exact_artifact_id_safe_extract_independent_verifier_and_bounded_errors(self) -> None:
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("materialize_verified_evidence_artifact.py", text)
         self.assertIn("verify_final_ga_attestation_bundle.py", text)
         self.assertIn("materializer.download", text)
         self.assertIn("materializer.safe_extract", text)
+        self.assertIn("exact final-attestation artifact materialization failed", text)
+        self.assertIn("independent final-attestation semantic verification failed", text)
         self.assertIn("semantic_verification_mutated_tree", text)
         self.assertIn("final_ga_attestation_verified", text)
         self.assertIn('"ga_eligible": True', text)
+        self.assertNotIn("KeyError, Exception", text)
         self.assertNotIn("shell=True", text)
 
 
