@@ -40,8 +40,10 @@ class ProductionGAFullMatrixLocalBootstrapTests(unittest.TestCase):
             receipt = json.loads(output.read_text(encoding="utf-8-sig"))
             self.assertEqual(receipt["status"], "PASS")
             self.assertEqual(receipt["runner_requirement"], "NAVEAX")
-            self.assertEqual(receipt["variables"]["PSMATRIX_FULL_MATRIX_ENDPOINT_ROOT"], str(endpoint.resolve()))
-            self.assertEqual(receipt["variables"]["PSMATRIX_FULL_MATRIX_HOME"], str(home.resolve()))
+            endpoint_receipt = Path(receipt["variables"]["PSMATRIX_FULL_MATRIX_ENDPOINT_ROOT"])
+            home_receipt = Path(receipt["variables"]["PSMATRIX_FULL_MATRIX_HOME"])
+            self.assertTrue(endpoint_receipt.samefile(endpoint))
+            self.assertTrue(home_receipt.samefile(home))
             self.assertFalse(receipt["secret_values_present"])
             self.assertTrue(all(row["exists"] for row in receipt["path_checks"]))
 
