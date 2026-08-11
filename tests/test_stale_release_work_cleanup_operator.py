@@ -71,6 +71,7 @@ class StaleReleaseWorkCleanupOperatorTests(unittest.TestCase):
             )
 
         self.assertEqual(receipt["status"], "DRY_RUN")
+        self.assertEqual(receipt["repository"], "Naveax/PSMatrix")
         self.assertEqual(receipt["stale_branch_count"], 1)
         self.assertEqual(receipt["stale_branches"][0]["branch"], "prod/old-hardening")
         self.assertFalse(receipt["mutation_executed"])
@@ -167,11 +168,13 @@ class StaleReleaseWorkCleanupOperatorTests(unittest.TestCase):
             )
 
         self.assertEqual(receipt["status"], "PASS")
+        self.assertEqual(receipt["repository"], "Naveax/PSMatrix")
         self.assertEqual(receipt["deleted_branch_count"], 2)
         self.assertTrue(receipt["mutation_executed"])
         self.assertTrue(receipt["post_delete_verification_passed"])
         self.assertTrue(receipt["stale_branch_pr_cleanup_completed"])
         self.assertEqual(verification["status"], "PASS")
+        self.assertEqual(verification["repository"], "Naveax/PSMatrix")
         self.assertTrue(verification["stale_branch_pr_cleanup_completed"])
         self.assertEqual(len(deleted), 2)
         self.assertTrue(all("%2F" in endpoint for endpoint in deleted))
@@ -230,7 +233,6 @@ class StaleReleaseWorkCleanupOperatorTests(unittest.TestCase):
         def fake_paged(_gh: str, endpoint: str):
             if "pulls?state=open" in endpoint:
                 return []
-            # Simulate one stale branch surviving, forcing verifier failure.
             return [{"name": "main"}, {"name": "prod/two"}]
 
         with (
@@ -264,9 +266,30 @@ class StaleReleaseWorkCleanupOperatorTests(unittest.TestCase):
         with self.assertRaises(self.module.StaleReleaseWorkCleanupOperationError):
             self.module.build_plan(self.verifier, self.closure, bad, [{"name": "main"}], [], [])
 
+    def test_receipt_head_mismatch_is_rejected_before_planning(self) -> None:
+        bad = dict(self.immutable)
+        bad["release_execution_control_head"] = "b" * 40
+        with self.assertRaises(self.module.StaleReleaseWorkCleanupOperationError):
+            self.module.build_plan(self.verifier, self.closure, bad, [{"name": "main"}], [], [])
+
+    def test_wrong_repository_is_rejected_before_any_api_or_delete(self) -> None:
+        with (
+            patch.object(self.module, "_paged_list", side_effect=AssertionError("wrong repo reached API")),
+            patch.object(self.module, "_gh_delete", side_effect=AssertionError("wrong repo reached DELETE")),
+            self.assertRaises(self.module.StaleReleaseWorkCleanupOperationError),
+        ):
+            self.module.run_operation(
+                self.closure,
+                self.immutable,
+                "someone-else/PSMatrix",
+                "gh",
+                False,
+            )
+
     def test_source_reuses_repository_verifier_and_requires_explicit_execute(self) -> None:
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("verify_stale_release_work_cleanup.py", text)
+        self.assertIn('REPOSITORY = "Naveax/PSMatrix"', text)
         self.assertIn("--execute", text)
         self.assertIn("delete_requires_explicit_execute", text)
         self.assertIn("rollback_supported", text)
