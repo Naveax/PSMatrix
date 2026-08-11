@@ -1,0 +1,42 @@
+name: pr105-powershell-parse-diagnostic
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/ga/Invoke-ProductionGALocalNineteenCheckProvisioning.ps1'
+      - '.github/workflows/pr105-powershell-parse-diagnostic.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  parse-local-19check-operator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Parse target PowerShell source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $target = Join-Path $env:GITHUB_WORKSPACE 'scripts/ga/Invoke-ProductionGALocalNineteenCheckProvisioning.ps1'
+          $tokens = $null
+          $parseErrors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $target,
+              [ref]$tokens,
+              [ref]$parseErrors
+          )
+          if ($parseErrors.Count -ne 0) {
+              foreach ($parseError in $parseErrors) {
+                  $extent = $parseError.Extent
+                  Write-Error ("{0}:{1}:{2}: {3}" -f $extent.File,$extent.StartLineNumber,$extent.StartColumnNumber,$parseError.Message)
+              }
+              throw "PowerShell parse failed with $($parseErrors.Count) error(s)."
+          }
+          Write-Host 'pr105_powershell_parse=PASS'
