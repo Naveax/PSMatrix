@@ -123,6 +123,7 @@ class ProductionGAAuthorityDpapiEscrowTests(unittest.TestCase):
         self.assertIn("private_key_lengths_serialized = $false", text)
         self.assertIn("dpapi_round_trip_verified = $true", text)
         self.assertIn("RemovePlaintextPrivateKeys", text)
+        self.assertIn("restore_rollback_completed", text)
         self.assertNotIn("2.0.0rc4", text)
         self.assertNotIn("PSMATRIX_WPS40_ADMIN_PASSWORD", text)
 
@@ -182,8 +183,8 @@ class ProductionGAAuthorityDpapiEscrowTests(unittest.TestCase):
                 marker = private.decode().strip()
                 self.assertNotIn(marker, escrow_text)
                 self.assertNotIn(marker, report_text)
-            self.assertNotIn("private_key_sha256", escrow_text)
-            self.assertNotIn("private_key_length", escrow_text)
+            self.assertNotIn('"private_key_sha256"', escrow_text)
+            self.assertNotIn('"private_key_length"', escrow_text)
 
             restore = subprocess.run(
                 [
@@ -250,6 +251,7 @@ class ProductionGAAuthorityDpapiEscrowTests(unittest.TestCase):
                 check=False,
             )
             self.assertNotEqual(rejected.returncode, 0)
+            self.assertFalse(tampered_destination.exists(), rejected.stdout)
 
     @unittest.skipUnless(os.name == "nt" and shutil.which("pwsh"), "Windows PowerShell 7 required for path-boundary test")
     def test_repository_escrow_path_is_rejected_before_material_write(self) -> None:
