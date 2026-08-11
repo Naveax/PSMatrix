@@ -33,7 +33,8 @@ def verify(
     if immutable_release.get("schema") != 1 or immutable_release.get("kind") != "psmatrix.final-immutable-release-verification" or immutable_release.get("version") != "2.0.0" or immutable_release.get("status") != "PASS":
         raise FinalReleaseClosureError("immutable release verification identity/status mismatch")
     if (
-        immutable_release.get("release_execution_control_head") != execution_head
+        immutable_release.get("repository") != REPOSITORY
+        or immutable_release.get("release_execution_control_head") != execution_head
         or immutable_release.get("publication_operation_verified") is not True
         or immutable_release.get("publication_asset_count") != 8
         or immutable_release.get("release_asset_set_verified") is not True
@@ -49,18 +50,59 @@ def verify(
 
     if documentation.get("schema") != 1 or documentation.get("kind") != "psmatrix.final-documentation-state-verification" or documentation.get("version") != "2.0.0" or documentation.get("status") != "PASS":
         raise FinalReleaseClosureError("documentation verification identity/status mismatch")
-    if documentation.get("execution_control_head") != execution_head or documentation.get("release_tag") != immutable_release.get("tag") or documentation.get("release_id") != immutable_release.get("release_id") or documentation.get("documentation_final_state_closed") is not True or documentation.get("release_immutable") is not True or documentation.get("final_ga_attestation_verified") is not True or documentation.get("ga_eligible") is not True or documentation.get("release_closed") is not False:
-        raise FinalReleaseClosureError("documentation final-state verification does not bind the immutable GA release")
+    if (
+        documentation.get("repository") != REPOSITORY
+        or documentation.get("execution_control_head") != execution_head
+        or documentation.get("release_tag") != immutable_release.get("tag")
+        or documentation.get("release_id") != immutable_release.get("release_id")
+        or documentation.get("immutable_publication_operation_verified") is not True
+        or documentation.get("immutable_publication_asset_count") != 8
+        or documentation.get("immutable_release_asset_set_verified") is not True
+        or documentation.get("immutable_release_attestation_verified") is not True
+        or documentation.get("documentation_final_state_closed") is not True
+        or documentation.get("release_immutable") is not True
+        or documentation.get("final_ga_attestation_verified") is not True
+        or documentation.get("ga_eligible") is not True
+        or documentation.get("release_closed") is not False
+    ):
+        raise FinalReleaseClosureError("documentation final-state verification does not bind the asset-verified immutable GA release")
 
     if cleanup.get("schema") != 1 or cleanup.get("kind") != "psmatrix.release-stale-work-cleanup-verification" or cleanup.get("version") != "2.0.0" or cleanup.get("status") != "PASS":
         raise FinalReleaseClosureError("stale release-work cleanup verification identity/status mismatch")
-    if cleanup.get("repository") != REPOSITORY or cleanup.get("release_execution_head") != execution_head or cleanup.get("release_tag") != immutable_release.get("tag") or cleanup.get("stale_branch_count") != 0 or cleanup.get("stale_open_pr_count") != 0 or cleanup.get("stale_branch_pr_cleanup_completed") is not True or cleanup.get("immutable_release_verified_before_cleanup") is not True or cleanup.get("ga_eligible") is not True or cleanup.get("release_closed") is not False:
-        raise FinalReleaseClosureError("stale release-work cleanup is incomplete, repository-unbound, or release identity drifted")
+    if (
+        cleanup.get("repository") != REPOSITORY
+        or cleanup.get("release_execution_head") != execution_head
+        or cleanup.get("release_tag") != immutable_release.get("tag")
+        or cleanup.get("stale_branch_count") != 0
+        or cleanup.get("stale_open_pr_count") != 0
+        or cleanup.get("immutable_publication_operation_verified_before_cleanup") is not True
+        or cleanup.get("immutable_publication_asset_count") != 8
+        or cleanup.get("immutable_release_asset_set_verified_before_cleanup") is not True
+        or cleanup.get("immutable_release_attestation_verified_before_cleanup") is not True
+        or cleanup.get("immutable_release_verified_before_cleanup") is not True
+        or cleanup.get("stale_branch_pr_cleanup_completed") is not True
+        or cleanup.get("ga_eligible") is not True
+        or cleanup.get("release_closed") is not False
+    ):
+        raise FinalReleaseClosureError("stale release-work cleanup is incomplete, asset-unbound, repository-unbound, or release identity drifted")
 
     if final_scan.get("schema") != 1 or final_scan.get("kind") != "psmatrix.final-repository-private-material-scan-certification" or final_scan.get("version") != "2.0.0" or final_scan.get("status") != "PASS":
         raise FinalReleaseClosureError("final repository private-material scan certification identity/status mismatch")
-    if final_scan.get("release_closure_ready") is not True or final_scan.get("release_execution_head") != execution_head or final_scan.get("finding_count") != 0 or final_scan.get("working_tree_clean") is not True or final_scan.get("final_repo_secret_scan_completed") is not True or final_scan.get("release_closed") is not False:
-        raise FinalReleaseClosureError("final repository secret scan does not close exact release state")
+    if (
+        final_scan.get("repository") != REPOSITORY
+        or final_scan.get("release_closure_ready") is not True
+        or final_scan.get("release_execution_head") != execution_head
+        or final_scan.get("release_tag") != immutable_release.get("tag")
+        or final_scan.get("documentation_final_state_closed") is not True
+        or final_scan.get("stale_branch_pr_cleanup_completed") is not True
+        or final_scan.get("post_ga_receipts_bound") is not True
+        or final_scan.get("preflight_only") is not False
+        or final_scan.get("finding_count") != 0
+        or final_scan.get("working_tree_clean") is not True
+        or final_scan.get("final_repo_secret_scan_completed") is not True
+        or final_scan.get("release_closed") is not False
+    ):
+        raise FinalReleaseClosureError("final repository secret scan is not exact post-GA-bound final certification")
 
     documentation_head = str(documentation.get("documentation_repository_head") or "").lower()
     scan_head = str(final_scan.get("repository_head") or "").lower()
@@ -97,6 +139,7 @@ def verify(
         "publication_asset_count": 8,
         "release_asset_set_verified": True,
         "github_release_attestation_verified": True,
+        "post_ga_receipts_bound_before_final_scan": True,
         **post_ga,
         "final_ga_attestation_verified": True,
         "ga_eligible": True,
@@ -141,6 +184,7 @@ def main() -> int:
         print("post_ga_operations=6/6")
         print("release_asset_set_verified=true")
         print("github_release_attestation_verified=true")
+        print("post_ga_receipts_bound_before_final_scan=true")
         print("final_ga_attestation_verified=true")
         print("ga_eligible=true")
         print("release_closed=true")
