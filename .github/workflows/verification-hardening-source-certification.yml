@@ -32,6 +32,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Verify hardening workflow action lock
+        run: >-
+          python scripts/ga/verify_verification_hardening_action_lock.py
+          --root .
+
       - name: Scan exact tracked tree for private material
         run: >-
           python scripts/ga/scan_repository_private_material.py
