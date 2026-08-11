@@ -519,6 +519,15 @@ def _verify_tag(gh: str, target_commit: str) -> None:
         raise FinalImmutableReleasePublicationError("immutable release tag does not target the frozen final release commit")
 
 
+def _verify_published_remote(gh: str, plan: dict[str, Any], release_id: int) -> None:
+    published = _view_release(gh)
+    final_release_id = _verify_release_identity(published, plan, published=True)
+    if final_release_id != release_id:
+        raise FinalImmutableReleasePublicationError("release database identity changed across publication")
+    _verify_tag(gh, plan["target_commit"])
+    _verify_remote_assets(_list_assets(gh, release_id), plan)
+
+
 def _rollback_draft(gh: str, plan: dict[str, Any]) -> None:
     current = _view_release(gh)
     _verify_release_identity(current, plan, published=False)
@@ -552,7 +561,8 @@ def _rollback_pre_publish(
             errors.append(f"draft creation reconciliation: {exc}")
     if immutable_changed and not errors:
         try:
-            _disable_immutable(gh)
+            if _immutable_enabled(gh):
+                _disable_immutable(gh)
         except Exception as exc:
             errors.append(f"immutable-setting rollback: {exc}")
     if errors:
@@ -577,13 +587,13 @@ def execute_plan(plan: dict[str, Any], gh: str) -> dict[str, Any]:
 
     immutable_initially_enabled = _immutable_enabled(gh)
     immutable_changed = not immutable_initially_enabled
-    if immutable_changed:
-        _enable_immutable(gh)
-
     draft_created = False
     publish_attempted = False
+    post_publish_reconciled_after_client_error = False
     release_id: int | None = None
     try:
+        if immutable_changed:
+            _enable_immutable(gh)
         _create_draft(plan, gh)
         draft_created = True
         draft = _view_release(gh)
@@ -593,12 +603,7 @@ def execute_plan(plan: dict[str, Any], gh: str) -> dict[str, Any]:
         _verify_remote_assets(_list_assets(gh, release_id), plan)
         publish_attempted = True
         _publish(gh)
-        published = _view_release(gh)
-        final_release_id = _verify_release_identity(published, plan, published=True)
-        if final_release_id != release_id:
-            raise FinalImmutableReleasePublicationError("release database identity changed across publication")
-        _verify_tag(gh, plan["target_commit"])
-        _verify_remote_assets(_list_assets(gh, release_id), plan)
+        _verify_published_remote(gh, plan, release_id)
     except Exception as exc:
         if not publish_attempted:
             try:
@@ -610,7 +615,14 @@ def execute_plan(plan: dict[str, Any], gh: str) -> dict[str, Any]:
                 )
             except Exception as rollback_exc:
                 raise FinalImmutableReleasePublicationError(f"publication failed and rollback was incomplete: {rollback_exc}") from exc
-        raise
+            raise
+        if release_id is None:
+            raise
+        try:
+            _verify_published_remote(gh, plan, release_id)
+            post_publish_reconciled_after_client_error = True
+        except Exception:
+            raise exc
 
     if release_id is None:
         raise FinalImmutableReleasePublicationError("publication succeeded without a stable release database identity")
@@ -628,6 +640,7 @@ def execute_plan(plan: dict[str, Any], gh: str) -> dict[str, Any]:
             "release_tag_exact_commit_verified": True,
             "release_published": True,
             "release_immutable": True,
+            "post_publish_reconciled_after_client_error": post_publish_reconciled_after_client_error,
             "pre_publish_rollback_completed": False,
             "release_closed": False,
         }
