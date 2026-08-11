@@ -8,6 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = (
+    ROOT / "scripts" / "ga" / "build_release_closure_readiness.py",
     ROOT / "scripts" / "ga" / "verify_final_documentation_state.py",
     ROOT / "scripts" / "ga" / "verify_stale_release_work_cleanup.py",
     ROOT / "scripts" / "ga" / "verify_final_release_closure.py",
