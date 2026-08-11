@@ -89,6 +89,8 @@ class FinalReleaseClosureVerificationTests(unittest.TestCase):
             "immutable_release_asset_set_verified_before_cleanup": True,
             "immutable_release_attestation_verified_before_cleanup": True,
             "immutable_release_verified_before_cleanup": True,
+            "cleanup_audit_outputs_reserved_before_mutation": True,
+            "cleanup_audit_outputs_finalized_inside_rollback_boundary": True,
             "stale_branch_pr_cleanup_completed": True,
             "ga_eligible": True,
             "release_closed": False,
@@ -104,6 +106,7 @@ class FinalReleaseClosureVerificationTests(unittest.TestCase):
             "release_tag": "v2.0.0",
             "release_closure_ready": True,
             "documentation_final_state_closed": True,
+            "cleanup_audit_transaction_verified": True,
             "stale_branch_pr_cleanup_completed": True,
             "post_ga_receipts_bound": True,
             "preflight_only": False,
@@ -129,6 +132,7 @@ class FinalReleaseClosureVerificationTests(unittest.TestCase):
         self.assertTrue(value["release_tag_created"])
         self.assertTrue(value["final_immutable_ga_anchor_created"])
         self.assertTrue(value["documentation_final_state_closed"])
+        self.assertTrue(value["cleanup_audit_transaction_verified"])
         self.assertTrue(value["stale_branch_pr_cleanup_completed"])
         self.assertTrue(value["final_repo_secret_scan_completed"])
         self.assertTrue(value["ga_eligible"])
@@ -145,6 +149,7 @@ class FinalReleaseClosureVerificationTests(unittest.TestCase):
         for field, invalid in (
             ("release_closure_ready", False),
             ("documentation_final_state_closed", False),
+            ("cleanup_audit_transaction_verified", False),
             ("stale_branch_pr_cleanup_completed", False),
             ("post_ga_receipts_bound", False),
             ("preflight_only", True),
@@ -236,6 +241,7 @@ class FinalReleaseClosureVerificationTests(unittest.TestCase):
         self.assertIn("github_release_attestation_verified", text)
         self.assertIn("post_ga_receipts_bound", text)
         self.assertIn("documentation_repository_head", text)
+        self.assertIn("cleanup_audit_transaction_verified", text)
         self.assertIn("final_repo_secret_scan_completed", text)
 
 

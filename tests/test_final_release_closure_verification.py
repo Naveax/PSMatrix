@@ -53,7 +53,46 @@ class FinalReleaseClosureVerificationTests(
                 self.scan,
             )
 
-    def test_release_closed_receipt_carries_publication_reservation_proof(self) -> None:
+    def test_cleanup_audit_transaction_proof_is_required_for_release_closed(self) -> None:
+        for field in (
+            "cleanup_audit_outputs_reserved_before_mutation",
+            "cleanup_audit_outputs_finalized_inside_rollback_boundary",
+        ):
+            with self.subTest(field=field, mode="missing"):
+                self.setUp()
+                self.cleanup.pop(field)
+                with self.assertRaises(self.module.FinalReleaseClosureError):
+                    self.module.verify(
+                        self.closure,
+                        self.release,
+                        self.documentation,
+                        self.cleanup,
+                        self.scan,
+                    )
+            with self.subTest(field=field, mode="false"):
+                self.setUp()
+                self.cleanup[field] = False
+                with self.assertRaises(self.module.FinalReleaseClosureError):
+                    self.module.verify(
+                        self.closure,
+                        self.release,
+                        self.documentation,
+                        self.cleanup,
+                        self.scan,
+                    )
+
+        self.setUp()
+        self.scan.pop("cleanup_audit_transaction_verified")
+        with self.assertRaises(self.module.FinalReleaseClosureError):
+            self.module.verify(
+                self.closure,
+                self.release,
+                self.documentation,
+                self.cleanup,
+                self.scan,
+            )
+
+    def test_release_closed_receipt_carries_bound_safety_proofs(self) -> None:
         value = self.module.verify(
             self.closure,
             self.release,
@@ -64,6 +103,7 @@ class FinalReleaseClosureVerificationTests(
         self.assertTrue(
             value["publication_receipt_output_reserved_before_mutation"]
         )
+        self.assertTrue(value["cleanup_audit_transaction_verified"])
 
     def test_source_is_only_component_allowed_to_emit_release_closed_true(self) -> None:
         public = _base.SCRIPT
@@ -79,6 +119,9 @@ class FinalReleaseClosureVerificationTests(
         self.assertIn("documentation_repository_head", text)
         self.assertIn("final_repo_secret_scan_completed", text)
         self.assertIn("publication_receipt_output_reserved_before_mutation", text)
+        self.assertIn("cleanup_audit_outputs_reserved_before_mutation", text)
+        self.assertIn("cleanup_audit_outputs_finalized_inside_rollback_boundary", text)
+        self.assertIn("cleanup_audit_transaction_verified", text)
 
 
 if __name__ == "__main__":

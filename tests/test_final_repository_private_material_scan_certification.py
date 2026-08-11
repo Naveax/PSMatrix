@@ -97,6 +97,8 @@ class FinalRepositoryPrivateMaterialScanCertificationTests(unittest.TestCase):
             "immutable_release_asset_set_verified_before_cleanup": True,
             "immutable_release_attestation_verified_before_cleanup": True,
             "immutable_release_verified_before_cleanup": True,
+            "cleanup_audit_outputs_reserved_before_mutation": True,
+            "cleanup_audit_outputs_finalized_inside_rollback_boundary": True,
             "stale_branch_pr_cleanup_completed": True,
             "ga_eligible": True,
             "release_closed": False,
@@ -112,6 +114,7 @@ class FinalRepositoryPrivateMaterialScanCertificationTests(unittest.TestCase):
         self.assertTrue(value["preflight_only"])
         self.assertFalse(value["release_closure_ready"])
         self.assertFalse(value["documentation_final_state_closed"])
+        self.assertFalse(value["cleanup_audit_transaction_verified"])
         self.assertFalse(value["stale_branch_pr_cleanup_completed"])
         self.assertFalse(value["post_ga_receipts_bound"])
         self.assertFalse(value["final_repo_secret_scan_completed"])
@@ -128,6 +131,7 @@ class FinalRepositoryPrivateMaterialScanCertificationTests(unittest.TestCase):
         self.assertEqual(value["release_tag"], "v2.0.0")
         self.assertTrue(value["release_closure_ready"])
         self.assertTrue(value["documentation_final_state_closed"])
+        self.assertTrue(value["cleanup_audit_transaction_verified"])
         self.assertTrue(value["stale_branch_pr_cleanup_completed"])
         self.assertTrue(value["post_ga_receipts_bound"])
         self.assertTrue(value["final_repo_secret_scan_completed"])
@@ -165,6 +169,22 @@ class FinalRepositoryPrivateMaterialScanCertificationTests(unittest.TestCase):
         with self.assertRaises(self.module.FinalRepositoryScanCertificationError):
             self.module.certify(self.root, closure, documentation, cleanup)
 
+    def test_cleanup_audit_transaction_proof_is_required(self) -> None:
+        for field in (
+            "cleanup_audit_outputs_reserved_before_mutation",
+            "cleanup_audit_outputs_finalized_inside_rollback_boundary",
+        ):
+            with self.subTest(field=field):
+                closure, documentation, cleanup = self.receipts()
+                cleanup.pop(field)
+                with self.assertRaises(self.module.FinalRepositoryScanCertificationError):
+                    self.module.certify(self.root, closure, documentation, cleanup)
+
+                closure, documentation, cleanup = self.receipts()
+                cleanup[field] = False
+                with self.assertRaises(self.module.FinalRepositoryScanCertificationError):
+                    self.module.certify(self.root, closure, documentation, cleanup)
+
     def test_release_identity_drift_between_docs_and_cleanup_fails(self) -> None:
         closure, documentation, cleanup = self.receipts()
         cleanup["release_tag"] = "v2.0.0-wrong"
@@ -200,6 +220,9 @@ class FinalRepositoryPrivateMaterialScanCertificationTests(unittest.TestCase):
         self.assertIn("--preflight-only", text)
         self.assertIn("documentation_verification", text)
         self.assertIn("cleanup_verification", text)
+        self.assertIn("cleanup_audit_outputs_reserved_before_mutation", text)
+        self.assertIn("cleanup_audit_outputs_finalized_inside_rollback_boundary", text)
+        self.assertIn("cleanup_audit_transaction_verified", text)
         self.assertIn("post_ga_receipts_bound", text)
         self.assertIn("final_repo_secret_scan_completed", text)
         self.assertIn("release_closed", text)

@@ -118,12 +118,14 @@ def _validate_cleanup(
         or value.get("immutable_release_asset_set_verified_before_cleanup") is not True
         or value.get("immutable_release_attestation_verified_before_cleanup") is not True
         or value.get("immutable_release_verified_before_cleanup") is not True
+        or value.get("cleanup_audit_outputs_reserved_before_mutation") is not True
+        or value.get("cleanup_audit_outputs_finalized_inside_rollback_boundary") is not True
         or value.get("stale_branch_pr_cleanup_completed") is not True
         or value.get("ga_eligible") is not True
         or value.get("release_closed") is not False
     ):
         raise FinalRepositoryScanCertificationError(
-            "stale release-work cleanup verification is incomplete or release identity drifted"
+            "stale release-work cleanup verification is incomplete, audit-transaction-unbound, or release identity drifted"
         )
 
 
@@ -210,6 +212,7 @@ def certify(
         "secret_lengths_emitted": False,
         "release_closure_ready": final_mode,
         "documentation_final_state_closed": final_mode,
+        "cleanup_audit_transaction_verified": final_mode,
         "stale_branch_pr_cleanup_completed": final_mode,
         "post_ga_receipts_bound": final_mode,
         "final_repo_secret_scan_completed": final_mode,
@@ -383,6 +386,10 @@ def main() -> int:
         )
         print(
             f"post_ga_receipts_bound={str(value['post_ga_receipts_bound']).lower()}"
+        )
+        print(
+            "cleanup_audit_transaction_verified="
+            + str(value["cleanup_audit_transaction_verified"]).lower()
         )
         print(
             "final_repo_secret_scan_completed="
