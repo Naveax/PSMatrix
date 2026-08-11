@@ -12,6 +12,7 @@ from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parents[2]
 VERIFIER_PATH = ROOT / "scripts" / "ga" / "verify_stale_release_work_cleanup.py"
+REPOSITORY = "Naveax/PSMatrix"
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -47,6 +48,13 @@ def _write(path: Path, value: dict[str, Any]) -> None:
     resolved.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _validate_repository(repository: str) -> None:
+    if repository != REPOSITORY:
+        raise StaleReleaseWorkCleanupOperationError(
+            f"destructive stale-work cleanup repository is frozen to {REPOSITORY}"
+        )
+
+
 def _gh_json(gh: str, endpoint: str) -> Any:
     completed = subprocess.run(
         [gh, "api", endpoint],
@@ -78,6 +86,7 @@ def _gh_delete(gh: str, endpoint: str) -> None:
 
 
 def _gh_create_ref(gh: str, repository: str, branch: str, sha: str) -> None:
+    _validate_repository(repository)
     completed = subprocess.run(
         [
             gh,
@@ -172,6 +181,7 @@ def _collect_stale(
 
 
 def _branch_ref(gh: str, repository: str, branch: str) -> dict[str, str]:
+    _validate_repository(repository)
     encoded = quote(branch, safe="")
     value = _gh_json(gh, f"repos/{repository}/git/ref/heads/{encoded}")
     if not isinstance(value, dict) or value.get("ref") != f"refs/heads/{branch}":
@@ -201,6 +211,7 @@ def build_plan(
         "kind": "psmatrix.release-stale-work-cleanup-operation",
         "version": "2.0.0",
         "status": "DRY_RUN",
+        "repository": REPOSITORY,
         "release_execution_head": release_closure.get("execution_head"),
         "release_tag": immutable_release.get("tag"),
         "immutable_release_verified_before_cleanup": True,
@@ -227,6 +238,7 @@ def build_plan(
 
 
 def _delete_endpoint(repository: str, branch: str) -> str:
+    _validate_repository(repository)
     return f"repos/{repository}/git/refs/heads/{quote(branch, safe='')}"
 
 
@@ -238,6 +250,9 @@ def execute_plan(
     repository: str,
     gh: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    _validate_repository(repository)
+    if plan.get("repository") != REPOSITORY:
+        raise StaleReleaseWorkCleanupOperationError("cleanup plan repository binding mismatch")
     if plan.get("status") != "DRY_RUN" or plan.get("mutation_executed") is not False:
         raise StaleReleaseWorkCleanupOperationError("cleanup execution requires an unexecuted dry-run plan")
     stale_pulls = plan.get("stale_open_prs")
@@ -327,6 +342,7 @@ def run_operation(
     gh: str,
     execute: bool,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    _validate_repository(repository)
     verifier = _load_verifier()
     _validate_release_state(verifier, release_closure, immutable_release)
     branches = _paged_list(gh, f"repos/{repository}/branches")
@@ -345,26 +361,28 @@ def main() -> int:
     )
     parser.add_argument("--release-closure", type=Path, required=True)
     parser.add_argument("--immutable-release-verification", type=Path, required=True)
-    parser.add_argument("--repository", default="Naveax/PSMatrix")
+    parser.add_argument("--repository", default=REPOSITORY)
     parser.add_argument("--gh", default="gh")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--verification-output", type=Path, required=True)
     args = parser.parse_args()
     try:
+        _validate_repository(args.repository)
+        verification_path = args.verification_output.expanduser().resolve()
+        if not args.execute and verification_path.exists():
+            raise StaleReleaseWorkCleanupOperationError(
+                "dry-run may not reuse an existing verification output path"
+            )
         closure = _read(args.release_closure, "release-closure readiness")
         immutable = _read(args.immutable_release_verification, "immutable release verification")
         receipt, verification = run_operation(closure, immutable, args.repository, args.gh, args.execute)
         _write(args.output, receipt)
         if verification is not None:
             _write(args.verification_output, verification)
-        elif args.verification_output.expanduser().resolve().exists():
-            raise StaleReleaseWorkCleanupOperationError(
-                "dry-run may not reuse an existing verification output path"
-            )
         print(
             f"stale_release_work_cleanup_operation={receipt['status']} "
-            f"branches={receipt['stale_branch_count']} open_prs={receipt['stale_open_pr_count']}"
+            f"repository={REPOSITORY} branches={receipt['stale_branch_count']} open_prs={receipt['stale_open_pr_count']}"
         )
         print(f"mutation_executed={str(receipt['mutation_executed']).lower()}")
         print(f"delete_requires_explicit_execute={str(receipt['delete_requires_explicit_execute']).lower()}")
