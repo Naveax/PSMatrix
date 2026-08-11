@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -9,6 +10,14 @@ from typing import Any
 
 class ReadinessSummaryVerificationError(RuntimeError):
     pass
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def verify(summary: dict[str, Any], contract: dict[str, Any], run_verification: dict[str, Any]) -> dict[str, Any]:
@@ -71,10 +80,21 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
-        value = verify(json.loads(args.summary.read_text(encoding="utf-8")), json.loads(args.contract.read_text(encoding="utf-8")), json.loads(args.run_verification.read_text(encoding="utf-8")))
+        summary_path = args.summary.expanduser().resolve()
+        if not summary_path.is_file() or summary_path.is_symlink():
+            raise ReadinessSummaryVerificationError("readiness summary file is missing or unsafe")
+        value = verify(
+            json.loads(summary_path.read_text(encoding="utf-8")),
+            json.loads(args.contract.read_text(encoding="utf-8")),
+            json.loads(args.run_verification.read_text(encoding="utf-8")),
+        )
+        value["summary_file_sha256"] = _file_sha256(summary_path)
+        value["summary_file_size"] = summary_path.stat().st_size
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print("production_readiness_summary_verification=PASS environments=12/12 checks=41/41")
+        print(f"summary_file_sha256={value['summary_file_sha256']}")
+        print(f"summary_file_size={value['summary_file_size']}")
         print("production_readiness_verified=true")
         print("ga_eligible=false")
         return 0
