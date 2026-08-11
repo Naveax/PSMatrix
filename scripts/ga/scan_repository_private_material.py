@@ -17,6 +17,7 @@ PEM_PRIVATE_BLOCK = re.compile(
 )
 GITHUB_CLASSIC_TOKEN = re.compile(rb"(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{36,255}(?![A-Za-z0-9])")
 GITHUB_FINE_GRAINED_TOKEN = re.compile(rb"(?<![A-Za-z0-9_])github_pat_[A-Za-z0-9_]{50,255}(?![A-Za-z0-9_])")
+SHA40 = re.compile(r"^[0-9a-f]{40}$")
 FORBIDDEN_PRIVATE_CONTAINER_SUFFIXES = {".p12", ".pfx"}
 FORBIDDEN_PRIVATE_KEY_FILENAMES = {"id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"}
 MAX_TRACKED_FILE_BYTES = 100 * 1024 * 1024
@@ -108,6 +109,27 @@ def tracked_files(root: Path, git: str) -> list[str]:
     if not values:
         raise RepositoryPrivateMaterialScanError("repository has zero tracked files")
     return values
+
+
+def repository_head(root: Path, git: str) -> str:
+    completed = subprocess.run(
+        [git, "-C", str(root), "rev-parse", "HEAD"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RepositoryPrivateMaterialScanError(
+            f"git rev-parse HEAD failed: {completed.stderr.strip()}"
+        )
+    head = completed.stdout.strip().lower()
+    if SHA40.fullmatch(head) is None:
+        raise RepositoryPrivateMaterialScanError(
+            "repository HEAD is not an exact lowercase 40-hex commit"
+        )
+    return head
 
 
 def _reject_symlink_components(path: Path, label: str) -> None:
@@ -218,10 +240,13 @@ def main() -> int:
     args = parser.parse_args()
     try:
         root = args.root.expanduser().resolve()
+        head = repository_head(root, args.git)
         value = scan(root, tracked_files(root, args.git))
+        value["repository_head"] = head
         if args.output is not None:
             _write_private_material_scan_receipt(args.output, value)
         print(f"repository_private_material_scan={value['status']} files={value['tracked_file_count']} findings={value['finding_count']}")
+        print(f"repository_head={value['repository_head']}")
         print("secret_values_emitted=false")
         print("secret_hashes_emitted=false")
         print("secret_lengths_emitted=false")

@@ -50,8 +50,7 @@ class VerificationHardeningSourceCertificationTests(unittest.TestCase):
             self.fail(f"git {' '.join(args)} failed: {completed.stderr}")
         return completed.stdout
 
-    @staticmethod
-    def clean_scan() -> dict[str, object]:
+    def clean_scan(self) -> dict[str, object]:
         return {
             "schema": 1,
             "kind": "psmatrix.repository-private-material-scan",
@@ -59,6 +58,7 @@ class VerificationHardeningSourceCertificationTests(unittest.TestCase):
             "finding_count": 0,
             "secret_values_emitted": False,
             "secret_hashes_emitted": False,
+            "repository_head": self.git("rev-parse", "HEAD").strip().lower(),
         }
 
     def commit_file(self, relative: str, content: str = "ok\n") -> None:
@@ -75,6 +75,8 @@ class VerificationHardeningSourceCertificationTests(unittest.TestCase):
         self.assertEqual(value["delta_file_count"], 1)
         self.assertEqual(value["files"][0]["path"], "scripts/ga/new-hardening.py")
         self.assertEqual(len(value["files"][0]["sha256"]), 64)
+        self.assertEqual(value["private_material_scan_repository_head"], self.git("rev-parse", "HEAD").strip().lower())
+        self.assertTrue(value["boundaries"]["private_material_scan_head_bound"])
         self.assertEqual(value["boundaries"]["runtime_source_changes"], 0)
         self.assertEqual(value["boundaries"]["baseline_files_modified"], 0)
         self.assertFalse(value["boundaries"]["ga_eligible"])
@@ -101,6 +103,18 @@ class VerificationHardeningSourceCertificationTests(unittest.TestCase):
         with self.assertRaises(self.module.HardeningSourceCertificationError):
             self.module.certify(self.root, self.baseline, scan)
 
+    def test_private_material_scan_head_must_match_certified_head(self) -> None:
+        self.commit_file("scripts/ga/new-hardening.py")
+        for invalid in (None, "not-a-sha", self.baseline):
+            with self.subTest(repository_head=invalid):
+                scan = self.clean_scan()
+                if invalid is None:
+                    scan.pop("repository_head")
+                else:
+                    scan["repository_head"] = invalid
+                with self.assertRaises(self.module.HardeningSourceCertificationError):
+                    self.module.certify(self.root, self.baseline, scan)
+
     def test_repository_source_freezes_real_publication_baseline(self) -> None:
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("3ffc6b6d7cd58d64224f780aa819b50f50f72491", text)
@@ -108,6 +122,8 @@ class VerificationHardeningSourceCertificationTests(unittest.TestCase):
         self.assertIn("baseline_files_modified", text)
         self.assertIn("baseline_files_deleted", text)
         self.assertIn("private_material_scan_pass", text)
+        self.assertIn("private_material_scan_head_bound", text)
+        self.assertIn("private_material_scan_repository_head", text)
         self.assertIn("ga_eligible", text)
 
 
