@@ -44,8 +44,11 @@ if ($summaryPath.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase))
 
 Push-Location $repoRoot
 try {
-    $initializeArgs = @('-Root', $workspace, '-SummaryOutput', $workspaceSummary)
-    if ($ForceAuthorities) { $initializeArgs += '-ForceAuthorities' }
+    $initializeArgs = @{
+        Root = $workspace
+        SummaryOutput = $workspaceSummary
+    }
+    if ($ForceAuthorities) { $initializeArgs.ForceAuthorities = $true }
     & (Join-Path $repoRoot 'scripts/ga/Initialize-ProductionGAProvisioningWorkspace.ps1') @initializeArgs
     if ($LASTEXITCODE -ne 0) { throw 'Local Production GA workspace initialization failed.' }
     $prepared = Read-JsonObject $workspaceSummary 'Local Production GA workspace summary'
@@ -100,14 +103,14 @@ try {
         $selectedEnvironments = @($selected.environments.Keys | Sort-Object)
         if ($selectedEnvironments.Count -eq 0) { throw 'Selected missing local material map contains zero environments.' }
 
-        $provisionArgs = @(
-            '-MaterialMap', $selectedMap,
-            '-Repository', $Repository,
-            '-Environment', $selectedEnvironments,
-            '-AllowPartialEnvironment'
-        )
-        if ($gh) { $provisionArgs += @('-GhPath', $gh) }
-        if ($DryRun) { $provisionArgs += '-DryRun' }
+        $provisionArgs = @{
+            MaterialMap = $selectedMap
+            Repository = $Repository
+            Environment = $selectedEnvironments
+            AllowPartialEnvironment = $true
+        }
+        if ($gh) { $provisionArgs.GhPath = $gh }
+        if ($DryRun) { $provisionArgs.DryRun = $true }
         & (Join-Path $repoRoot 'scripts/ga/Invoke-ProductionGAEnvironmentProvisioning.ps1') @provisionArgs
         if ($LASTEXITCODE -ne 0) { throw 'Local 19-check partial Production GA provisioning failed.' }
         $mutationExecuted = -not $DryRun.IsPresent
