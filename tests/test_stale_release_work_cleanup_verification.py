@@ -33,8 +33,13 @@ class StaleReleaseWorkCleanupVerificationTests(unittest.TestCase):
             "kind": "psmatrix.final-immutable-release-verification",
             "version": "2.0.0",
             "status": "PASS",
+            "repository": "Naveax/PSMatrix",
             "tag": "v2.0.0",
             "release_execution_control_head": "a" * 40,
+            "publication_operation_verified": True,
+            "publication_asset_count": 8,
+            "release_asset_set_verified": True,
+            "github_release_attestation_verified": True,
             "final_immutable_ga_anchor_created": True,
             "release_published": True,
             "release_closed": False,
@@ -48,11 +53,36 @@ class StaleReleaseWorkCleanupVerificationTests(unittest.TestCase):
     def test_clean_release_work_set_passes(self) -> None:
         value = self.module.verify(self.closure, self.release, self.clean_branches, [])
         self.assertEqual(value["status"], "PASS")
+        self.assertEqual(value["repository"], "Naveax/PSMatrix")
         self.assertEqual(value["release_execution_head"], "a" * 40)
         self.assertEqual(value["stale_branch_count"], 0)
         self.assertEqual(value["stale_open_pr_count"], 0)
+        self.assertTrue(value["immutable_publication_operation_verified_before_cleanup"])
+        self.assertEqual(value["immutable_publication_asset_count"], 8)
+        self.assertTrue(value["immutable_release_asset_set_verified_before_cleanup"])
+        self.assertTrue(value["immutable_release_attestation_verified_before_cleanup"])
         self.assertTrue(value["stale_branch_pr_cleanup_completed"])
         self.assertFalse(value["release_closed"])
+
+    def test_asset_unbound_or_repository_unbound_immutable_release_blocks_cleanup(self) -> None:
+        for field in (
+            "publication_operation_verified",
+            "release_asset_set_verified",
+            "github_release_attestation_verified",
+        ):
+            with self.subTest(field=field):
+                release = dict(self.release)
+                release[field] = False
+                with self.assertRaises(self.module.StaleReleaseWorkCleanupError):
+                    self.module.verify(self.closure, release, self.clean_branches, [])
+        release = dict(self.release)
+        release["publication_asset_count"] = 7
+        with self.assertRaises(self.module.StaleReleaseWorkCleanupError):
+            self.module.verify(self.closure, release, self.clean_branches, [])
+        release = dict(self.release)
+        release["repository"] = "someone-else/PSMatrix"
+        with self.assertRaises(self.module.StaleReleaseWorkCleanupError):
+            self.module.verify(self.closure, release, self.clean_branches, [])
 
     def test_prod_branch_or_open_pr_blocks_cleanup(self) -> None:
         with self.assertRaises(self.module.StaleReleaseWorkCleanupError):
@@ -89,6 +119,9 @@ class StaleReleaseWorkCleanupVerificationTests(unittest.TestCase):
         self.assertIn("page > 100", text)
         self.assertIn("STALE_PREFIXES", text)
         self.assertIn("ALLOWED_BRANCHES", text)
+        self.assertIn("publication_operation_verified", text)
+        self.assertIn("release_asset_set_verified", text)
+        self.assertIn("github_release_attestation_verified", text)
         self.assertIn("release_execution_control_head", text)
         self.assertIn("stale_branch_pr_cleanup_completed", text)
         self.assertNotIn("git push --delete", text)
