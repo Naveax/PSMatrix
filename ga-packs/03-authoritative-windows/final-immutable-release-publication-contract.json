@@ -1,0 +1,85 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.final-immutable-release-publication-contract",
+  "version": "2.0.0",
+  "repository": "Naveax/PSMatrix",
+  "release": {
+    "tag": "v2.0.0",
+    "name": "PSMatrix 2.0.0",
+    "target_commit": "02cef95d40cf524ce00f9d917188343dc49e6f2c",
+    "draft_before_asset_upload": true,
+    "prerelease": false,
+    "generate_release_notes": false,
+    "make_latest": true,
+    "immutable_releases_required": true
+  },
+  "publication_asset_count": 8,
+  "publication_assets": [
+    {
+      "role": "wheel",
+      "name": "psmatrix-2.0.0-py3-none-any.whl",
+      "digest_source": "signed_release_manifest"
+    },
+    {
+      "role": "source_zip",
+      "name": "psmatrix-2.0.0-source.zip",
+      "digest_source": "signed_release_manifest"
+    },
+    {
+      "role": "source_tar_gz",
+      "name": "psmatrix-2.0.0-source.tar.gz",
+      "digest_source": "signed_release_manifest"
+    },
+    {
+      "role": "windows_workers",
+      "name": "psmatrix-2.0.0-windows-workers.zip",
+      "digest_source": "signed_release_manifest"
+    },
+    {
+      "role": "windows_certification_kit",
+      "name": "psmatrix-2.0.0-windows-certification-kit.zip",
+      "digest_source": "signed_release_manifest"
+    },
+    {
+      "role": "windows_provisioning_kit",
+      "name": "psmatrix-2.0.0-windows-provisioning-kit.zip",
+      "digest_source": "signed_release_manifest"
+    },
+    {
+      "role": "signed_release_manifest",
+      "name": "psmatrix-2.0.0-release.json",
+      "digest_source": "protected_release_bundle"
+    },
+    {
+      "role": "release_public_key",
+      "name": "psmatrix-2.0.0-release-public.pem",
+      "digest_source": "active_final_release_lock"
+    }
+  ],
+  "excluded_control_evidence": [
+    "final-release-signing-status.json",
+    "final-release-lock.json",
+    "release-signing-run-verification.json",
+    "SHA256SUMS.txt"
+  ],
+  "publication_order": [
+    "verify_release_closure_readiness",
+    "verify_protected_release_bundle_content",
+    "enable_repository_immutable_releases",
+    "create_draft_release_at_frozen_final_release_commit",
+    "upload_exact_publication_asset_set",
+    "verify_draft_release_asset_set",
+    "publish_release",
+    "verify_published_release_is_immutable"
+  ],
+  "safety": {
+    "ga_execution_control_head_is_not_release_tag_target": true,
+    "draft_required_before_asset_upload": true,
+    "asset_set_must_be_exact_before_publish": true,
+    "control_evidence_must_not_be_publication_asset": true,
+    "post_publish_asset_mutation_forbidden": true,
+    "post_publish_tag_mutation_forbidden": true,
+    "source_contract_executes_publication": false,
+    "release_closed": false
+  }
+}
