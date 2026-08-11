@@ -1,0 +1,61 @@
+name: powershell-source-parse-diagnostic
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '**/*.ps1'
+      - '.github/workflows/powershell-source-parse-diagnostic.yml'
+  push:
+    branches: [main]
+    paths:
+      - '**/*.ps1'
+      - '.github/workflows/powershell-source-parse-diagnostic.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  exact-powershell-parse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Parse every tracked PowerShell script
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $parseFailures = [System.Collections.Generic.List[string]]::new()
+          $files = @(
+              git ls-files '*.ps1' |
+                  ForEach-Object { Join-Path $env:GITHUB_WORKSPACE $_ }
+          )
+          foreach ($file in $files) {
+              $tokens = $null
+              $parseErrors = $null
+              [void][System.Management.Automation.Language.Parser]::ParseFile(
+                  $file,
+                  [ref]$tokens,
+                  [ref]$parseErrors
+              )
+              foreach ($parseError in @($parseErrors)) {
+                  $extent = $parseError.Extent
+                  $parseFailures.Add((
+                      '{0}:{1}:{2}: {3}' -f
+                      $extent.File,
+                      $extent.StartLineNumber,
+                      $extent.StartColumnNumber,
+                      $parseError.Message
+                  ))
+              }
+          }
+          if ($parseFailures.Count -ne 0) {
+              $parseFailures | ForEach-Object { Write-Error $_ }
+              throw "PowerShell parser found $($parseFailures.Count) error(s)."
+          }
+          Write-Host "powershell_exact_parse=PASS files=$($files.Count)"
