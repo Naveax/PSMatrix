@@ -132,6 +132,24 @@ def repository_head(root: Path, git: str) -> str:
     return head
 
 
+def assert_clean_working_tree(root: Path, git: str) -> None:
+    completed = subprocess.run(
+        [git, "-C", str(root), "status", "--porcelain=v1", "--untracked-files=all"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RepositoryPrivateMaterialScanError(
+            f"git status failed: {completed.stderr.decode('utf-8', errors='replace').strip()}"
+        )
+    if completed.stdout:
+        raise RepositoryPrivateMaterialScanError(
+            "private-material scan requires an exact clean working tree"
+        )
+
+
 def _reject_symlink_components(path: Path, label: str) -> None:
     expanded = path.expanduser()
     parts = expanded.parts
@@ -240,13 +258,24 @@ def main() -> int:
     args = parser.parse_args()
     try:
         root = args.root.expanduser().resolve()
-        head = repository_head(root, args.git)
+        head_before = repository_head(root, args.git)
+        assert_clean_working_tree(root, args.git)
         value = scan(root, tracked_files(root, args.git))
-        value["repository_head"] = head
+        assert_clean_working_tree(root, args.git)
+        head_after = repository_head(root, args.git)
+        if head_after != head_before:
+            raise RepositoryPrivateMaterialScanError(
+                "repository HEAD changed during private-material scan"
+            )
+        value["repository_head"] = head_after
+        value["working_tree_clean_verified"] = True
+        value["repository_head_stable_during_scan"] = True
         if args.output is not None:
             _write_private_material_scan_receipt(args.output, value)
         print(f"repository_private_material_scan={value['status']} files={value['tracked_file_count']} findings={value['finding_count']}")
         print(f"repository_head={value['repository_head']}")
+        print("working_tree_clean_verified=true")
+        print("repository_head_stable_during_scan=true")
         print("secret_values_emitted=false")
         print("secret_hashes_emitted=false")
         print("secret_lengths_emitted=false")
