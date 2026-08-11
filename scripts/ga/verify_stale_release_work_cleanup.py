@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -14,6 +15,7 @@ ALLOWED_BRANCHES = {
     "final/2.0.0-verification-hardening-publication-anchor",
     "final/2.0.0-ga-publication-anchor",
 }
+SHA40 = re.compile(r"^[0-9a-f]{40}$")
 
 
 class StaleReleaseWorkCleanupError(RuntimeError):
@@ -29,6 +31,12 @@ def verify(release_closure: dict[str, Any], immutable_release: dict[str, Any], b
         raise StaleReleaseWorkCleanupError("release-closure readiness identity/state mismatch")
     if immutable_release.get("schema") != 1 or immutable_release.get("kind") != "psmatrix.final-immutable-release-verification" or immutable_release.get("version") != "2.0.0" or immutable_release.get("status") != "PASS" or immutable_release.get("final_immutable_ga_anchor_created") is not True or immutable_release.get("release_published") is not True or immutable_release.get("release_closed") is not False:
         raise StaleReleaseWorkCleanupError("verified immutable release is required before stale release-work cleanup")
+    execution_head = str(release_closure.get("execution_head") or "").lower()
+    immutable_execution_head = str(immutable_release.get("release_execution_control_head") or "").lower()
+    if SHA40.fullmatch(execution_head) is None or SHA40.fullmatch(immutable_execution_head) is None:
+        raise StaleReleaseWorkCleanupError("release cleanup execution-control head is invalid")
+    if immutable_execution_head != execution_head:
+        raise StaleReleaseWorkCleanupError("release closure and immutable release execution-control heads differ")
 
     stale_branches: list[str] = []
     observed_branches: set[str] = set()
@@ -70,7 +78,7 @@ def verify(release_closure: dict[str, Any], immutable_release: dict[str, Any], b
         "kind": "psmatrix.release-stale-work-cleanup-verification",
         "version": "2.0.0",
         "status": "PASS",
-        "release_execution_head": release_closure.get("execution_head"),
+        "release_execution_head": execution_head,
         "release_tag": immutable_release.get("tag"),
         "branch_count_observed": len(branches),
         "open_pr_count_observed": len(pulls),
