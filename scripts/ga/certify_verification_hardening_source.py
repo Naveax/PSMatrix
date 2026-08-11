@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import stat
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
+SCANNER_PATH = ROOT / "scripts" / "ga" / "scan_repository_private_material.py"
 DEFAULT_BASELINE = "3ffc6b6d7cd58d64224f780aa819b50f50f72491"
 ALLOWED_WORKFLOWS = {
     ".github/workflows/ga-repository-private-material-scan.yml",
@@ -74,6 +76,44 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _load_private_scanner():
+    spec = importlib.util.spec_from_file_location(
+        "psmatrix_source_cert_private_material_scanner", SCANNER_PATH
+    )
+    if spec is None or spec.loader is None:
+        raise HardeningSourceCertificationError(
+            "unable to load repository-owned private-material scanner"
+        )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _reverify_private_scan(
+    root: Path,
+    head: str,
+    supplied: dict[str, Any],
+) -> dict[str, Any]:
+    scanner = _load_private_scanner()
+    try:
+        fresh = scanner.scan(root, scanner.tracked_files(root, "git"))
+    except Exception as exc:
+        raise HardeningSourceCertificationError(
+            f"independent repository private-material re-scan failed: {exc}"
+        ) from exc
+    if not isinstance(fresh, dict):
+        raise HardeningSourceCertificationError(
+            "repository-owned private-material scanner returned an invalid receipt"
+        )
+    fresh = dict(fresh)
+    fresh["repository_head"] = head
+    if fresh != supplied:
+        raise HardeningSourceCertificationError(
+            "supplied private-material scan receipt differs from independent exact-head re-scan"
+        )
+    return fresh
+
+
 def certify(root: Path, baseline: str, private_scan: dict[str, Any]) -> dict[str, Any]:
     root = root.resolve()
     if not root.is_dir():
@@ -123,6 +163,7 @@ def certify(root: Path, baseline: str, private_scan: dict[str, Any]) -> dict[str
         raise HardeningSourceCertificationError(
             "private-material scan repository head differs from certified HEAD"
         )
+    _reverify_private_scan(root, head, private_scan)
 
     files: list[dict[str, Any]] = []
     for relative in sorted(changed):
@@ -151,6 +192,7 @@ def certify(root: Path, baseline: str, private_scan: dict[str, Any]) -> dict[str
         "baseline_commit": baseline,
         "certified_head": head,
         "private_material_scan_repository_head": scan_head,
+        "private_material_scan_independently_reverified": True,
         "delta_file_count": len(files),
         "files": files,
         "boundaries": {
@@ -162,6 +204,7 @@ def certify(root: Path, baseline: str, private_scan: dict[str, Any]) -> dict[str
             "private_material_scan_pass": True,
             "private_material_findings": 0,
             "private_material_scan_head_bound": True,
+            "private_material_scan_independently_reverified": True,
             "production_state_mutated": False,
             "production_readiness_claimed": False,
             "final_ga_evaluator_invoked": False,
@@ -300,6 +343,7 @@ def main() -> int:
         print(f"certified_head={value['certified_head']}")
         print(f"private_material_scan_repository_head={value['private_material_scan_repository_head']}")
         print("private_material_scan_head_bound=true")
+        print("private_material_scan_independently_reverified=true")
         print("runtime_source_changes=0")
         print("baseline_files_modified=0")
         print("baseline_files_deleted=0")
