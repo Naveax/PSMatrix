@@ -26,7 +26,7 @@ class OTLPProvisioningMaterialMapFragmentTests(unittest.TestCase):
         endpoint = root / "endpoint.txt"
         headers = root / "headers.json"
         endpoint.write_text("https://otel.example.test/v1/traces\n", encoding="utf-8")
-        headers.write_text(json.dumps({"Authorization": "Bearer secret-otlp-token", "X-PSMatrix-Tenant": "production-ga"}), encoding="utf-8")
+        headers.write_text(json.dumps({"Authorization": "Bearer secret-otlp-token", "X-PSMatrix-Tenant": "tenant-fixture-secret-value"}), encoding="utf-8")
         return endpoint, headers
 
     def test_valid_otlp_material_builds_exact_one_secret_one_variable_fragment(self) -> None:
@@ -43,8 +43,9 @@ class OTLPProvisioningMaterialMapFragmentTests(unittest.TestCase):
             self.assertEqual(endpoint_value_file.read_text(encoding="utf-8"), "https://otel.example.test/v1/traces\n")
             serialized = json.dumps(value, sort_keys=True)
             self.assertNotIn("secret-otlp-token", serialized)
-            self.assertNotIn("production-ga", serialized)
+            self.assertNotIn("tenant-fixture-secret-value", serialized)
             self.assertNotIn("https://otel.example.test/v1/traces", serialized)
+            self.assertEqual(value["environments"].keys(), {"production-ga-external-otlp-probe"})
             self.assertFalse(value["validation"]["network_probe_executed"])
 
     def test_header_injection_is_rejected_by_existing_validator(self) -> None:
