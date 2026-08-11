@@ -131,7 +131,7 @@ class StaleReleaseCleanupOutputPathSafetyTests(unittest.TestCase):
             text.index("_validate_output_boundaries(", main_start),
             text.index("run_operation(", main_start),
         )
-        self.assertIn("same physical files", text)
+        self.assertIn("distinct physical files", text)
         self.assertIn("may not overwrite", text)
 
 
