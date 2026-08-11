@@ -1,0 +1,58 @@
+name: verification-hardening-source-certification
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/ga/**'
+      - 'tests/**'
+      - '.github/workflows/ga-repository-private-material-scan.yml'
+      - '.github/workflows/powershell-source-parse-diagnostic.yml'
+      - '.github/workflows/verification-hardening-source-certification.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/ga/**'
+      - 'tests/**'
+      - '.github/workflows/ga-repository-private-material-scan.yml'
+      - '.github/workflows/powershell-source-parse-diagnostic.yml'
+      - '.github/workflows/verification-hardening-source-certification.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  certify-additive-hardening:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact revision with publication ancestry
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Scan exact tracked tree for private material
+        run: >-
+          python scripts/ga/scan_repository_private_material.py
+          --root .
+          --output "$RUNNER_TEMP/repository-private-material-scan.json"
+
+      - name: Certify additive-only verification hardening
+        run: >-
+          python scripts/ga/certify_verification_hardening_source.py
+          --root .
+          --baseline 3ffc6b6d7cd58d64224f780aa819b50f50f72491
+          --private-scan "$RUNNER_TEMP/repository-private-material-scan.json"
+          --output "$RUNNER_TEMP/verification-hardening-source-certification.json"
+
+      - name: Upload exact-head certification receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: psmatrix-2.0.0-verification-hardening-source-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/repository-private-material-scan.json
+            ${{ runner.temp }}/verification-hardening-source-certification.json
+          if-no-files-found: warn
+          retention-days: 30
