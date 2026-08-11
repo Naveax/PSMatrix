@@ -4,7 +4,9 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -92,6 +94,138 @@ def _external_bundle_root(path: Path) -> Path:
     except ValueError:
         return resolved
     raise FinalImmutableReleasePublicationError("protected bundle root must stay outside repository")
+
+
+def _inside(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _reservation_identity(handle: Any) -> tuple[int, int]:
+    info = os.fstat(handle.fileno())
+    return int(info.st_dev), int(info.st_ino)
+
+
+def _assert_reserved_output_identity(
+    handle: Any,
+    path: Path,
+    identity: tuple[int, int],
+) -> None:
+    current = _reservation_identity(handle)
+    if current != identity:
+        raise FinalImmutableReleasePublicationError(
+            "publication receipt reservation file descriptor identity changed"
+        )
+    try:
+        path_info = os.lstat(path)
+    except FileNotFoundError as exc:
+        raise FinalImmutableReleasePublicationError(
+            "publication receipt reservation path disappeared"
+        ) from exc
+    if not stat.S_ISREG(path_info.st_mode):
+        raise FinalImmutableReleasePublicationError(
+            "publication receipt reservation path is no longer a regular file"
+        )
+    if (int(path_info.st_dev), int(path_info.st_ino)) != identity:
+        raise FinalImmutableReleasePublicationError(
+            "publication receipt reservation path no longer names the reserved file"
+        )
+
+
+def _write_reserved_receipt(
+    handle: Any,
+    path: Path,
+    identity: tuple[int, int],
+    value: dict[str, Any],
+) -> None:
+    _assert_reserved_output_identity(handle, path, identity)
+    payload = json.dumps(value, indent=2, sort_keys=True) + "\n"
+    handle.seek(0)
+    handle.truncate(0)
+    handle.write(payload)
+    handle.flush()
+    os.fsync(handle.fileno())
+    handle.seek(0)
+    if handle.read() != payload:
+        raise FinalImmutableReleasePublicationError(
+            "publication receipt reservation read-back verification failed"
+        )
+    _assert_reserved_output_identity(handle, path, identity)
+
+
+def _reserve_publication_output(
+    output: Path,
+    bundle_root: Path,
+) -> tuple[Any, Path, tuple[int, int]]:
+    _reject_symlink_components(output, "publication receipt output")
+    absolute = output.expanduser().absolute()
+    if absolute.exists():
+        raise FinalImmutableReleasePublicationError(
+            "publication receipt output must not already exist"
+        )
+    parent = absolute.parent
+    _reject_symlink_components(parent, "publication receipt output parent")
+    resolved_parent = parent.resolve()
+    if not resolved_parent.is_dir():
+        raise FinalImmutableReleasePublicationError(
+            "publication receipt output parent must already exist"
+        )
+    candidate = resolved_parent / absolute.name
+    repository_root = ROOT.resolve()
+    protected_root = _external_bundle_root(bundle_root)
+    if _inside(candidate, repository_root):
+        raise FinalImmutableReleasePublicationError(
+            "publication receipt output must stay outside repository"
+        )
+    if _inside(candidate, protected_root):
+        raise FinalImmutableReleasePublicationError(
+            "publication receipt output must stay outside protected bundle root"
+        )
+
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    try:
+        fd = os.open(candidate, flags, 0o600)
+    except FileExistsError as exc:
+        raise FinalImmutableReleasePublicationError(
+            "publication receipt output appeared before exclusive reservation"
+        ) from exc
+    except OSError as exc:
+        raise FinalImmutableReleasePublicationError(
+            f"publication receipt output could not be reserved: {exc}"
+        ) from exc
+
+    handle = os.fdopen(fd, "r+", encoding="utf-8", newline="\n")
+    identity = _reservation_identity(handle)
+    pending = {
+        "schema": 1,
+        "kind": "psmatrix.final-immutable-release-publication-output-reservation",
+        "version": VERSION,
+        "status": "PENDING",
+        "repository": REPOSITORY,
+        "tag": TAG,
+        "mutation_executed": False,
+        "release_published": False,
+        "release_closed": False,
+    }
+    try:
+        _write_reserved_receipt(handle, candidate, identity, pending)
+    except Exception:
+        handle.close()
+        try:
+            info = os.lstat(candidate)
+            if stat.S_ISREG(info.st_mode) and (
+                int(info.st_dev), int(info.st_ino)
+            ) == identity:
+                candidate.unlink()
+        except OSError:
+            pass
+        raise
+    return handle, candidate, identity
 
 
 def _load_protected_verifier():
@@ -660,6 +794,7 @@ def main() -> int:
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    reservation_handle = None
     try:
         plan = build_plan(
             _read_json(args.contract, "immutable release publication contract"),
@@ -669,18 +804,30 @@ def main() -> int:
             args.active_lock,
             _read_json(args.release_signing_run_verification, "release-signing run verification"),
         )
+        reservation_handle, reservation_path, reservation_identity = _reserve_publication_output(
+            args.output,
+            args.bundle_root,
+        )
         value = execute_plan(plan, args.gh) if args.execute else plan
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        _write_reserved_receipt(
+            reservation_handle,
+            reservation_path,
+            reservation_identity,
+            value,
+        )
         print(f"final_immutable_release_publication={value['status']} tag={TAG} assets={value['publication_asset_count']}")
         print(f"current_protected_bundle_reverified={str(value['current_protected_bundle_reverified']).lower()}")
         print(f"mutation_executed={str(value['mutation_executed']).lower()}")
         print(f"release_published={str(value['release_published']).lower()}")
+        print("publication_receipt_output_reserved_before_mutation=true")
         print("release_closed=false")
         return 0
     except (OSError, json.JSONDecodeError, subprocess.SubprocessError, FinalImmutableReleasePublicationError, TypeError, ValueError, KeyError) as exc:
         print(f"final immutable release publication failed: {exc}", file=sys.stderr)
         return 1
+    finally:
+        if reservation_handle is not None:
+            reservation_handle.close()
 
 
 if __name__ == "__main__":
