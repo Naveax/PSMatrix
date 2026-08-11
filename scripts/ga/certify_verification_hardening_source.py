@@ -116,6 +116,13 @@ def certify(root: Path, baseline: str, private_scan: dict[str, Any]) -> dict[str
         raise HardeningSourceCertificationError("private-material scan must be PASS with zero findings")
     if private_scan.get("secret_values_emitted") is not False or private_scan.get("secret_hashes_emitted") is not False:
         raise HardeningSourceCertificationError("private-material scan safety boundary drift")
+    scan_head = str(private_scan.get("repository_head") or "").lower()
+    if len(scan_head) != 40 or any(ch not in "0123456789abcdef" for ch in scan_head):
+        raise HardeningSourceCertificationError("private-material scan repository head is invalid")
+    if scan_head != head:
+        raise HardeningSourceCertificationError(
+            "private-material scan repository head differs from certified HEAD"
+        )
 
     files: list[dict[str, Any]] = []
     for relative in sorted(changed):
@@ -143,6 +150,7 @@ def certify(root: Path, baseline: str, private_scan: dict[str, Any]) -> dict[str
         "status": "PASS",
         "baseline_commit": baseline,
         "certified_head": head,
+        "private_material_scan_repository_head": scan_head,
         "delta_file_count": len(files),
         "files": files,
         "boundaries": {
@@ -153,6 +161,7 @@ def certify(root: Path, baseline: str, private_scan: dict[str, Any]) -> dict[str
             "allowed_roots": ["scripts/ga/", "tests/", ".github/workflows/<hardening-only>"],
             "private_material_scan_pass": True,
             "private_material_findings": 0,
+            "private_material_scan_head_bound": True,
             "production_state_mutated": False,
             "production_readiness_claimed": False,
             "final_ga_evaluator_invoked": False,
@@ -289,6 +298,8 @@ def main() -> int:
         print(f"verification_hardening_source_certification=PASS files={value['delta_file_count']}")
         print(f"baseline={value['baseline_commit']}")
         print(f"certified_head={value['certified_head']}")
+        print(f"private_material_scan_repository_head={value['private_material_scan_repository_head']}")
+        print("private_material_scan_head_bound=true")
         print("runtime_source_changes=0")
         print("baseline_files_modified=0")
         print("baseline_files_deleted=0")
