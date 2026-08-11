@@ -25,7 +25,10 @@ def _load(path: Path, name: str):
     if spec is None or spec.loader is None:
         raise FinalAttestationContentOperationError(f"unable to load repository-owned module: {path.name}")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        raise FinalAttestationContentOperationError(f"repository-owned module failed to load: {path.name}: {exc}") from exc
     return module
 
 
@@ -66,6 +69,8 @@ def validate_run_verification(value: dict[str, Any]) -> tuple[int, str]:
     head = value.get("execution_head")
     if type(artifact_id) is not int or artifact_id <= 0 or not isinstance(head, str) or len(head) != 40 or any(ch not in "0123456789abcdef" for ch in head):
         raise FinalAttestationContentOperationError("final attestation artifact ID or execution head is invalid")
+    if type(value.get("run_id")) is not int or value["run_id"] <= 0:
+        raise FinalAttestationContentOperationError("final evaluator run ID is invalid")
     if value.get("final_attestation_content_verified") is not False or value.get("ga_eligible") is not False:
         raise FinalAttestationContentOperationError("run verification must remain pre-content-verification/GA")
     return artifact_id, head
@@ -99,13 +104,19 @@ def run_operation(run_verification: Path, workspace: Path, repository: str, gh: 
     bundle_root = root / "bundle"
     verification_path = root / "final-attestation-verification.json"
     try:
-        materializer.download(gh, repository, artifact_id, archive)
-        archive_sha = materializer._sha256(archive)
-        extracted = materializer.safe_extract(archive, bundle_root)
+        try:
+            materializer.download(gh, repository, artifact_id, archive)
+            archive_sha = materializer._sha256(archive)
+            extracted = materializer.safe_extract(archive, bundle_root)
+        except Exception as exc:
+            raise FinalAttestationContentOperationError(f"exact final-attestation artifact materialization failed: {exc}") from exc
         before_tree, before_files = _tree_state(bundle_root)
         if before_tree != extracted.get("tree_sha256") or len(before_files) != extracted.get("file_count"):
             raise FinalAttestationContentOperationError("safe extraction tree receipt mismatch")
-        verification = verifier.verify(bundle_root, head)
+        try:
+            verification = verifier.verify(bundle_root, head)
+        except Exception as exc:
+            raise FinalAttestationContentOperationError(f"independent final-attestation semantic verification failed: {exc}") from exc
         if verification.get("schema") != 1 or verification.get("kind") != "psmatrix.final-ga-attestation-bundle-verification" or verification.get("version") != "2.0.0" or verification.get("status") != "PASS" or verification.get("final_ga_attestation_verified") is not True or verification.get("ga_eligible") is not True:
             raise FinalAttestationContentOperationError("independent final attestation verification did not prove GA eligibility")
         verification_path.write_text(json.dumps(verification, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -118,7 +129,7 @@ def run_operation(run_verification: Path, workspace: Path, repository: str, gh: 
             "version": "2.0.0",
             "status": "PASS",
             "execution_head": head,
-            "evaluator_run_id": receipt.get("run_id"),
+            "evaluator_run_id": receipt["run_id"],
             "artifact": ARTIFACT,
             "artifact_id": artifact_id,
             "artifact_archive_sha256": archive_sha,
@@ -153,7 +164,7 @@ def main() -> int:
         print("final_ga_attestation_verified=true")
         print("ga_eligible=true")
         return 0
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, FinalAttestationContentOperationError, TypeError, ValueError, KeyError, Exception) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, FinalAttestationContentOperationError, TypeError, ValueError, KeyError) as exc:
         print(f"final GA attestation content operation failed: {exc}", file=sys.stderr)
         return 1
 
