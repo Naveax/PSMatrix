@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import argparse
 import importlib.util
+import json
+import os
+import stat
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +31,92 @@ for _name, _value in vars(_impl).items():
         globals()[_name] = _value
 
 _original_verify = _impl.verify
+
+
+def _write_immutable_verification_receipt(path: Path, value: dict[str, Any]) -> Path:
+    _reject_symlink_components(path, "immutable release verification output")
+    absolute = path.expanduser().absolute()
+    if absolute.exists():
+        raise FinalImmutableReleaseError(
+            "immutable release verification output must not already exist"
+        )
+
+    parent = absolute.parent
+    _reject_symlink_components(parent, "immutable release verification output parent")
+    resolved_parent = parent.resolve()
+    if not resolved_parent.is_dir():
+        raise FinalImmutableReleaseError(
+            "immutable release verification output parent must already exist"
+        )
+    candidate = resolved_parent / absolute.name
+
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    try:
+        fd = os.open(candidate, flags, 0o600)
+    except FileExistsError as exc:
+        raise FinalImmutableReleaseError(
+            "immutable release verification output appeared before exclusive creation"
+        ) from exc
+    except OSError as exc:
+        raise FinalImmutableReleaseError(
+            f"immutable release verification output could not be created: {exc}"
+        ) from exc
+
+    info = os.fstat(fd)
+    identity = (int(info.st_dev), int(info.st_ino))
+    handle = None
+    success = False
+    try:
+        handle = os.fdopen(fd, "r+", encoding="utf-8", newline="\n")
+        path_info = os.lstat(candidate)
+        if (
+            not stat.S_ISREG(path_info.st_mode)
+            or (int(path_info.st_dev), int(path_info.st_ino)) != identity
+        ):
+            raise FinalImmutableReleaseError(
+                "immutable release verification output path does not name the exclusively created file"
+            )
+
+        payload = json.dumps(value, indent=2, sort_keys=True) + "\n"
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+        handle.seek(0)
+        if handle.read() != payload:
+            raise FinalImmutableReleaseError(
+                "immutable release verification output read-back verification failed"
+            )
+
+        path_info = os.lstat(candidate)
+        if (
+            not stat.S_ISREG(path_info.st_mode)
+            or (int(path_info.st_dev), int(path_info.st_ino)) != identity
+        ):
+            raise FinalImmutableReleaseError(
+                "immutable release verification output path identity changed during write"
+            )
+        success = True
+        return candidate
+    finally:
+        if handle is not None:
+            handle.close()
+        else:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if not success:
+            try:
+                path_info = os.lstat(candidate)
+                if (
+                    stat.S_ISREG(path_info.st_mode)
+                    and (int(path_info.st_dev), int(path_info.st_ino)) == identity
+                ):
+                    candidate.unlink()
+            except OSError:
+                pass
 
 
 def verify(
@@ -68,7 +160,95 @@ _impl.verify = verify
 
 
 def main() -> int:
-    return _impl.main()
+    parser = argparse.ArgumentParser(
+        description="Verify the final PSMatrix v2.0.0 immutable GitHub release, exact eight assets, GitHub release attestation, and frozen tag target"
+    )
+    parser.add_argument("--release-closure", type=Path, required=True)
+    parser.add_argument(
+        "--contract",
+        type=Path,
+        default=Path(
+            "ga-packs/03-authoritative-windows/final-production-readiness-contract.json"
+        ),
+    )
+    parser.add_argument(
+        "--publication-contract",
+        type=Path,
+        default=PUBLICATION_CONTRACT,
+    )
+    parser.add_argument("--publication-operation", type=Path, required=True)
+    parser.add_argument("--repository", default=REPOSITORY)
+    parser.add_argument("--tag", default=TAG)
+    parser.add_argument("--gh", default="gh")
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    try:
+        if args.repository != REPOSITORY:
+            raise FinalImmutableReleaseError(
+                f"final release repository is frozen to {REPOSITORY}"
+            )
+        if args.tag != TAG:
+            raise FinalImmutableReleaseError(f"final release tag is frozen to {TAG}")
+        closure = _read(args.release_closure, "release-closure readiness")
+        contract = _read(args.contract, "final Production readiness contract")
+        publication_contract = _read(
+            args.publication_contract,
+            "immutable release publication contract",
+        )
+        publication_operation = _read(
+            args.publication_operation,
+            "immutable release publication operation",
+        )
+        settings = _gh_json(args.gh, f"repos/{REPOSITORY}/immutable-releases")
+        release = _gh_json(args.gh, f"repos/{REPOSITORY}/releases/tags/{TAG}")
+        ref = _gh_json(args.gh, f"repos/{REPOSITORY}/git/ref/tags/{TAG}")
+        obj = (
+            ref.get("object")
+            if isinstance(ref, dict) and isinstance(ref.get("object"), dict)
+            else {}
+        )
+        annotated = None
+        if obj.get("type") == "tag":
+            annotated = _gh_json(
+                args.gh,
+                f"repos/{REPOSITORY}/git/tags/{obj.get('sha')}",
+            )
+        _verify_github_release_attestation(args.gh, REPOSITORY)
+        value = verify(
+            closure,
+            contract,
+            publication_contract,
+            publication_operation,
+            settings,
+            release,
+            ref,
+            True,
+            annotated,
+        )
+        _write_immutable_verification_receipt(args.output, value)
+        print(
+            f"final_immutable_release_verification=PASS tag={TAG} "
+            f"release_id={value['release_id']} assets=8/8"
+        )
+        print(f"tagged_commit={value['tagged_commit']}")
+        print("release_asset_set_verified=true")
+        print("github_release_attestation_verified=true")
+        print("repository_immutable_releases_enabled=true")
+        print("release_object_immutable=true")
+        print("final_immutable_ga_anchor_created=true")
+        print("release_closed=false")
+        return 0
+    except (
+        OSError,
+        json.JSONDecodeError,
+        subprocess.SubprocessError,
+        FinalImmutableReleaseError,
+        TypeError,
+        ValueError,
+        KeyError,
+    ) as exc:
+        print(f"final immutable release verification failed: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
