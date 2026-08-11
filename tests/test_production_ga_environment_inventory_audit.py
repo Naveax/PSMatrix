@@ -101,11 +101,24 @@ class ProductionGAEnvironmentInventoryAuditTests(unittest.TestCase):
             path.write_text(json.dumps(self._inventory(complete=True)), encoding="utf-8")
             loaded = json.loads(path.read_text(encoding="utf-8"))
             value = self.module.audit_inventory(self.contract, loaded)
-            serialized = json.dumps(value, sort_keys=True)
             self.assertEqual(value["status"], "PASS")
-            self.assertNotIn("secret_value", serialized)
-            self.assertNotIn("secret_hash", serialized)
-            self.assertNotIn("secret_length", serialized)
+            self.assertFalse(value["values_observed"])
+            self.assertFalse(value["secret_hashes_observed"])
+            self.assertFalse(value["secret_lengths_observed"])
+            for row in value["environments"]:
+                self.assertEqual(
+                    set(row),
+                    {
+                        "environment",
+                        "status",
+                        "required",
+                        "present",
+                        "missing_secrets",
+                        "missing_vars",
+                        "extra_secrets",
+                        "extra_vars",
+                    },
+                )
 
 
 if __name__ == "__main__":
