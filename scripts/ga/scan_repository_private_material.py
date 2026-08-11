@@ -43,6 +43,30 @@ def classify(path: Path, data: bytes) -> list[str]:
     return findings
 
 
+def _scan_value(findings: list[dict[str, str]], scanned: int) -> dict[str, Any]:
+    findings.sort(key=lambda item: (item["path"], item["type"]))
+    return {
+        "schema": 1,
+        "kind": "psmatrix.repository-private-material-scan",
+        "version": "2.0.0",
+        "status": "PASS" if not findings else "FAIL",
+        "tracked_file_count": scanned,
+        "finding_count": len(findings),
+        "findings": findings,
+        "scanned_classes": [
+            "private-key-pem-block",
+            "tracked-private-key-container",
+            "tracked-private-key-filename",
+            "github-classic-token",
+            "github-fine-grained-token",
+        ],
+        "secret_values_emitted": False,
+        "secret_hashes_emitted": False,
+        "secret_lengths_emitted": False,
+        "ga_eligible": False,
+    }
+
+
 def scan(root: Path, tracked_paths: Iterable[str]) -> dict[str, Any]:
     root = root.resolve()
     if not root.is_dir():
@@ -66,27 +90,7 @@ def scan(root: Path, tracked_paths: Iterable[str]) -> dict[str, Any]:
         scanned += 1
         for finding_type in classify(Path(relative), data):
             findings.append({"path": relative.replace("\\", "/"), "type": finding_type})
-    findings.sort(key=lambda item: (item["path"], item["type"]))
-    return {
-        "schema": 1,
-        "kind": "psmatrix.repository-private-material-scan",
-        "version": "2.0.0",
-        "status": "PASS" if not findings else "FAIL",
-        "tracked_file_count": scanned,
-        "finding_count": len(findings),
-        "findings": findings,
-        "scanned_classes": [
-            "private-key-pem-block",
-            "tracked-private-key-container",
-            "tracked-private-key-filename",
-            "github-classic-token",
-            "github-fine-grained-token",
-        ],
-        "secret_values_emitted": False,
-        "secret_hashes_emitted": False,
-        "secret_lengths_emitted": False,
-        "ga_eligible": False,
-    }
+    return _scan_value(findings, scanned)
 
 
 def tracked_files(root: Path, git: str) -> list[str]:
@@ -150,6 +154,88 @@ def assert_clean_working_tree(root: Path, git: str) -> None:
         )
 
 
+def _run_git_bytes(root: Path, git: str, *args: str) -> bytes:
+    completed = subprocess.run(
+        [git, "-C", str(root), *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+        check=False,
+    )
+    if completed.returncode != 0:
+        stderr = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise RepositoryPrivateMaterialScanError(f"git {' '.join(args)} failed: {stderr}")
+    return completed.stdout
+
+
+def _git_head_blob_entries(root: Path, git: str, head: str) -> list[tuple[str, str, str, str]]:
+    if SHA40.fullmatch(head) is None:
+        raise RepositoryPrivateMaterialScanError("Git-object scan requires an exact 40-hex HEAD")
+    payload = _run_git_bytes(root, git, "ls-tree", "-rz", "--full-tree", head)
+    entries: list[tuple[str, str, str, str]] = []
+    for raw_entry in payload.split(b"\x00"):
+        if not raw_entry:
+            continue
+        try:
+            metadata, raw_path = raw_entry.split(b"\t", 1)
+            mode_raw, type_raw, oid_raw = metadata.split(b" ", 2)
+            mode = mode_raw.decode("ascii")
+            object_type = type_raw.decode("ascii")
+            oid = oid_raw.decode("ascii").lower()
+            relative = raw_path.decode("utf-8")
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise RepositoryPrivateMaterialScanError(
+                "git ls-tree returned malformed or non-UTF-8 tracked path data"
+            ) from exc
+        if not relative or "\x00" in relative:
+            raise RepositoryPrivateMaterialScanError("git ls-tree returned an invalid tracked path")
+        if SHA40.fullmatch(oid) is None:
+            raise RepositoryPrivateMaterialScanError("git ls-tree returned an invalid object id")
+        if object_type != "blob":
+            raise RepositoryPrivateMaterialScanError(
+                f"private-material Git-object scan refuses non-blob tracked entry: {relative}"
+            )
+        entries.append((mode, object_type, oid, relative))
+    if not entries:
+        raise RepositoryPrivateMaterialScanError("repository HEAD contains zero tracked blob entries")
+    return entries
+
+
+def _blob_size(root: Path, git: str, oid: str) -> int:
+    raw = _run_git_bytes(root, git, "cat-file", "-s", oid)
+    try:
+        value = int(raw.decode("ascii").strip())
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise RepositoryPrivateMaterialScanError("git cat-file returned an invalid blob size") from exc
+    if value < 0 or value > MAX_TRACKED_FILE_BYTES:
+        raise RepositoryPrivateMaterialScanError("tracked Git blob exceeds bounded scan size")
+    return value
+
+
+def _blob_bytes(root: Path, git: str, oid: str, expected_size: int) -> bytes:
+    data = _run_git_bytes(root, git, "cat-file", "blob", oid)
+    if len(data) != expected_size:
+        raise RepositoryPrivateMaterialScanError("Git blob size changed during private-material scan")
+    return data
+
+
+def scan_git_head(root: Path, git: str, head: str) -> dict[str, Any]:
+    root = root.resolve()
+    if not root.is_dir():
+        raise RepositoryPrivateMaterialScanError("repository root is missing")
+    findings: list[dict[str, str]] = []
+    scanned = 0
+    for _mode, _object_type, oid, relative in _git_head_blob_entries(root, git, head):
+        size = _blob_size(root, git, oid)
+        data = _blob_bytes(root, git, oid, size)
+        scanned += 1
+        for finding_type in classify(Path(relative), data):
+            findings.append({"path": relative.replace("\\", "/"), "type": finding_type})
+    value = _scan_value(findings, scanned)
+    value["tracked_blob_authority_verified"] = True
+    return value
+
+
 def _reject_symlink_components(path: Path, label: str) -> None:
     expanded = path.expanduser()
     parts = expanded.parts
@@ -182,7 +268,6 @@ def _write_private_material_scan_receipt(path: Path, value: dict[str, Any]) -> P
             "private-material scan output parent must already exist"
         )
     candidate = resolved_parent / absolute.name
-
     flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_BINARY"):
         flags |= os.O_BINARY
@@ -196,7 +281,6 @@ def _write_private_material_scan_receipt(path: Path, value: dict[str, Any]) -> P
         raise RepositoryPrivateMaterialScanError(
             f"private-material scan output could not be created: {exc}"
         ) from exc
-
     info = os.fstat(fd)
     identity = (int(info.st_dev), int(info.st_ino))
     handle = None
@@ -260,7 +344,7 @@ def main() -> int:
         root = args.root.expanduser().resolve()
         head_before = repository_head(root, args.git)
         assert_clean_working_tree(root, args.git)
-        value = scan(root, tracked_files(root, args.git))
+        value = scan_git_head(root, args.git, head_before)
         assert_clean_working_tree(root, args.git)
         head_after = repository_head(root, args.git)
         if head_after != head_before:
@@ -274,6 +358,7 @@ def main() -> int:
             _write_private_material_scan_receipt(args.output, value)
         print(f"repository_private_material_scan={value['status']} files={value['tracked_file_count']} findings={value['finding_count']}")
         print(f"repository_head={value['repository_head']}")
+        print("tracked_blob_authority_verified=true")
         print("working_tree_clean_verified=true")
         print("repository_head_stable_during_scan=true")
         print("secret_values_emitted=false")
