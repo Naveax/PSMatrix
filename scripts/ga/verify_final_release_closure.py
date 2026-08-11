@@ -32,8 +32,20 @@ def verify(
 
     if immutable_release.get("schema") != 1 or immutable_release.get("kind") != "psmatrix.final-immutable-release-verification" or immutable_release.get("version") != "2.0.0" or immutable_release.get("status") != "PASS":
         raise FinalReleaseClosureError("immutable release verification identity/status mismatch")
-    if immutable_release.get("release_execution_control_head") != execution_head or immutable_release.get("release_tag_created") is not True or immutable_release.get("release_published") is not True or immutable_release.get("final_immutable_ga_anchor_created") is not True or immutable_release.get("final_ga_attestation_verified") is not True or immutable_release.get("ga_eligible") is not True or immutable_release.get("release_closed") is not False:
-        raise FinalReleaseClosureError("immutable release verification does not close exact release publication state")
+    if (
+        immutable_release.get("release_execution_control_head") != execution_head
+        or immutable_release.get("publication_operation_verified") is not True
+        or immutable_release.get("publication_asset_count") != 8
+        or immutable_release.get("release_asset_set_verified") is not True
+        or immutable_release.get("github_release_attestation_verified") is not True
+        or immutable_release.get("release_tag_created") is not True
+        or immutable_release.get("release_published") is not True
+        or immutable_release.get("final_immutable_ga_anchor_created") is not True
+        or immutable_release.get("final_ga_attestation_verified") is not True
+        or immutable_release.get("ga_eligible") is not True
+        or immutable_release.get("release_closed") is not False
+    ):
+        raise FinalReleaseClosureError("immutable release verification does not close exact asset-bound release publication state")
 
     if documentation.get("schema") != 1 or documentation.get("kind") != "psmatrix.final-documentation-state-verification" or documentation.get("version") != "2.0.0" or documentation.get("status") != "PASS":
         raise FinalReleaseClosureError("documentation verification identity/status mismatch")
@@ -81,6 +93,10 @@ def verify(
         "preconditions_passed": 5,
         "post_ga_operation_count": 6,
         "post_ga_operations_passed": 6,
+        "publication_operation_verified": True,
+        "publication_asset_count": 8,
+        "release_asset_set_verified": True,
+        "github_release_attestation_verified": True,
         **post_ga,
         "final_ga_attestation_verified": True,
         "ga_eligible": True,
@@ -120,9 +136,11 @@ def main() -> int:
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        print(f"final_release_closure=RELEASE_CLOSED repository={REPOSITORY} tag={value['release_tag']} repo_head={value['final_repository_head']}")
+        print(f"final_release_closure=RELEASE_CLOSED tag={value['release_tag']} repo_head={value['final_repository_head']}")
         print("preconditions=5/5")
         print("post_ga_operations=6/6")
+        print("release_asset_set_verified=true")
+        print("github_release_attestation_verified=true")
         print("final_ga_attestation_verified=true")
         print("ga_eligible=true")
         print("release_closed=true")

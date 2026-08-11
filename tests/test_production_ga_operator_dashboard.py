@@ -71,7 +71,7 @@ class ProductionGAOperatorDashboardTests(unittest.TestCase):
         return {"schema": 1, "kind": "psmatrix.release-closure-readiness", "version": "2.0.0", "status": "READY_FOR_RELEASE_CLOSURE", "execution_head": HEAD, "precondition_count": 5, "preconditions_passed": 5, "final_ga_attestation_verified": True, "ga_eligible": True, "release_closed": False}
 
     def immutable(self) -> dict:
-        return {"schema": 1, "kind": "psmatrix.final-immutable-release-verification", "version": "2.0.0", "status": "PASS", "tag": "v2.0.0", "release_id": 77, "release_execution_control_head": HEAD, "release_tag_created": True, "release_published": True, "final_immutable_ga_anchor_created": True, "final_ga_attestation_verified": True, "ga_eligible": True, "release_closed": False}
+        return {"schema": 1, "kind": "psmatrix.final-immutable-release-verification", "version": "2.0.0", "status": "PASS", "repository": "Naveax/PSMatrix", "tag": "v2.0.0", "release_id": 77, "release_execution_control_head": HEAD, "publication_operation_verified": True, "publication_asset_count": 8, "release_asset_set_verified": True, "github_release_attestation_verified": True, "release_tag_created": True, "release_published": True, "final_immutable_ga_anchor_created": True, "final_ga_attestation_verified": True, "ga_eligible": True, "release_closed": False}
 
     def documentation(self) -> dict:
         return {"schema": 1, "kind": "psmatrix.final-documentation-state-verification", "version": "2.0.0", "status": "PASS", "execution_control_head": HEAD, "documentation_repository_head": REPO_HEAD, "release_tag": "v2.0.0", "release_id": 77, "documentation_final_state_closed": True, "release_immutable": True, "final_ga_attestation_verified": True, "ga_eligible": True, "release_closed": False}
@@ -83,7 +83,7 @@ class ProductionGAOperatorDashboardTests(unittest.TestCase):
         return {"schema": 1, "kind": "psmatrix.final-repository-private-material-scan-certification", "version": "2.0.0", "status": "PASS", "repository_head": REPO_HEAD, "release_execution_head": HEAD, "release_closure_ready": True, "finding_count": 0, "working_tree_clean": True, "final_repo_secret_scan_completed": True, "release_closed": False}
 
     def final_release(self) -> dict:
-        return {"schema": 1, "kind": "psmatrix.final-release-closure-verification", "version": "2.0.0", "status": "RELEASE_CLOSED", "repository": "Naveax/PSMatrix", "release_execution_control_head": HEAD, "precondition_count": 5, "preconditions_passed": 5, "post_ga_operation_count": 6, "post_ga_operations_passed": 6, "final_ga_attestation_verified": True, "ga_eligible": True, "release_closed": True}
+        return {"schema": 1, "kind": "psmatrix.final-release-closure-verification", "version": "2.0.0", "status": "RELEASE_CLOSED", "repository": "Naveax/PSMatrix", "release_execution_control_head": HEAD, "precondition_count": 5, "preconditions_passed": 5, "post_ga_operation_count": 6, "post_ga_operations_passed": 6, "publication_operation_verified": True, "publication_asset_count": 8, "release_asset_set_verified": True, "github_release_attestation_verified": True, "final_ga_attestation_verified": True, "ga_eligible": True, "release_closed": True}
 
     def base_kwargs(self) -> dict:
         return {"readiness_verification": self.readiness(), "lock_verification": self.lock(), "evidence_api_verification": self.api()}
@@ -163,7 +163,29 @@ class ProductionGAOperatorDashboardTests(unittest.TestCase):
     def test_immutable_release_advances_to_documentation(self) -> None:
         value = self.module.build(self.inventory(), self.summary(), immutable_release_verification=self.immutable(), **self.post_ga_base())
         self.assertEqual(value["stage"], "VERIFY_FINAL_DOCUMENTATION_STATE")
+        self.assertTrue(value["immutable_release_publication_operation_verified"])
+        self.assertTrue(value["immutable_release_asset_set_verified"])
+        self.assertTrue(value["immutable_release_attestation_verified"])
         self.assertTrue(value["immutable_release_verified"])
+
+    def test_old_or_asset_unbound_immutable_receipt_stays_at_publication(self) -> None:
+        for field in (
+            "publication_operation_verified",
+            "release_asset_set_verified",
+            "github_release_attestation_verified",
+        ):
+            with self.subTest(field=field):
+                receipt = self.immutable()
+                receipt[field] = False
+                value = self.module.build(self.inventory(), self.summary(), immutable_release_verification=receipt, **self.post_ga_base())
+                self.assertEqual(value["stage"], "PUBLISH_AND_VERIFY_IMMUTABLE_RELEASE")
+                self.assertFalse(value["immutable_release_verified"])
+                self.assertFalse(value["release_closed"])
+        receipt = self.immutable()
+        receipt["publication_asset_count"] = 7
+        value = self.module.build(self.inventory(), self.summary(), immutable_release_verification=receipt, **self.post_ga_base())
+        self.assertEqual(value["stage"], "PUBLISH_AND_VERIFY_IMMUTABLE_RELEASE")
+        self.assertFalse(value["immutable_release_verified"])
 
     def test_documentation_advances_to_cleanup(self) -> None:
         value = self.module.build(self.inventory(), self.summary(), immutable_release_verification=self.immutable(), documentation_verification=self.documentation(), **self.post_ga_base())
@@ -187,6 +209,20 @@ class ProductionGAOperatorDashboardTests(unittest.TestCase):
         self.assertTrue(value["final_release_closure_verified"])
         self.assertTrue(value["ga_eligible"])
         self.assertTrue(value["release_closed"])
+
+    def test_asset_unbound_final_release_receipt_cannot_flip_dashboard_closed(self) -> None:
+        for field in (
+            "publication_operation_verified",
+            "release_asset_set_verified",
+            "github_release_attestation_verified",
+        ):
+            with self.subTest(field=field):
+                final = self.final_release()
+                final[field] = False
+                value = self.module.build(self.inventory(), self.summary(), immutable_release_verification=self.immutable(), documentation_verification=self.documentation(), cleanup_verification=self.cleanup(), final_repository_scan=self.scan(), final_release_verification=final, **self.post_ga_base())
+                self.assertEqual(value["stage"], "VERIFY_FINAL_RELEASE_CLOSURE")
+                self.assertFalse(value["final_release_closure_verified"])
+                self.assertFalse(value["release_closed"])
 
     def test_final_receipt_alone_cannot_flip_release_closed(self) -> None:
         value = self.module.build(self.inventory(), self.summary(), final_release_verification=self.final_release(), **self.post_ga_base())

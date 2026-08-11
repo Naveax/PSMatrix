@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+REPOSITORY = "Naveax/PSMatrix"
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -18,8 +19,20 @@ class FinalDocumentationStateError(RuntimeError):
 def verify(record: dict[str, Any], immutable_release: dict[str, Any], repository_head: str) -> dict[str, Any]:
     if immutable_release.get("schema") != 1 or immutable_release.get("kind") != "psmatrix.final-immutable-release-verification" or immutable_release.get("version") != "2.0.0" or immutable_release.get("status") != "PASS":
         raise FinalDocumentationStateError("immutable release verification identity/status mismatch")
-    if immutable_release.get("release_tag_created") is not True or immutable_release.get("release_published") is not True or immutable_release.get("final_immutable_ga_anchor_created") is not True or immutable_release.get("final_ga_attestation_verified") is not True or immutable_release.get("ga_eligible") is not True or immutable_release.get("release_closed") is not False:
-        raise FinalDocumentationStateError("immutable release verification is not exact pre-documentation post-GA state")
+    if (
+        immutable_release.get("repository") != REPOSITORY
+        or immutable_release.get("publication_operation_verified") is not True
+        or immutable_release.get("publication_asset_count") != 8
+        or immutable_release.get("release_asset_set_verified") is not True
+        or immutable_release.get("github_release_attestation_verified") is not True
+        or immutable_release.get("release_tag_created") is not True
+        or immutable_release.get("release_published") is not True
+        or immutable_release.get("final_immutable_ga_anchor_created") is not True
+        or immutable_release.get("final_ga_attestation_verified") is not True
+        or immutable_release.get("ga_eligible") is not True
+        or immutable_release.get("release_closed") is not False
+    ):
+        raise FinalDocumentationStateError("immutable release verification is not exact asset-bound pre-documentation post-GA state")
 
     repository_head = repository_head.lower()
     if SHA40.fullmatch(repository_head) is None:
@@ -64,6 +77,7 @@ def verify(record: dict[str, Any], immutable_release: dict[str, Any], repository
         "kind": "psmatrix.final-documentation-state-verification",
         "version": "2.0.0",
         "status": "PASS",
+        "repository": REPOSITORY,
         "documentation_repository_head": repository_head,
         "release_tag": immutable_release["tag"],
         "release_id": immutable_release["release_id"],
@@ -71,6 +85,10 @@ def verify(record: dict[str, Any], immutable_release: dict[str, Any], repository
         "execution_control_head": immutable_release["release_execution_control_head"],
         "document_count": record["document_count"],
         "documentation_source_sha256": source_sha,
+        "immutable_publication_operation_verified": True,
+        "immutable_publication_asset_count": 8,
+        "immutable_release_asset_set_verified": True,
+        "immutable_release_attestation_verified": True,
         "release_immutable": True,
         "final_ga_attestation_verified": True,
         "ga_eligible": True,
@@ -95,7 +113,7 @@ def _read(path: Path, label: str) -> dict[str, Any]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Verify a final 2.0.0 GA documentation closure record against the independently verified immutable release")
+    parser = argparse.ArgumentParser(description="Verify a final 2.0.0 GA documentation closure record against the independently verified asset-bound immutable release")
     parser.add_argument("--documentation-record", type=Path, required=True)
     parser.add_argument("--immutable-release-verification", type=Path, required=True)
     parser.add_argument("--repository-head", required=True)
@@ -110,6 +128,8 @@ def main() -> int:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(f"final_documentation_state_verification=PASS documents={value['document_count']} head={value['documentation_repository_head']}")
+        print("immutable_release_asset_set_verified=true")
+        print("immutable_release_attestation_verified=true")
         print("documentation_final_state_closed=true")
         print("release_closed=false")
         return 0

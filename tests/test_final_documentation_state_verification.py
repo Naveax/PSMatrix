@@ -25,10 +25,15 @@ class FinalDocumentationStateVerificationTests(unittest.TestCase):
             "kind": "psmatrix.final-immutable-release-verification",
             "version": "2.0.0",
             "status": "PASS",
+            "repository": "Naveax/PSMatrix",
             "tag": "v2.0.0",
             "release_id": 77,
             "release_execution_control_head": "a" * 40,
             "frozen_final_release_commit": "b" * 40,
+            "publication_operation_verified": True,
+            "publication_asset_count": 8,
+            "release_asset_set_verified": True,
+            "github_release_attestation_verified": True,
             "release_tag_created": True,
             "release_published": True,
             "final_immutable_ga_anchor_created": True,
@@ -66,10 +71,35 @@ class FinalDocumentationStateVerificationTests(unittest.TestCase):
     def test_exact_final_documentation_record_passes(self) -> None:
         value = self.module.verify(self.record, self.release, self.repository_head)
         self.assertEqual(value["status"], "PASS")
+        self.assertEqual(value["repository"], "Naveax/PSMatrix")
         self.assertEqual(value["document_count"], 2)
+        self.assertTrue(value["immutable_publication_operation_verified"])
+        self.assertEqual(value["immutable_publication_asset_count"], 8)
+        self.assertTrue(value["immutable_release_asset_set_verified"])
+        self.assertTrue(value["immutable_release_attestation_verified"])
         self.assertTrue(value["documentation_final_state_closed"])
         self.assertTrue(value["ga_eligible"])
         self.assertFalse(value["release_closed"])
+
+    def test_asset_unbound_or_repository_unbound_immutable_release_fails_closed(self) -> None:
+        for field in (
+            "publication_operation_verified",
+            "release_asset_set_verified",
+            "github_release_attestation_verified",
+        ):
+            with self.subTest(field=field):
+                original = self.release[field]
+                self.release[field] = False
+                with self.assertRaises(self.module.FinalDocumentationStateError):
+                    self.module.verify(self.record, self.release, self.repository_head)
+                self.release[field] = original
+        self.release["publication_asset_count"] = 7
+        with self.assertRaises(self.module.FinalDocumentationStateError):
+            self.module.verify(self.record, self.release, self.repository_head)
+        self.release["publication_asset_count"] = 8
+        self.release["repository"] = "someone-else/PSMatrix"
+        with self.assertRaises(self.module.FinalDocumentationStateError):
+            self.module.verify(self.record, self.release, self.repository_head)
 
     def test_prerelease_or_placeholder_state_fails_closed(self) -> None:
         self.record["rc_or_prerelease_language_present"] = True
@@ -100,6 +130,10 @@ class FinalDocumentationStateVerificationTests(unittest.TestCase):
 
     def test_source_requires_machine_readable_final_state_without_closing_release(self) -> None:
         text = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('REPOSITORY = "Naveax/PSMatrix"', text)
+        self.assertIn("publication_operation_verified", text)
+        self.assertIn("release_asset_set_verified", text)
+        self.assertIn("github_release_attestation_verified", text)
         self.assertIn("FINAL_GA_DOCUMENTATION_COMPLETE", text)
         self.assertIn("known_open_ga_blockers", text)
         self.assertIn("rc_or_prerelease_language_present", text)
