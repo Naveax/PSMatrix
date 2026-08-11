@@ -363,11 +363,23 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Fail closed on tracked private-key material and high-confidence GitHub tokens without emitting secret values")
     parser.add_argument("--root", type=Path, default=Path("."))
     parser.add_argument("--git", default="git")
+    parser.add_argument("--expected-head")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     try:
         root = args.root.expanduser().resolve()
         head_before = repository_head(root, args.git)
+        expected_head = None
+        if args.expected_head is not None:
+            expected_head = args.expected_head.strip().lower()
+            if SHA40.fullmatch(expected_head) is None:
+                raise RepositoryPrivateMaterialScanError(
+                    "expected repository head must be an exact lowercase 40-hex commit"
+                )
+            if expected_head != head_before:
+                raise RepositoryPrivateMaterialScanError(
+                    "checked-out repository HEAD differs from expected workflow/event HEAD"
+                )
         tree_before = repository_tree(root, args.git, head_before)
         assert_clean_working_tree(root, args.git)
         value = scan_git_head(root, args.git, head_before)
@@ -387,6 +399,9 @@ def main() -> int:
         value["working_tree_clean_verified"] = True
         value["repository_head_stable_during_scan"] = True
         value["repository_tree_stable_during_scan"] = True
+        if expected_head is not None:
+            value["expected_repository_head"] = expected_head
+            value["expected_repository_head_verified"] = True
         if args.output is not None:
             _write_private_material_scan_receipt(args.output, value)
         print(f"repository_private_material_scan={value['status']} files={value['tracked_file_count']} findings={value['finding_count']}")
@@ -396,6 +411,8 @@ def main() -> int:
         print("working_tree_clean_verified=true")
         print("repository_head_stable_during_scan=true")
         print("repository_tree_stable_during_scan=true")
+        if expected_head is not None:
+            print("expected_repository_head_verified=true")
         print("secret_values_emitted=false")
         print("secret_hashes_emitted=false")
         print("secret_lengths_emitted=false")

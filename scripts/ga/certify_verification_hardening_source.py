@@ -148,6 +148,11 @@ def _write_source_certification_receipt(path: Path, value: dict[str, Any]) -> Pa
 
 def _reverify_private_scan(root: Path, head: str, supplied: dict[str, Any]) -> dict[str, Any]:
     scanner = _load_private_scanner()
+    expected_head = str(supplied.get("expected_repository_head") or "").lower()
+    if supplied.get("expected_repository_head_verified") is not True or expected_head != head:
+        raise HardeningSourceCertificationError(
+            "private-material scan expected-head proof does not match certified HEAD"
+        )
     try:
         head_before = scanner.repository_head(root, "git")
         if head_before != head:
@@ -184,18 +189,30 @@ def _reverify_private_scan(root: Path, head: str, supplied: dict[str, Any]) -> d
     fresh["working_tree_clean_verified"] = True
     fresh["repository_head_stable_during_scan"] = True
     fresh["repository_tree_stable_during_scan"] = True
+    fresh["expected_repository_head"] = head
+    fresh["expected_repository_head_verified"] = True
     if fresh.get("tracked_blob_authority_verified") is not True:
         raise HardeningSourceCertificationError(
             "independent private-material scan did not prove exact Git-blob authority"
         )
     if fresh != supplied:
         raise HardeningSourceCertificationError(
-            "supplied private-material scan receipt differs from independent exact-head/tree clean-tree Git-object re-scan"
+            "supplied private-material scan receipt differs from independent event-head/tree clean-tree Git-object re-scan"
         )
     return fresh
 
 
 def certify(root: Path, baseline: str, private_scan: dict[str, Any]) -> dict[str, Any]:
+    scan_head = str(private_scan.get("repository_head") or "").lower()
+    expected_head = str(private_scan.get("expected_repository_head") or "").lower()
+    if private_scan.get("expected_repository_head_verified") is not True:
+        raise HardeningSourceCertificationError(
+            "private-material scan must prove expected workflow/event HEAD"
+        )
+    if expected_head != scan_head:
+        raise HardeningSourceCertificationError(
+            "private-material scan expected HEAD differs from scanned repository HEAD"
+        )
     if private_scan.get("tracked_blob_authority_verified") is not True:
         raise HardeningSourceCertificationError(
             "private-material scan must prove exact Git-blob authority"
@@ -217,7 +234,6 @@ def certify(root: Path, baseline: str, private_scan: dict[str, Any]) -> dict[str
         raise HardeningSourceCertificationError(
             "private-material scan repository tree is invalid"
         )
-    scan_head = str(private_scan.get("repository_head") or "").lower()
     scanner = _load_private_scanner()
     try:
         expected_tree = scanner.repository_tree(root.resolve(), "git", scan_head)
@@ -233,11 +249,14 @@ def certify(root: Path, baseline: str, private_scan: dict[str, Any]) -> dict[str
     _impl.SCANNER_PATH = SCANNER_PATH
     _impl._reverify_private_scan = _reverify_private_scan
     value = _impl.certify(root, baseline, private_scan)
+    value["private_material_scan_expected_repository_head"] = expected_head
+    value["private_material_scan_expected_repository_head_verified"] = True
     value["private_material_scan_repository_tree"] = scan_tree
     value["private_material_scan_tracked_blob_authority_verified"] = True
     value["private_material_scan_working_tree_clean_verified"] = True
     value["private_material_scan_repository_head_stable_during_scan"] = True
     value["private_material_scan_repository_tree_stable_during_scan"] = True
+    value["boundaries"]["private_material_scan_expected_repository_head_verified"] = True
     value["boundaries"]["private_material_scan_repository_tree_bound"] = True
     value["boundaries"]["private_material_scan_tracked_blob_authority_verified"] = True
     value["boundaries"]["private_material_scan_working_tree_clean_verified"] = True
@@ -263,7 +282,9 @@ def main() -> int:
         print(f"baseline={value['baseline_commit']}")
         print(f"certified_head={value['certified_head']}")
         print(f"private_material_scan_repository_head={value['private_material_scan_repository_head']}")
+        print(f"private_material_scan_expected_repository_head={value['private_material_scan_expected_repository_head']}")
         print(f"private_material_scan_repository_tree={value['private_material_scan_repository_tree']}")
+        print("private_material_scan_expected_repository_head_verified=true")
         print("private_material_scan_head_bound=true")
         print("private_material_scan_repository_tree_bound=true")
         print("private_material_scan_independently_reverified=true")
