@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 _IMPL_PATH = Path(__file__).with_name("_publish_final_immutable_release_impl.py")
 
@@ -26,6 +27,75 @@ _impl = _load_impl()
 for _name, _value in vars(_impl).items():
     if not _name.startswith("__"):
         globals()[_name] = _value
+
+_impl_build_plan = _impl.build_plan
+_impl_execute_plan = _impl.execute_plan
+_impl_reverify_current_bundle = _impl._reverify_current_bundle
+_impl_rollback_pre_publish = _impl._rollback_pre_publish
+
+
+def _sync_impl_symbols(*names: str) -> None:
+    for name in names:
+        setattr(_impl, name, globals()[name])
+
+
+def _reverify_current_bundle(
+    provided: dict[str, Any],
+    bundle_root: Path,
+    active_lock: Path,
+    run_verification: dict[str, Any],
+) -> dict[str, Any]:
+    _sync_impl_symbols("_load_protected_verifier")
+    return _impl_reverify_current_bundle(
+        provided,
+        bundle_root,
+        active_lock,
+        run_verification,
+    )
+
+
+def build_plan(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    _sync_impl_symbols("_reverify_current_bundle")
+    return _impl_build_plan(*args, **kwargs)
+
+
+def _rollback_pre_publish(
+    gh: str,
+    plan: dict[str, Any],
+    *,
+    draft_created: bool,
+    immutable_changed: bool,
+) -> None:
+    _sync_impl_symbols(
+        "_rollback_draft",
+        "_remote_absent",
+        "_immutable_enabled",
+        "_disable_immutable",
+    )
+    return _impl_rollback_pre_publish(
+        gh,
+        plan,
+        draft_created=draft_created,
+        immutable_changed=immutable_changed,
+    )
+
+
+def execute_plan(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    _sync_impl_symbols(
+        "_remote_absent",
+        "_immutable_enabled",
+        "_enable_immutable",
+        "_disable_immutable",
+        "_create_draft",
+        "_view_release",
+        "_upload_asset",
+        "_list_assets",
+        "_publish",
+        "_verify_tag",
+        "_rollback_pre_publish",
+        "_verify_published_remote",
+    )
+    return _impl_execute_plan(*args, **kwargs)
 
 
 def main() -> int:
