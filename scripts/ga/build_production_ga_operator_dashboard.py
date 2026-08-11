@@ -114,11 +114,11 @@ def build(
     release_ready = release_closure is not None and release_closure.get("status") == "READY_FOR_RELEASE_CLOSURE" and release_closure.get("precondition_count") == 5 and release_closure.get("preconditions_passed") == 5 and release_closure.get("final_ga_attestation_verified") is True and release_closure.get("ga_eligible") is True and release_closure.get("release_closed") is False
 
     execution_head = str(release_closure.get("execution_head") or "") if release_ready and release_closure is not None else ""
-    immutable_release_pass = release_ready and immutable_release_verification is not None and immutable_release_verification.get("status") == "PASS" and immutable_release_verification.get("release_execution_control_head") == execution_head and immutable_release_verification.get("release_tag_created") is True and immutable_release_verification.get("release_published") is True and immutable_release_verification.get("final_immutable_ga_anchor_created") is True and immutable_release_verification.get("final_ga_attestation_verified") is True and immutable_release_verification.get("ga_eligible") is True and immutable_release_verification.get("release_closed") is False
+    immutable_release_pass = release_ready and immutable_release_verification is not None and immutable_release_verification.get("status") == "PASS" and immutable_release_verification.get("release_execution_control_head") == execution_head and immutable_release_verification.get("publication_operation_verified") is True and immutable_release_verification.get("publication_asset_count") == 8 and immutable_release_verification.get("release_asset_set_verified") is True and immutable_release_verification.get("github_release_attestation_verified") is True and immutable_release_verification.get("release_tag_created") is True and immutable_release_verification.get("release_published") is True and immutable_release_verification.get("final_immutable_ga_anchor_created") is True and immutable_release_verification.get("final_ga_attestation_verified") is True and immutable_release_verification.get("ga_eligible") is True and immutable_release_verification.get("release_closed") is False
     documentation_pass = immutable_release_pass and documentation_verification is not None and documentation_verification.get("status") == "PASS" and documentation_verification.get("execution_control_head") == execution_head and documentation_verification.get("release_tag") == immutable_release_verification.get("tag") and documentation_verification.get("release_id") == immutable_release_verification.get("release_id") and documentation_verification.get("documentation_final_state_closed") is True and documentation_verification.get("release_immutable") is True and documentation_verification.get("final_ga_attestation_verified") is True and documentation_verification.get("ga_eligible") is True and documentation_verification.get("release_closed") is False
     cleanup_pass = immutable_release_pass and cleanup_verification is not None and cleanup_verification.get("status") == "PASS" and cleanup_verification.get("repository") == REPOSITORY and cleanup_verification.get("release_execution_head") == execution_head and cleanup_verification.get("release_tag") == immutable_release_verification.get("tag") and cleanup_verification.get("stale_branch_count") == 0 and cleanup_verification.get("stale_open_pr_count") == 0 and cleanup_verification.get("stale_branch_pr_cleanup_completed") is True and cleanup_verification.get("immutable_release_verified_before_cleanup") is True and cleanup_verification.get("ga_eligible") is True and cleanup_verification.get("release_closed") is False
     final_scan_pass = documentation_pass and cleanup_pass and final_repository_scan is not None and final_repository_scan.get("status") == "PASS" and final_repository_scan.get("release_closure_ready") is True and final_repository_scan.get("release_execution_head") == execution_head and final_repository_scan.get("repository_head") == documentation_verification.get("documentation_repository_head") and final_repository_scan.get("finding_count") == 0 and final_repository_scan.get("working_tree_clean") is True and final_repository_scan.get("final_repo_secret_scan_completed") is True and final_repository_scan.get("release_closed") is False
-    final_release_closed = immutable_release_pass and documentation_pass and cleanup_pass and final_scan_pass and final_release_verification is not None and final_release_verification.get("status") == "RELEASE_CLOSED" and final_release_verification.get("repository") == REPOSITORY and final_release_verification.get("release_execution_control_head") == execution_head and final_release_verification.get("precondition_count") == 5 and final_release_verification.get("preconditions_passed") == 5 and final_release_verification.get("post_ga_operation_count") == 6 and final_release_verification.get("post_ga_operations_passed") == 6 and final_release_verification.get("final_ga_attestation_verified") is True and final_release_verification.get("ga_eligible") is True and final_release_verification.get("release_closed") is True
+    final_release_closed = immutable_release_pass and documentation_pass and cleanup_pass and final_scan_pass and final_release_verification is not None and final_release_verification.get("status") == "RELEASE_CLOSED" and final_release_verification.get("repository") == REPOSITORY and final_release_verification.get("release_execution_control_head") == execution_head and final_release_verification.get("precondition_count") == 5 and final_release_verification.get("preconditions_passed") == 5 and final_release_verification.get("post_ga_operation_count") == 6 and final_release_verification.get("post_ga_operations_passed") == 6 and final_release_verification.get("publication_operation_verified") is True and final_release_verification.get("publication_asset_count") == 8 and final_release_verification.get("release_asset_set_verified") is True and final_release_verification.get("github_release_attestation_verified") is True and final_release_verification.get("final_ga_attestation_verified") is True and final_release_verification.get("ga_eligible") is True and final_release_verification.get("release_closed") is True
 
     if present < 41:
         stage = "PROVISION_ENVIRONMENTS"
@@ -162,7 +162,7 @@ def build(
         next_action = "Bind verified readiness, final-lock content, 11/11 content closure, evaluator run and final attestation into the five-precondition release-closure receipt."
     elif not immutable_release_pass:
         stage = "PUBLISH_AND_VERIFY_IMMUTABLE_RELEASE"
-        next_action = "Publish final v2.0.0 only after immutable releases are enabled, then verify the immutable release/tag API object against the frozen final release commit and GA execution-control head."
+        next_action = "Publish final v2.0.0 only through the transaction operator, then require exact 8/8 GitHub asset digest verification, immutable release/tag binding and GitHub release-attestation verification."
     elif not documentation_pass:
         stage = "VERIFY_FINAL_DOCUMENTATION_STATE"
         next_action = "Close the machine-readable final 2.0.0 documentation state against the immutable release, exact documentation repository head and zero known GA blockers."
@@ -174,7 +174,7 @@ def build(
         next_action = "Run the exact-head clean-tree repository private-material scan after final docs/cleanup and require zero findings on the same repository head as the final documentation state."
     elif not final_release_closed:
         stage = "VERIFY_FINAL_RELEASE_CLOSURE"
-        next_action = "Feed the five-precondition GA receipt plus immutable release, documentation, cleanup and final repository scan receipts into the sole final release-closure verifier."
+        next_action = "Feed the five-precondition GA receipt plus asset-bound immutable release, documentation, cleanup and final repository scan receipts into the sole final release-closure verifier."
     else:
         stage = "RELEASE_CLOSED"
         next_action = "Final 2.0.0 release closure is independently verified. Preserve the immutable release, closure receipts and frozen publication anchors."
@@ -200,6 +200,9 @@ def build(
         "ga_root_signing_completed": evaluator_pass,
         "final_ga_attestation_verified": attestation_pass,
         "release_closure_ready": release_ready,
+        "immutable_release_publication_operation_verified": immutable_release_pass and immutable_release_verification is not None and immutable_release_verification.get("publication_operation_verified") is True,
+        "immutable_release_asset_set_verified": immutable_release_pass and immutable_release_verification is not None and immutable_release_verification.get("release_asset_set_verified") is True,
+        "immutable_release_attestation_verified": immutable_release_pass and immutable_release_verification is not None and immutable_release_verification.get("github_release_attestation_verified") is True,
         "immutable_release_verified": immutable_release_pass,
         "documentation_final_state_closed": documentation_pass,
         "stale_branch_pr_cleanup_completed": cleanup_pass,
@@ -270,6 +273,9 @@ def main() -> int:
         print(f"production_ga_authority_dpapi_escrow_pass={str(value['production_ga_authority_dpapi_escrow_pass']).lower()}")
         print(f"final_evidence_content_closure_reverified={str(value['final_evidence_content_closure_reverified']).lower()}")
         print(f"final_ga_attestation_verified={str(value['final_ga_attestation_verified']).lower()}")
+        print(f"immutable_release_publication_operation_verified={str(value['immutable_release_publication_operation_verified']).lower()}")
+        print(f"immutable_release_asset_set_verified={str(value['immutable_release_asset_set_verified']).lower()}")
+        print(f"immutable_release_attestation_verified={str(value['immutable_release_attestation_verified']).lower()}")
         print(f"immutable_release_verified={str(value['immutable_release_verified']).lower()}")
         print(f"stale_branch_pr_cleanup_completed={str(value['stale_branch_pr_cleanup_completed']).lower()}")
         print(f"final_release_closure_verified={str(value['final_release_closure_verified']).lower()}")
