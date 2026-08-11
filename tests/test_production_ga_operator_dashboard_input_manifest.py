@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -81,8 +82,29 @@ class ProductionGAOperatorDashboardInputManifestTests(unittest.TestCase):
         with self.assertRaises(self.module.OperatorDashboardInputManifestError):
             self.module.render(value, self.root)
 
-    def test_parent_absolute_windows_and_backslash_paths_are_rejected(self) -> None:
-        for bad in ("../inventory.json", "/tmp/inventory.json", "C:/inventory.json", "folder\\inventory.json"):
+    def test_hardlink_alias_cannot_satisfy_two_roles(self) -> None:
+        alias = self.root / "inventory-hardlink.json"
+        try:
+            os.link(self.root / "inventory.json", alias)
+        except (OSError, NotImplementedError):
+            self.skipTest("hardlink creation unavailable")
+        value = manifest()
+        value["optional"] = {"readiness_verification": "inventory-hardlink.json"}
+        with self.assertRaises(self.module.OperatorDashboardInputManifestError):
+            self.module.render(value, self.root)
+
+    def test_parent_absolute_windows_backslash_and_noncanonical_paths_are_rejected(self) -> None:
+        nested = self.root / "folder"
+        nested.mkdir()
+        (nested / "inventory.json").write_text(json.dumps(inventory()) + "\n", encoding="utf-8")
+        for bad in (
+            "../inventory.json",
+            "/tmp/inventory.json",
+            "C:/inventory.json",
+            "folder\\inventory.json",
+            "folder/./inventory.json",
+            "folder//inventory.json",
+        ):
             value = manifest()
             value["required"] = {
                 "inventory_audit": bad,
@@ -102,6 +124,23 @@ class ProductionGAOperatorDashboardInputManifestTests(unittest.TestCase):
         value = manifest()
         value["required"] = {
             "inventory_audit": "inventory-link.json",
+            "readiness_summary": "readiness.json",
+        }
+        with self.assertRaises(self.module.OperatorDashboardInputManifestError):
+            self.module.render(value, self.root)
+
+    def test_symlink_parent_traversal_is_rejected(self) -> None:
+        real = self.root / "real"
+        real.mkdir()
+        (real / "inventory.json").write_text(json.dumps(inventory()) + "\n", encoding="utf-8")
+        link = self.root / "linked"
+        try:
+            link.symlink_to(real, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("directory symlink creation unavailable")
+        value = manifest()
+        value["required"] = {
+            "inventory_audit": "linked/inventory.json",
             "readiness_summary": "readiness.json",
         }
         with self.assertRaises(self.module.OperatorDashboardInputManifestError):
@@ -139,7 +178,8 @@ class ProductionGAOperatorDashboardInputManifestTests(unittest.TestCase):
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("build_production_ga_operator_dashboard.py", text)
         self.assertIn("object_pairs_hook=_unique_object", text)
-        self.assertIn("one receipt file may not satisfy multiple dashboard roles", text)
+        self.assertIn("one physical receipt file may not satisfy multiple dashboard roles", text)
+        self.assertIn("receipt path traverses a symlink", text)
         self.assertIn("receipt root must stay outside repository", text)
         self.assertNotIn("subprocess", text)
         self.assertNotIn("shell=True", text)
