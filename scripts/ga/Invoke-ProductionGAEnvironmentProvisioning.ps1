@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory)] [string]$MaterialMap,
     [Parameter()] [string]$Repository = 'Naveax/PSMatrix',
     [Parameter()] [string[]]$Environment,
+    [Parameter()] [switch]$AllowPartialEnvironment,
     [Parameter()] [switch]$DryRun,
     [Parameter()] [string]$Contract = 'ga-packs/03-authoritative-windows/final-production-readiness-contract.json',
     [Parameter()] [string]$GhPath
@@ -44,6 +45,7 @@ $mapValue = Read-JsonObject $MaterialMap 'Production provisioning material map'
 if ($contractValue.schema -ne 1 -or $contractValue.kind -ne 'psmatrix.final-production-readiness-contract' -or $contractValue.version -ne '2.0.0') { throw 'Production readiness contract identity mismatch.' }
 if ($mapValue.schema -ne 1 -or $mapValue.kind -ne 'psmatrix.production-ga-environment-material-map' -or $mapValue.version -ne '2.0.0') { throw 'Production provisioning material-map identity mismatch.' }
 if ($mapValue.Contains('values')) { throw 'Provisioning material map must contain file paths only, never inline values.' }
+if ($AllowPartialEnvironment -and -not $Environment) { throw 'AllowPartialEnvironment requires one or more explicit -Environment values.' }
 
 $wanted = @{}; if ($Environment) { foreach ($name in $Environment) { $wanted[$name] = $true } }
 $selected = @($contractValue.environments | Where-Object { -not $Environment -or $wanted.ContainsKey($_.name) })
@@ -55,22 +57,38 @@ foreach ($entry in $selected) {
     $name = [string]$entry.name
     if (-not $mapValue.environments.Contains($name)) { throw "Material map is missing environment: $name" }
     $mapped = $mapValue.environments[$name]
-    foreach ($secret in @($entry.required_secrets)) {
-        if (-not $mapped.secrets.Contains($secret)) { throw "$name is missing secret source: $secret" }
+    if ($mapped -isnot [Collections.IDictionary] -or -not $mapped.Contains('secrets') -or -not $mapped.Contains('vars')) { throw "$name material-map entry must contain secrets and vars objects." }
+    $expectedSecrets = @($entry.required_secrets)
+    $expectedVars = @($entry.required_vars)
+    $mappedSecrets = @($mapped.secrets.Keys)
+    $mappedVars = @($mapped.vars.Keys)
+    $extraSecrets = @($mappedSecrets | Where-Object { $_ -notin $expectedSecrets })
+    $extraVars = @($mappedVars | Where-Object { $_ -notin $expectedVars })
+    if ($extraSecrets.Count -or $extraVars.Count) { throw "$name material map contains undeclared secret/var names." }
+
+    if (-not $AllowPartialEnvironment) {
+        $missingSecrets = @($expectedSecrets | Where-Object { $_ -notin $mappedSecrets })
+        $missingVars = @($expectedVars | Where-Object { $_ -notin $mappedVars })
+        if ($missingSecrets.Count) { throw "$name is missing secret source: $($missingSecrets -join ',')" }
+        if ($missingVars.Count) { throw "$name is missing variable source: $($missingVars -join ',')" }
+    }
+    elseif (($mappedSecrets.Count + $mappedVars.Count) -eq 0) {
+        throw "$name partial material map contains no provisionable checks."
+    }
+
+    foreach ($secret in $mappedSecrets | Sort-Object) {
         $path = Assert-ExternalMaterialFile ([string]$mapped.secrets[$secret]) $repoRoot "$name/$secret"
         $plan += [ordered]@{ environment=$name; source='secret'; name=$secret; path=$path }
     }
-    foreach ($variable in @($entry.required_vars)) {
-        if (-not $mapped.vars.Contains($variable)) { throw "$name is missing variable source: $variable" }
+    foreach ($variable in $mappedVars | Sort-Object) {
         $path = Assert-ExternalMaterialFile ([string]$mapped.vars[$variable]) $repoRoot "$name/$variable"
         $plan += [ordered]@{ environment=$name; source='var'; name=$variable; path=$path }
     }
-    $extraSecrets = @($mapped.secrets.Keys | Where-Object { $_ -notin @($entry.required_secrets) })
-    $extraVars = @($mapped.vars.Keys | Where-Object { $_ -notin @($entry.required_vars) })
-    if ($extraSecrets.Count -or $extraVars.Count) { throw "$name material map contains undeclared secret/var names." }
 }
+if ($plan.Count -eq 0) { throw 'Provisioning plan contains zero checks.' }
 
 Write-Host "production_ga_environment_provisioning_plan=PASS environments=$($selected.Count) checks=$($plan.Count)"
+Write-Host "partial_environment_mode=$($AllowPartialEnvironment.IsPresent.ToString().ToLowerInvariant())"
 Write-Host 'secret_values_logged=false'
 if ($DryRun) { Write-Host 'production_ga_environment_provisioning_executed=false'; exit 0 }
 
