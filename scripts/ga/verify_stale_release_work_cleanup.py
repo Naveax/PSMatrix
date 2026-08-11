@@ -141,9 +141,25 @@ def _paged_list(gh: str, endpoint: str) -> list[dict[str, Any]]:
     return rows
 
 
+def _reject_symlink_components(path: Path, label: str) -> None:
+    expanded = path.expanduser()
+    parts = expanded.parts
+    if expanded.is_absolute():
+        current = Path(expanded.anchor)
+        start = 1
+    else:
+        current = Path(".")
+        start = 0
+    for part in parts[start:]:
+        current = current / part
+        if current.is_symlink():
+            raise StaleReleaseWorkCleanupError(f"{label} may not traverse a symlink component")
+
+
 def _read(path: Path, label: str) -> dict[str, Any]:
+    _reject_symlink_components(path, label)
     resolved = path.expanduser().resolve()
-    if not resolved.is_file() or resolved.is_symlink():
+    if not resolved.is_file():
         raise StaleReleaseWorkCleanupError(f"{label} is missing or unsafe")
     value = json.loads(resolved.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
