@@ -21,14 +21,102 @@ class FinalReleaseClosureVerificationTests(unittest.TestCase):
         self.module = load_module()
         self.execution_head = "a" * 40
         self.repository_head = "b" * 40
-        self.closure = {"schema": 1, "kind": "psmatrix.release-closure-readiness", "version": "2.0.0", "status": "READY_FOR_RELEASE_CLOSURE", "execution_head": self.execution_head, "precondition_count": 5, "preconditions_passed": 5, "final_ga_attestation_verified": True, "ga_eligible": True, "release_closed": False}
-        self.release = {"schema": 1, "kind": "psmatrix.final-immutable-release-verification", "version": "2.0.0", "status": "PASS", "tag": "v2.0.0", "release_id": 77, "release_execution_control_head": self.execution_head, "frozen_final_release_commit": "c" * 40, "publication_operation_verified": True, "publication_asset_count": 8, "release_asset_set_verified": True, "github_release_attestation_verified": True, "release_tag_created": True, "release_published": True, "final_immutable_ga_anchor_created": True, "final_ga_attestation_verified": True, "ga_eligible": True, "release_closed": False}
-        self.documentation = {"schema": 1, "kind": "psmatrix.final-documentation-state-verification", "version": "2.0.0", "status": "PASS", "documentation_repository_head": self.repository_head, "release_tag": "v2.0.0", "release_id": 77, "execution_control_head": self.execution_head, "documentation_final_state_closed": True, "release_immutable": True, "final_ga_attestation_verified": True, "ga_eligible": True, "release_closed": False}
-        self.cleanup = {"schema": 1, "kind": "psmatrix.release-stale-work-cleanup-verification", "version": "2.0.0", "status": "PASS", "repository": "Naveax/PSMatrix", "release_execution_head": self.execution_head, "release_tag": "v2.0.0", "stale_branch_count": 0, "stale_open_pr_count": 0, "stale_branch_pr_cleanup_completed": True, "immutable_release_verified_before_cleanup": True, "ga_eligible": True, "release_closed": False}
-        self.scan = {"schema": 1, "kind": "psmatrix.final-repository-private-material-scan-certification", "version": "2.0.0", "status": "PASS", "repository_head": self.repository_head, "release_execution_head": self.execution_head, "release_closure_ready": True, "finding_count": 0, "working_tree_clean": True, "final_repo_secret_scan_completed": True, "release_closed": False}
+        self.closure = {
+            "schema": 1,
+            "kind": "psmatrix.release-closure-readiness",
+            "version": "2.0.0",
+            "status": "READY_FOR_RELEASE_CLOSURE",
+            "execution_head": self.execution_head,
+            "precondition_count": 5,
+            "preconditions_passed": 5,
+            "final_ga_attestation_verified": True,
+            "ga_eligible": True,
+            "release_closed": False,
+        }
+        self.release = {
+            "schema": 1,
+            "kind": "psmatrix.final-immutable-release-verification",
+            "version": "2.0.0",
+            "status": "PASS",
+            "repository": "Naveax/PSMatrix",
+            "tag": "v2.0.0",
+            "release_id": 77,
+            "release_execution_control_head": self.execution_head,
+            "frozen_final_release_commit": "c" * 40,
+            "publication_operation_verified": True,
+            "publication_asset_count": 8,
+            "release_asset_set_verified": True,
+            "github_release_attestation_verified": True,
+            "release_tag_created": True,
+            "release_published": True,
+            "final_immutable_ga_anchor_created": True,
+            "final_ga_attestation_verified": True,
+            "ga_eligible": True,
+            "release_closed": False,
+        }
+        self.documentation = {
+            "schema": 1,
+            "kind": "psmatrix.final-documentation-state-verification",
+            "version": "2.0.0",
+            "status": "PASS",
+            "repository": "Naveax/PSMatrix",
+            "documentation_repository_head": self.repository_head,
+            "release_tag": "v2.0.0",
+            "release_id": 77,
+            "execution_control_head": self.execution_head,
+            "immutable_publication_operation_verified": True,
+            "immutable_publication_asset_count": 8,
+            "immutable_release_asset_set_verified": True,
+            "immutable_release_attestation_verified": True,
+            "documentation_final_state_closed": True,
+            "release_immutable": True,
+            "final_ga_attestation_verified": True,
+            "ga_eligible": True,
+            "release_closed": False,
+        }
+        self.cleanup = {
+            "schema": 1,
+            "kind": "psmatrix.release-stale-work-cleanup-verification",
+            "version": "2.0.0",
+            "status": "PASS",
+            "repository": "Naveax/PSMatrix",
+            "release_execution_head": self.execution_head,
+            "release_tag": "v2.0.0",
+            "stale_branch_count": 0,
+            "stale_open_pr_count": 0,
+            "immutable_publication_operation_verified_before_cleanup": True,
+            "immutable_publication_asset_count": 8,
+            "immutable_release_asset_set_verified_before_cleanup": True,
+            "immutable_release_attestation_verified_before_cleanup": True,
+            "immutable_release_verified_before_cleanup": True,
+            "stale_branch_pr_cleanup_completed": True,
+            "ga_eligible": True,
+            "release_closed": False,
+        }
+        self.scan = {
+            "schema": 1,
+            "kind": "psmatrix.final-repository-private-material-scan-certification",
+            "version": "2.0.0",
+            "status": "PASS",
+            "repository": "Naveax/PSMatrix",
+            "repository_head": self.repository_head,
+            "release_execution_head": self.execution_head,
+            "release_tag": "v2.0.0",
+            "release_closure_ready": True,
+            "documentation_final_state_closed": True,
+            "stale_branch_pr_cleanup_completed": True,
+            "post_ga_receipts_bound": True,
+            "preflight_only": False,
+            "finding_count": 0,
+            "working_tree_clean": True,
+            "final_repo_secret_scan_completed": True,
+            "release_closed": False,
+        }
 
     def test_all_five_plus_six_closures_are_required_for_release_closed(self) -> None:
-        value = self.module.verify(self.closure, self.release, self.documentation, self.cleanup, self.scan)
+        value = self.module.verify(
+            self.closure, self.release, self.documentation, self.cleanup, self.scan
+        )
         self.assertEqual(value["status"], "RELEASE_CLOSED")
         self.assertEqual(value["repository"], "Naveax/PSMatrix")
         self.assertEqual(value["preconditions_passed"], 5)
@@ -37,6 +125,7 @@ class FinalReleaseClosureVerificationTests(unittest.TestCase):
         self.assertEqual(value["publication_asset_count"], 8)
         self.assertTrue(value["release_asset_set_verified"])
         self.assertTrue(value["github_release_attestation_verified"])
+        self.assertTrue(value["post_ga_receipts_bound_before_final_scan"])
         self.assertTrue(value["release_tag_created"])
         self.assertTrue(value["final_immutable_ga_anchor_created"])
         self.assertTrue(value["documentation_final_state_closed"])
@@ -48,26 +137,70 @@ class FinalReleaseClosureVerificationTests(unittest.TestCase):
     def test_documentation_and_final_scan_must_bind_same_repository_head(self) -> None:
         self.scan["repository_head"] = "d" * 40
         with self.assertRaises(self.module.FinalReleaseClosureError):
-            self.module.verify(self.closure, self.release, self.documentation, self.cleanup, self.scan)
+            self.module.verify(
+                self.closure, self.release, self.documentation, self.cleanup, self.scan
+            )
 
-    def test_missing_any_post_ga_flag_fails_closed(self) -> None:
-        self.documentation["documentation_final_state_closed"] = False
+    def test_preflight_or_unbound_final_scan_cannot_close_release(self) -> None:
+        for field, invalid in (
+            ("release_closure_ready", False),
+            ("documentation_final_state_closed", False),
+            ("stale_branch_pr_cleanup_completed", False),
+            ("post_ga_receipts_bound", False),
+            ("preflight_only", True),
+            ("final_repo_secret_scan_completed", False),
+        ):
+            with self.subTest(field=field):
+                original = self.scan[field]
+                self.scan[field] = invalid
+                with self.assertRaises(self.module.FinalReleaseClosureError):
+                    self.module.verify(
+                        self.closure,
+                        self.release,
+                        self.documentation,
+                        self.cleanup,
+                        self.scan,
+                    )
+                self.scan[field] = original
+
+    def test_final_scan_repository_tag_and_execution_identity_must_match(self) -> None:
+        for field, invalid in (
+            ("repository", "someone-else/PSMatrix"),
+            ("release_tag", "v2.0.0-wrong"),
+            ("release_execution_head", "d" * 40),
+        ):
+            with self.subTest(field=field):
+                original = self.scan[field]
+                self.scan[field] = invalid
+                with self.assertRaises(self.module.FinalReleaseClosureError):
+                    self.module.verify(
+                        self.closure,
+                        self.release,
+                        self.documentation,
+                        self.cleanup,
+                        self.scan,
+                    )
+                self.scan[field] = original
+
+    def test_documentation_and_cleanup_must_keep_asset_bound_immutable_proof(self) -> None:
+        self.documentation["immutable_release_asset_set_verified"] = False
         with self.assertRaises(self.module.FinalReleaseClosureError):
-            self.module.verify(self.closure, self.release, self.documentation, self.cleanup, self.scan)
-        self.documentation["documentation_final_state_closed"] = True
-        self.cleanup["stale_open_pr_count"] = 1
+            self.module.verify(
+                self.closure, self.release, self.documentation, self.cleanup, self.scan
+            )
+        self.documentation["immutable_release_asset_set_verified"] = True
+        self.cleanup["immutable_release_attestation_verified_before_cleanup"] = False
         with self.assertRaises(self.module.FinalReleaseClosureError):
-            self.module.verify(self.closure, self.release, self.documentation, self.cleanup, self.scan)
+            self.module.verify(
+                self.closure, self.release, self.documentation, self.cleanup, self.scan
+            )
 
     def test_execution_control_head_must_match_every_release_receipt(self) -> None:
         self.release["release_execution_control_head"] = "e" * 40
         with self.assertRaises(self.module.FinalReleaseClosureError):
-            self.module.verify(self.closure, self.release, self.documentation, self.cleanup, self.scan)
-
-    def test_cleanup_receipt_must_bind_psmatrix_repository(self) -> None:
-        self.cleanup["repository"] = "someone-else/PSMatrix"
-        with self.assertRaises(self.module.FinalReleaseClosureError):
-            self.module.verify(self.closure, self.release, self.documentation, self.cleanup, self.scan)
+            self.module.verify(
+                self.closure, self.release, self.documentation, self.cleanup, self.scan
+            )
 
     def test_old_or_asset_unbound_immutable_receipt_cannot_close_release(self) -> None:
         for field in (
@@ -79,11 +212,19 @@ class FinalReleaseClosureVerificationTests(unittest.TestCase):
                 original = self.release[field]
                 self.release[field] = False
                 with self.assertRaises(self.module.FinalReleaseClosureError):
-                    self.module.verify(self.closure, self.release, self.documentation, self.cleanup, self.scan)
+                    self.module.verify(
+                        self.closure,
+                        self.release,
+                        self.documentation,
+                        self.cleanup,
+                        self.scan,
+                    )
                 self.release[field] = original
         self.release["publication_asset_count"] = 7
         with self.assertRaises(self.module.FinalReleaseClosureError):
-            self.module.verify(self.closure, self.release, self.documentation, self.cleanup, self.scan)
+            self.module.verify(
+                self.closure, self.release, self.documentation, self.cleanup, self.scan
+            )
 
     def test_source_is_only_component_allowed_to_emit_release_closed_true(self) -> None:
         text = SCRIPT.read_text(encoding="utf-8")
@@ -93,6 +234,7 @@ class FinalReleaseClosureVerificationTests(unittest.TestCase):
         self.assertIn('"release_closed": True', text)
         self.assertIn("release_asset_set_verified", text)
         self.assertIn("github_release_attestation_verified", text)
+        self.assertIn("post_ga_receipts_bound", text)
         self.assertIn("documentation_repository_head", text)
         self.assertIn("final_repo_secret_scan_completed", text)
 
