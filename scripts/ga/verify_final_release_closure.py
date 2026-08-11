@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
+import os
+import stat
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +61,90 @@ def _read(path: Path, label: str) -> dict[str, Any]:
     return value
 
 
+def _write_final_closure_receipt(path: Path, value: dict[str, Any]) -> Path:
+    _reject_symlink_components(path, "final release closure output")
+    absolute = path.expanduser().absolute()
+    if absolute.exists():
+        raise FinalReleaseClosureError("final release closure output must not already exist")
+
+    parent = absolute.parent
+    _reject_symlink_components(parent, "final release closure output parent")
+    resolved_parent = parent.resolve()
+    if not resolved_parent.is_dir():
+        raise FinalReleaseClosureError(
+            "final release closure output parent must already exist"
+        )
+    candidate = resolved_parent / absolute.name
+
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    try:
+        fd = os.open(candidate, flags, 0o600)
+    except FileExistsError as exc:
+        raise FinalReleaseClosureError(
+            "final release closure output appeared before exclusive creation"
+        ) from exc
+    except OSError as exc:
+        raise FinalReleaseClosureError(
+            f"final release closure output could not be created: {exc}"
+        ) from exc
+
+    info = os.fstat(fd)
+    identity = (int(info.st_dev), int(info.st_ino))
+    handle = None
+    success = False
+    try:
+        handle = os.fdopen(fd, "r+", encoding="utf-8", newline="\n")
+        path_info = os.lstat(candidate)
+        if (
+            not stat.S_ISREG(path_info.st_mode)
+            or (int(path_info.st_dev), int(path_info.st_ino)) != identity
+        ):
+            raise FinalReleaseClosureError(
+                "final release closure output path does not name the exclusively created file"
+            )
+
+        payload = json.dumps(value, indent=2, sort_keys=True) + "\n"
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+        handle.seek(0)
+        if handle.read() != payload:
+            raise FinalReleaseClosureError(
+                "final release closure output read-back verification failed"
+            )
+
+        path_info = os.lstat(candidate)
+        if (
+            not stat.S_ISREG(path_info.st_mode)
+            or (int(path_info.st_dev), int(path_info.st_ino)) != identity
+        ):
+            raise FinalReleaseClosureError(
+                "final release closure output path identity changed during write"
+            )
+        success = True
+        return candidate
+    finally:
+        if handle is not None:
+            handle.close()
+        else:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if not success:
+            try:
+                path_info = os.lstat(candidate)
+                if (
+                    stat.S_ISREG(path_info.st_mode)
+                    and (int(path_info.st_dev), int(path_info.st_ino)) == identity
+                ):
+                    candidate.unlink()
+            except OSError:
+                pass
+
+
 def verify(
     release_closure: dict[str, Any],
     immutable_release: dict[str, Any],
@@ -92,7 +180,49 @@ _impl._read = _read
 
 
 def main() -> int:
-    return _impl.main()
+    parser = argparse.ArgumentParser(
+        description="Make the sole final release_closed=true decision after exact GA preconditions and six post-GA operations are independently verified"
+    )
+    parser.add_argument("--release-closure", type=Path, required=True)
+    parser.add_argument("--immutable-release-verification", type=Path, required=True)
+    parser.add_argument("--documentation-verification", type=Path, required=True)
+    parser.add_argument("--cleanup-verification", type=Path, required=True)
+    parser.add_argument("--final-repository-scan", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    try:
+        value = verify(
+            _read(args.release_closure, "release-closure readiness"),
+            _read(args.immutable_release_verification, "immutable release verification"),
+            _read(args.documentation_verification, "documentation verification"),
+            _read(args.cleanup_verification, "cleanup verification"),
+            _read(args.final_repository_scan, "final repository scan"),
+        )
+        _write_final_closure_receipt(args.output, value)
+        print(
+            f"final_release_closure=RELEASE_CLOSED tag={value['release_tag']} "
+            f"repo_head={value['final_repository_head']}"
+        )
+        print("preconditions=5/5")
+        print("post_ga_operations=6/6")
+        print("release_asset_set_verified=true")
+        print("github_release_attestation_verified=true")
+        print("post_ga_receipts_bound_before_final_scan=true")
+        print("publication_receipt_output_reserved_before_mutation=true")
+        print("final_ga_attestation_verified=true")
+        print("ga_eligible=true")
+        print("release_closed=true")
+        return 0
+    except (
+        OSError,
+        json.JSONDecodeError,
+        FinalReleaseClosureError,
+        TypeError,
+        ValueError,
+        KeyError,
+    ) as exc:
+        print(f"final release closure verification failed: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
