@@ -108,7 +108,7 @@ def content_closure_verification(file_sha256: str) -> dict[str, object]:
 
 
 class FinalGAEvaluatorContentClosureHandoffTests(unittest.TestCase):
-    def run_handoff(self, ready: dict[str, object], verified: dict[str, object], closure: dict[str, object], closure_verification_override: dict[str, object] | None = None) -> subprocess.CompletedProcess[str]:
+    def run_handoff(self, ready: dict[str, object], verified: dict[str, object], closure: dict[str, object], closure_verification_override: dict[str, object] | None = None, readiness_digest_override: str | None = None) -> subprocess.CompletedProcess[str]:
         pwsh = shutil.which("pwsh")
         if not pwsh:
             self.skipTest("pwsh required")
@@ -119,7 +119,10 @@ class FinalGAEvaluatorContentClosureHandoffTests(unittest.TestCase):
             closure_path = root / "content-closure.json"
             closure_verification_path = root / "content-closure-verification.json"
             summary_path.write_text(json.dumps(ready) + "\n", encoding="utf-8")
-            verification_path.write_text(json.dumps(verified) + "\n", encoding="utf-8")
+            verified_value = dict(verified)
+            verified_value["summary_file_sha256"] = readiness_digest_override or hashlib.sha256(summary_path.read_bytes()).hexdigest()
+            verified_value["summary_file_size"] = summary_path.stat().st_size
+            verification_path.write_text(json.dumps(verified_value) + "\n", encoding="utf-8")
             closure_path.write_text(json.dumps(closure) + "\n", encoding="utf-8")
             closure_sha256 = hashlib.sha256(closure_path.read_bytes()).hexdigest()
             closure_verification_value = closure_verification_override or content_closure_verification(closure_sha256)
@@ -157,6 +160,7 @@ class FinalGAEvaluatorContentClosureHandoffTests(unittest.TestCase):
         completed = self.run_handoff(readiness_summary(), readiness_verification(), content_closure())
         self.assertEqual(completed.returncode, 0, completed.stdout)
         self.assertIn("final_ga_evaluator_content_closure_handoff=PASS", completed.stdout)
+        self.assertIn("readiness_summary_file_digest_bound=true", completed.stdout)
         self.assertIn("verified_evidence_content=11/11", completed.stdout)
         self.assertIn("content_closure_exactly_rederived=true", completed.stdout)
         self.assertIn("content_closure_file_digest_bound=true", completed.stdout)
@@ -164,6 +168,11 @@ class FinalGAEvaluatorContentClosureHandoffTests(unittest.TestCase):
         self.assertIn("workflow=ga-final-evaluator.yml", completed.stdout)
         self.assertIn("production_ga_workflow_dispatched=false", completed.stdout)
         self.assertIn("ga_eligible=false", completed.stdout)
+
+    def test_wrong_readiness_summary_file_digest_fails_closed(self) -> None:
+        completed = self.run_handoff(readiness_summary(), readiness_verification(), content_closure(), readiness_digest_override="0" * 64)
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("Readiness summary file bytes differ", completed.stdout)
 
     def test_content_closure_flag_failure_blocks_dispatch(self) -> None:
         closure = content_closure()
@@ -204,10 +213,13 @@ class FinalGAEvaluatorContentClosureHandoffTests(unittest.TestCase):
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("closure_exactly_recomputed", completed.stdout)
 
-    def test_source_uses_named_splatting_reverification_and_only_final_evaluator_workflow(self) -> None:
+    def test_source_uses_named_splatting_reverification_and_binds_both_raw_receipt_files(self) -> None:
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("@operatorArgs", text)
         self.assertIn(".github/workflows/ga-final-evaluator.yml", text)
+        self.assertIn("summary_file_sha256", text)
+        self.assertIn("summary_file_size", text)
+        self.assertIn("readiness_summary_file_digest_bound=true", text)
         self.assertIn("psmatrix.final-ga-evidence-content-closure", text)
         self.assertIn("psmatrix.final-ga-evidence-content-closure-verification", text)
         self.assertIn("content_closure_file_sha256", text)
