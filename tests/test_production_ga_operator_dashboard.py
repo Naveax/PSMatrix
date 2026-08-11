@@ -32,6 +32,9 @@ class ProductionGAOperatorDashboardTests(unittest.TestCase):
     def summary(self, passed: bool = True) -> dict:
         return {"schema": 1, "kind": "psmatrix.production-readiness-summary", "version": "2.0.0", "environment_count": 12, "status": "PASS" if passed else "FAIL", "environment_passed": 12 if passed else 0, "environment_failed": 0 if passed else 12, "environment_readiness": passed}
 
+    def escrow(self, removed: bool = True) -> dict:
+        return {"schema": 1, "kind": "psmatrix.production-ga-dpapi-authority-escrow-operation", "version": "2.0.0", "status": "PASS", "action": "protect", "authority_count": 9, "readiness_secret_check_count": 17, "dpapi_scope": "CurrentUser", "dpapi_round_trip_verified": True, "plaintext_private_keys_removed": removed, "private_key_values_serialized": False, "private_key_hashes_serialized": False, "private_key_lengths_serialized": False, "github_environment_mutation_executed": False, "ga_eligible": False}
+
     def readiness(self) -> dict:
         return {"schema": 1, "kind": "psmatrix.production-readiness-summary-verification", "version": "2.0.0", "status": "PASS", "verified_environment_count": 12, "verified_check_count": 41, "summary_content_verified": True, "production_readiness_verified": True, "ga_eligible": False}
 
@@ -71,7 +74,21 @@ class ProductionGAOperatorDashboardTests(unittest.TestCase):
     def test_zero_of_forty_one_stays_in_provisioning(self) -> None:
         value = self.module.build(self.inventory(0), self.summary(False))
         self.assertEqual(value["stage"], "PROVISION_ENVIRONMENTS")
+        self.assertFalse(value["production_ga_authority_dpapi_escrow_pass"])
+        self.assertIn("CurrentUser DPAPI", value["next_action"])
         self.assertFalse(value["ga_eligible"])
+
+    def test_verified_dpapi_escrow_is_visible_but_does_not_become_ga_gate(self) -> None:
+        value = self.module.build(self.inventory(0), self.summary(False), authority_escrow_operation=self.escrow())
+        self.assertEqual(value["stage"], "PROVISION_ENVIRONMENTS")
+        self.assertTrue(value["production_ga_authority_dpapi_escrow_pass"])
+        self.assertIn("plaintext private keys removed", value["next_action"])
+        self.assertFalse(value["ga_eligible"])
+
+    def test_escrow_without_plaintext_removal_is_not_reported_secure(self) -> None:
+        value = self.module.build(self.inventory(0), self.summary(False), authority_escrow_operation=self.escrow(False))
+        self.assertFalse(value["production_ga_authority_dpapi_escrow_pass"])
+        self.assertEqual(value["stage"], "PROVISION_ENVIRONMENTS")
 
     def test_raw_readiness_without_verification_stays_at_readiness(self) -> None:
         value = self.module.build(self.inventory(), self.summary())
