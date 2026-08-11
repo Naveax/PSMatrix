@@ -90,13 +90,12 @@ def _write_final_closure_receipt(path: Path, value: dict[str, Any]) -> Path:
             f"final release closure output could not be created: {exc}"
         ) from exc
 
+    info = os.fstat(fd)
+    identity = (int(info.st_dev), int(info.st_ino))
     handle = None
-    identity: tuple[int, int] | None = None
     success = False
     try:
         handle = os.fdopen(fd, "r+", encoding="utf-8", newline="\n")
-        info = os.fstat(handle.fileno())
-        identity = (int(info.st_dev), int(info.st_ino))
         path_info = os.lstat(candidate)
         if (
             not stat.S_ISREG(path_info.st_mode)
@@ -134,7 +133,7 @@ def _write_final_closure_receipt(path: Path, value: dict[str, Any]) -> Path:
                 os.close(fd)
             except OSError:
                 pass
-        if not success and identity is not None:
+        if not success:
             try:
                 path_info = os.lstat(candidate)
                 if (
