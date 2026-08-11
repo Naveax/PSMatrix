@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory)] [string]$ReadinessSummary,
     [Parameter(Mandatory)] [string]$ReadinessVerification,
     [Parameter(Mandatory)] [string]$ContentClosure,
+    [Parameter(Mandatory)] [string]$ContentClosureVerification,
     [Parameter()] [string]$Repository = 'Naveax/PSMatrix',
     [Parameter()] [string]$Ref = 'final/2.0.0-production-control-plane-publication-anchor',
     [Parameter()] [string]$GhPath,
@@ -32,7 +33,8 @@ foreach ($name in @('production_evidence_runs_complete','final_ga_evaluator_invo
 $readinessHead = [string]$readiness.exact_head
 if ($readinessHead -cnotmatch '^[0-9a-f]{40}$') { throw 'Verified readiness receipt exact head is invalid.' }
 
-$closure = Read-JsonObject $ContentClosure 'Final GA evidence content closure'
+$closurePath = [IO.Path]::GetFullPath($ContentClosure)
+$closure = Read-JsonObject $closurePath 'Final GA evidence content closure'
 if ($closure.schema -ne 1 -or $closure.kind -ne 'psmatrix.final-ga-evidence-content-closure' -or $closure.version -ne '2.0.0' -or $closure.status -ne 'PASS') {
     throw 'Final GA evidence content closure identity/status mismatch.'
 }
@@ -46,6 +48,24 @@ foreach ($name in @('all_api_artifact_origins_verified','all_materialized_trees_
 if ($closure.final_ga_evaluator_invoked -ne $false -or $closure.ga_root_private_key_read -ne $false -or $closure.ga_eligible -ne $false) {
     throw 'Final evidence content closure crossed evaluator/root/GA boundary.'
 }
+
+$closureVerification = Read-JsonObject $ContentClosureVerification 'Final GA evidence content closure reverification'
+if ($closureVerification.schema -ne 1 -or $closureVerification.kind -ne 'psmatrix.final-ga-evidence-content-closure-verification' -or $closureVerification.version -ne '2.0.0' -or $closureVerification.status -ne 'PASS') {
+    throw 'Final GA evidence content closure reverification identity/status mismatch.'
+}
+if ([string]$closureVerification.execution_head -ne $readinessHead -or [int]$closureVerification.verified_gate_count -ne 11 -or [int]$closureVerification.source_binding_receipt_count -ne 10) {
+    throw 'Content closure reverification does not bind the exact 11-gate execution head/source set.'
+}
+foreach ($name in @('repository_owned_rederivation','closure_exactly_recomputed','ready_for_final_ga_evaluator_dispatch')) {
+    if ($closureVerification[$name] -ne $true) { throw "Content closure reverification field is not true: $name" }
+}
+if ($closureVerification.final_ga_evaluator_invoked -ne $false -or $closureVerification.ga_eligible -ne $false) {
+    throw 'Content closure reverification crossed evaluator/GA boundary.'
+}
+$expectedClosureFileSha = [string]$closureVerification.content_closure_file_sha256
+if ($expectedClosureFileSha -cnotmatch '^[0-9a-f]{64}$') { throw 'Content closure reverification file digest is invalid.' }
+$actualClosureFileSha = (Get-FileHash -LiteralPath $closurePath -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actualClosureFileSha -ne $expectedClosureFileSha) { throw 'Content closure file bytes differ from the exact reverified closure receipt.' }
 
 $inputMap = [ordered]@{
     'validation-summary' = 'validation_run_id'
@@ -101,6 +121,8 @@ finally {
 Write-Host 'final_ga_evaluator_content_closure_handoff=PASS'
 Write-Host 'verified_readiness=12/12 checks=41/41'
 Write-Host 'verified_evidence_content=11/11'
+Write-Host 'content_closure_exactly_rederived=true'
+Write-Host 'content_closure_file_digest_bound=true'
 Write-Host 'evaluator_input_run_ids_distinct=true'
 Write-Host "evaluator_dispatch_dry_run=$($DryRun.IsPresent.ToString().ToLowerInvariant())"
 Write-Host 'ga_root_private_key_read=false'
