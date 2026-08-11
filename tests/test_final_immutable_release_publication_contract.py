@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CONTRACT = ROOT / "ga-packs" / "03-authoritative-windows" / "final-immutable-release-publication-contract.json"
+CONTRACT = ROOT / "scripts" / "ga" / "final-immutable-release-publication-contract.json"
 READINESS = ROOT / "ga-packs" / "03-authoritative-windows" / "final-production-readiness-contract.json"
 BUILDER = ROOT / "scripts" / "ga" / "build_windows_authority_final_release_candidate.py"
 
@@ -97,6 +97,10 @@ class FinalImmutableReleasePublicationContractTests(unittest.TestCase):
         self.assertLess(order.index("create_draft_release_at_frozen_final_release_commit"), order.index("upload_exact_publication_asset_set"))
         self.assertLess(order.index("upload_exact_publication_asset_set"), order.index("verify_draft_release_asset_set"))
         self.assertLess(order.index("verify_draft_release_asset_set"), order.index("publish_release"))
+
+    def test_contract_lives_inside_frozen_additive_hardening_boundary(self) -> None:
+        relative = CONTRACT.relative_to(ROOT).as_posix()
+        self.assertEqual(relative, "scripts/ga/final-immutable-release-publication-contract.json")
 
     def test_source_contract_does_not_claim_execution_or_release_closure(self) -> None:
         safety = self.contract["safety"]
