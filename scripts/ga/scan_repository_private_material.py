@@ -136,6 +136,31 @@ def repository_head(root: Path, git: str) -> str:
     return head
 
 
+def repository_tree(root: Path, git: str, head: str) -> str:
+    if SHA40.fullmatch(head) is None:
+        raise RepositoryPrivateMaterialScanError(
+            "repository tree binding requires an exact lowercase 40-hex commit"
+        )
+    completed = subprocess.run(
+        [git, "-C", str(root), "rev-parse", f"{head}^{{tree}}"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RepositoryPrivateMaterialScanError(
+            f"git rev-parse tree failed: {completed.stderr.strip()}"
+        )
+    tree = completed.stdout.strip().lower()
+    if SHA40.fullmatch(tree) is None:
+        raise RepositoryPrivateMaterialScanError(
+            "repository tree is not an exact lowercase 40-hex object"
+        )
+    return tree
+
+
 def assert_clean_working_tree(root: Path, git: str) -> None:
     completed = subprocess.run(
         [git, "-C", str(root), "status", "--porcelain=v1", "--untracked-files=all"],
@@ -343,24 +368,34 @@ def main() -> int:
     try:
         root = args.root.expanduser().resolve()
         head_before = repository_head(root, args.git)
+        tree_before = repository_tree(root, args.git, head_before)
         assert_clean_working_tree(root, args.git)
         value = scan_git_head(root, args.git, head_before)
         assert_clean_working_tree(root, args.git)
         head_after = repository_head(root, args.git)
+        tree_after = repository_tree(root, args.git, head_after)
         if head_after != head_before:
             raise RepositoryPrivateMaterialScanError(
                 "repository HEAD changed during private-material scan"
             )
+        if tree_after != tree_before:
+            raise RepositoryPrivateMaterialScanError(
+                "repository tree changed during private-material scan"
+            )
         value["repository_head"] = head_after
+        value["repository_tree"] = tree_after
         value["working_tree_clean_verified"] = True
         value["repository_head_stable_during_scan"] = True
+        value["repository_tree_stable_during_scan"] = True
         if args.output is not None:
             _write_private_material_scan_receipt(args.output, value)
         print(f"repository_private_material_scan={value['status']} files={value['tracked_file_count']} findings={value['finding_count']}")
         print(f"repository_head={value['repository_head']}")
+        print(f"repository_tree={value['repository_tree']}")
         print("tracked_blob_authority_verified=true")
         print("working_tree_clean_verified=true")
         print("repository_head_stable_during_scan=true")
+        print("repository_tree_stable_during_scan=true")
         print("secret_values_emitted=false")
         print("secret_hashes_emitted=false")
         print("secret_lengths_emitted=false")

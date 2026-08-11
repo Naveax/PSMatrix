@@ -154,10 +154,12 @@ def _reverify_private_scan(root: Path, head: str, supplied: dict[str, Any]) -> d
             raise HardeningSourceCertificationError(
                 "independent private-material re-scan HEAD differs from certified HEAD before scan"
             )
+        tree_before = scanner.repository_tree(root, "git", head_before)
         scanner.assert_clean_working_tree(root, "git")
         fresh = scanner.scan_git_head(root, "git", head_before)
         scanner.assert_clean_working_tree(root, "git")
         head_after = scanner.repository_head(root, "git")
+        tree_after = scanner.repository_tree(root, "git", head_after)
     except HardeningSourceCertificationError:
         raise
     except Exception as exc:
@@ -168,21 +170,27 @@ def _reverify_private_scan(root: Path, head: str, supplied: dict[str, Any]) -> d
         raise HardeningSourceCertificationError(
             "repository HEAD changed during independent private-material re-scan"
         )
+    if tree_after != tree_before:
+        raise HardeningSourceCertificationError(
+            "repository tree changed during independent private-material re-scan"
+        )
     if not isinstance(fresh, dict):
         raise HardeningSourceCertificationError(
             "repository-owned private-material scanner returned an invalid receipt"
         )
     fresh = dict(fresh)
     fresh["repository_head"] = head_after
+    fresh["repository_tree"] = tree_after
     fresh["working_tree_clean_verified"] = True
     fresh["repository_head_stable_during_scan"] = True
+    fresh["repository_tree_stable_during_scan"] = True
     if fresh.get("tracked_blob_authority_verified") is not True:
         raise HardeningSourceCertificationError(
             "independent private-material scan did not prove exact Git-blob authority"
         )
     if fresh != supplied:
         raise HardeningSourceCertificationError(
-            "supplied private-material scan receipt differs from independent exact-head clean-tree Git-object re-scan"
+            "supplied private-material scan receipt differs from independent exact-head/tree clean-tree Git-object re-scan"
         )
     return fresh
 
@@ -200,16 +208,41 @@ def certify(root: Path, baseline: str, private_scan: dict[str, Any]) -> dict[str
         raise HardeningSourceCertificationError(
             "private-material scan must prove repository HEAD stability during scan"
         )
+    if private_scan.get("repository_tree_stable_during_scan") is not True:
+        raise HardeningSourceCertificationError(
+            "private-material scan must prove repository tree stability during scan"
+        )
+    scan_tree = str(private_scan.get("repository_tree") or "").lower()
+    if len(scan_tree) != 40 or any(ch not in "0123456789abcdef" for ch in scan_tree):
+        raise HardeningSourceCertificationError(
+            "private-material scan repository tree is invalid"
+        )
+    scan_head = str(private_scan.get("repository_head") or "").lower()
+    scanner = _load_private_scanner()
+    try:
+        expected_tree = scanner.repository_tree(root.resolve(), "git", scan_head)
+    except Exception as exc:
+        raise HardeningSourceCertificationError(
+            f"unable to independently resolve private-material repository tree: {exc}"
+        ) from exc
+    if scan_tree != expected_tree:
+        raise HardeningSourceCertificationError(
+            "private-material scan repository tree differs from exact certified commit tree"
+        )
     _impl.REQUIRED_HARDENING_PATHS = REQUIRED_HARDENING_PATHS
     _impl.SCANNER_PATH = SCANNER_PATH
     _impl._reverify_private_scan = _reverify_private_scan
     value = _impl.certify(root, baseline, private_scan)
+    value["private_material_scan_repository_tree"] = scan_tree
     value["private_material_scan_tracked_blob_authority_verified"] = True
     value["private_material_scan_working_tree_clean_verified"] = True
     value["private_material_scan_repository_head_stable_during_scan"] = True
+    value["private_material_scan_repository_tree_stable_during_scan"] = True
+    value["boundaries"]["private_material_scan_repository_tree_bound"] = True
     value["boundaries"]["private_material_scan_tracked_blob_authority_verified"] = True
     value["boundaries"]["private_material_scan_working_tree_clean_verified"] = True
     value["boundaries"]["private_material_scan_repository_head_stable_during_scan"] = True
+    value["boundaries"]["private_material_scan_repository_tree_stable_during_scan"] = True
     return value
 
 
@@ -230,11 +263,14 @@ def main() -> int:
         print(f"baseline={value['baseline_commit']}")
         print(f"certified_head={value['certified_head']}")
         print(f"private_material_scan_repository_head={value['private_material_scan_repository_head']}")
+        print(f"private_material_scan_repository_tree={value['private_material_scan_repository_tree']}")
         print("private_material_scan_head_bound=true")
+        print("private_material_scan_repository_tree_bound=true")
         print("private_material_scan_independently_reverified=true")
         print("private_material_scan_tracked_blob_authority_verified=true")
         print("private_material_scan_working_tree_clean_verified=true")
         print("private_material_scan_repository_head_stable_during_scan=true")
+        print("private_material_scan_repository_tree_stable_during_scan=true")
         print("runtime_source_changes=0")
         print("baseline_files_modified=0")
         print("baseline_files_deleted=0")
