@@ -1,0 +1,42 @@
+name: production-ga-repository-private-material-scan
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tracked-private-material-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Scan git-tracked repository for private material
+        run: >-
+          python scripts/ga/scan_repository_private_material.py
+          --root .
+          --output "${RUNNER_TEMP}/repository-private-material-scan.json"
+
+      - name: Upload scan receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: psmatrix-2.0.0-repository-private-material-scan-${{ github.run_id }}
+          path: ${{ runner.temp }}/repository-private-material-scan.json
+          if-no-files-found: warn
+          retention-days: 14
