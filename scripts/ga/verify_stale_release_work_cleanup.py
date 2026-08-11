@@ -30,8 +30,21 @@ def _is_stale_branch(name: str) -> bool:
 def verify(release_closure: dict[str, Any], immutable_release: dict[str, Any], branches: list[dict[str, Any]], pulls: list[dict[str, Any]]) -> dict[str, Any]:
     if release_closure.get("schema") != 1 or release_closure.get("kind") != "psmatrix.release-closure-readiness" or release_closure.get("version") != "2.0.0" or release_closure.get("status") != "READY_FOR_RELEASE_CLOSURE" or release_closure.get("ga_eligible") is not True or release_closure.get("release_closed") is not False:
         raise StaleReleaseWorkCleanupError("release-closure readiness identity/state mismatch")
-    if immutable_release.get("schema") != 1 or immutable_release.get("kind") != "psmatrix.final-immutable-release-verification" or immutable_release.get("version") != "2.0.0" or immutable_release.get("status") != "PASS" or immutable_release.get("final_immutable_ga_anchor_created") is not True or immutable_release.get("release_published") is not True or immutable_release.get("release_closed") is not False:
-        raise StaleReleaseWorkCleanupError("verified immutable release is required before stale release-work cleanup")
+    if (
+        immutable_release.get("schema") != 1
+        or immutable_release.get("kind") != "psmatrix.final-immutable-release-verification"
+        or immutable_release.get("version") != "2.0.0"
+        or immutable_release.get("status") != "PASS"
+        or immutable_release.get("repository") != REPOSITORY
+        or immutable_release.get("publication_operation_verified") is not True
+        or immutable_release.get("publication_asset_count") != 8
+        or immutable_release.get("release_asset_set_verified") is not True
+        or immutable_release.get("github_release_attestation_verified") is not True
+        or immutable_release.get("final_immutable_ga_anchor_created") is not True
+        or immutable_release.get("release_published") is not True
+        or immutable_release.get("release_closed") is not False
+    ):
+        raise StaleReleaseWorkCleanupError("asset-bound verified immutable release is required before stale release-work cleanup")
     execution_head = str(release_closure.get("execution_head") or "").lower()
     immutable_execution_head = str(immutable_release.get("release_execution_control_head") or "").lower()
     if SHA40.fullmatch(execution_head) is None or SHA40.fullmatch(immutable_execution_head) is None:
@@ -88,6 +101,10 @@ def verify(release_closure: dict[str, Any], immutable_release: dict[str, Any], b
         "stale_open_pr_count": 0,
         "stale_prefixes": list(STALE_PREFIXES),
         "allowed_branches": sorted(ALLOWED_BRANCHES),
+        "immutable_publication_operation_verified_before_cleanup": True,
+        "immutable_publication_asset_count": 8,
+        "immutable_release_asset_set_verified_before_cleanup": True,
+        "immutable_release_attestation_verified_before_cleanup": True,
         "immutable_release_verified_before_cleanup": True,
         "stale_branch_pr_cleanup_completed": True,
         "documentation_final_state_closed": False,
@@ -135,7 +152,7 @@ def _read(path: Path, label: str) -> dict[str, Any]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Verify all stale PSMatrix release-work branches and open PRs are gone after immutable release publication")
+    parser = argparse.ArgumentParser(description="Verify all stale PSMatrix release-work branches and open PRs are gone after asset-bound immutable release publication")
     parser.add_argument("--release-closure", type=Path, required=True)
     parser.add_argument("--immutable-release-verification", type=Path, required=True)
     parser.add_argument("--repository", default=REPOSITORY)
@@ -156,6 +173,8 @@ def main() -> int:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(f"stale_release_work_cleanup_verification=PASS repository={REPOSITORY} branches={value['branch_count_observed']} open_prs={value['open_pr_count_observed']}")
+        print("immutable_release_asset_set_verified_before_cleanup=true")
+        print("immutable_release_attestation_verified_before_cleanup=true")
         print("stale_branch_pr_cleanup_completed=true")
         print("release_closed=false")
         return 0
