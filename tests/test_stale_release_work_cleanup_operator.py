@@ -35,8 +35,13 @@ def immutable_release(head: str = "a" * 40) -> dict[str, object]:
         "kind": "psmatrix.final-immutable-release-verification",
         "version": "2.0.0",
         "status": "PASS",
+        "repository": "Naveax/PSMatrix",
         "tag": "v2.0.0",
         "release_execution_control_head": head,
+        "publication_operation_verified": True,
+        "publication_asset_count": 8,
+        "release_asset_set_verified": True,
+        "github_release_attestation_verified": True,
         "release_published": True,
         "final_immutable_ga_anchor_created": True,
         "release_closed": False,
@@ -175,6 +180,8 @@ class StaleReleaseWorkCleanupOperatorTests(unittest.TestCase):
         self.assertTrue(receipt["stale_branch_pr_cleanup_completed"])
         self.assertEqual(verification["status"], "PASS")
         self.assertEqual(verification["repository"], "Naveax/PSMatrix")
+        self.assertTrue(verification["immutable_release_asset_set_verified_before_cleanup"])
+        self.assertTrue(verification["immutable_release_attestation_verified_before_cleanup"])
         self.assertTrue(verification["stale_branch_pr_cleanup_completed"])
         self.assertEqual(len(deleted), 2)
         self.assertTrue(all("%2F" in endpoint for endpoint in deleted))
@@ -265,6 +272,18 @@ class StaleReleaseWorkCleanupOperatorTests(unittest.TestCase):
         bad["release_published"] = False
         with self.assertRaises(self.module.StaleReleaseWorkCleanupOperationError):
             self.module.build_plan(self.verifier, self.closure, bad, [{"name": "main"}], [], [])
+
+    def test_asset_unbound_immutable_release_is_rejected_before_planning(self) -> None:
+        for field in (
+            "publication_operation_verified",
+            "release_asset_set_verified",
+            "github_release_attestation_verified",
+        ):
+            with self.subTest(field=field):
+                bad = dict(self.immutable)
+                bad[field] = False
+                with self.assertRaises(self.module.StaleReleaseWorkCleanupOperationError):
+                    self.module.build_plan(self.verifier, self.closure, bad, [{"name": "main"}], [], [])
 
     def test_receipt_head_mismatch_is_rejected_before_planning(self) -> None:
         bad = dict(self.immutable)
