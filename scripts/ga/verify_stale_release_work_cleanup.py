@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+REPOSITORY = "Naveax/PSMatrix"
 STALE_PREFIXES = ("prod/", "ops/", "cleanup/", "work/", "agent/", "final/2.0.0-")
 ALLOWED_BRANCHES = {
     "main",
@@ -78,6 +79,7 @@ def verify(release_closure: dict[str, Any], immutable_release: dict[str, Any], b
         "kind": "psmatrix.release-stale-work-cleanup-verification",
         "version": "2.0.0",
         "status": "PASS",
+        "repository": REPOSITORY,
         "release_execution_head": execution_head,
         "release_tag": immutable_release.get("tag"),
         "branch_count_observed": len(branches),
@@ -136,11 +138,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Verify all stale PSMatrix release-work branches and open PRs are gone after immutable release publication")
     parser.add_argument("--release-closure", type=Path, required=True)
     parser.add_argument("--immutable-release-verification", type=Path, required=True)
-    parser.add_argument("--repository", default="Naveax/PSMatrix")
+    parser.add_argument("--repository", default=REPOSITORY)
     parser.add_argument("--gh", default="gh")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
+        if args.repository != REPOSITORY:
+            raise StaleReleaseWorkCleanupError(f"stale cleanup verification repository is frozen to {REPOSITORY}")
         branches = _paged_list(args.gh, f"repos/{args.repository}/branches")
         pulls = _paged_list(args.gh, f"repos/{args.repository}/pulls?state=open")
         value = verify(
@@ -151,7 +155,7 @@ def main() -> int:
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        print(f"stale_release_work_cleanup_verification=PASS branches={value['branch_count_observed']} open_prs={value['open_pr_count_observed']}")
+        print(f"stale_release_work_cleanup_verification=PASS repository={REPOSITORY} branches={value['branch_count_observed']} open_prs={value['open_pr_count_observed']}")
         print("stale_branch_pr_cleanup_completed=true")
         print("release_closed=false")
         return 0
