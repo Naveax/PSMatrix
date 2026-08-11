@@ -44,7 +44,16 @@ class FinalImmutableReleasePublicationContractTests(unittest.TestCase):
         self.assertEqual(self.contract["publication_asset_count"], 8)
         self.assertEqual(len(assets), 8)
         names = [row["name"] for row in assets]
-        self.assertEqual(names[:6], list(self.builder.EXPECTED_NAMES))
+        release_name = f"psmatrix-{self.builder._FINAL_VERSION}"
+        expected = [
+            f"{release_name}-py3-none-any.whl",
+            f"{release_name}-source.zip",
+            f"{release_name}-source.tar.gz",
+            f"{release_name}-windows-workers.zip",
+            f"{release_name}-windows-certification-kit.zip",
+            f"{release_name}-windows-provisioning-kit.zip",
+        ]
+        self.assertEqual(names[:6], expected)
         self.assertEqual(names[6:], ["psmatrix-2.0.0-release.json", "psmatrix-2.0.0-release-public.pem"])
         self.assertEqual(len(set(names)), 8)
 
