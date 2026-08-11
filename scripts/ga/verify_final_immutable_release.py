@@ -302,11 +302,19 @@ def _verify_github_release_attestation(gh: str, repository: str) -> None:
         )
 
 
+def _reject_symlink_components(path: Path, label: str) -> None:
+    current = path.expanduser().absolute()
+    while True:
+        if current.exists() and current.is_symlink():
+            raise FinalImmutableReleaseError(f"{label} may not traverse a symlink: {current}")
+        if current.parent == current:
+            break
+        current = current.parent
+
+
 def _read(path: Path, label: str) -> dict[str, Any]:
-    raw = path.expanduser()
-    if raw.is_symlink():
-        raise FinalImmutableReleaseError(f"{label} may not be a symlink")
-    resolved = raw.resolve()
+    _reject_symlink_components(path, label)
+    resolved = path.expanduser().resolve()
     if not resolved.is_file():
         raise FinalImmutableReleaseError(f"{label} is missing")
     value = json.loads(resolved.read_text(encoding="utf-8"))
