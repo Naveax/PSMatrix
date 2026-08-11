@@ -15,6 +15,9 @@ ALLOWED_WORKFLOWS = {
     ".github/workflows/powershell-source-parse-diagnostic.yml",
     ".github/workflows/verification-hardening-source-certification.yml",
 }
+ALLOWED_CONTRACTS = {
+    "ga-packs/03-authoritative-windows/final-immutable-release-publication-contract.json",
+}
 REQUIRED_HARDENING_PATHS = {
     "scripts/ga/verify_production_readiness_summary.py",
     "scripts/ga/verify_final_lock_repository_content.py",
@@ -61,7 +64,7 @@ def _paths(raw: bytes) -> list[str]:
 
 
 def _allowed(path: str) -> bool:
-    return path.startswith("scripts/ga/") or path.startswith("tests/") or path in ALLOWED_WORKFLOWS
+    return path.startswith("scripts/ga/") or path.startswith("tests/") or path in ALLOWED_WORKFLOWS or path in ALLOWED_CONTRACTS
 
 
 def _sha256(path: Path) -> str:
@@ -100,7 +103,7 @@ def certify(root: Path, baseline: str, private_scan: dict[str, Any]) -> dict[str
     unexpected = sorted(path for path in changed if not _allowed(path))
     if unexpected:
         raise HardeningSourceCertificationError(
-            "verification-hardening delta escaped the frozen tooling/test/workflow boundary: " + ",".join(unexpected)
+            "verification-hardening delta escaped the frozen tooling/test/workflow/contract boundary: " + ",".join(unexpected)
         )
     missing_required = sorted(REQUIRED_HARDENING_PATHS - set(changed))
     if missing_required:
@@ -124,7 +127,15 @@ def certify(root: Path, baseline: str, private_scan: dict[str, Any]) -> dict[str
             raise HardeningSourceCertificationError(f"changed path escapes repository: {relative}") from exc
         if not path.is_file() or path.is_symlink():
             raise HardeningSourceCertificationError(f"changed path is missing or unsafe: {relative}")
-        category = "workflow" if relative.startswith(".github/workflows/") else "test" if relative.startswith("tests/") else "ga-tooling"
+        category = (
+            "workflow"
+            if relative.startswith(".github/workflows/")
+            else "test"
+            if relative.startswith("tests/")
+            else "contract"
+            if relative in ALLOWED_CONTRACTS
+            else "ga-tooling"
+        )
         files.append(
             {
                 "path": relative,
@@ -148,7 +159,12 @@ def certify(root: Path, baseline: str, private_scan: dict[str, Any]) -> dict[str
             "baseline_files_modified": 0,
             "baseline_files_deleted": 0,
             "runtime_source_changes": 0,
-            "allowed_roots": ["scripts/ga/", "tests/", ".github/workflows/<hardening-only>"],
+            "allowed_roots": [
+                "scripts/ga/",
+                "tests/",
+                ".github/workflows/<hardening-only>",
+                "ga-packs/03-authoritative-windows/final-immutable-release-publication-contract.json",
+            ],
             "private_material_scan_pass": True,
             "private_material_findings": 0,
             "production_state_mutated": False,
