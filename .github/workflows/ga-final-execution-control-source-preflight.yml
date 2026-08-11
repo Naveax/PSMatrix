@@ -33,7 +33,7 @@ jobs:
     env:
       PYTHONPATH: ${{ github.workspace }}\src
       EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
-      READINESS_SOURCE_HEAD: 18eb9a7eed6fef807e709ce4377fd2709429066d
+      READINESS_SOURCE_HEAD: 6bfedb4979d0832daf01f3f452144f7bb7f830d6
       PRODUCER_SOURCE_ANCHOR: 89372d9432433237abdf677900093b399c4d0868
       FINAL_RELEASE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
 
