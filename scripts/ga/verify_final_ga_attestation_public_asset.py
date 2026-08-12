@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
+BUNDLE_VERIFIER_PATH = ROOT / "scripts" / "ga" / "verify_final_ga_attestation_bundle.py"
 ASSET_NAME = "psmatrix-2.0.0-final-ga-attestation.zip"
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -22,6 +24,21 @@ PRIVATE_MARKERS = (
     b"-----BEGIN OPENSSH PRIVATE KEY-----",
     b"-----BEGIN ED25519 PRIVATE KEY-----",
 )
+
+
+def _load_bundle_verifier():
+    spec = importlib.util.spec_from_file_location(
+        "psmatrix_final_ga_attestation_bundle_verifier",
+        BUNDLE_VERIFIER_PATH,
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError("unable to load canonical final GA attestation bundle verifier")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_BUNDLE_VERIFIER = _load_bundle_verifier()
 
 
 class FinalGAAttestationPublicAssetVerificationError(RuntimeError):
@@ -122,6 +139,43 @@ def _bundle_state(root: Path) -> tuple[str, list[dict[str, Any]], dict[str, byte
     return tree.hexdigest(), files, payloads
 
 
+def _verify_bundle_semantics(bundle_root: Path, expected_head: str) -> dict[str, Any]:
+    try:
+        value = _BUNDLE_VERIFIER.verify(bundle_root, expected_head)
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        _BUNDLE_VERIFIER.FinalAttestationBundleError,
+        TypeError,
+        ValueError,
+        KeyError,
+    ) as exc:
+        raise FinalGAAttestationPublicAssetVerificationError(
+            "canonical final attestation bundle semantic verification failed"
+        ) from exc
+    if (
+        not isinstance(value, dict)
+        or value.get("schema") != 1
+        or value.get("kind") != "psmatrix.final-ga-attestation-bundle-verification"
+        or value.get("version") != "2.0.0"
+        or value.get("status") != "PASS"
+        or value.get("execution_control_head") != expected_head
+        or value.get("required_gate_count") != 11
+        or value.get("provenance_run_count") != 11
+        or value.get("sha256_manifest_verified") is not True
+        or value.get("private_key_material_absent") is not True
+        or value.get("dsse_cryptographically_verified") is not True
+        or value.get("root_release_authorities_independent") is not True
+        or value.get("final_ga_attestation_verified") is not True
+        or value.get("ga_eligible") is not True
+    ):
+        raise FinalGAAttestationPublicAssetVerificationError(
+            "canonical final attestation bundle semantic verification boundary mismatch"
+        )
+    return value
+
+
 def _write_json_once(path: Path, payload: dict[str, Any]) -> Path:
     raw = _reject_symlink_components(path, "final attestation public asset verification output")
     parent = raw.parent
@@ -215,6 +269,8 @@ def verify(operation: dict[str, Any], public_asset_receipt: dict[str, Any], bund
     if tree_sha != expected_tree or len(files) != expected_count:
         raise FinalGAAttestationPublicAssetVerificationError("current final attestation bundle differs from independently verified materialized tree")
 
+    _verify_bundle_semantics(bundle_root, head)
+
     asset_raw = public_asset_receipt.get("asset_path")
     expected_sha = str(public_asset_receipt.get("asset_sha256") or "").lower()
     expected_size = public_asset_receipt.get("asset_size")
@@ -259,6 +315,7 @@ def verify(operation: dict[str, Any], public_asset_receipt: dict[str, Any], bund
         "member_count": len(files),
         "current_bundle_tree_sha256": tree_sha,
         "current_bundle_matches_verified_operation": True,
+        "canonical_bundle_semantics_verified": True,
         "current_asset_matches_producer_receipt": True,
         "zip_members_match_current_verified_bundle": True,
         "private_key_material_absent": True,
@@ -282,6 +339,7 @@ def main() -> int:
         written = _write_json_once(args.output, value)
         print(f"final_ga_attestation_public_asset_verification=PASS asset={ASSET_NAME} members={value['member_count']}")
         print("current_bundle_matches_verified_operation=true")
+        print("canonical_bundle_semantics_verified=true")
         print("zip_members_match_current_verified_bundle=true")
         print("final_ga_attestation_verified=true")
         print("ga_eligible=true")
