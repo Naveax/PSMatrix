@@ -29,6 +29,7 @@ jobs:
         run: >-
           python scripts/ga/scan_repository_private_material.py
           --root .
+          --expected-head "${GITHUB_SHA}"
           --output "${RUNNER_TEMP}/repository-private-material-scan.json"
 
       - name: Upload scan receipt
