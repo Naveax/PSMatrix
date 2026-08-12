@@ -16,6 +16,7 @@ WORKFLOWS = (
 USE_LINE = re.compile(
     r"^\s*(?:-\s+)?uses:\s*(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)@(?P<commit>[0-9a-f]{40})(?:\s+#.*)?$"
 )
+USE_KEY = re.compile(r"(?:^|[\s{,])(?:[\"']?uses[\"']?)\s*:")
 
 
 class VerificationHardeningActionLockError(RuntimeError):
@@ -67,12 +68,12 @@ def verify(root: Path) -> dict[str, Any]:
                 f"required hardening workflow is missing: {relative.as_posix()}"
             ) from exc
         for line_number, line in enumerate(text.splitlines(), start=1):
-            if "uses:" not in line:
+            if USE_KEY.search(line) is None:
                 continue
             match = USE_LINE.fullmatch(line)
             if match is None:
                 raise VerificationHardeningActionLockError(
-                    f"workflow action reference must be immutable 40-hex SHA: {relative.as_posix()}:{line_number}"
+                    f"workflow action reference must use canonical immutable uses syntax: {relative.as_posix()}:{line_number}"
                 )
             action = match.group("action")
             commit = match.group("commit")
