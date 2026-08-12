@@ -14,7 +14,6 @@ PIN_REFRESH_PATH = Path(__file__).with_name('verify_repository_workflow_pin_refr
 DEFAULT_BASELINE = '3ffc6b6d7cd58d64224f780aa819b50f50f72491'
 DEFAULT_EXPECTED_FILES = 76
 DEFAULT_EXPECTED_REPLACEMENTS = 167
-TEMPORARY_DIAGNOSTIC_WORKFLOW = '.github/workflows/core-test-diagnostics.yml'
 
 
 def _load(path: Path, name: str):
@@ -96,11 +95,7 @@ def certify(
     original_git = impl._git
 
     def allowed(path: str) -> bool:
-        return (
-            path == TEMPORARY_DIAGNOSTIC_WORKFLOW
-            or path in certified_paths
-            or original_allowed(path)
-        )
+        return path in certified_paths or original_allowed(path)
 
     impl._allowed = allowed
     impl._git = _filter_non_additive_git(original_git, certified_paths)
