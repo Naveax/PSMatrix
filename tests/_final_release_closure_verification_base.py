@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "ga" / "verify_final_release_closure.py"
@@ -115,6 +116,13 @@ class FinalReleaseClosureVerificationTests(unittest.TestCase):
             "final_repo_secret_scan_completed": True,
             "release_closed": False,
         }
+        self.immutable_reverify_patcher = patch.object(
+            self.module,
+            "_reverify_current_immutable_release",
+            side_effect=lambda *_args, **_kwargs: dict(self.release),
+        )
+        self.immutable_reverify = self.immutable_reverify_patcher.start()
+        self.addCleanup(self.immutable_reverify_patcher.stop)
 
     def test_all_five_plus_six_closures_are_required_for_release_closed(self) -> None:
         value = self.module.verify(
