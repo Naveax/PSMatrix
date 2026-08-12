@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -85,6 +87,90 @@ def _gh_json(gh: str, endpoint: str) -> Any:
         raise FinalGAEvaluatorRunError("gh api returned invalid JSON") from exc
 
 
+def _absolute(path: Path) -> Path:
+    raw = Path(path).expanduser()
+    return raw if raw.is_absolute() else Path.cwd() / raw
+
+
+def _reject_symlink_components(path: Path, *, label: str) -> Path:
+    raw = _absolute(path)
+    for component in [raw, *raw.parents]:
+        try:
+            mode = component.lstat().st_mode
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise FinalGAEvaluatorRunError(f"unable to inspect {label}: {component}") from exc
+        if stat.S_ISLNK(mode):
+            raise FinalGAEvaluatorRunError(f"{label} contains a symlink component: {component}")
+    return raw
+
+
+def _read_content_closure(path: Path) -> dict[str, Any]:
+    raw = _reject_symlink_components(path, label="content closure")
+    try:
+        resolved = raw.resolve(strict=True)
+        if not resolved.is_file():
+            raise FinalGAEvaluatorRunError("content closure must be a regular file")
+        value = json.loads(resolved.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise FinalGAEvaluatorRunError(f"unable to read content closure: {raw}") from exc
+    if not isinstance(value, dict):
+        raise FinalGAEvaluatorRunError("content closure must be a JSON object")
+    return value
+
+
+def _write_run_api_verification_receipt(path: Path, payload: dict[str, Any]) -> Path:
+    raw = _reject_symlink_components(path, label="evaluator run verification output")
+    parent = raw.parent
+    if not parent.exists() or not parent.is_dir():
+        raise FinalGAEvaluatorRunError("evaluator run verification output parent must already exist")
+    resolved_parent = parent.resolve(strict=True)
+    candidate = resolved_parent / raw.name
+    _reject_symlink_components(candidate, label="evaluator run verification output")
+    if candidate.exists() or candidate.is_symlink():
+        raise FinalGAEvaluatorRunError("evaluator run verification output must not already exist")
+
+    text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    fd: int | None = None
+    created_identity: tuple[int, int] | None = None
+    try:
+        fd = os.open(str(candidate), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        opened = os.fstat(fd)
+        created_identity = (opened.st_dev, opened.st_ino)
+        if not stat.S_ISREG(opened.st_mode):
+            raise FinalGAEvaluatorRunError("evaluator run verification output is not a regular file")
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            fd = None
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        current = candidate.lstat()
+        if stat.S_ISLNK(current.st_mode) or not stat.S_ISREG(current.st_mode):
+            raise FinalGAEvaluatorRunError("evaluator run verification output changed type during write")
+        if (current.st_dev, current.st_ino) != created_identity:
+            raise FinalGAEvaluatorRunError("evaluator run verification output path changed identity during write")
+        if candidate.read_text(encoding="utf-8") != text:
+            raise FinalGAEvaluatorRunError("evaluator run verification output read-back mismatch")
+        return candidate
+    except Exception:
+        if fd is not None:
+            os.close(fd)
+        if created_identity is not None:
+            try:
+                current = candidate.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                if (
+                    not stat.S_ISLNK(current.st_mode)
+                    and stat.S_ISREG(current.st_mode)
+                    and (current.st_dev, current.st_ino) == created_identity
+                ):
+                    candidate.unlink()
+        raise
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Verify final GA evaluator/root-signing run provenance after exact 11/11 evidence content closure")
     parser.add_argument("--run-id", type=int, required=True)
@@ -95,19 +181,19 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
-        content_closure = json.loads(args.content_closure.read_text(encoding="utf-8"))
+        content_closure = _read_content_closure(args.content_closure)
         run = _gh_json(args.gh, f"repos/{args.repository}/actions/runs/{args.run_id}")
         listing = _gh_json(args.gh, f"repos/{args.repository}/actions/runs/{args.run_id}/artifacts?per_page=100")
         if not isinstance(listing, dict) or not isinstance(listing.get("artifacts"), list):
             raise FinalGAEvaluatorRunError("invalid final evaluator artifact listing")
         value = verify(args.run_id, args.execution_head, content_closure, run, listing["artifacts"])
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        written = _write_run_api_verification_receipt(args.output, value)
         print("final_ga_evaluator_run_api_verification=PASS")
         print("content_verified_gate_count_before_dispatch=11")
         print("ga_root_signing_run_completed=true")
         print("final_attestation_content_verified=false")
         print("ga_eligible=false")
+        print(f"output={written}")
         return 0
     except (OSError, json.JSONDecodeError, FinalGAEvaluatorRunError, subprocess.SubprocessError, TypeError, ValueError) as exc:
         print(f"final GA evaluator run verification failed: {exc}", file=sys.stderr)
