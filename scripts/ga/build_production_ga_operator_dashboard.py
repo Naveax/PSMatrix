@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,36 @@ for _name in dir(_impl):
 OperatorDashboardError = _impl.OperatorDashboardError
 _original_build = _impl.build
 NINE_ASSET_COUNT = 9
+
+
+def _reject_symlink_components(path: Path, label: str) -> None:
+    expanded = path.expanduser()
+    parts = expanded.parts
+    if expanded.is_absolute():
+        current = Path(expanded.anchor)
+        start = 1
+    else:
+        current = Path(".")
+        start = 0
+    for part in parts[start:]:
+        current = current / part
+        if current.is_symlink():
+            raise OperatorDashboardError(
+                f"{label} may not traverse a symlink component"
+            )
+
+
+def _read(path: Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    _reject_symlink_components(path, "dashboard receipt")
+    resolved = path.expanduser().resolve()
+    if not resolved.is_file():
+        raise OperatorDashboardError(f"dashboard receipt is missing or unsafe: {path}")
+    value = json.loads(resolved.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise OperatorDashboardError(f"JSON root must be an object: {path}")
+    return value
 
 
 def _legacy_cardinality_view(
@@ -102,6 +133,8 @@ def build(
     return value
 
 
+_impl._reject_symlink_components = _reject_symlink_components
+_impl._read = _read
 _impl.build = build
 main = _impl.main
 
