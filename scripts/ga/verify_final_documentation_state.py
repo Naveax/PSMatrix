@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import stat
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
+ROOT = Path(__file__).resolve().parents[2]
 REPOSITORY = "Naveax/PSMatrix"
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -18,7 +21,114 @@ class FinalDocumentationStateError(RuntimeError):
     pass
 
 
-def verify(record: dict[str, Any], immutable_release: dict[str, Any], repository_head: str) -> dict[str, Any]:
+def _repository_root(path: Path) -> Path:
+    _reject_symlink_components(path, "documentation repository root")
+    try:
+        resolved = path.expanduser().resolve(strict=True)
+    except OSError as exc:
+        raise FinalDocumentationStateError("documentation repository root is missing or unsafe") from exc
+    if not resolved.is_dir():
+        raise FinalDocumentationStateError("documentation repository root must be a directory")
+    return resolved
+
+
+def _git_bytes(repository_root: Path, *args: str) -> bytes:
+    root = _repository_root(repository_root)
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(root), *args],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError as exc:
+        raise FinalDocumentationStateError("unable to execute git for documentation verification") from exc
+    if completed.returncode != 0:
+        raise FinalDocumentationStateError(
+            f"git documentation verification command failed: {' '.join(args[:2])}"
+        )
+    return completed.stdout
+
+
+def _git_ascii(repository_root: Path, *args: str) -> str:
+    try:
+        return _git_bytes(repository_root, *args).decode("ascii").strip()
+    except UnicodeDecodeError as exc:
+        raise FinalDocumentationStateError("git documentation verification returned non-ASCII identity data") from exc
+
+
+def _verify_committed_document_bytes(
+    repository_root: Path,
+    repository_head: str,
+    documents: list[dict[str, Any]],
+) -> None:
+    current_head = _git_ascii(repository_root, "rev-parse", "--verify", "HEAD").lower()
+    if SHA40.fullmatch(current_head) is None or current_head != repository_head:
+        raise FinalDocumentationStateError(
+            "documentation repository head does not match the current checkout HEAD"
+        )
+    commit_head = _git_ascii(
+        repository_root,
+        "rev-parse",
+        "--verify",
+        f"{repository_head}^{{commit}}",
+    ).lower()
+    if commit_head != repository_head:
+        raise FinalDocumentationStateError(
+            "documentation repository head is not the exact verified commit"
+        )
+
+    for item in documents:
+        path = item["path"]
+        expected_digest = str(item["sha256"]).lower()
+        expected_size = item["size"]
+        tree_output = _git_bytes(
+            repository_root,
+            "ls-tree",
+            "-z",
+            repository_head,
+            "--",
+            path,
+        )
+        rows = [row for row in tree_output.split(b"\0") if row]
+        if len(rows) != 1 or b"\t" not in rows[0]:
+            raise FinalDocumentationStateError(
+                f"documentation entry is not an exact tracked file at repository head: {path}"
+            )
+        metadata, raw_path = rows[0].split(b"\t", 1)
+        try:
+            mode, object_type, object_sha = metadata.decode("ascii").split()
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise FinalDocumentationStateError(
+                f"documentation git tree entry is invalid: {path}"
+            ) from exc
+        if (
+            mode not in {"100644", "100755"}
+            or object_type != "blob"
+            or SHA40.fullmatch(object_sha.lower()) is None
+            or raw_path != path.encode("utf-8")
+        ):
+            raise FinalDocumentationStateError(
+                f"documentation entry is not a regular tracked blob at repository head: {path}"
+            )
+        payload = _git_bytes(repository_root, "cat-file", "blob", object_sha)
+        if len(payload) != expected_size:
+            raise FinalDocumentationStateError(
+                f"documentation entry size differs from committed git object: {path}"
+            )
+        if hashlib.sha256(payload).hexdigest() != expected_digest:
+            raise FinalDocumentationStateError(
+                f"documentation entry digest differs from committed git object: {path}"
+            )
+
+
+def verify(
+    record: dict[str, Any],
+    immutable_release: dict[str, Any],
+    repository_head: str,
+    *,
+    repository_root: Path = ROOT,
+) -> dict[str, Any]:
     if immutable_release.get("schema") != 1 or immutable_release.get("kind") != "psmatrix.final-immutable-release-verification" or immutable_release.get("version") != "2.0.0" or immutable_release.get("status") != "PASS":
         raise FinalDocumentationStateError("immutable release verification identity/status mismatch")
     if (
@@ -69,11 +179,18 @@ def verify(record: dict[str, Any], immutable_release: dict[str, Any], repository
             raise FinalDocumentationStateError("documentation entry must be an object")
         path = item.get("path")
         digest = str(item.get("sha256") or "").lower()
-        if not isinstance(path, str) or not path or path in seen or Path(path).is_absolute() or ".." in Path(path).parts or SHA256.fullmatch(digest) is None:
+        if not isinstance(path, str) or not path or path in seen or Path(path).is_absolute() or ".." in Path(path).parts or "\x00" in path or SHA256.fullmatch(digest) is None:
             raise FinalDocumentationStateError(f"documentation entry is invalid: {path}")
         if type(item.get("size")) is not int or item["size"] <= 0:
             raise FinalDocumentationStateError(f"documentation entry size is invalid: {path}")
         seen.add(path)
+
+    _verify_committed_document_bytes(
+        repository_root,
+        repository_head,
+        documents,
+    )
+
     return {
         "schema": 1,
         "kind": "psmatrix.final-documentation-state-verification",
@@ -87,6 +204,8 @@ def verify(record: dict[str, Any], immutable_release: dict[str, Any], repository
         "execution_control_head": immutable_release["release_execution_control_head"],
         "document_count": record["document_count"],
         "documentation_source_sha256": source_sha,
+        "repository_head_matches_checkout": True,
+        "committed_document_bytes_verified": True,
         "immutable_publication_operation_verified": True,
         "immutable_publication_asset_count": 9,
         "immutable_release_asset_set_verified": True,
@@ -220,7 +339,7 @@ def _write_final_documentation_verification_receipt(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Verify a final 2.0.0 GA documentation closure record against the independently verified asset-bound immutable release")
+    parser = argparse.ArgumentParser(description="Verify a final 2.0.0 GA documentation closure record against the independently verified asset-bound immutable release and exact committed repository bytes")
     parser.add_argument("--documentation-record", type=Path, required=True)
     parser.add_argument("--immutable-release-verification", type=Path, required=True)
     parser.add_argument("--repository-head", required=True)
@@ -234,6 +353,8 @@ def main() -> int:
         )
         _write_final_documentation_verification_receipt(args.output, value)
         print(f"final_documentation_state_verification=PASS documents={value['document_count']} head={value['documentation_repository_head']}")
+        print("repository_head_matches_checkout=true")
+        print("committed_document_bytes_verified=true")
         print("immutable_release_asset_set_verified=true")
         print("immutable_release_attestation_verified=true")
         print("documentation_final_state_closed=true")
