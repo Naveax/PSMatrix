@@ -32,8 +32,19 @@ for _name, _value in vars(_impl).items():
 _original_verify = _impl.verify
 
 
+class _PublicAPI:
+    def __getattr__(self, name: str):
+        try:
+            return globals()[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+
+_PUBLIC_API = _PublicAPI()
+
+
 def _module():
-    return sys.modules[__name__]
+    return _PUBLIC_API
 
 
 def _publication_contract_assets(value: dict[str, Any], release_commit: str) -> dict[str, dict[str, str]]:
