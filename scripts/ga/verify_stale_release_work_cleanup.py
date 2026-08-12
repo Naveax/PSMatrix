@@ -39,7 +39,7 @@ def verify(release_closure: dict[str, Any], immutable_release: dict[str, Any], b
         or immutable_release.get("status") != "PASS"
         or immutable_release.get("repository") != REPOSITORY
         or immutable_release.get("publication_operation_verified") is not True
-        or immutable_release.get("publication_asset_count") != 8
+        or immutable_release.get("publication_asset_count") != 9
         or immutable_release.get("release_asset_set_verified") is not True
         or immutable_release.get("github_release_attestation_verified") is not True
         or immutable_release.get("final_immutable_ga_anchor_created") is not True
@@ -104,7 +104,7 @@ def verify(release_closure: dict[str, Any], immutable_release: dict[str, Any], b
         "stale_prefixes": list(STALE_PREFIXES),
         "allowed_branches": sorted(ALLOWED_BRANCHES),
         "immutable_publication_operation_verified_before_cleanup": True,
-        "immutable_publication_asset_count": 8,
+        "immutable_publication_asset_count": 9,
         "immutable_release_asset_set_verified_before_cleanup": True,
         "immutable_release_attestation_verified_before_cleanup": True,
         "immutable_release_verified_before_cleanup": True,

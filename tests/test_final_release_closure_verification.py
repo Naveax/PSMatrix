@@ -30,9 +30,32 @@ class FinalReleaseClosureVerificationTests(
         self.release[
             "publication_receipt_output_reserved_before_mutation"
         ] = True
+        self.release["final_ga_attestation_public_asset_verified"] = True
 
     def test_publication_reservation_proof_is_required_for_release_closed(self) -> None:
         field = "publication_receipt_output_reserved_before_mutation"
+        self.release.pop(field)
+        with self.assertRaises(self.module.FinalReleaseClosureError):
+            self.module.verify(
+                self.closure,
+                self.release,
+                self.documentation,
+                self.cleanup,
+                self.scan,
+            )
+        self.setUp()
+        self.release[field] = False
+        with self.assertRaises(self.module.FinalReleaseClosureError):
+            self.module.verify(
+                self.closure,
+                self.release,
+                self.documentation,
+                self.cleanup,
+                self.scan,
+            )
+
+    def test_final_ga_attestation_public_asset_proof_is_required_for_release_closed(self) -> None:
+        field = "final_ga_attestation_public_asset_verified"
         self.release.pop(field)
         with self.assertRaises(self.module.FinalReleaseClosureError):
             self.module.verify(
@@ -103,6 +126,7 @@ class FinalReleaseClosureVerificationTests(
         self.assertTrue(
             value["publication_receipt_output_reserved_before_mutation"]
         )
+        self.assertTrue(value["final_ga_attestation_public_asset_verified"])
         self.assertTrue(value["cleanup_audit_transaction_verified"])
 
     def test_source_is_only_component_allowed_to_emit_release_closed_true(self) -> None:
@@ -114,6 +138,7 @@ class FinalReleaseClosureVerificationTests(
         self.assertIn('"post_ga_operation_count": 6', text)
         self.assertIn('"release_closed": True', text)
         self.assertIn("release_asset_set_verified", text)
+        self.assertIn("final_ga_attestation_public_asset_verified", text)
         self.assertIn("github_release_attestation_verified", text)
         self.assertIn("post_ga_receipts_bound", text)
         self.assertIn("documentation_repository_head", text)

@@ -44,7 +44,7 @@ class FinalReleaseClosureVerificationTests(unittest.TestCase):
             "release_execution_control_head": self.execution_head,
             "frozen_final_release_commit": "c" * 40,
             "publication_operation_verified": True,
-            "publication_asset_count": 8,
+            "publication_asset_count": 9,
             "release_asset_set_verified": True,
             "github_release_attestation_verified": True,
             "release_tag_created": True,
@@ -65,7 +65,7 @@ class FinalReleaseClosureVerificationTests(unittest.TestCase):
             "release_id": 77,
             "execution_control_head": self.execution_head,
             "immutable_publication_operation_verified": True,
-            "immutable_publication_asset_count": 8,
+            "immutable_publication_asset_count": 9,
             "immutable_release_asset_set_verified": True,
             "immutable_release_attestation_verified": True,
             "documentation_final_state_closed": True,
@@ -85,7 +85,7 @@ class FinalReleaseClosureVerificationTests(unittest.TestCase):
             "stale_branch_count": 0,
             "stale_open_pr_count": 0,
             "immutable_publication_operation_verified_before_cleanup": True,
-            "immutable_publication_asset_count": 8,
+            "immutable_publication_asset_count": 9,
             "immutable_release_asset_set_verified_before_cleanup": True,
             "immutable_release_attestation_verified_before_cleanup": True,
             "immutable_release_verified_before_cleanup": True,
@@ -125,7 +125,7 @@ class FinalReleaseClosureVerificationTests(unittest.TestCase):
         self.assertEqual(value["preconditions_passed"], 5)
         self.assertEqual(value["post_ga_operations_passed"], 6)
         self.assertTrue(value["publication_operation_verified"])
-        self.assertEqual(value["publication_asset_count"], 8)
+        self.assertEqual(value["publication_asset_count"], 9)
         self.assertTrue(value["release_asset_set_verified"])
         self.assertTrue(value["github_release_attestation_verified"])
         self.assertTrue(value["post_ga_receipts_bound_before_final_scan"])
@@ -207,6 +207,25 @@ class FinalReleaseClosureVerificationTests(unittest.TestCase):
                 self.closure, self.release, self.documentation, self.cleanup, self.scan
             )
 
+    def test_old_eight_asset_receipts_cannot_close_release(self) -> None:
+        for target, field in (
+            (self.release, "publication_asset_count"),
+            (self.documentation, "immutable_publication_asset_count"),
+            (self.cleanup, "immutable_publication_asset_count"),
+        ):
+            with self.subTest(field=field):
+                original = target[field]
+                target[field] = 8
+                with self.assertRaises(self.module.FinalReleaseClosureError):
+                    self.module.verify(
+                        self.closure,
+                        self.release,
+                        self.documentation,
+                        self.cleanup,
+                        self.scan,
+                    )
+                target[field] = original
+
     def test_old_or_asset_unbound_immutable_receipt_cannot_close_release(self) -> None:
         for field in (
             "publication_operation_verified",
@@ -225,7 +244,7 @@ class FinalReleaseClosureVerificationTests(unittest.TestCase):
                         self.scan,
                     )
                 self.release[field] = original
-        self.release["publication_asset_count"] = 7
+        self.release["publication_asset_count"] = 8
         with self.assertRaises(self.module.FinalReleaseClosureError):
             self.module.verify(
                 self.closure, self.release, self.documentation, self.cleanup, self.scan

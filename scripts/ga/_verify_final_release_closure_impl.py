@@ -40,7 +40,7 @@ def verify(
         immutable_release.get("repository") != REPOSITORY
         or immutable_release.get("release_execution_control_head") != execution_head
         or immutable_release.get("publication_operation_verified") is not True
-        or immutable_release.get("publication_asset_count") != 8
+        or immutable_release.get("publication_asset_count") != 9
         or immutable_release.get("release_asset_set_verified") is not True
         or immutable_release.get("github_release_attestation_verified") is not True
         or immutable_release.get("release_tag_created") is not True
@@ -60,7 +60,7 @@ def verify(
         or documentation.get("release_tag") != immutable_release.get("tag")
         or documentation.get("release_id") != immutable_release.get("release_id")
         or documentation.get("immutable_publication_operation_verified") is not True
-        or documentation.get("immutable_publication_asset_count") != 8
+        or documentation.get("immutable_publication_asset_count") != 9
         or documentation.get("immutable_release_asset_set_verified") is not True
         or documentation.get("immutable_release_attestation_verified") is not True
         or documentation.get("documentation_final_state_closed") is not True
@@ -80,7 +80,7 @@ def verify(
         or cleanup.get("stale_branch_count") != 0
         or cleanup.get("stale_open_pr_count") != 0
         or cleanup.get("immutable_publication_operation_verified_before_cleanup") is not True
-        or cleanup.get("immutable_publication_asset_count") != 8
+        or cleanup.get("immutable_publication_asset_count") != 9
         or cleanup.get("immutable_release_asset_set_verified_before_cleanup") is not True
         or cleanup.get("immutable_release_attestation_verified_before_cleanup") is not True
         or cleanup.get("immutable_release_verified_before_cleanup") is not True
@@ -140,7 +140,7 @@ def verify(
         "post_ga_operation_count": 6,
         "post_ga_operations_passed": 6,
         "publication_operation_verified": True,
-        "publication_asset_count": 8,
+        "publication_asset_count": 9,
         "release_asset_set_verified": True,
         "github_release_attestation_verified": True,
         "post_ga_receipts_bound_before_final_scan": True,

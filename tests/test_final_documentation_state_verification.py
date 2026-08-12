@@ -31,7 +31,7 @@ class FinalDocumentationStateVerificationTests(unittest.TestCase):
             "release_execution_control_head": "a" * 40,
             "frozen_final_release_commit": "b" * 40,
             "publication_operation_verified": True,
-            "publication_asset_count": 8,
+            "publication_asset_count": 9,
             "release_asset_set_verified": True,
             "github_release_attestation_verified": True,
             "release_tag_created": True,
@@ -74,7 +74,7 @@ class FinalDocumentationStateVerificationTests(unittest.TestCase):
         self.assertEqual(value["repository"], "Naveax/PSMatrix")
         self.assertEqual(value["document_count"], 2)
         self.assertTrue(value["immutable_publication_operation_verified"])
-        self.assertEqual(value["immutable_publication_asset_count"], 8)
+        self.assertEqual(value["immutable_publication_asset_count"], 9)
         self.assertTrue(value["immutable_release_asset_set_verified"])
         self.assertTrue(value["immutable_release_attestation_verified"])
         self.assertTrue(value["documentation_final_state_closed"])
@@ -93,10 +93,10 @@ class FinalDocumentationStateVerificationTests(unittest.TestCase):
                 with self.assertRaises(self.module.FinalDocumentationStateError):
                     self.module.verify(self.record, self.release, self.repository_head)
                 self.release[field] = original
-        self.release["publication_asset_count"] = 7
+        self.release["publication_asset_count"] = 8
         with self.assertRaises(self.module.FinalDocumentationStateError):
             self.module.verify(self.record, self.release, self.repository_head)
-        self.release["publication_asset_count"] = 8
+        self.release["publication_asset_count"] = 9
         self.release["repository"] = "someone-else/PSMatrix"
         with self.assertRaises(self.module.FinalDocumentationStateError):
             self.module.verify(self.record, self.release, self.repository_head)
