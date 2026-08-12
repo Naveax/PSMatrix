@@ -31,25 +31,35 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _reject_symlink_components(path: Path, label: str) -> None:
-    current = path.expanduser().absolute()
-    while True:
-        if current.exists() and current.is_symlink():
-            raise FinalGAAttestationPublicAssetError(f"{label} may not traverse a symlink: {current}")
-        if current.parent == current:
-            break
-        current = current.parent
+def _absolute(path: Path) -> Path:
+    raw = Path(path).expanduser()
+    return raw if raw.is_absolute() else Path.cwd() / raw
+
+
+def _reject_symlink_components(path: Path, label: str) -> Path:
+    raw = _absolute(path)
+    for component in [raw, *raw.parents]:
+        try:
+            mode = component.lstat().st_mode
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise FinalGAAttestationPublicAssetError(f"unable to inspect {label}: {component}") from exc
+        if stat.S_ISLNK(mode):
+            raise FinalGAAttestationPublicAssetError(f"{label} may not traverse a symlink: {component}")
+    return raw
 
 
 def _safe_json(path: Path, label: str) -> tuple[dict[str, Any], Path]:
-    _reject_symlink_components(path, label)
-    resolved = path.expanduser().resolve()
-    if not resolved.is_file():
-        raise FinalGAAttestationPublicAssetError(f"{label} is missing")
+    raw = _reject_symlink_components(path, label)
     try:
+        resolved = raw.resolve(strict=True)
+        item = resolved.lstat()
+        if not stat.S_ISREG(item.st_mode):
+            raise FinalGAAttestationPublicAssetError(f"{label} must be a regular file")
         value = json.loads(resolved.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise FinalGAAttestationPublicAssetError(f"{label} JSON is invalid") from exc
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise FinalGAAttestationPublicAssetError(f"unable to read {label}") from exc
     if not isinstance(value, dict):
         raise FinalGAAttestationPublicAssetError(f"{label} root must be an object")
     return value, resolved
@@ -104,10 +114,14 @@ def _validate_operation(value: dict[str, Any], operation_path: Path) -> str:
 
 
 def _bundle_files(root: Path) -> list[tuple[str, Path, bytes]]:
-    _reject_symlink_components(root, "final attestation bundle root")
-    resolved = root.expanduser().resolve()
-    if not resolved.is_dir():
-        raise FinalGAAttestationPublicAssetError("final attestation bundle root is missing")
+    raw = _reject_symlink_components(root, "final attestation bundle root")
+    try:
+        resolved = raw.resolve(strict=True)
+        root_info = resolved.lstat()
+    except OSError as exc:
+        raise FinalGAAttestationPublicAssetError("unable to inspect final attestation bundle root") from exc
+    if not stat.S_ISDIR(root_info.st_mode):
+        raise FinalGAAttestationPublicAssetError("final attestation bundle root must be a real directory")
     required = {
         "final-ga-attestation-status.json",
         "final-ga-evaluator-candidate-status.json",
@@ -120,13 +134,20 @@ def _bundle_files(root: Path) -> list[tuple[str, Path, bytes]]:
     }
     rows: list[tuple[str, Path, bytes]] = []
     for path in sorted(resolved.rglob("*")):
-        if path.is_symlink():
+        try:
+            mode = path.lstat().st_mode
+        except OSError as exc:
+            raise FinalGAAttestationPublicAssetError(f"unable to inspect attestation bundle member: {path.name}") from exc
+        if stat.S_ISLNK(mode):
             raise FinalGAAttestationPublicAssetError(f"symlink found in verified attestation bundle: {path.name}")
-        if path.is_file():
-            relative = path.relative_to(resolved).as_posix()
-            if relative.startswith("/") or ".." in Path(relative).parts:
-                raise FinalGAAttestationPublicAssetError(f"unsafe attestation bundle member: {relative}")
-            rows.append((relative, path, path.read_bytes()))
+        if stat.S_ISDIR(mode):
+            continue
+        if not stat.S_ISREG(mode):
+            raise FinalGAAttestationPublicAssetError(f"unsupported filesystem entry in verified attestation bundle: {path.name}")
+        relative = path.relative_to(resolved).as_posix()
+        if relative.startswith("/") or ".." in Path(relative).parts:
+            raise FinalGAAttestationPublicAssetError(f"unsafe attestation bundle member: {relative}")
+        rows.append((relative, path, path.read_bytes()))
     names = {row[0] for row in rows}
     if not required.issubset(names):
         raise FinalGAAttestationPublicAssetError("verified attestation bundle is missing required public verification files")
@@ -136,16 +157,25 @@ def _bundle_files(root: Path) -> list[tuple[str, Path, bytes]]:
 
 
 def _open_exclusive(path: Path):
-    _reject_symlink_components(path, "final attestation public asset output")
-    absolute = path.expanduser().absolute()
+    absolute = _reject_symlink_components(path, "final attestation public asset output")
     if absolute.name != ASSET_NAME:
         raise FinalGAAttestationPublicAssetError(f"final attestation public asset name must be {ASSET_NAME}")
-    if absolute.exists():
+    try:
+        absolute.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise FinalGAAttestationPublicAssetError("unable to inspect final attestation public asset output") from exc
+    else:
         raise FinalGAAttestationPublicAssetError("final attestation public asset output must not already exist")
     parent = absolute.parent
     _reject_symlink_components(parent, "final attestation public asset output parent")
-    resolved_parent = parent.resolve()
-    if not resolved_parent.is_dir():
+    try:
+        resolved_parent = parent.resolve(strict=True)
+        parent_info = resolved_parent.lstat()
+    except OSError as exc:
+        raise FinalGAAttestationPublicAssetError("final attestation public asset output parent must already exist") from exc
+    if not stat.S_ISDIR(parent_info.st_mode):
         raise FinalGAAttestationPublicAssetError("final attestation public asset output parent must already exist")
     candidate = resolved_parent / absolute.name
     try:
@@ -160,6 +190,62 @@ def _open_exclusive(path: Path):
     fd = os.open(candidate, flags, 0o600)
     info = os.fstat(fd)
     return os.fdopen(fd, "w+b"), candidate, (int(info.st_dev), int(info.st_ino))
+
+
+def _write_json_once(path: Path, payload: dict[str, Any], label: str) -> Path:
+    raw = _reject_symlink_components(path, label)
+    parent = raw.parent
+    try:
+        resolved_parent = parent.resolve(strict=True)
+        parent_info = resolved_parent.lstat()
+    except OSError as exc:
+        raise FinalGAAttestationPublicAssetError(f"{label} parent must already exist") from exc
+    if not stat.S_ISDIR(parent_info.st_mode):
+        raise FinalGAAttestationPublicAssetError(f"{label} parent must already exist")
+    candidate = resolved_parent / raw.name
+    _reject_symlink_components(candidate, label)
+    try:
+        candidate.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise FinalGAAttestationPublicAssetError(f"unable to inspect {label}") from exc
+    else:
+        raise FinalGAAttestationPublicAssetError(f"{label} must not already exist")
+    text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    fd: int | None = None
+    identity: tuple[int, int] | None = None
+    try:
+        fd = os.open(str(candidate), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        opened = os.fstat(fd)
+        identity = (int(opened.st_dev), int(opened.st_ino))
+        if not stat.S_ISREG(opened.st_mode):
+            raise FinalGAAttestationPublicAssetError(f"{label} is not a regular file")
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            fd = None
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        current = candidate.lstat()
+        if stat.S_ISLNK(current.st_mode) or not stat.S_ISREG(current.st_mode):
+            raise FinalGAAttestationPublicAssetError(f"{label} changed type during write")
+        if (int(current.st_dev), int(current.st_ino)) != identity:
+            raise FinalGAAttestationPublicAssetError(f"{label} path changed identity during write")
+        if candidate.read_text(encoding="utf-8") != text:
+            raise FinalGAAttestationPublicAssetError(f"{label} read-back mismatch")
+        return candidate
+    except Exception:
+        if fd is not None:
+            os.close(fd)
+        if identity is not None:
+            try:
+                current = candidate.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                if not stat.S_ISLNK(current.st_mode) and stat.S_ISREG(current.st_mode) and (int(current.st_dev), int(current.st_ino)) == identity:
+                    candidate.unlink()
+        raise
 
 
 def build(operation_path: Path, bundle_root: Path, output: Path) -> dict[str, Any]:
@@ -238,16 +324,14 @@ def main() -> int:
     args = parser.parse_args()
     try:
         value = build(args.attestation_operation, args.bundle_root, args.output)
-        if args.receipt.exists():
-            raise FinalGAAttestationPublicAssetError("public attestation asset receipt must not already exist")
-        args.receipt.parent.mkdir(parents=True, exist_ok=True)
-        args.receipt.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        written = _write_json_once(args.receipt, value, "public attestation asset receipt")
         print(f"final_ga_attestation_public_asset=PASS asset={ASSET_NAME} members={value['member_count']}")
         print("final_ga_attestation_verified=true")
         print("ga_eligible=true")
         print("release_closed=false")
+        print(f"receipt={written}")
         return 0
-    except (OSError, json.JSONDecodeError, zipfile.BadZipFile, FinalGAAttestationPublicAssetError, TypeError, ValueError, KeyError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, zipfile.BadZipFile, FinalGAAttestationPublicAssetError, TypeError, ValueError, KeyError) as exc:
         print(f"final GA attestation public asset build failed: {exc}", file=sys.stderr)
         return 1
 
