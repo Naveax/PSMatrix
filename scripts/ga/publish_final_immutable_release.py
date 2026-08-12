@@ -34,8 +34,19 @@ EXPECTED_ASSETS = dict(_impl.EXPECTED_ASSETS)
 EXPECTED_ASSETS[_nine.ROLE] = (_nine.NAME, _nine.SOURCE)
 
 
+class _PublicAPI:
+    def __getattr__(self, name: str):
+        try:
+            return globals()[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+
+_PUBLIC_API = _PublicAPI()
+
+
 def _module():
-    return sys.modules[__name__]
+    return _PUBLIC_API
 
 
 def _sync_impl_symbols(*names: str) -> None:
