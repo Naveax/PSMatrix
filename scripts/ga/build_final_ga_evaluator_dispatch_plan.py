@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
+import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -157,14 +159,88 @@ def build(
     }
 
 
+def _absolute(path: Path) -> Path:
+    raw = Path(path).expanduser()
+    return raw if raw.is_absolute() else Path.cwd() / raw
+
+
+def _reject_symlink_components(path: Path, *, label: str) -> Path:
+    raw = _absolute(path)
+    for component in [raw, *raw.parents]:
+        try:
+            mode = component.lstat().st_mode
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise FinalGAEvaluatorDispatchPlanError(f"unable to inspect {label}: {component}") from exc
+        if stat.S_ISLNK(mode):
+            raise FinalGAEvaluatorDispatchPlanError(f"{label} contains a symlink component: {component}")
+    return raw
+
+
 def _read(path: Path, label: str) -> dict[str, Any]:
+    raw = _reject_symlink_components(path, label=label)
     try:
-        value = json.loads(path.resolve().read_text(encoding="utf-8"))
+        resolved = raw.resolve(strict=True)
+        if not resolved.is_file():
+            raise FinalGAEvaluatorDispatchPlanError(f"{label} must be a regular file")
+        value = json.loads(resolved.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise FinalGAEvaluatorDispatchPlanError(f"unable to read {label}: {path}") from exc
+        raise FinalGAEvaluatorDispatchPlanError(f"unable to read {label}: {raw}") from exc
     if not isinstance(value, dict):
         raise FinalGAEvaluatorDispatchPlanError(f"{label} must be a JSON object")
     return value
+
+
+def _write_plan(path: Path, payload: dict[str, Any]) -> Path:
+    raw = _reject_symlink_components(path, label="dispatch plan output")
+    parent = raw.parent
+    if not parent.exists() or not parent.is_dir():
+        raise FinalGAEvaluatorDispatchPlanError("dispatch plan output parent must already exist")
+    resolved_parent = parent.resolve(strict=True)
+    candidate = resolved_parent / raw.name
+    _reject_symlink_components(candidate, label="dispatch plan output")
+    if candidate.exists() or candidate.is_symlink():
+        raise FinalGAEvaluatorDispatchPlanError("dispatch plan output must not already exist")
+
+    text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    fd: int | None = None
+    created_identity: tuple[int, int] | None = None
+    try:
+        fd = os.open(str(candidate), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        opened = os.fstat(fd)
+        created_identity = (opened.st_dev, opened.st_ino)
+        if not stat.S_ISREG(opened.st_mode):
+            raise FinalGAEvaluatorDispatchPlanError("dispatch plan output is not a regular file")
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            fd = None
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        current = candidate.lstat()
+        if stat.S_ISLNK(current.st_mode) or not stat.S_ISREG(current.st_mode):
+            raise FinalGAEvaluatorDispatchPlanError("dispatch plan output changed type during write")
+        if (current.st_dev, current.st_ino) != created_identity:
+            raise FinalGAEvaluatorDispatchPlanError("dispatch plan output path changed identity during write")
+        if candidate.read_text(encoding="utf-8") != text:
+            raise FinalGAEvaluatorDispatchPlanError("dispatch plan output read-back mismatch")
+        return candidate
+    except Exception:
+        if fd is not None:
+            os.close(fd)
+        if created_identity is not None:
+            try:
+                current = candidate.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                if (
+                    not stat.S_ISLNK(current.st_mode)
+                    and stat.S_ISREG(current.st_mode)
+                    and (current.st_dev, current.st_ino) == created_identity
+                ):
+                    candidate.unlink()
+        raise
 
 
 def main() -> int:
@@ -182,9 +258,9 @@ def main() -> int:
             api_verification=_read(args.api_verification, "final evidence API verification"),
             contract=_read(args.contract, "final evaluator contract"),
         )
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        written = _write_plan(args.output, value)
         print("final_ga_evaluator_dispatch_plan=PASS inputs=11 dispatch_performed=false")
+        print(f"output={written}")
         print(f"ref={value['ref']}")
         print(f"execution_head={value['execution_head']}")
         print("final_evidence_api_verified=true")
