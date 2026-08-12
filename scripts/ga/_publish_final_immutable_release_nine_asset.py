@@ -147,6 +147,15 @@ def verify_remote_assets(api: Any, remote: list[dict[str, Any]], plan: dict[str,
             _fail(api, f"GitHub release asset digest/size/state mismatch: {name}")
 
 
+def verify_published_remote(api: Any, gh: str, plan: dict[str, Any], release_id: int) -> None:
+    published = api._view_release(gh)
+    final_release_id = api._verify_release_identity(published, plan, published=True)
+    if final_release_id != release_id:
+        _fail(api, "release database identity changed across publication")
+    api._verify_tag(gh, plan["target_commit"])
+    api._verify_remote_assets(api._list_assets(gh, release_id), plan)
+
+
 def execute_plan(api: Any, plan: dict[str, Any], gh: str) -> dict[str, Any]:
     if (
         plan.get("status") != "DRY_RUN"
@@ -180,15 +189,10 @@ def execute_plan(api: Any, plan: dict[str, Any], gh: str) -> dict[str, Any]:
         release_id = api._verify_release_identity(draft, plan, published=False)
         for row in plan["publication_assets"]:
             api._upload_asset(gh, row["path"])
-        verify_remote_assets(api, api._list_assets(gh, release_id), plan)
+        api._verify_remote_assets(api._list_assets(gh, release_id), plan)
         publish_attempted = True
         api._publish(gh)
-        published = api._view_release(gh)
-        final_release_id = api._verify_release_identity(published, plan, published=True)
-        if final_release_id != release_id:
-            _fail(api, "release database identity changed across publication")
-        api._verify_tag(gh, plan["target_commit"])
-        verify_remote_assets(api, api._list_assets(gh, release_id), plan)
+        api._verify_published_remote(gh, plan, release_id)
     except Exception as exc:
         if not publish_attempted:
             try:
@@ -206,12 +210,7 @@ def execute_plan(api: Any, plan: dict[str, Any], gh: str) -> dict[str, Any]:
         if release_id is None:
             raise
         try:
-            published = api._view_release(gh)
-            final_release_id = api._verify_release_identity(published, plan, published=True)
-            if final_release_id != release_id:
-                _fail(api, "release database identity changed during post-publish reconciliation")
-            api._verify_tag(gh, plan["target_commit"])
-            verify_remote_assets(api, api._list_assets(gh, release_id), plan)
+            api._verify_published_remote(gh, plan, release_id)
             post_publish_reconciled_after_client_error = True
         except Exception:
             raise exc
