@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+EXPECTED_REPOSITORY = "Naveax/PSMatrix"
 WORKFLOW = "production-ga-final-validation-summary"
 ARTIFACT = "psmatrix-2.0.0-final-validation-summary"
 FINAL_RELEASE_COMMIT = "02cef95d40cf524ce00f9d917188343dc49e6f2c"
@@ -42,8 +43,11 @@ def verify(
             "final release signing run API verification must PASS before validation-run verification"
         )
     signing_run_id = signing_run_verification.get("run_id")
+    signing_artifact_id = signing_run_verification.get("artifact_id")
     if type(signing_run_id) is not int or signing_run_id <= 0 or signing_run_id == run_id:
         raise FinalValidationSummaryRunVerificationError("release-signing and validation run IDs must be distinct")
+    if type(signing_artifact_id) is not int or signing_artifact_id <= 0:
+        raise FinalValidationSummaryRunVerificationError("release-signing artifact ID is invalid")
     if str(signing_run_verification.get("execution_head") or "").lower() != execution_head:
         raise FinalValidationSummaryRunVerificationError("release-signing execution head mismatch")
 
@@ -75,6 +79,11 @@ def verify(
         raise FinalValidationSummaryRunVerificationError("final validation summary run is not completed successfully")
     if str(run.get("head_sha") or "").lower() != execution_head:
         raise FinalValidationSummaryRunVerificationError("final validation summary execution head mismatch")
+    repository = run.get("repository")
+    if isinstance(repository, dict):
+        full_name = str(repository.get("full_name") or "")
+        if full_name and full_name != EXPECTED_REPOSITORY:
+            raise FinalValidationSummaryRunVerificationError("final validation summary repository mismatch")
 
     matches = [
         item
@@ -97,6 +106,7 @@ def verify(
         "kind": "psmatrix.final-validation-summary-run-api-verification",
         "version": "2.0.0",
         "status": "PASS",
+        "repository": EXPECTED_REPOSITORY,
         "run_id": run_id,
         "execution_head": execution_head,
         "workflow": WORKFLOW,
@@ -104,7 +114,7 @@ def verify(
         "artifact_id": artifact_id,
         "final_release_commit": FINAL_RELEASE_COMMIT,
         "release_signing_run_id": signing_run_id,
-        "release_signing_artifact_id": signing_run_verification.get("artifact_id"),
+        "release_signing_artifact_id": signing_artifact_id,
         "release_signing_run_verified": True,
         "protected_release_content_verified": True,
         "validation_run_verified": True,
@@ -144,17 +154,21 @@ def main() -> int:
     parser.add_argument("--execution-head", required=True)
     parser.add_argument("--signing-run-verification", type=Path, required=True)
     parser.add_argument("--protected-release-verification", type=Path, required=True)
-    parser.add_argument("--repository", default="Naveax/PSMatrix")
+    parser.add_argument("--repository", default=EXPECTED_REPOSITORY)
     parser.add_argument("--gh", default="gh")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
+        if args.repository != EXPECTED_REPOSITORY:
+            raise FinalValidationSummaryRunVerificationError(
+                f"repository is frozen to {EXPECTED_REPOSITORY}"
+            )
         signing = json.loads(args.signing_run_verification.read_text(encoding="utf-8"))
         protected = json.loads(args.protected_release_verification.read_text(encoding="utf-8"))
-        run = _gh_json(args.gh, f"repos/{args.repository}/actions/runs/{args.run_id}")
+        run = _gh_json(args.gh, f"repos/{EXPECTED_REPOSITORY}/actions/runs/{args.run_id}")
         listing = _gh_json(
             args.gh,
-            f"repos/{args.repository}/actions/runs/{args.run_id}/artifacts?per_page=100",
+            f"repos/{EXPECTED_REPOSITORY}/actions/runs/{args.run_id}/artifacts?per_page=100",
         )
         if not isinstance(listing, dict) or not isinstance(listing.get("artifacts"), list):
             raise FinalValidationSummaryRunVerificationError(
