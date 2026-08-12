@@ -62,4 +62,5 @@ jobs:
             exit 1
           fi
           git commit -m 'ci: refresh repository workflow action pins'
+          echo "local_commit_sha=$(git rev-parse HEAD)"
           git push origin "HEAD:${GITHUB_HEAD_REF}"
