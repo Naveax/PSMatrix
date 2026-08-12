@@ -1,0 +1,57 @@
+name: repository-action-pin-autofix
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/ga/refresh_repository_workflow_action_pins.py'
+      - 'scripts/ga/verify_repository_workflow_action_policy.py'
+      - '.github/workflows/**'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: repository-action-pin-autofix-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    if: >-
+      github.actor == 'Naveax' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out same-repository PR head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Refresh exact repository workflow pins
+        run: python scripts/ga/refresh_repository_workflow_action_pins.py --root . --apply
+
+      - name: Verify repository-wide action policy after refresh
+        run: python scripts/ga/verify_repository_workflow_action_policy.py --root .
+
+      - name: Commit deterministic workflow-only refresh
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          if git diff --quiet -- .github/workflows; then
+            echo 'workflow_pin_autofix=no_changes'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows
+          git diff --cached --name-only | grep -q '^.github/workflows/'
+          if git diff --cached --name-only | grep -v '^.github/workflows/' | grep -q .; then
+            echo 'autofix staged a non-workflow path' >&2
+            exit 1
+          fi
+          git commit -m 'ci: refresh repository workflow action pins'
+          git push origin "HEAD:${GITHUB_HEAD_REF}"
