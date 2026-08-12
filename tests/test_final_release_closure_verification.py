@@ -115,6 +115,21 @@ class FinalReleaseClosureVerificationTests(
                 self.scan,
             )
 
+    def test_forged_immutable_release_receipt_is_rejected_when_fresh_authority_disagrees(self) -> None:
+        fresh = dict(self.release)
+        fresh["release_id"] = 78
+        self.immutable_reverify.side_effect = None
+        self.immutable_reverify.return_value = fresh
+        with self.assertRaises(self.module.FinalReleaseClosureError):
+            self.module.verify(
+                self.closure,
+                self.release,
+                self.documentation,
+                self.cleanup,
+                self.scan,
+            )
+        self.immutable_reverify.assert_called_once_with(self.closure, None, "gh")
+
     def test_release_closed_receipt_carries_bound_safety_proofs(self) -> None:
         value = self.module.verify(
             self.closure,
@@ -123,11 +138,13 @@ class FinalReleaseClosureVerificationTests(
             self.cleanup,
             self.scan,
         )
+        self.assertTrue(value["immutable_release_canonical_reverification_verified"])
         self.assertTrue(
             value["publication_receipt_output_reserved_before_mutation"]
         )
         self.assertTrue(value["final_ga_attestation_public_asset_verified"])
         self.assertTrue(value["cleanup_audit_transaction_verified"])
+        self.immutable_reverify.assert_called_once_with(self.closure, None, "gh")
 
     def test_source_is_only_component_allowed_to_emit_release_closed_true(self) -> None:
         public = _base.SCRIPT
@@ -147,6 +164,11 @@ class FinalReleaseClosureVerificationTests(
         self.assertIn("cleanup_audit_outputs_reserved_before_mutation", text)
         self.assertIn("cleanup_audit_outputs_finalized_inside_rollback_boundary", text)
         self.assertIn("cleanup_audit_transaction_verified", text)
+        self.assertIn("verify_final_immutable_release.py", text)
+        self.assertIn("_reverify_current_immutable_release", text)
+        self.assertIn("_verify_github_release_attestation", text)
+        self.assertIn("--publication-operation", text)
+        self.assertIn("immutable_release_canonical_reverification_verified", text)
 
 
 if __name__ == "__main__":

@@ -5,11 +5,20 @@ import importlib.util
 import json
 import os
 import stat
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
+ROOT = Path(__file__).resolve().parents[2]
 _IMPL_PATH = Path(__file__).with_name("_verify_final_release_closure_impl.py")
+_IMMUTABLE_VERIFIER_PATH = Path(__file__).with_name("verify_final_immutable_release.py")
+_READINESS_CONTRACT_PATH = (
+    ROOT / "ga-packs" / "03-authoritative-windows" / "final-production-readiness-contract.json"
+)
+_PUBLICATION_CONTRACT_PATH = Path(__file__).with_name(
+    "final-immutable-release-publication-contract.json"
+)
 
 
 def _load_impl():
@@ -24,7 +33,20 @@ def _load_impl():
     return module
 
 
+def _load_immutable_verifier():
+    spec = importlib.util.spec_from_file_location(
+        "psmatrix_final_release_closure_immutable_release_verifier",
+        _IMMUTABLE_VERIFIER_PATH,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("unable to load canonical immutable release verifier")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 _impl = _load_impl()
+_IMMUTABLE_VERIFIER = _load_immutable_verifier()
 for _name, _value in vars(_impl).items():
     if not _name.startswith("__"):
         globals()[_name] = _value
@@ -59,6 +81,84 @@ def _read(path: Path, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise FinalReleaseClosureError(f"{label} root must be object")
     return value
+
+
+def _reverify_current_immutable_release(
+    release_closure: dict[str, Any],
+    publication_operation: dict[str, Any] | None,
+    gh: str,
+) -> dict[str, Any]:
+    if not isinstance(publication_operation, dict):
+        raise FinalReleaseClosureError(
+            "final release closure requires the immutable publication operation for canonical re-verification"
+        )
+    if not isinstance(gh, str) or not gh.strip():
+        raise FinalReleaseClosureError(
+            "final release closure canonical immutable verifier executable is invalid"
+        )
+
+    readiness_contract = _read(
+        _READINESS_CONTRACT_PATH,
+        "final Production readiness contract",
+    )
+    publication_contract = _read(
+        _PUBLICATION_CONTRACT_PATH,
+        "immutable release publication contract",
+    )
+    verifier = _IMMUTABLE_VERIFIER
+    try:
+        settings = verifier._gh_json(
+            gh,
+            f"repos/{verifier.REPOSITORY}/immutable-releases",
+        )
+        release = verifier._gh_json(
+            gh,
+            f"repos/{verifier.REPOSITORY}/releases/tags/{verifier.TAG}",
+        )
+        ref = verifier._gh_json(
+            gh,
+            f"repos/{verifier.REPOSITORY}/git/ref/tags/{verifier.TAG}",
+        )
+        obj = (
+            ref.get("object")
+            if isinstance(ref, dict) and isinstance(ref.get("object"), dict)
+            else {}
+        )
+        annotated = None
+        if obj.get("type") == "tag":
+            annotated = verifier._gh_json(
+                gh,
+                f"repos/{verifier.REPOSITORY}/git/tags/{obj.get('sha')}",
+            )
+        verifier._verify_github_release_attestation(gh, verifier.REPOSITORY)
+        fresh = verifier.verify(
+            release_closure,
+            readiness_contract,
+            publication_contract,
+            publication_operation,
+            settings,
+            release,
+            ref,
+            True,
+            annotated,
+        )
+    except (
+        OSError,
+        json.JSONDecodeError,
+        subprocess.SubprocessError,
+        verifier.FinalImmutableReleaseError,
+        TypeError,
+        ValueError,
+        KeyError,
+    ) as exc:
+        raise FinalReleaseClosureError(
+            "current immutable release canonical re-verification failed"
+        ) from exc
+    if not isinstance(fresh, dict):
+        raise FinalReleaseClosureError(
+            "canonical immutable release verifier returned an invalid receipt"
+        )
+    return fresh
 
 
 def _write_final_closure_receipt(path: Path, value: dict[str, Any]) -> Path:
@@ -151,7 +251,19 @@ def verify(
     documentation: dict[str, Any],
     cleanup: dict[str, Any],
     final_scan: dict[str, Any],
+    *,
+    publication_operation: dict[str, Any] | None = None,
+    gh: str = "gh",
 ) -> dict[str, Any]:
+    fresh_immutable_release = _reverify_current_immutable_release(
+        release_closure,
+        publication_operation,
+        gh,
+    )
+    if fresh_immutable_release != immutable_release:
+        raise FinalReleaseClosureError(
+            "provided immutable release verification differs from fresh canonical verification of current GitHub release state"
+        )
     if immutable_release.get(
         "publication_receipt_output_reserved_before_mutation"
     ) is not True:
@@ -185,6 +297,7 @@ def verify(
             "final release closure implementation returned an invalid receipt"
         )
     result = dict(value)
+    result["immutable_release_canonical_reverification_verified"] = True
     result["publication_receipt_output_reserved_before_mutation"] = True
     result["final_ga_attestation_public_asset_verified"] = True
     result["cleanup_audit_transaction_verified"] = True
@@ -202,9 +315,11 @@ def main() -> int:
     )
     parser.add_argument("--release-closure", type=Path, required=True)
     parser.add_argument("--immutable-release-verification", type=Path, required=True)
+    parser.add_argument("--publication-operation", type=Path, required=True)
     parser.add_argument("--documentation-verification", type=Path, required=True)
     parser.add_argument("--cleanup-verification", type=Path, required=True)
     parser.add_argument("--final-repository-scan", type=Path, required=True)
+    parser.add_argument("--gh", default="gh")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
@@ -214,6 +329,11 @@ def main() -> int:
             _read(args.documentation_verification, "documentation verification"),
             _read(args.cleanup_verification, "cleanup verification"),
             _read(args.final_repository_scan, "final repository scan"),
+            publication_operation=_read(
+                args.publication_operation,
+                "immutable release publication operation",
+            ),
+            gh=args.gh,
         )
         _write_final_closure_receipt(args.output, value)
         print(
@@ -223,6 +343,7 @@ def main() -> int:
         print("preconditions=5/5")
         print("post_ga_operations=6/6")
         print("release_asset_set_verified=true")
+        print("immutable_release_canonical_reverification_verified=true")
         print("final_ga_attestation_public_asset_verified=true")
         print("github_release_attestation_verified=true")
         print("post_ga_receipts_bound_before_final_scan=true")
