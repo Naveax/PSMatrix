@@ -24,7 +24,7 @@ def verify(record: dict[str, Any], immutable_release: dict[str, Any], repository
     if (
         immutable_release.get("repository") != REPOSITORY
         or immutable_release.get("publication_operation_verified") is not True
-        or immutable_release.get("publication_asset_count") != 8
+        or immutable_release.get("publication_asset_count") != 9
         or immutable_release.get("release_asset_set_verified") is not True
         or immutable_release.get("github_release_attestation_verified") is not True
         or immutable_release.get("release_tag_created") is not True
@@ -88,7 +88,7 @@ def verify(record: dict[str, Any], immutable_release: dict[str, Any], repository
         "document_count": record["document_count"],
         "documentation_source_sha256": source_sha,
         "immutable_publication_operation_verified": True,
-        "immutable_publication_asset_count": 8,
+        "immutable_publication_asset_count": 9,
         "immutable_release_asset_set_verified": True,
         "immutable_release_attestation_verified": True,
         "release_immutable": True,
