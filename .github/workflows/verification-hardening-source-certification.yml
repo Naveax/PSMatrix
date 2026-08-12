@@ -42,6 +42,11 @@ jobs:
           python scripts/ga/verify_verification_hardening_workflow_policy.py
           --root .
 
+      - name: Verify hardening checkout policy
+        run: >-
+          python scripts/ga/verify_verification_hardening_checkout_policy.py
+          --root .
+
       - name: Scan exact tracked tree for private material
         run: >-
           python scripts/ga/scan_repository_private_material.py
