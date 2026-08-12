@@ -13,6 +13,9 @@ PIN_REPLACEMENTS = {
     '34e114876b0b11c390a56381ad16ebd13914f8d5': '11d5960a326750d5838078e36cf38b85af677262',
     'a309ff8b426b58ec0e2a45f0f869d46889d02405': 'ece7cb06caefa5fff74198d8649806c4678c61a1',
 }
+COMPANION_PIN_CONTRACT_PATHS = {
+    'tests/test_final_vulnerability_scanner_supply_chain.py',
+}
 
 
 class RepositoryWorkflowPinRefreshError(RuntimeError):
@@ -40,12 +43,16 @@ def _paths(raw: bytes) -> list[str]:
     except UnicodeDecodeError as exc:
         raise RepositoryWorkflowPinRefreshError('git returned non-UTF-8 path data') from exc
     if any(any(ch in path for ch in ('\n', '\r', '\t')) for path in values):
-        raise RepositoryWorkflowPinRefreshError('workflow refresh contains unsupported path characters')
+        raise RepositoryWorkflowPinRefreshError('pin refresh contains unsupported path characters')
     return values
 
 
 def _is_workflow(path: str) -> bool:
     return path.startswith('.github/workflows/') and (path.endswith('.yml') or path.endswith('.yaml'))
+
+
+def _is_certified_path(path: str) -> bool:
+    return _is_workflow(path) or path in COMPANION_PIN_CONTRACT_PATHS
 
 
 def _blob(root: Path, revision: str, path: str) -> bytes:
@@ -76,18 +83,20 @@ def verify(
     deleted = _paths(_git(root, 'diff', '--diff-filter=D', '--name-only', '-z', f'{baseline}..HEAD'))
     if deleted:
         raise RepositoryWorkflowPinRefreshError(
-            'workflow pin refresh may not delete baseline paths: ' + ','.join(sorted(deleted))
+            'certified pin refresh may not delete baseline paths: ' + ','.join(sorted(deleted))
         )
     modified = _paths(_git(root, 'diff', '--diff-filter=M', '--name-only', '-z', f'{baseline}..HEAD'))
-    non_workflow = sorted(path for path in modified if not _is_workflow(path))
-    if non_workflow:
+    forbidden = sorted(path for path in modified if not _is_certified_path(path))
+    if forbidden:
         raise RepositoryWorkflowPinRefreshError(
-            'non-workflow baseline modifications are forbidden: ' + ','.join(non_workflow)
+            'baseline modifications escaped workflow/companion pin-refresh boundary: ' + ','.join(forbidden)
         )
     if not modified:
-        raise RepositoryWorkflowPinRefreshError('no baseline workflow pin refresh was found')
+        raise RepositoryWorkflowPinRefreshError('no baseline pin refresh was found')
 
     total_replacements = 0
+    workflow_replacements = 0
+    companion_replacements = 0
     manifest: list[dict[str, Any]] = []
     for path in sorted(modified):
         before = _blob(root, baseline, path)
@@ -103,19 +112,25 @@ def verify(
                 replacements += hits
         if replacements == 0:
             raise RepositoryWorkflowPinRefreshError(
-                f'baseline workflow modification contains no approved pin replacement: {path}'
+                f'baseline modification contains no approved pin replacement: {path}'
             )
         if transformed != after:
             raise RepositoryWorkflowPinRefreshError(
-                f'workflow differs from exact approved pin-only transformation: {path}'
+                f'path differs from exact approved pin-only transformation: {path}'
             )
         for old in PIN_REPLACEMENTS:
             if old.encode('ascii') in after:
                 raise RepositoryWorkflowPinRefreshError(f'old action pin remains after refresh: {path}')
+        category = 'workflow' if _is_workflow(path) else 'companion-source-contract-test'
         total_replacements += replacements
+        if category == 'workflow':
+            workflow_replacements += replacements
+        else:
+            companion_replacements += replacements
         manifest.append(
             {
                 'path': path,
+                'category': category,
                 'replacements': replacements,
                 'baseline_sha256': _sha256(before),
                 'baseline_bytes': len(before),
@@ -124,13 +139,15 @@ def verify(
             }
         )
 
-    if expected_files is not None and len(manifest) != expected_files:
+    workflow_files = [item for item in manifest if item['category'] == 'workflow']
+    companion_files = [item for item in manifest if item['category'] != 'workflow']
+    if expected_files is not None and len(workflow_files) != expected_files:
         raise RepositoryWorkflowPinRefreshError(
-            f'workflow pin refresh file count mismatch: expected {expected_files}, got {len(manifest)}'
+            f'workflow pin refresh file count mismatch: expected {expected_files}, got {len(workflow_files)}'
         )
-    if expected_replacements is not None and total_replacements != expected_replacements:
+    if expected_replacements is not None and workflow_replacements != expected_replacements:
         raise RepositoryWorkflowPinRefreshError(
-            f'workflow pin refresh replacement count mismatch: expected {expected_replacements}, got {total_replacements}'
+            f'workflow pin refresh replacement count mismatch: expected {expected_replacements}, got {workflow_replacements}'
         )
 
     return {
@@ -143,17 +160,23 @@ def verify(
         'replacement_map': dict(PIN_REPLACEMENTS),
         'file_count': len(manifest),
         'replacement_count': total_replacements,
-        'modified_workflow_paths': [item['path'] for item in manifest],
+        'workflow_file_count': len(workflow_files),
+        'workflow_replacement_count': workflow_replacements,
+        'companion_file_count': len(companion_files),
+        'companion_replacement_count': companion_replacements,
+        'modified_certified_paths': [item['path'] for item in manifest],
+        'modified_workflow_paths': [item['path'] for item in workflow_files],
+        'modified_companion_paths': [item['path'] for item in companion_files],
         'files': manifest,
         'baseline_files_deleted': 0,
-        'non_workflow_baseline_modifications': 0,
+        'baseline_modifications_outside_certified_pin_refresh': 0,
         'pin_only_transform_verified': True,
         'ga_eligible': False,
     }
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description='Certify exact repository workflow action-pin-only refresh')
+    parser = argparse.ArgumentParser(description='Certify exact repository workflow and companion action-pin-only refresh')
     parser.add_argument('--root', type=Path, default=Path('.'))
     parser.add_argument('--baseline', default=DEFAULT_BASELINE)
     parser.add_argument('--expected-files', type=int)
@@ -173,7 +196,13 @@ def main() -> int:
         if not output.parent.is_dir():
             raise RepositoryWorkflowPinRefreshError('output parent must already exist')
         output.write_text(json.dumps(value, indent=2, sort_keys=True) + '\n', encoding='utf-8')
-        print(f"repository_workflow_pin_refresh=PASS files={value['file_count']} replacements={value['replacement_count']}")
+        print(
+            f"repository_workflow_pin_refresh=PASS workflow_files={value['workflow_file_count']} "
+            f"workflow_replacements={value['workflow_replacement_count']} "
+            f"companion_files={value['companion_file_count']} companion_replacements={value['companion_replacement_count']}"
+        )
+        print(f"certified_modified_files={value['file_count']}")
+        print(f"certified_replacements={value['replacement_count']}")
         print(f"baseline={value['baseline_commit']}")
         print(f"certified_head={value['certified_head']}")
         print('pin_only_transform_verified=true')
