@@ -80,6 +80,9 @@ class FinalValidationControlPlaneCollectorTests(unittest.TestCase):
         self.assertEqual(value["current_stage"], "CONTROL_PLANE_VALIDATED")
         self.assertTrue(value["authenticated_api_collection_verified"])
         self.assertTrue(value["collection"]["main_head_verified"])
+        self.assertTrue(value["collection"]["main_head_stable_during_collection"])
+        self.assertEqual(value["collection"]["main_head_verified_before_collection"], HEAD)
+        self.assertEqual(value["collection"]["main_head_verified_after_collection"], HEAD)
         self.assertTrue(value["collection"]["pagination_complete"])
         self.assertEqual(value["collection"]["workflow_run_filter"]["head_sha"], HEAD)
         self.assertEqual(value["protected_final_release_signing"]["state"], "NOT_EXECUTED")
@@ -90,6 +93,22 @@ class FinalValidationControlPlaneCollectorTests(unittest.TestCase):
     def test_requested_control_head_must_still_be_current_main(self) -> None:
         with self.assertRaises(module.FinalValidationControlPlaneCollectionError):
             module.collect(control_head=HEAD, api_get=self._api(main_head="f" * 40))
+
+    def test_main_movement_during_collection_is_rejected(self) -> None:
+        stable_api = self._api()
+        branch_reads = 0
+
+        def api_get(endpoint: str):
+            nonlocal branch_reads
+            if endpoint == "repos/Naveax/PSMatrix/branches/main":
+                branch_reads += 1
+                sha = HEAD if branch_reads == 1 else "f" * 40
+                return {"name": "main", "commit": {"sha": sha}}
+            return stable_api(endpoint)
+
+        with self.assertRaises(module.FinalValidationControlPlaneCollectionError):
+            module.collect(control_head=HEAD, api_get=api_get)
+        self.assertEqual(branch_reads, 2)
 
     def test_exact_head_control_workflow_must_have_exactly_one_run(self) -> None:
         with self.assertRaises(module.FinalValidationControlPlaneCollectionError):

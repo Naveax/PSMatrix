@@ -151,6 +151,17 @@ def _single_control_run(listing: dict[str, Any], label: str) -> dict[str, Any]:
     return runs[0]
 
 
+def _current_main_head(api_get: Callable[[str], Any], repository: str) -> str:
+    branch = api_get(f"repos/{repository}/branches/main")
+    if not isinstance(branch, dict) or branch.get("name") != "main":
+        raise FinalValidationControlPlaneCollectionError("unable to verify current main branch identity")
+    commit = branch.get("commit")
+    head = str(commit.get("sha") or "").lower() if isinstance(commit, dict) else ""
+    if len(head) != 40 or any(ch not in "0123456789abcdef" for ch in head):
+        raise FinalValidationControlPlaneCollectionError("current main branch head is invalid")
+    return head
+
+
 def collect(
     *,
     control_head: str,
@@ -165,11 +176,8 @@ def collect(
     if len(control_head) != 40 or any(ch not in "0123456789abcdef" for ch in control_head):
         raise FinalValidationControlPlaneCollectionError("control head must be exact lowercase 40-hex")
 
-    branch = api_get(f"repos/{repository}/branches/main")
-    if not isinstance(branch, dict) or branch.get("name") != "main":
-        raise FinalValidationControlPlaneCollectionError("unable to verify current main branch identity")
-    commit = branch.get("commit")
-    if not isinstance(commit, dict) or str(commit.get("sha") or "").lower() != control_head:
+    main_head_before = _current_main_head(api_get, repository)
+    if main_head_before != control_head:
         raise FinalValidationControlPlaneCollectionError(
             "requested control head is not the current main branch head"
         )
@@ -200,6 +208,12 @@ def collect(
         event="workflow_dispatch",
     )
 
+    main_head_after = _current_main_head(api_get, repository)
+    if main_head_after != control_head:
+        raise FinalValidationControlPlaneCollectionError(
+            "main branch moved during control-plane evidence collection"
+        )
+
     try:
         value = verifier.verify(
             control_head=control_head,
@@ -223,6 +237,9 @@ def collect(
         "source": "authenticated-gh-api",
         "repository": repository,
         "main_head_verified": True,
+        "main_head_verified_before_collection": main_head_before,
+        "main_head_verified_after_collection": main_head_after,
+        "main_head_stable_during_collection": True,
         "workflow_run_filter": {
             "branch": "main",
             "head_sha": control_head,
@@ -264,6 +281,7 @@ def main() -> int:
         print(f"final_validation_control_plane_collection=PASS stage={value['current_stage']}")
         print(f"control_head={value['control_head']}")
         print("main_head_verified=true")
+        print("main_head_stable_during_collection=true")
         print("pagination_complete=true")
         print("authenticated_api_collection_verified=true")
         print("production_state_mutated=false")
