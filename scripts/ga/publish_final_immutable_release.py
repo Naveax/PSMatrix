@@ -10,6 +10,9 @@ from typing import Any
 
 _IMPL_PATH = Path(__file__).with_name("_publish_final_immutable_release_impl.py")
 _NINE_PATH = Path(__file__).with_name("_publish_final_immutable_release_nine_asset.py")
+_ATTESTATION_PUBLIC_ASSET_VERIFIER_PATH = Path(__file__).with_name(
+    "verify_final_ga_attestation_public_asset.py"
+)
 
 
 def _load(path: Path, name: str):
@@ -69,6 +72,23 @@ def _reverify_current_bundle(
     )
 
 
+def _reverify_final_ga_attestation_public_asset(
+    operation: dict[str, Any],
+    public_asset_receipt: dict[str, Any],
+    bundle_root: Path,
+) -> dict[str, Any]:
+    verifier = _load(
+        _ATTESTATION_PUBLIC_ASSET_VERIFIER_PATH,
+        "psmatrix_final_ga_attestation_public_asset_publication_verifier",
+    )
+    try:
+        return verifier.verify(operation, public_asset_receipt, bundle_root)
+    except verifier.FinalGAAttestationPublicAssetVerificationError as exc:
+        raise FinalImmutableReleasePublicationError(
+            f"current final GA attestation public asset canonical reverification failed: {exc}"
+        ) from exc
+
+
 def build_plan(
     contract: dict[str, Any],
     release_closure: dict[str, Any],
@@ -76,6 +96,9 @@ def build_plan(
     bundle_root: Path,
     active_lock: Path,
     release_signing_run_verification: dict[str, Any],
+    final_attestation_operation: dict[str, Any],
+    final_attestation_public_asset_receipt: dict[str, Any],
+    final_attestation_bundle_root: Path,
     final_attestation_public_asset_verification: dict[str, Any],
 ) -> dict[str, Any]:
     return _nine.build_plan(
@@ -86,6 +109,9 @@ def build_plan(
         bundle_root,
         active_lock,
         release_signing_run_verification,
+        final_attestation_operation,
+        final_attestation_public_asset_receipt,
+        final_attestation_bundle_root,
         final_attestation_public_asset_verification,
     )
 
@@ -132,6 +158,9 @@ def main() -> int:
     parser.add_argument("--bundle-root", type=Path, required=True)
     parser.add_argument("--active-lock", type=Path, required=True)
     parser.add_argument("--release-signing-run-verification", type=Path, required=True)
+    parser.add_argument("--final-attestation-operation", type=Path, required=True)
+    parser.add_argument("--final-attestation-public-asset-receipt", type=Path, required=True)
+    parser.add_argument("--final-attestation-bundle-root", type=Path, required=True)
     parser.add_argument("--final-attestation-public-asset-verification", type=Path, required=True)
     parser.add_argument("--contract", type=Path, default=CONTRACT_PATH)
     parser.add_argument("--gh", default="gh")
@@ -147,6 +176,9 @@ def main() -> int:
             args.bundle_root,
             args.active_lock,
             _read_json(args.release_signing_run_verification, "release-signing run verification"),
+            _read_json(args.final_attestation_operation, "final attestation content operation"),
+            _read_json(args.final_attestation_public_asset_receipt, "final GA attestation public asset producer receipt"),
+            args.final_attestation_bundle_root,
             _read_json(args.final_attestation_public_asset_verification, "final GA attestation public asset verification"),
         )
         reservation_handle, reservation_path, reservation_identity = _reserve_publication_output(
