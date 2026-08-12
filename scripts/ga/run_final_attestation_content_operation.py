@@ -4,7 +4,9 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 import shutil
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -76,25 +78,130 @@ def validate_run_verification(value: dict[str, Any]) -> tuple[int, str]:
     return artifact_id, head
 
 
-def _external_workspace(path: Path) -> Path:
-    resolved = path.expanduser().resolve()
+def _absolute(path: Path) -> Path:
+    raw = Path(path).expanduser()
+    return raw if raw.is_absolute() else Path.cwd() / raw
+
+
+def _reject_symlink_components(path: Path, *, label: str) -> Path:
+    raw = _absolute(path)
+    for component in [raw, *raw.parents]:
+        try:
+            mode = component.lstat().st_mode
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise FinalAttestationContentOperationError(f"unable to inspect {label}: {component}") from exc
+        if stat.S_ISLNK(mode):
+            raise FinalAttestationContentOperationError(f"{label} contains a symlink component: {component}")
+    return raw
+
+
+def _read_json_object(path: Path, *, label: str) -> dict[str, Any]:
+    raw = _reject_symlink_components(path, label=label)
     try:
-        resolved.relative_to(ROOT.resolve())
+        resolved = raw.resolve(strict=True)
+        item = resolved.lstat()
+        if not stat.S_ISREG(item.st_mode):
+            raise FinalAttestationContentOperationError(f"{label} must be a regular file")
+        value = json.loads(resolved.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise FinalAttestationContentOperationError(f"unable to read {label}: {raw}") from exc
+    if not isinstance(value, dict):
+        raise FinalAttestationContentOperationError(f"{label} root must be an object")
+    return value
+
+
+def _write_json_once(path: Path, payload: dict[str, Any], *, label: str) -> Path:
+    raw = _reject_symlink_components(path, label=label)
+    parent = raw.parent
+    if not parent.exists() or not parent.is_dir():
+        raise FinalAttestationContentOperationError(f"{label} parent must already exist")
+    resolved_parent = parent.resolve(strict=True)
+    candidate = resolved_parent / raw.name
+    _reject_symlink_components(candidate, label=label)
+    try:
+        candidate.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise FinalAttestationContentOperationError(f"unable to inspect {label}: {candidate}") from exc
+    else:
+        raise FinalAttestationContentOperationError(f"{label} must not already exist")
+
+    text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    fd: int | None = None
+    created_identity: tuple[int, int] | None = None
+    try:
+        fd = os.open(str(candidate), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        opened = os.fstat(fd)
+        created_identity = (opened.st_dev, opened.st_ino)
+        if not stat.S_ISREG(opened.st_mode):
+            raise FinalAttestationContentOperationError(f"{label} is not a regular file")
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            fd = None
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        current = candidate.lstat()
+        if stat.S_ISLNK(current.st_mode) or not stat.S_ISREG(current.st_mode):
+            raise FinalAttestationContentOperationError(f"{label} changed type during write")
+        if (current.st_dev, current.st_ino) != created_identity:
+            raise FinalAttestationContentOperationError(f"{label} path changed identity during write")
+        if candidate.read_text(encoding="utf-8") != text:
+            raise FinalAttestationContentOperationError(f"{label} read-back mismatch")
+        return candidate
+    except Exception:
+        if fd is not None:
+            os.close(fd)
+        if created_identity is not None:
+            try:
+                current = candidate.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                if (
+                    not stat.S_ISLNK(current.st_mode)
+                    and stat.S_ISREG(current.st_mode)
+                    and (current.st_dev, current.st_ino) == created_identity
+                ):
+                    candidate.unlink()
+        raise
+
+
+def _external_workspace(path: Path) -> Path:
+    raw = _reject_symlink_components(path, label="final attestation workspace")
+    parent = raw.parent
+    if not parent.exists() or not parent.is_dir():
+        raise FinalAttestationContentOperationError("final attestation workspace parent must already exist")
+    resolved_parent = parent.resolve(strict=True)
+    candidate = resolved_parent / raw.name
+    try:
+        candidate.relative_to(ROOT.resolve())
     except ValueError:
         pass
     else:
         raise FinalAttestationContentOperationError("final attestation workspace must stay outside repository")
-    if resolved.exists() and any(resolved.iterdir()):
-        raise FinalAttestationContentOperationError("final attestation workspace must be absent or empty")
-    resolved.mkdir(parents=True, exist_ok=True)
-    return resolved
+    _reject_symlink_components(candidate, label="final attestation workspace")
+    if candidate.exists():
+        item = candidate.lstat()
+        if not stat.S_ISDIR(item.st_mode):
+            raise FinalAttestationContentOperationError("final attestation workspace must be a real directory")
+        if any(candidate.iterdir()):
+            raise FinalAttestationContentOperationError("final attestation workspace must be absent or empty")
+        return candidate
+    try:
+        os.mkdir(candidate, 0o700)
+    except OSError as exc:
+        raise FinalAttestationContentOperationError("unable to create final attestation workspace") from exc
+    item = candidate.lstat()
+    if not stat.S_ISDIR(item.st_mode):
+        raise FinalAttestationContentOperationError("final attestation workspace changed type during creation")
+    return candidate
 
 
 def run_operation(run_verification: Path, workspace: Path, repository: str, gh: str) -> dict[str, Any]:
-    receipt_path = run_verification.expanduser().resolve()
-    if not receipt_path.is_file() or receipt_path.is_symlink():
-        raise FinalAttestationContentOperationError("final evaluator run verification receipt is missing or unsafe")
-    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt = _read_json_object(run_verification, label="final evaluator run verification receipt")
     artifact_id, head = validate_run_verification(receipt)
     root = _external_workspace(workspace)
     materializer = _load(MATERIALIZER_PATH, "psmatrix_final_attestation_materializer")
@@ -119,7 +226,7 @@ def run_operation(run_verification: Path, workspace: Path, repository: str, gh: 
             raise FinalAttestationContentOperationError(f"independent final-attestation semantic verification failed: {exc}") from exc
         if verification.get("schema") != 1 or verification.get("kind") != "psmatrix.final-ga-attestation-bundle-verification" or verification.get("version") != "2.0.0" or verification.get("status") != "PASS" or verification.get("final_ga_attestation_verified") is not True or verification.get("ga_eligible") is not True:
             raise FinalAttestationContentOperationError("independent final attestation verification did not prove GA eligibility")
-        verification_path.write_text(json.dumps(verification, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        written_verification = _write_json_once(verification_path, verification, label="final attestation verification receipt")
         after_tree, after_files = _tree_state(bundle_root)
         if after_tree != before_tree or after_files != before_files:
             raise FinalAttestationContentOperationError("final attestation semantic verifier mutated materialized artifact tree")
@@ -135,8 +242,8 @@ def run_operation(run_verification: Path, workspace: Path, repository: str, gh: 
             "artifact_archive_sha256": archive_sha,
             "materialized_file_count": len(before_files),
             "materialized_tree_sha256": before_tree,
-            "verification_receipt": str(verification_path),
-            "verification_receipt_sha256": _sha256(verification_path),
+            "verification_receipt": str(written_verification),
+            "verification_receipt_sha256": _sha256(written_verification),
             "exact_api_artifact_id_used": True,
             "safe_extraction_verified": True,
             "semantic_verifier_repository_owned": True,
@@ -158,11 +265,11 @@ def main() -> int:
     args = parser.parse_args()
     try:
         value = run_operation(args.run_verification, args.workspace, args.repository, args.gh)
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        written = _write_json_once(args.output, value, label="final attestation content operation output")
         print(f"final_ga_attestation_content_operation=PASS run={value['evaluator_run_id']} artifact_id={value['artifact_id']}")
         print("final_ga_attestation_verified=true")
         print("ga_eligible=true")
+        print(f"output={written}")
         return 0
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, FinalAttestationContentOperationError, TypeError, ValueError, KeyError) as exc:
         print(f"final GA attestation content operation failed: {exc}", file=sys.stderr)
