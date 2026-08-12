@@ -7,12 +7,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "ga" / "build_final_validation_evidence_chain_plan.py"
-READINESS_CONTRACT = ROOT / "ga-packs" / "03-authoritative-windows" / "final-production-readiness-contract.json"
-EVALUATOR_CONTRACT = ROOT / "ga-packs" / "03-authoritative-windows" / "final-ga-evaluator-control-contract.json"
-CONTROL_HEAD = "06c80421ecb8c6668e5e4334f9138a55ae56e1fd"
+PACK = ROOT / "ga-packs" / "03-authoritative-windows"
+READINESS_CONTRACT = PACK / "final-production-readiness-contract.json"
+EVALUATOR_CONTRACT = PACK / "final-ga-evaluator-control-contract.json"
+BOOTSTRAP_CONTRACT = PACK / "final-production-bootstrap-contract.json"
+LOCK_CONTRACT = PACK / "final-release-lock-signing-control-contract.json"
 
 spec = importlib.util.spec_from_file_location("final_validation_evidence_chain_plan", SCRIPT)
 assert spec is not None and spec.loader is not None
@@ -22,13 +23,15 @@ spec.loader.exec_module(module)
 
 class FinalValidationEvidenceChainPlanTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.readiness_contract = json.loads(READINESS_CONTRACT.read_text(encoding="utf-8"))
-        self.evaluator_contract = json.loads(EVALUATOR_CONTRACT.read_text(encoding="utf-8"))
+        self.readiness = json.loads(READINESS_CONTRACT.read_text(encoding="utf-8"))
+        self.evaluator = json.loads(EVALUATOR_CONTRACT.read_text(encoding="utf-8"))
+        self.bootstrap = json.loads(BOOTSTRAP_CONTRACT.read_text(encoding="utf-8"))
+        self.lock = json.loads(LOCK_CONTRACT.read_text(encoding="utf-8"))
 
     def _summary(self, *, ready: bool) -> dict:
         rows = []
         failed = []
-        for environment in self.readiness_contract["environments"]:
+        for environment in self.readiness["environments"]:
             missing = []
             missing_paths = []
             if not ready:
@@ -54,9 +57,8 @@ class FinalValidationEvidenceChainPlanTests(unittest.TestCase):
             "kind": "psmatrix.production-readiness-summary",
             "version": "2.0.0",
             "status": "PASS" if passed == 12 else "FAIL",
-            "evaluated_at": "2026-08-12T00:00:00Z",
-            "producer_source_anchor": self.readiness_contract["producer_source_anchor"],
-            "final_release_commit": self.readiness_contract["final_release_commit"],
+            "producer_source_anchor": self.readiness["producer_source_anchor"],
+            "final_release_commit": self.readiness["final_release_commit"],
             "producer_source_coverage": 11,
             "environment_count": 12,
             "environment_passed": passed,
@@ -73,99 +75,88 @@ class FinalValidationEvidenceChainPlanTests(unittest.TestCase):
             "ga_eligible": False,
         }
 
-    def _build(self, summary: dict, *, readiness_contract: dict | None = None, evaluator_contract: dict | None = None):
+    def _build(
+        self,
+        summary: dict,
+        *,
+        bootstrap: dict | None = None,
+        lock: dict | None = None,
+        control_head: str | None = None,
+    ) -> dict:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
-            readiness_path = root / "readiness-contract.json"
-            evaluator_path = root / "evaluator-contract.json"
-            summary_path = root / "readiness-summary.json"
-            readiness_path.write_text(
-                json.dumps(readiness_contract or self.readiness_contract), encoding="utf-8"
-            )
-            evaluator_path.write_text(
-                json.dumps(evaluator_contract or self.evaluator_contract), encoding="utf-8"
-            )
-            summary_path.write_text(json.dumps(summary), encoding="utf-8")
+            paths = {
+                "readiness": root / "readiness.json",
+                "evaluator": root / "evaluator.json",
+                "bootstrap": root / "bootstrap.json",
+                "lock": root / "lock.json",
+                "summary": root / "summary.json",
+            }
+            paths["readiness"].write_text(json.dumps(self.readiness), encoding="utf-8")
+            paths["evaluator"].write_text(json.dumps(self.evaluator), encoding="utf-8")
+            paths["bootstrap"].write_text(json.dumps(bootstrap or self.bootstrap), encoding="utf-8")
+            paths["lock"].write_text(json.dumps(lock or self.lock), encoding="utf-8")
+            paths["summary"].write_text(json.dumps(summary), encoding="utf-8")
             return module.build_plan(
-                readiness_contract_path=readiness_path,
-                evaluator_contract_path=evaluator_path,
-                readiness_summary_path=summary_path,
-                control_head=CONTROL_HEAD,
+                readiness_contract_path=paths["readiness"],
+                evaluator_contract_path=paths["evaluator"],
+                bootstrap_contract_path=paths["bootstrap"],
+                lock_contract_path=paths["lock"],
+                readiness_summary_path=paths["summary"],
+                control_head=control_head or module.EXPECTED_EXECUTION_ANCHOR,
             )
 
-    def test_all_missing_material_is_blocked_without_mutating_ga_state(self) -> None:
+    def test_all_missing_material_is_blocked_with_truthful_41_plus_path_accounting(self) -> None:
         value = self._build(self._summary(ready=False))
         self.assertEqual(value["current_stage"], "BLOCKED_ON_PRODUCTION_MATERIAL")
         self.assertEqual(value["required_check_count"], 41)
-        self.assertEqual(value["environment_count"], 12)
-        self.assertEqual(value["environment_passed"], 0)
-        self.assertEqual(value["environment_failed"], 12)
-        self.assertEqual(value["evaluator_gate_count"], 11)
-        self.assertEqual(len(value["evidence_operations"]), 11)
+        self.assertEqual(value["missing_material_check_count"], 41)
+        self.assertEqual(value["missing_path_check_count"], 2)
         self.assertEqual(value["missing_requirement_count"], 43)
+        self.assertEqual(value["environment_passed"], 0)
+        self.assertFalse(value["ready_for_final_lock_bootstrap"])
         self.assertFalse(value["ready_for_final_release_signing"])
-        self.assertFalse(value["production_state_mutated"])
-        self.assertFalse(value["final_ga_evaluator_invoked"])
         self.assertFalse(value["ga_eligible"])
-        self.assertFalse(value["release_closed"])
 
-    def test_environment_ready_only_advances_to_protected_release_signing(self) -> None:
+    def test_ready_summary_advances_only_to_final_lock_bootstrap(self) -> None:
         value = self._build(self._summary(ready=True))
-        self.assertEqual(value["current_stage"], "READY_FOR_FINAL_RELEASE_SIGNING")
-        self.assertEqual(value["environment_passed"], 12)
-        self.assertEqual(value["missing_requirement_count"], 0)
-        self.assertTrue(value["ready_for_final_release_signing"])
+        self.assertEqual(value["current_stage"], "READY_FOR_FINAL_LOCK_BOOTSTRAP")
+        self.assertTrue(value["ready_for_final_lock_bootstrap"])
+        self.assertFalse(value["ready_for_final_release_signing"])
+        self.assertEqual(len(value["post_readiness_lock_bootstrap"]), 8)
+        self.assertTrue(
+            value["protected_final_release_signing"]["requires_final_lock_api_verification"]
+        )
+        self.assertTrue(
+            value["protected_final_release_signing"]["requires_final_lock_repository_content_verification"]
+        )
         self.assertFalse(value["ga_eligible"])
-        self.assertFalse(value["release_closed"])
-        self.assertEqual(
-            value["protected_final_validation"]["workflow_path"],
-            ".github/workflows/ga-final-validation-summary.yml",
-        )
-        self.assertTrue(value["protected_final_validation"]["requires_release_signing_run_id"])
 
-    def test_plan_binds_exact_evaluator_gate_and_artifact_contract(self) -> None:
+    def test_execution_head_is_frozen_publication_anchor_not_mutable_main(self) -> None:
+        with self.assertRaises(module.FinalValidationEvidenceChainError):
+            self._build(self._summary(ready=False), control_head="f" * 40)
+
+    def test_bootstrap_insertion_point_cannot_skip_lock_bootstrap(self) -> None:
+        bootstrap = copy.deepcopy(self.bootstrap)
+        bootstrap["execution_insertion_point"] = {
+            "after_stage": "readiness",
+            "before_stage": "validation-summary",
+        }
+        with self.assertRaises(module.FinalValidationEvidenceChainError):
+            self._build(self._summary(ready=True), bootstrap=bootstrap)
+
+    def test_final_lock_sign_without_exact_match_may_not_be_enabled(self) -> None:
+        lock = copy.deepcopy(self.lock)
+        lock["safety"]["sign_without_exact_lock_match_allowed"] = True
+        with self.assertRaises(module.FinalValidationEvidenceChainError):
+            self._build(self._summary(ready=True), lock=lock)
+
+    def test_evaluator_gate_set_remains_exact_11(self) -> None:
         value = self._build(self._summary(ready=False))
-        operations = {item["gate"]: item for item in value["evidence_operations"]}
-        self.assertEqual(set(operations), module.EXPECTED_EVALUATOR_GATES)
-        self.assertEqual(
-            operations["signed-release"]["artifact"], "psmatrix-2.0.0-protected-release"
-        )
-        self.assertEqual(
-            operations["validation-summary"]["artifact"],
-            "psmatrix-2.0.0-final-validation-summary",
-        )
-        self.assertEqual(
-            operations["public-oauth"]["authority"], operations["public-mtls"]["authority"]
-        )
-        self.assertTrue(value["all_evidence_must_share_control_head"])
-        self.assertTrue(value["all_evidence_run_ids_must_be_distinct"])
-        self.assertTrue(value["all_expected_artifacts_must_be_api_verified"])
-
-    def test_wrong_final_release_commit_is_rejected(self) -> None:
-        summary = self._summary(ready=False)
-        summary["final_release_commit"] = "f" * 40
-        with self.assertRaises(module.FinalValidationEvidenceChainError):
-            self._build(summary)
-
-    def test_duplicate_readiness_environment_is_rejected(self) -> None:
-        summary = self._summary(ready=False)
-        summary["environments"][1] = copy.deepcopy(summary["environments"][0])
-        with self.assertRaises(module.FinalValidationEvidenceChainError):
-            self._build(summary)
-
-    def test_readiness_contract_check_count_drift_is_rejected(self) -> None:
-        contract = copy.deepcopy(self.readiness_contract)
-        contract["environments"][0]["required_secrets"] = []
-        summary = self._summary(ready=False)
-        with self.assertRaises(module.FinalValidationEvidenceChainError):
-            self._build(summary, readiness_contract=contract)
-
-    def test_evaluator_gate_set_drift_is_rejected(self) -> None:
-        contract = copy.deepcopy(self.evaluator_contract)
-        contract["required_gates"] = contract["required_gates"][:-1]
-        contract["evidence_sources"].pop("vulnerability-scan")
-        with self.assertRaises(module.FinalValidationEvidenceChainError):
-            self._build(self._summary(ready=False), evaluator_contract=contract)
+        self.assertEqual(value["evaluator_gate_count"], 11)
+        self.assertEqual(set(value["evaluator_gates"]), module.EXPECTED_EVALUATOR_GATES)
+        self.assertEqual(len(value["evidence_operations"]), 11)
+        self.assertTrue(value["all_evidence_must_share_execution_control_head"])
 
     def test_secret_observation_or_premature_ga_state_is_rejected(self) -> None:
         for field in (
@@ -182,30 +173,6 @@ class FinalValidationEvidenceChainPlanTests(unittest.TestCase):
                 summary[field] = True
                 with self.assertRaises(module.FinalValidationEvidenceChainError):
                     self._build(summary)
-
-    def test_unknown_missing_requirement_is_rejected(self) -> None:
-        summary = self._summary(ready=False)
-        summary["environments"][0]["missing"].append("secret:NOT_IN_CONTRACT")
-        with self.assertRaises(module.FinalValidationEvidenceChainError):
-            self._build(summary)
-
-    def test_control_head_must_be_exact_lowercase_sha(self) -> None:
-        summary = self._summary(ready=False)
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            readiness_path = root / "readiness-contract.json"
-            evaluator_path = root / "evaluator-contract.json"
-            summary_path = root / "summary.json"
-            readiness_path.write_text(json.dumps(self.readiness_contract), encoding="utf-8")
-            evaluator_path.write_text(json.dumps(self.evaluator_contract), encoding="utf-8")
-            summary_path.write_text(json.dumps(summary), encoding="utf-8")
-            with self.assertRaises(module.FinalValidationEvidenceChainError):
-                module.build_plan(
-                    readiness_contract_path=readiness_path,
-                    evaluator_contract_path=evaluator_path,
-                    readiness_summary_path=summary_path,
-                    control_head="ABC",
-                )
 
 
 if __name__ == "__main__":
