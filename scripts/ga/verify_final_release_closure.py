@@ -158,6 +158,10 @@ def verify(
         raise FinalReleaseClosureError(
             "immutable release verification does not prove publication receipt output reservation before mutation"
         )
+    if immutable_release.get("final_ga_attestation_public_asset_verified") is not True:
+        raise FinalReleaseClosureError(
+            "immutable release verification does not prove the final GA attestation is the verified ninth public asset"
+        )
     if (
         cleanup.get("cleanup_audit_outputs_reserved_before_mutation") is not True
         or cleanup.get("cleanup_audit_outputs_finalized_inside_rollback_boundary") is not True
@@ -182,6 +186,7 @@ def verify(
         )
     result = dict(value)
     result["publication_receipt_output_reserved_before_mutation"] = True
+    result["final_ga_attestation_public_asset_verified"] = True
     result["cleanup_audit_transaction_verified"] = True
     return result
 
@@ -218,6 +223,7 @@ def main() -> int:
         print("preconditions=5/5")
         print("post_ga_operations=6/6")
         print("release_asset_set_verified=true")
+        print("final_ga_attestation_public_asset_verified=true")
         print("github_release_attestation_verified=true")
         print("post_ga_receipts_bound_before_final_scan=true")
         print("publication_receipt_output_reserved_before_mutation=true")
