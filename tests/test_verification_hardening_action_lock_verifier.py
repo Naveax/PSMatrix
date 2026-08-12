@@ -109,6 +109,36 @@ class VerificationHardeningActionLockVerifierTests(unittest.TestCase):
         with self.assertRaises(self.module.VerificationHardeningActionLockError):
             self.module.verify(root)
 
+    def test_duplicate_lock_json_key_fails_closed(self) -> None:
+        root = self.make_root()
+        path = root / "scripts" / "ga" / "verification-hardening-action-lock.json"
+        text = path.read_text(encoding="utf-8").replace(
+            '"schema": 1',
+            '"schema": 1, "schema": 1',
+            1,
+        )
+        path.write_text(text, encoding="utf-8")
+        with self.assertRaises(self.module.VerificationHardeningActionLockError):
+            self.module.verify(root)
+
+    def test_extra_lock_root_key_fails_closed(self) -> None:
+        root = self.make_root()
+        path = root / "scripts" / "ga" / "verification-hardening-action-lock.json"
+        lock = json.loads(path.read_text(encoding="utf-8"))
+        lock["unexpected"] = True
+        path.write_text(json.dumps(lock), encoding="utf-8")
+        with self.assertRaises(self.module.VerificationHardeningActionLockError):
+            self.module.verify(root)
+
+    def test_invalid_major_family_fails_closed(self) -> None:
+        root = self.make_root()
+        path = root / "scripts" / "ga" / "verification-hardening-action-lock.json"
+        lock = json.loads(path.read_text(encoding="utf-8"))
+        lock["actions"]["actions/checkout"]["major_family"] = "latest"
+        path.write_text(json.dumps(lock), encoding="utf-8")
+        with self.assertRaises(self.module.VerificationHardeningActionLockError):
+            self.module.verify(root)
+
     def test_source_cert_verifies_lock_before_private_scan(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")
         verify = text.index("- name: Verify hardening workflow action lock")
