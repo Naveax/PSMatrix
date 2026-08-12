@@ -13,7 +13,7 @@
     "make_latest": true,
     "immutable_releases_required": true
   },
-  "publication_asset_count": 8,
+  "publication_asset_count": 9,
   "publication_assets": [
     {
       "role": "wheel",
@@ -54,6 +54,11 @@
       "role": "release_public_key",
       "name": "psmatrix-2.0.0-release-public.pem",
       "digest_source": "active_final_release_lock"
+    },
+    {
+      "role": "final_ga_attestation_bundle",
+      "name": "psmatrix-2.0.0-final-ga-attestation.zip",
+      "digest_source": "final_ga_attestation_public_asset_verification"
     }
   ],
   "excluded_control_evidence": [
@@ -65,6 +70,7 @@
   "publication_order": [
     "verify_release_closure_readiness",
     "verify_protected_release_bundle_content",
+    "verify_final_ga_attestation_public_asset",
     "enable_repository_immutable_releases",
     "create_draft_release_at_frozen_final_release_commit",
     "upload_exact_publication_asset_set",
@@ -76,6 +82,8 @@
     "ga_execution_control_head_is_not_release_tag_target": true,
     "draft_required_before_asset_upload": true,
     "asset_set_must_be_exact_before_publish": true,
+    "final_ga_attestation_bundle_must_be_publication_asset": true,
+    "final_ga_attestation_bundle_must_match_verified_execution_head": true,
     "control_evidence_must_not_be_publication_asset": true,
     "post_publish_asset_mutation_forbidden": true,
     "post_publish_tag_mutation_forbidden": true,

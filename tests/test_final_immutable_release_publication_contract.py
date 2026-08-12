@@ -41,8 +41,8 @@ class FinalImmutableReleasePublicationContractTests(unittest.TestCase):
 
     def test_first_six_assets_equal_final_deterministic_builder_outputs(self) -> None:
         assets = self.contract["publication_assets"]
-        self.assertEqual(self.contract["publication_asset_count"], 8)
-        self.assertEqual(len(assets), 8)
+        self.assertEqual(self.contract["publication_asset_count"], 9)
+        self.assertEqual(len(assets), 9)
         names = [row["name"] for row in assets]
         release_name = f"psmatrix-{self.builder._FINAL_VERSION}"
         expected = [
@@ -54,8 +54,15 @@ class FinalImmutableReleasePublicationContractTests(unittest.TestCase):
             f"{release_name}-windows-provisioning-kit.zip",
         ]
         self.assertEqual(names[:6], expected)
-        self.assertEqual(names[6:], ["psmatrix-2.0.0-release.json", "psmatrix-2.0.0-release-public.pem"])
-        self.assertEqual(len(set(names)), 8)
+        self.assertEqual(
+            names[6:],
+            [
+                "psmatrix-2.0.0-release.json",
+                "psmatrix-2.0.0-release-public.pem",
+                "psmatrix-2.0.0-final-ga-attestation.zip",
+            ],
+        )
+        self.assertEqual(len(set(names)), 9)
 
     def test_consumer_assets_and_control_evidence_are_disjoint(self) -> None:
         assets = {row["name"] for row in self.contract["publication_assets"]}
@@ -72,20 +79,41 @@ class FinalImmutableReleasePublicationContractTests(unittest.TestCase):
         )
         self.assertTrue(self.contract["safety"]["control_evidence_must_not_be_publication_asset"])
 
-    def test_six_product_digests_come_from_signed_manifest(self) -> None:
+    def test_digest_sources_bind_pre_ga_release_material_and_post_ga_attestation_separately(self) -> None:
         assets = self.contract["publication_assets"]
         for row in assets[:6]:
             self.assertEqual(row["digest_source"], "signed_release_manifest")
         self.assertEqual(assets[6]["digest_source"], "protected_release_bundle")
         self.assertEqual(assets[7]["digest_source"], "active_final_release_lock")
+        self.assertEqual(assets[8]["digest_source"], "final_ga_attestation_public_asset_verification")
+        self.assertTrue(self.contract["safety"]["final_ga_attestation_bundle_must_be_publication_asset"])
+        self.assertTrue(self.contract["safety"]["final_ga_attestation_bundle_must_match_verified_execution_head"])
 
-    def test_publication_order_is_draft_upload_verify_then_publish(self) -> None:
+    def test_final_ga_attestation_is_one_self_verifying_public_bundle_not_split_assets(self) -> None:
+        assets = self.contract["publication_assets"]
+        attestation = [row for row in assets if row["role"] == "final_ga_attestation_bundle"]
+        self.assertEqual(
+            attestation,
+            [
+                {
+                    "role": "final_ga_attestation_bundle",
+                    "name": "psmatrix-2.0.0-final-ga-attestation.zip",
+                    "digest_source": "final_ga_attestation_public_asset_verification",
+                }
+            ],
+        )
+        names = {row["name"] for row in assets}
+        self.assertNotIn("psmatrix-2.0.0-final-ga.dsse.json", names)
+        self.assertNotIn("psmatrix-2.0.0-ga-root-public.pem", names)
+
+    def test_publication_order_verifies_post_ga_asset_before_remote_mutation(self) -> None:
         order = self.contract["publication_order"]
         self.assertEqual(
             order,
             [
                 "verify_release_closure_readiness",
                 "verify_protected_release_bundle_content",
+                "verify_final_ga_attestation_public_asset",
                 "enable_repository_immutable_releases",
                 "create_draft_release_at_frozen_final_release_commit",
                 "upload_exact_publication_asset_set",
@@ -94,6 +122,7 @@ class FinalImmutableReleasePublicationContractTests(unittest.TestCase):
                 "verify_published_release_is_immutable",
             ],
         )
+        self.assertLess(order.index("verify_final_ga_attestation_public_asset"), order.index("enable_repository_immutable_releases"))
         self.assertLess(order.index("create_draft_release_at_frozen_final_release_commit"), order.index("upload_exact_publication_asset_set"))
         self.assertLess(order.index("upload_exact_publication_asset_set"), order.index("verify_draft_release_asset_set"))
         self.assertLess(order.index("verify_draft_release_asset_set"), order.index("publish_release"))

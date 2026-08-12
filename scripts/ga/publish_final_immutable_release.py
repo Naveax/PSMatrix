@@ -9,29 +9,44 @@ from pathlib import Path
 from typing import Any
 
 _IMPL_PATH = Path(__file__).with_name("_publish_final_immutable_release_impl.py")
+_NINE_PATH = Path(__file__).with_name("_publish_final_immutable_release_nine_asset.py")
 
 
-def _load_impl():
-    spec = importlib.util.spec_from_file_location(
-        "psmatrix_final_immutable_release_publication_impl",
-        _IMPL_PATH,
-    )
+def _load(path: Path, name: str):
+    spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
-        raise RuntimeError("unable to load immutable publication implementation")
+        raise RuntimeError(f"unable to load immutable publication module: {path.name}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-_impl = _load_impl()
+_impl = _load(_IMPL_PATH, "psmatrix_final_immutable_release_publication_impl")
+_nine = _load(_NINE_PATH, "psmatrix_final_immutable_release_publication_nine_asset")
 for _name, _value in vars(_impl).items():
     if not _name.startswith("__"):
         globals()[_name] = _value
 
 _impl_build_plan = _impl.build_plan
-_impl_execute_plan = _impl.execute_plan
 _impl_reverify_current_bundle = _impl._reverify_current_bundle
 _impl_rollback_pre_publish = _impl._rollback_pre_publish
+EXPECTED_ASSETS = dict(_impl.EXPECTED_ASSETS)
+EXPECTED_ASSETS[_nine.ROLE] = (_nine.NAME, _nine.SOURCE)
+
+
+class _PublicAPI:
+    def __getattr__(self, name: str):
+        try:
+            return globals()[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+
+_PUBLIC_API = _PublicAPI()
+
+
+def _module():
+    return _PUBLIC_API
 
 
 def _sync_impl_symbols(*names: str) -> None:
@@ -54,9 +69,33 @@ def _reverify_current_bundle(
     )
 
 
-def build_plan(*args: Any, **kwargs: Any) -> dict[str, Any]:
-    _sync_impl_symbols("_reverify_current_bundle")
-    return _impl_build_plan(*args, **kwargs)
+def build_plan(
+    contract: dict[str, Any],
+    release_closure: dict[str, Any],
+    protected_verification: dict[str, Any],
+    bundle_root: Path,
+    active_lock: Path,
+    release_signing_run_verification: dict[str, Any],
+    final_attestation_public_asset_verification: dict[str, Any],
+) -> dict[str, Any]:
+    return _nine.build_plan(
+        _module(),
+        contract,
+        release_closure,
+        protected_verification,
+        bundle_root,
+        active_lock,
+        release_signing_run_verification,
+        final_attestation_public_asset_verification,
+    )
+
+
+def _verify_remote_assets(remote: list[dict[str, Any]], plan: dict[str, Any]) -> None:
+    return _nine.verify_remote_assets(_module(), remote, plan)
+
+
+def _verify_published_remote(gh: str, plan: dict[str, Any], release_id: int) -> None:
+    return _nine.verify_published_remote(_module(), gh, plan, release_id)
 
 
 def _rollback_pre_publish(
@@ -80,33 +119,20 @@ def _rollback_pre_publish(
     )
 
 
-def execute_plan(*args: Any, **kwargs: Any) -> dict[str, Any]:
-    _sync_impl_symbols(
-        "_remote_absent",
-        "_immutable_enabled",
-        "_enable_immutable",
-        "_disable_immutable",
-        "_create_draft",
-        "_view_release",
-        "_upload_asset",
-        "_list_assets",
-        "_publish",
-        "_verify_tag",
-        "_rollback_pre_publish",
-        "_verify_published_remote",
-    )
-    return _impl_execute_plan(*args, **kwargs)
+def execute_plan(plan: dict[str, Any], gh: str) -> dict[str, Any]:
+    return _nine.execute_plan(_module(), plan, gh)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Plan or explicitly publish the final immutable PSMatrix v2.0.0 GitHub Release"
+        description="Plan or explicitly publish the final immutable PSMatrix v2.0.0 GitHub Release with exact nine public assets"
     )
     parser.add_argument("--release-closure", type=Path, required=True)
     parser.add_argument("--protected-bundle-verification", type=Path, required=True)
     parser.add_argument("--bundle-root", type=Path, required=True)
     parser.add_argument("--active-lock", type=Path, required=True)
     parser.add_argument("--release-signing-run-verification", type=Path, required=True)
+    parser.add_argument("--final-attestation-public-asset-verification", type=Path, required=True)
     parser.add_argument("--contract", type=Path, default=CONTRACT_PATH)
     parser.add_argument("--gh", default="gh")
     parser.add_argument("--execute", action="store_true")
@@ -121,6 +147,7 @@ def main() -> int:
             args.bundle_root,
             args.active_lock,
             _read_json(args.release_signing_run_verification, "release-signing run verification"),
+            _read_json(args.final_attestation_public_asset_verification, "final GA attestation public asset verification"),
         )
         reservation_handle, reservation_path, reservation_identity = _reserve_publication_output(
             args.output,
@@ -141,6 +168,10 @@ def main() -> int:
         print(
             "current_protected_bundle_reverified="
             + str(value["current_protected_bundle_reverified"]).lower()
+        )
+        print(
+            "current_final_ga_attestation_public_asset_reverified="
+            + str(value["current_final_ga_attestation_public_asset_reverified"]).lower()
         )
         print(f"mutation_executed={str(value['mutation_executed']).lower()}")
         print(f"release_published={str(value['release_published']).lower()}")
