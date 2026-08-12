@@ -89,6 +89,26 @@ class VerificationHardeningActionLockVerifierTests(unittest.TestCase):
         with self.assertRaises(self.module.VerificationHardeningActionLockError):
             self.module.verify(root)
 
+    def test_quoted_uses_key_fails_closed(self) -> None:
+        root = self.make_root()
+        path = root / ".github" / "workflows" / "powershell-source-parse-diagnostic.yml"
+        path.write_text(
+            "steps:\n  - \"uses\": actions/checkout@" + "1" * 40 + "\n",
+            encoding="utf-8",
+        )
+        with self.assertRaises(self.module.VerificationHardeningActionLockError):
+            self.module.verify(root)
+
+    def test_flow_mapping_uses_key_fails_closed(self) -> None:
+        root = self.make_root()
+        path = root / ".github" / "workflows" / "powershell-source-parse-diagnostic.yml"
+        path.write_text(
+            "steps:\n  - {uses: actions/checkout@" + "1" * 40 + "}\n",
+            encoding="utf-8",
+        )
+        with self.assertRaises(self.module.VerificationHardeningActionLockError):
+            self.module.verify(root)
+
     def test_source_cert_verifies_lock_before_private_scan(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")
         verify = text.index("- name: Verify hardening workflow action lock")
