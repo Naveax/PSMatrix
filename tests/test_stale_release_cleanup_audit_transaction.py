@@ -43,7 +43,7 @@ def immutable_release() -> dict[str, object]:
         "tag": "v2.0.0",
         "release_execution_control_head": "a" * 40,
         "publication_operation_verified": True,
-        "publication_asset_count": 8,
+        "publication_asset_count": 9,
         "release_asset_set_verified": True,
         "github_release_attestation_verified": True,
         "release_published": True,
