@@ -10,10 +10,7 @@ from typing import Any
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 REPOSITORY = "Naveax/PSMatrix"
 CONTROL_RUNS = {
-    "ci": {
-        "name": "ci",
-        "path": ".github/workflows/ci.yml",
-    },
+    "ci": {"name": "ci", "path": ".github/workflows/ci.yml"},
     "source_certification": {
         "name": "verification-hardening-source-certification",
         "path": ".github/workflows/verification-hardening-source-certification.yml",
@@ -90,8 +87,11 @@ def _run_list(value: dict[str, Any], label: str) -> list[dict[str, Any]]:
     runs = value.get("workflow_runs")
     if not isinstance(runs, list) or any(not isinstance(item, dict) for item in runs):
         raise FinalValidationControlPlaneError(f"{label} workflow run listing is invalid")
-    if "total_count" in value and (type(value.get("total_count")) is not int or value["total_count"] < len(runs)):
-        raise FinalValidationControlPlaneError(f"{label} workflow run listing count is invalid")
+    total_count = value.get("total_count")
+    if type(total_count) is not int or total_count != len(runs):
+        raise FinalValidationControlPlaneError(
+            f"{label} workflow run listing must be complete: total_count={total_count!r} rows={len(runs)}"
+        )
     return runs
 
 
@@ -203,6 +203,7 @@ def verify(
         "control_run_ids_distinct": True,
         "protected_final_release_signing": signing,
         "protected_final_validation_summary": validation,
+        "protected_workflow_run_listings_complete": True,
         "protected_workflow_observation_is_not_ga_evidence": True,
         "production_state_mutated": False,
         "final_ga_evaluator_invoked": False,
