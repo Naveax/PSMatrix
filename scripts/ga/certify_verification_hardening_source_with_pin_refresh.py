@@ -56,10 +56,7 @@ def _verify_pin_refresh_receipt(
     return fresh
 
 
-def _filter_non_additive_git(
-    original_git,
-    certified_paths: set[str],
-):
+def _filter_non_additive_git(original_git, certified_paths: set[str]):
     def wrapped(root: Path, *args: str) -> bytes:
         raw = original_git(root, *args)
         if args and args[0] == 'diff' and '--diff-filter=MDRCTUXB' in args:
@@ -87,16 +84,15 @@ def certify(
         expected_files=expected_files,
         expected_replacements=expected_replacements,
     )
-    certified_paths = set(refresh['modified_workflow_paths'])
+    certified_paths = set(refresh['modified_certified_paths'])
     if len(certified_paths) != refresh['file_count']:
         raise HardeningSourceCertificationError(
-            'workflow pin-refresh receipt contains duplicate modified paths'
+            'pin-refresh receipt contains duplicate modified paths'
         )
 
     impl = legacy._impl
     original_allowed = impl._allowed
     original_git = impl._git
-    original_required = set(legacy.REQUIRED_HARDENING_PATHS)
 
     def allowed(path: str) -> bool:
         return path in certified_paths or original_allowed(path)
@@ -108,7 +104,6 @@ def certify(
     finally:
         impl._allowed = original_allowed
         impl._git = original_git
-        legacy.REQUIRED_HARDENING_PATHS = original_required
 
     boundaries = value['boundaries']
     boundaries['additive_only'] = False
@@ -117,8 +112,12 @@ def certify(
     boundaries['baseline_files_modified'] = refresh['file_count']
     boundaries['baseline_files_modified_outside_certified_pin_refresh'] = 0
     boundaries['baseline_files_deleted'] = 0
-    boundaries['workflow_pin_refresh_files'] = refresh['file_count']
-    boundaries['workflow_pin_replacements'] = refresh['replacement_count']
+    boundaries['workflow_pin_refresh_files'] = refresh['workflow_file_count']
+    boundaries['workflow_pin_replacements'] = refresh['workflow_replacement_count']
+    boundaries['pin_refresh_companion_files'] = refresh['companion_file_count']
+    boundaries['pin_refresh_companion_replacements'] = refresh['companion_replacement_count']
+    boundaries['certified_pin_refresh_files_total'] = refresh['file_count']
+    boundaries['certified_pin_replacements_total'] = refresh['replacement_count']
     boundaries['workflow_pin_refresh_pin_only_transform_verified'] = True
     boundaries['runtime_source_changes'] = 0
     boundaries['ga_eligible'] = False
@@ -128,6 +127,10 @@ def certify(
         'kind': refresh['kind'],
         'baseline_commit': refresh['baseline_commit'],
         'certified_head': refresh['certified_head'],
+        'workflow_file_count': refresh['workflow_file_count'],
+        'workflow_replacement_count': refresh['workflow_replacement_count'],
+        'companion_file_count': refresh['companion_file_count'],
+        'companion_replacement_count': refresh['companion_replacement_count'],
         'file_count': refresh['file_count'],
         'replacement_count': refresh['replacement_count'],
         'pin_only_transform_verified': True,
@@ -172,6 +175,10 @@ def main() -> int:
         print('baseline_files_deleted=0')
         print(f"workflow_pin_refresh_files={boundaries['workflow_pin_refresh_files']}")
         print(f"workflow_pin_replacements={boundaries['workflow_pin_replacements']}")
+        print(f"pin_refresh_companion_files={boundaries['pin_refresh_companion_files']}")
+        print(f"pin_refresh_companion_replacements={boundaries['pin_refresh_companion_replacements']}")
+        print(f"certified_pin_refresh_files_total={boundaries['certified_pin_refresh_files_total']}")
+        print(f"certified_pin_replacements_total={boundaries['certified_pin_replacements_total']}")
         print('workflow_pin_refresh_pin_only_transform_verified=true')
         print('private_material_scan_independently_reverified=true')
         print('runtime_source_changes=0')
