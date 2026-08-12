@@ -6,6 +6,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILDER = ROOT / "scripts" / "ga" / "build_final_ga_attestation_public_asset.py"
@@ -49,6 +50,9 @@ class FinalGAAttestationPublicReleaseAssetTests(unittest.TestCase):
             "version": "2.0.0",
             "status": "PASS",
             "execution_control_head": self.head,
+            "required_gate_count": 11,
+            "provenance_run_count": 11,
+            "sha256_manifest_verified": True,
             "private_key_material_absent": True,
             "dsse_cryptographically_verified": True,
             "root_release_authorities_independent": True,
@@ -56,6 +60,12 @@ class FinalGAAttestationPublicReleaseAssetTests(unittest.TestCase):
             "ga_eligible": True,
         }
         self.verification.write_text(json.dumps(verification_value, sort_keys=True) + "\n", encoding="utf-8")
+        self.semantic_verifier = patch.object(
+            self.verifier._BUNDLE_VERIFIER,
+            "verify",
+            return_value=dict(verification_value),
+        )
+        self.semantic_verify = self.semantic_verifier.start()
         tree_sha, files, _ = self.verifier._bundle_state(self.bundle)
         self.operation = self.root / "attestation-operation.json"
         operation_value = {
@@ -81,6 +91,7 @@ class FinalGAAttestationPublicReleaseAssetTests(unittest.TestCase):
         self.operation.write_text(json.dumps(operation_value, sort_keys=True) + "\n", encoding="utf-8")
 
     def tearDown(self) -> None:
+        self.semantic_verifier.stop()
         self.temp.cleanup()
 
     def build(self, suffix: str):
@@ -99,10 +110,21 @@ class FinalGAAttestationPublicReleaseAssetTests(unittest.TestCase):
         self.assertEqual(verified["status"], "PASS")
         self.assertEqual(verified["asset_name"], ASSET_NAME)
         self.assertTrue(verified["current_bundle_matches_verified_operation"])
+        self.assertTrue(verified["canonical_bundle_semantics_verified"])
         self.assertTrue(verified["zip_members_match_current_verified_bundle"])
         self.assertTrue(verified["private_key_material_absent"])
         self.assertTrue(verified["final_ga_attestation_verified"])
         self.assertTrue(verified["ga_eligible"])
+        self.semantic_verify.assert_called_once_with(self.bundle, self.head)
+
+    def test_canonical_semantic_failure_rejects_self_consistent_operation_and_zip(self) -> None:
+        receipt, _ = self.build("semantic-failure")
+        self.semantic_verify.side_effect = self.verifier._BUNDLE_VERIFIER.FinalAttestationBundleError(
+            "synthetic semantic failure"
+        )
+        with self.assertRaises(self.verifier.FinalGAAttestationPublicAssetVerificationError):
+            self.verifier.verify(json.loads(self.operation.read_text()), receipt, self.bundle)
+        self.semantic_verify.assert_called_once_with(self.bundle, self.head)
 
     def test_bundle_byte_drift_after_operation_is_rejected(self) -> None:
         receipt, _ = self.build("drift-bundle")
