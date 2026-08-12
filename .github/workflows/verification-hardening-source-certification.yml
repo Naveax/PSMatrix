@@ -52,6 +52,11 @@ jobs:
           python scripts/ga/verify_verification_hardening_event_head_policy.py
           --root .
 
+      - name: Verify repository-wide workflow action policy
+        run: >-
+          python scripts/ga/verify_repository_workflow_action_policy.py
+          --root .
+
       - name: Scan exact tracked tree for private material
         run: >-
           python scripts/ga/scan_repository_private_material.py
