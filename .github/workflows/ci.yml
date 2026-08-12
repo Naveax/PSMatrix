@@ -40,7 +40,7 @@ jobs:
           Write-Host "runner_name=$env:RUNNER_NAME"
 
       - name: Check out exact revision
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -203,7 +203,7 @@ jobs:
           Write-Host 'matrix_runner_assignment=PASS'
 
       - name: Check out exact revision
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
         with:
           fetch-depth: 1
           persist-credentials: false

@@ -66,14 +66,14 @@ jobs:
           if ($env:GITHUB_SHA.ToLowerInvariant() -eq $env:RC4_CONTROL_HEAD) { throw 'Final lock/rebind control head must be distinct from the RC4 lock/control head.' }
 
       - name: Check out exact final rebind/lock control
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
         with:
           path: control
           fetch-depth: 0
           persist-credentials: false
 
       - name: Check out exact RC4 active control
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
         with:
           ref: ${{ inputs.rc4_control_head }}
           path: rc4-control
@@ -81,7 +81,7 @@ jobs:
           persist-credentials: false
 
       - name: Check out exact RC4 release source
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
         with:
           ref: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
           path: rc4-source
@@ -89,7 +89,7 @@ jobs:
           persist-credentials: false
 
       - name: Check out exact final release source with full lineage
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
         with:
           ref: 02cef95d40cf524ce00f9d917188343dc49e6f2c
           path: final-source
