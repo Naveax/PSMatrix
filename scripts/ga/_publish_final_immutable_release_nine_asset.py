@@ -99,6 +99,9 @@ def build_plan(
     bundle_root: Path,
     active_lock: Path,
     release_signing_run_verification: dict[str, Any],
+    final_attestation_operation: dict[str, Any],
+    final_attestation_public_asset_receipt: dict[str, Any],
+    final_attestation_bundle_root: Path,
     final_attestation_public_asset_verification: dict[str, Any],
 ) -> dict[str, Any]:
     legacy = _legacy_contract(api, contract)
@@ -113,9 +116,17 @@ def build_plan(
     )
     if plan.get("publication_asset_count") != 8 or len(plan.get("publication_assets") or []) != 8:
         _fail(api, "legacy protected-release publication plan did not produce exact eight pre-GA assets")
+
+    current_verification = api._reverify_final_ga_attestation_public_asset(
+        final_attestation_operation,
+        final_attestation_public_asset_receipt,
+        final_attestation_bundle_root,
+    )
+    if current_verification != final_attestation_public_asset_verification:
+        _fail(api, "final GA attestation public asset verification receipt differs from current canonical reverification")
     attestation = _attestation_asset(
         api,
-        final_attestation_public_asset_verification,
+        current_verification,
         str(plan.get("release_execution_control_head") or ""),
     )
     assets = list(plan["publication_assets"]) + [attestation]
