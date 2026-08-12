@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
+import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -29,37 +31,150 @@ class FinalAttestationBundleError(RuntimeError):
     pass
 
 
+def _absolute(path: Path) -> Path:
+    raw = Path(path).expanduser()
+    return raw if raw.is_absolute() else Path.cwd() / raw
+
+
+def _reject_symlink_components(path: Path, *, label: str) -> Path:
+    raw = _absolute(path)
+    for component in [raw, *raw.parents]:
+        try:
+            mode = component.lstat().st_mode
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise FinalAttestationBundleError(f"unable to inspect {label}: {component}") from exc
+        if stat.S_ISLNK(mode):
+            raise FinalAttestationBundleError(f"{label} contains a symlink component: {component}")
+    return raw
+
+
+def _safe_file(path: Path, *, label: str) -> Path:
+    raw = _reject_symlink_components(path, label=label)
+    try:
+        resolved = raw.resolve(strict=True)
+        item = resolved.lstat()
+    except OSError as exc:
+        raise FinalAttestationBundleError(f"unable to inspect {label}: {raw}") from exc
+    if not stat.S_ISREG(item.st_mode):
+        raise FinalAttestationBundleError(f"{label} must be a regular file")
+    return resolved
+
+
+def _safe_bundle_root(path: Path) -> Path:
+    raw = _reject_symlink_components(path, label="final attestation bundle root")
+    try:
+        resolved = raw.resolve(strict=True)
+        item = resolved.lstat()
+    except OSError as exc:
+        raise FinalAttestationBundleError("unable to inspect final attestation bundle root") from exc
+    if not stat.S_ISDIR(item.st_mode):
+        raise FinalAttestationBundleError("final attestation bundle root must be a real directory")
+    for child in resolved.rglob("*"):
+        try:
+            mode = child.lstat().st_mode
+        except OSError as exc:
+            raise FinalAttestationBundleError(f"unable to inspect bundle entry: {child.name}") from exc
+        if stat.S_ISLNK(mode):
+            raise FinalAttestationBundleError(f"symlink found in final attestation bundle: {child.name}")
+        if not stat.S_ISDIR(mode) and not stat.S_ISREG(mode):
+            raise FinalAttestationBundleError(f"unsupported filesystem entry in final attestation bundle: {child.name}")
+    return resolved
+
+
 def _json(path: Path) -> dict[str, Any]:
-    value = json.loads(path.read_text(encoding="utf-8"))
+    safe = _safe_file(path, label=path.name)
+    value = json.loads(safe.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise FinalAttestationBundleError(f"JSON root must be object: {path.name}")
     return value
 
 
 def _verify_sums(root: Path) -> None:
-    sums_path = root / "SHA256SUMS.txt"
-    if not sums_path.is_file():
-        raise FinalAttestationBundleError("SHA256SUMS.txt is missing")
+    sums_path = _safe_file(root / "SHA256SUMS.txt", label="SHA256SUMS.txt")
     observed: dict[str, str] = {}
     for line in sums_path.read_text(encoding="utf-8").splitlines():
         if "  " not in line:
             raise FinalAttestationBundleError("invalid SHA256SUMS line")
         digest, name = line.split("  ", 1)
-        if not re.fullmatch(r"[0-9a-f]{64}", digest) or not name or name in observed:
+        if not re.fullmatch(r"[0-9a-f]{64}", digest) or not name or name in observed or Path(name).name != name:
             raise FinalAttestationBundleError("invalid SHA256SUMS identity")
         observed[name] = digest
-    expected_files = sorted(path.name for path in root.iterdir() if path.is_file() and path.name != "SHA256SUMS.txt")
+    expected_files = sorted(
+        path.name
+        for path in root.iterdir()
+        if stat.S_ISREG(path.lstat().st_mode) and path.name != "SHA256SUMS.txt"
+    )
     if set(observed) != set(expected_files):
         raise FinalAttestationBundleError("SHA256SUMS file set differs from bundle")
     for name in expected_files:
-        if hashlib.sha256((root / name).read_bytes()).hexdigest() != observed[name]:
+        safe = _safe_file(root / name, label=f"bundle file {name}")
+        if hashlib.sha256(safe.read_bytes()).hexdigest() != observed[name]:
             raise FinalAttestationBundleError(f"SHA256 mismatch: {name}")
 
 
+def _write_json_once(path: Path, payload: dict[str, Any]) -> Path:
+    raw = _reject_symlink_components(path, label="final attestation bundle verification output")
+    parent = raw.parent
+    if not parent.exists() or not parent.is_dir():
+        raise FinalAttestationBundleError("final attestation bundle verification output parent must already exist")
+    resolved_parent = parent.resolve(strict=True)
+    candidate = resolved_parent / raw.name
+    _reject_symlink_components(candidate, label="final attestation bundle verification output")
+    try:
+        candidate.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise FinalAttestationBundleError("unable to inspect final attestation bundle verification output") from exc
+    else:
+        raise FinalAttestationBundleError("final attestation bundle verification output must not already exist")
+
+    text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    fd: int | None = None
+    created_identity: tuple[int, int] | None = None
+    try:
+        fd = os.open(str(candidate), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        opened = os.fstat(fd)
+        created_identity = (opened.st_dev, opened.st_ino)
+        if not stat.S_ISREG(opened.st_mode):
+            raise FinalAttestationBundleError("final attestation bundle verification output is not a regular file")
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            fd = None
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        current = candidate.lstat()
+        if stat.S_ISLNK(current.st_mode) or not stat.S_ISREG(current.st_mode):
+            raise FinalAttestationBundleError("final attestation bundle verification output changed type during write")
+        if (current.st_dev, current.st_ino) != created_identity:
+            raise FinalAttestationBundleError("final attestation bundle verification output path changed identity during write")
+        if candidate.read_text(encoding="utf-8") != text:
+            raise FinalAttestationBundleError("final attestation bundle verification output read-back mismatch")
+        return candidate
+    except Exception:
+        if fd is not None:
+            os.close(fd)
+        if created_identity is not None:
+            try:
+                current = candidate.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                if (
+                    not stat.S_ISLNK(current.st_mode)
+                    and stat.S_ISREG(current.st_mode)
+                    and (current.st_dev, current.st_ino) == created_identity
+                ):
+                    candidate.unlink()
+        raise
+
+
 def verify(root: Path, expected_head: str) -> dict[str, Any]:
-    root = root.resolve()
+    root = _safe_bundle_root(root)
     expected_head = expected_head.lower()
-    if not root.is_dir() or SHA40.fullmatch(expected_head) is None:
+    if SHA40.fullmatch(expected_head) is None:
         raise FinalAttestationBundleError("invalid bundle root or execution head")
     required = {
         "final-ga-attestation-status.json",
@@ -71,12 +186,18 @@ def verify(root: Path, expected_head: str) -> dict[str, Any]:
         "psmatrix-2.0.0-ga-root-public.pem",
         "SHA256SUMS.txt",
     }
-    files = {path.name for path in root.iterdir() if path.is_file()}
+    files = {
+        path.name
+        for path in root.iterdir()
+        if stat.S_ISREG(path.lstat().st_mode)
+    }
     if not required.issubset(files):
         raise FinalAttestationBundleError(f"final attestation bundle missing files: {','.join(sorted(required-files))}")
     for path in root.rglob("*"):
-        if path.is_file() and any(marker in path.read_bytes() for marker in PRIVATE_MARKERS):
-            raise FinalAttestationBundleError(f"private-key material found in final attestation bundle: {path.name}")
+        if stat.S_ISREG(path.lstat().st_mode):
+            safe = _safe_file(path, label=f"bundle file {path.name}")
+            if any(marker in safe.read_bytes() for marker in PRIVATE_MARKERS):
+                raise FinalAttestationBundleError(f"private-key material found in final attestation bundle: {path.name}")
     _verify_sums(root)
     status = _json(root / "final-ga-attestation-status.json")
     candidate = _json(root / "final-ga-evaluator-candidate-status.json")
@@ -102,7 +223,7 @@ def verify(root: Path, expected_head: str) -> dict[str, Any]:
     run_ids = [row.get("run_id") for row in runs.values() if isinstance(row, dict)]
     if len(run_ids) != 11 or len(set(run_ids)) != 11:
         raise FinalAttestationBundleError("final GA provenance run IDs must be eleven distinct identities")
-    root_public = root / "psmatrix-2.0.0-ga-root-public.pem"
+    root_public = _safe_file(root / "psmatrix-2.0.0-ga-root-public.pem", label="GA root public key")
     cryptographic = verify_ga_attestation(envelope, public_key=root_public)
     if not isinstance(cryptographic, dict) or cryptographic.get("valid") is not True:
         raise FinalAttestationBundleError("independent final GA DSSE verification failed")
@@ -133,11 +254,11 @@ def main() -> int:
     args = parser.parse_args()
     try:
         value = verify(args.bundle_root, args.expected_head)
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        written = _write_json_once(args.output, value)
         print("final_ga_attestation_bundle_verification=PASS")
         print("final_ga_attestation_verified=true")
         print("ga_eligible=true")
+        print(f"output={written}")
         return 0
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, FinalAttestationBundleError, TypeError, ValueError) as exc:
         print(f"final GA attestation bundle verification failed: {exc}", file=sys.stderr)
