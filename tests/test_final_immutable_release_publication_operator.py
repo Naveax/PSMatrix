@@ -33,9 +33,12 @@ class FinalImmutableReleasePublicationOperatorTests(
     def setUp(self) -> None:
         super().setUp()
         self.attestation_temp = tempfile.TemporaryDirectory()
-        self.attestation_asset = Path(self.attestation_temp.name) / "psmatrix-2.0.0-final-ga-attestation.zip"
+        self.attestation_bundle_root = Path(self.attestation_temp.name)
+        self.attestation_asset = self.attestation_bundle_root / "psmatrix-2.0.0-final-ga-attestation.zip"
         self.attestation_asset.write_bytes(b"CANONICAL-FINAL-GA-ATTESTATION-ZIP\n")
         digest = hashlib.sha256(self.attestation_asset.read_bytes()).hexdigest()
+        self.attestation_operation = {"status": "PASS"}
+        self.attestation_public_asset_receipt = {"status": "PASS"}
         self.attestation_verification = {
             "schema": 1,
             "kind": "psmatrix.final-ga-attestation-public-release-asset-verification",
@@ -61,7 +64,14 @@ class FinalImmutableReleasePublicationOperatorTests(
         super().tearDown()
 
     def plan(self):
-        with patch.object(self.module, "_reverify_current_bundle", return_value=dict(self.protected)):
+        with (
+            patch.object(self.module, "_reverify_current_bundle", return_value=dict(self.protected)),
+            patch.object(
+                self.module,
+                "_reverify_final_ga_attestation_public_asset",
+                return_value=dict(self.attestation_verification),
+            ),
+        ):
             return self.module.build_plan(
                 self.contract,
                 self.closure,
@@ -69,6 +79,9 @@ class FinalImmutableReleasePublicationOperatorTests(
                 self.bundle,
                 self.lock,
                 self.run_verification,
+                self.attestation_operation,
+                self.attestation_public_asset_receipt,
+                self.attestation_bundle_root,
                 self.attestation_verification,
             )
 
@@ -95,6 +108,11 @@ class FinalImmutableReleasePublicationOperatorTests(
         changed["publication_assets"][0]["name"] = "wrong.whl"
         with (
             patch.object(self.module, "_reverify_current_bundle", return_value=dict(self.protected)),
+            patch.object(
+                self.module,
+                "_reverify_final_ga_attestation_public_asset",
+                return_value=dict(self.attestation_verification),
+            ),
             self.assertRaises(self.module.FinalImmutableReleasePublicationError),
         ):
             self.module.build_plan(
@@ -104,6 +122,9 @@ class FinalImmutableReleasePublicationOperatorTests(
                 self.bundle,
                 self.lock,
                 self.run_verification,
+                self.attestation_operation,
+                self.attestation_public_asset_receipt,
+                self.attestation_bundle_root,
                 self.attestation_verification,
             )
 
@@ -116,6 +137,56 @@ class FinalImmutableReleasePublicationOperatorTests(
         self.attestation_asset.write_bytes(b"TAMPERED\n")
         with self.assertRaises(self.module.FinalImmutableReleasePublicationError):
             self.plan()
+
+    def test_self_consistent_forged_pass_receipt_is_rejected_by_canonical_reverification(self) -> None:
+        with (
+            patch.object(self.module, "_reverify_current_bundle", return_value=dict(self.protected)),
+            self.assertRaisesRegex(
+                self.module.FinalImmutableReleasePublicationError,
+                "canonical reverification failed",
+            ),
+        ):
+            self.module.build_plan(
+                self.contract,
+                self.closure,
+                self.protected,
+                self.bundle,
+                self.lock,
+                self.run_verification,
+                self.attestation_operation,
+                self.attestation_public_asset_receipt,
+                self.attestation_bundle_root,
+                self.attestation_verification,
+            )
+
+    def test_attestation_verification_receipt_must_equal_current_canonical_result(self) -> None:
+        canonical = dict(self.attestation_verification)
+        supplied = dict(canonical)
+        supplied["member_count"] = 999
+        with (
+            patch.object(self.module, "_reverify_current_bundle", return_value=dict(self.protected)),
+            patch.object(
+                self.module,
+                "_reverify_final_ga_attestation_public_asset",
+                return_value=canonical,
+            ),
+            self.assertRaisesRegex(
+                self.module.FinalImmutableReleasePublicationError,
+                "differs from current canonical reverification",
+            ),
+        ):
+            self.module.build_plan(
+                self.contract,
+                self.closure,
+                self.protected,
+                self.bundle,
+                self.lock,
+                self.run_verification,
+                self.attestation_operation,
+                self.attestation_public_asset_receipt,
+                self.attestation_bundle_root,
+                supplied,
+            )
 
     def test_execute_uploads_without_clobber_and_verifies_before_publish(self) -> None:
         plan = self.plan()
@@ -155,12 +226,26 @@ class FinalImmutableReleasePublicationOperatorTests(
         public = _base.SCRIPT
         impl = public.with_name("_publish_final_immutable_release_impl.py")
         extension = public.with_name("_publish_final_immutable_release_nine_asset.py")
-        text = public.read_text(encoding="utf-8") + "\n" + impl.read_text(encoding="utf-8") + "\n" + extension.read_text(encoding="utf-8")
+        verifier = public.with_name("verify_final_ga_attestation_public_asset.py")
+        text = (
+            public.read_text(encoding="utf-8")
+            + "\n"
+            + impl.read_text(encoding="utf-8")
+            + "\n"
+            + extension.read_text(encoding="utf-8")
+            + "\n"
+            + verifier.read_text(encoding="utf-8")
+        )
         self.assertIn('API_VERSION = "2026-03-10"', text)
         self.assertIn('REPOSITORY = "Naveax/PSMatrix"', text)
         self.assertIn("final-immutable-release-publication-contract.json", text)
         self.assertIn("verify_protected_final_release_bundle.py", text)
+        self.assertIn("verify_final_ga_attestation_public_asset.py", text)
+        self.assertIn("final-attestation-operation", text)
+        self.assertIn("final-attestation-public-asset-receipt", text)
+        self.assertIn("final-attestation-bundle-root", text)
         self.assertIn("final-attestation-public-asset-verification", text)
+        self.assertIn("_reverify_final_ga_attestation_public_asset", text)
         self.assertIn("psmatrix-2.0.0-final-ga-attestation.zip", text)
         self.assertIn("immutable-releases", text)
         self.assertIn('method="DELETE"', text)
