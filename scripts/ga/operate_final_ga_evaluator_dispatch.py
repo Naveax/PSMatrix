@@ -18,6 +18,19 @@ EXPECTED_WORKFLOW = "production-ga-final-evaluator"
 EXPECTED_WORKFLOW_PATH = ".github/workflows/ga-final-evaluator.yml"
 EXPECTED_REF = "final/2.0.0-production-control-plane-publication-anchor"
 EXPECTED_EXECUTION_HEAD = "3ffc6b6d7cd58d64224f780aa819b50f50f72491"
+EXPECTED_GATES = (
+    "validation-summary",
+    "signed-release",
+    "authoritative-windows",
+    "complete-runtime-matrix",
+    "public-oauth",
+    "public-mtls",
+    "external-otlp",
+    "key-rotation",
+    "disaster-recovery",
+    "security-review",
+    "vulnerability-scan",
+)
 EXPECTED_INPUTS = (
     "validation_run_id",
     "release_signing_run_id",
@@ -99,7 +112,8 @@ def validate_plan(plan: dict[str, Any]) -> dict[str, str]:
         "release_closed": False,
     }
     for key, expected in expected_scalars.items():
-        if plan.get(key) != expected:
+        actual = plan.get(key)
+        if type(actual) is not type(expected) or actual != expected:
             raise FinalGAEvaluatorDispatchError(f"dispatch plan {key} mismatch")
 
     inputs = plan.get("workflow_dispatch_inputs")
@@ -112,12 +126,13 @@ def validate_plan(plan: dict[str, Any]) -> dict[str, str]:
         raise FinalGAEvaluatorDispatchError("dispatch plan workflow run IDs must be distinct")
 
     artifact_ids = plan.get("verified_artifact_ids")
-    if not isinstance(artifact_ids, dict) or len(artifact_ids) != 11:
-        raise FinalGAEvaluatorDispatchError("dispatch plan verified artifact set is invalid")
+    if not isinstance(artifact_ids, dict) or tuple(artifact_ids) != EXPECTED_GATES:
+        raise FinalGAEvaluatorDispatchError("dispatch plan verified artifact gate order/set mismatch")
     seen_artifacts: set[int] = set()
-    for gate, artifact_id in artifact_ids.items():
-        if not isinstance(gate, str) or not gate or type(artifact_id) is not int or artifact_id <= 0:
-            raise FinalGAEvaluatorDispatchError("dispatch plan contains an invalid verified artifact identity")
+    for gate in EXPECTED_GATES:
+        artifact_id = artifact_ids.get(gate)
+        if type(artifact_id) is not int or artifact_id <= 0:
+            raise FinalGAEvaluatorDispatchError(f"dispatch plan contains invalid verified artifact ID: {gate}")
         if artifact_id in seen_artifacts:
             raise FinalGAEvaluatorDispatchError("dispatch plan verified artifact IDs must be distinct")
         seen_artifacts.add(artifact_id)
@@ -137,13 +152,20 @@ def _open_once(request: urllib.request.Request):
     return urllib.request.urlopen(request, timeout=30)
 
 
+def _response_status(response: Any) -> int:
+    status_code = getattr(response, "status", None)
+    if status_code is None:
+        status_code = response.getcode()
+    return int(status_code)
+
+
 def _verify_frozen_ref_once(*, token: str) -> None:
     ref_path = urllib.parse.quote(EXPECTED_REF.removeprefix("refs/heads/"), safe="")
     url = f"https://api.github.com/repos/{EXPECTED_REPOSITORY}/git/ref/heads/{ref_path}"
     request = urllib.request.Request(url, headers=_headers(token), method="GET")
     try:
         with _open_once(request) as response:
-            if getattr(response, "status", response.getcode()) != 200:
+            if _response_status(response) != 200:
                 raise FinalGAEvaluatorDispatchError("frozen evaluator ref verification did not return HTTP 200")
             payload = json.load(response)
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
@@ -165,7 +187,7 @@ def _dispatch_once(*, token: str, inputs: dict[str, str]) -> str:
     request.add_header("Content-Type", "application/json")
     try:
         with _open_once(request) as response:
-            status_code = getattr(response, "status", response.getcode())
+            status_code = _response_status(response)
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
         raise FinalGAEvaluatorDispatchError(f"evaluator dispatch request failed: {type(exc).__name__}") from exc
     if status_code != 204:
