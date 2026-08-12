@@ -37,7 +37,7 @@ class StaleReleaseWorkCleanupVerificationTests(unittest.TestCase):
             "tag": "v2.0.0",
             "release_execution_control_head": "a" * 40,
             "publication_operation_verified": True,
-            "publication_asset_count": 8,
+            "publication_asset_count": 9,
             "release_asset_set_verified": True,
             "github_release_attestation_verified": True,
             "final_immutable_ga_anchor_created": True,
@@ -58,7 +58,7 @@ class StaleReleaseWorkCleanupVerificationTests(unittest.TestCase):
         self.assertEqual(value["stale_branch_count"], 0)
         self.assertEqual(value["stale_open_pr_count"], 0)
         self.assertTrue(value["immutable_publication_operation_verified_before_cleanup"])
-        self.assertEqual(value["immutable_publication_asset_count"], 8)
+        self.assertEqual(value["immutable_publication_asset_count"], 9)
         self.assertTrue(value["immutable_release_asset_set_verified_before_cleanup"])
         self.assertTrue(value["immutable_release_attestation_verified_before_cleanup"])
         self.assertTrue(value["stale_branch_pr_cleanup_completed"])
@@ -76,7 +76,7 @@ class StaleReleaseWorkCleanupVerificationTests(unittest.TestCase):
                 with self.assertRaises(self.module.StaleReleaseWorkCleanupError):
                     self.module.verify(self.closure, release, self.clean_branches, [])
         release = dict(self.release)
-        release["publication_asset_count"] = 7
+        release["publication_asset_count"] = 8
         with self.assertRaises(self.module.StaleReleaseWorkCleanupError):
             self.module.verify(self.closure, release, self.clean_branches, [])
         release = dict(self.release)
