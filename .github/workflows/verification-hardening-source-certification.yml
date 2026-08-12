@@ -57,6 +57,15 @@ jobs:
           python scripts/ga/verify_repository_workflow_action_policy.py
           --root .
 
+      - name: Certify exact repository workflow action-pin refresh
+        run: >-
+          python scripts/ga/verify_repository_workflow_pin_refresh.py
+          --root .
+          --baseline 3ffc6b6d7cd58d64224f780aa819b50f50f72491
+          --expected-files 76
+          --expected-replacements 167
+          --output "$RUNNER_TEMP/repository-workflow-pin-refresh.json"
+
       - name: Scan exact tracked tree for private material
         run: >-
           python scripts/ga/scan_repository_private_material.py
@@ -64,12 +73,15 @@ jobs:
           --expected-head "$GITHUB_SHA"
           --output "$RUNNER_TEMP/repository-private-material-scan.json"
 
-      - name: Certify additive-only verification hardening
+      - name: Certify verification hardening with exact workflow pin refresh
         run: >-
-          python scripts/ga/certify_verification_hardening_source.py
+          python scripts/ga/certify_verification_hardening_source_with_pin_refresh.py
           --root .
           --baseline 3ffc6b6d7cd58d64224f780aa819b50f50f72491
           --private-scan "$RUNNER_TEMP/repository-private-material-scan.json"
+          --workflow-pin-refresh "$RUNNER_TEMP/repository-workflow-pin-refresh.json"
+          --expected-workflow-pin-files 76
+          --expected-workflow-pin-replacements 167
           --output "$RUNNER_TEMP/verification-hardening-source-certification.json"
 
       - name: Upload exact-head certification receipts
@@ -78,6 +90,7 @@ jobs:
         with:
           name: psmatrix-2.0.0-verification-hardening-source-${{ github.run_id }}
           path: |
+            ${{ runner.temp }}/repository-workflow-pin-refresh.json
             ${{ runner.temp }}/repository-private-material-scan.json
             ${{ runner.temp }}/verification-hardening-source-certification.json
           if-no-files-found: warn
