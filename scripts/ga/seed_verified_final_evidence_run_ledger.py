@@ -84,6 +84,16 @@ def seed(
         or execution_anchor_verification.get("anchor_moved") is not False
     ):
         raise FinalEvidenceLedgerSeedError("execution anchor verification is incomplete")
+    post_readiness_count = execution_anchor_verification.get("post_readiness_run_count")
+    if (
+        execution_anchor_verification.get("readiness_pass_observed") is not True
+        or execution_anchor_verification.get("current_stage") != "POST_READINESS_EXECUTION_OBSERVED"
+        or type(post_readiness_count) is not int
+        or post_readiness_count < 2
+    ):
+        raise FinalEvidenceLedgerSeedError(
+            "execution anchor receipt is stale or does not observe signing plus validation execution"
+        )
 
     _require_receipt(
         signing_run_verification,
@@ -192,6 +202,7 @@ def seed(
             "signed_release_artifact_id": signing_artifact_id,
             "validation_summary_artifact_id": validation_artifact_id,
             "execution_anchor_verified": True,
+            "execution_anchor_post_readiness_run_count": post_readiness_count,
             "signed_release_content_verified": True,
             "validation_summary_content_verified": True,
             "dispatch_input_release_signing_run_id_api_verified": False,
