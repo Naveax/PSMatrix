@@ -15,7 +15,7 @@ class WindowsAuthoritySelfHostedRC3StagingTests(unittest.TestCase):
             'default: "34e87c60885001f8dd11744b8bf194a59e51bd1f"',
             "runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]",
             "Set up Python 3.12 for reviewed RC3 build",
-            "actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405",
+            "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
             'python-version: "3.12"',
             "Expected NAVEAX runner",
             "Expected job-local Python 3.12",

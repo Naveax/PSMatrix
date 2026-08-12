@@ -40,7 +40,7 @@ jobs:
         run: |
           if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') { throw 'Expected NAVEAX Windows runner.' }
           Write-Host 'rc4_closure_hardening_runner=PASS'
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with: {ref: "${{ github.event.pull_request.head.sha || github.sha }}", fetch-depth: 1, persist-credentials: false}
       - name: Verify exact clean RC4 preparation source
         shell: pwsh

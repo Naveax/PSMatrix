@@ -56,7 +56,7 @@ jobs:
           if ($env:ENROLLMENT_RUN_ID -eq $env:STAGING_RUN_ID) { throw 'Enrollment and staging run IDs must be distinct.' }
 
       - name: Check out exact RC4 candidate controls
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
         with:
           ref: ${{ inputs.candidate_commit }}
           path: candidate

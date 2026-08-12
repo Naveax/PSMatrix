@@ -41,14 +41,14 @@ jobs:
           Write-Host 'final_validation_dispatch_identity=PASS'
 
       - name: Check out exact producer controls
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
         with:
           path: control
           fetch-depth: 1
           persist-credentials: false
 
       - name: Check out exact frozen final source with full history
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
         with:
           ref: 02cef95d40cf524ce00f9d917188343dc49e6f2c
           path: final-source
@@ -215,14 +215,14 @@ jobs:
 
     steps:
       - name: Check out exact producer controls
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
         with:
           path: control
           fetch-depth: 1
           persist-credentials: false
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.2.0
         with:
           python-version: "3.12"
 
