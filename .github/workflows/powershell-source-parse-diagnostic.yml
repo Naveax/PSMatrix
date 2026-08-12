@@ -26,6 +26,17 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
+      - name: Verify exact workflow event revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          if [[ "$actual" != "$GITHUB_SHA" ]]; then
+            echo "checked-out HEAD does not match GITHUB_SHA" >&2
+            exit 1
+          fi
+          echo "workflow_event_head_verified=true"
+
       - name: Parse every tracked PowerShell script
         shell: pwsh
         run: |
