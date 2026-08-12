@@ -141,7 +141,7 @@ class FinalGAEvaluatorDispatchOperatorTests(unittest.TestCase):
         self.assertEqual(requests[1].get_header("Authorization"), "Bearer secret-token")
         body = json.loads(requests[1].data.decode("utf-8"))
         self.assertEqual(body["ref"], module.EXPECTED_REF)
-        self.assertEqual(tuple(body["inputs"]), module.EXPECTED_INPUTS)
+        self.assertEqual(body["inputs"], self._plan()["workflow_dispatch_inputs"])
         self.assertEqual(receipt["status"], "DISPATCH_ACCEPTED")
         self.assertTrue(receipt["dispatch_attempted"])
         self.assertTrue(receipt["dispatch_accepted"])
