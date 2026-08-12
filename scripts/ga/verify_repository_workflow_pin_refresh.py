@@ -15,6 +15,7 @@ PIN_REPLACEMENTS = {
 }
 COMPANION_PIN_CONTRACT_PATHS = {
     'tests/test_final_vulnerability_scanner_supply_chain.py',
+    'tests/test_windows_authority_self_hosted_rc3_staging.py',
 }
 
 
