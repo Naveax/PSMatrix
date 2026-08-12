@@ -1,0 +1,91 @@
+name: core-test-diagnostics
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: core-test-diagnostics-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    if: >-
+      github.actor == 'Naveax' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 45
+    env:
+      PYTHONPATH: ${{ github.workspace }}\src
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run isolated core diagnostics
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($head -ne $env:GITHUB_SHA.ToLowerInvariant()) {
+              throw "diagnostic checkout head mismatch: $head != $env:GITHUB_SHA"
+          }
+          $log = Join-Path $env:RUNNER_TEMP 'psmatrix-core-diagnostic.txt'
+          $failureFile = Join-Path $env:RUNNER_TEMP 'psmatrix-core-diagnostic-failures.txt'
+          Remove-Item -LiteralPath $log,$failureFile -Force -ErrorAction SilentlyContinue
+          $files = @(Get-ChildItem -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'tests') -File -Filter 'test_*.py' | Sort-Object Name)
+          $linuxNativeModules = @('test_integration.py')
+          $packageVersion = (python -c "import psmatrix; print(psmatrix.__version__)").Trim()
+          $failures = @()
+          foreach ($file in $files) {
+              if ($linuxNativeModules -contains $file.Name) { continue }
+              if ($packageVersion -ne '2.0.0rc4' -and $file.Name -like 'test_windows_authority_rc4_*.py') { continue }
+              $module = 'tests.' + [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
+              Add-Content -LiteralPath $log -Value "===== $module ====="
+              if ($file.Name -eq 'test_oci.py') {
+                  $output = @(& python -m unittest "tests.test_oci.OciRuntimeTests.test_image_reference_validation" -v 2>&1)
+              }
+              else {
+                  $output = @(& python -m unittest $module -v 2>&1)
+              }
+              $exit = $LASTEXITCODE
+              $output | ForEach-Object { Add-Content -LiteralPath $log -Value ([string]$_) }
+              Add-Content -LiteralPath $log -Value "exit=$exit"
+              if ($exit -ne 0) {
+                  $failures += $module
+                  Add-Content -LiteralPath $failureFile -Value $module
+              }
+          }
+          Add-Content -LiteralPath $log -Value "failures=$($failures.Count)"
+          foreach ($failure in $failures) {
+              Add-Content -LiteralPath $log -Value "FAILED_MODULE=$failure"
+          }
+          Write-Host "core_diagnostic_modules=$($files.Count) failures=$($failures.Count)"
+
+      - name: Upload diagnostic log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: psmatrix-core-diagnostic-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/psmatrix-core-diagnostic.txt
+            ${{ runner.temp }}/psmatrix-core-diagnostic-failures.txt
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Fail if core diagnostics found failures
+        shell: pwsh
+        run: |
+          $failureFile = Join-Path $env:RUNNER_TEMP 'psmatrix-core-diagnostic-failures.txt'
+          if (Test-Path -LiteralPath $failureFile) {
+              $failures = @(Get-Content -LiteralPath $failureFile | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+              if ($failures.Count -gt 0) {
+                  throw "Core diagnostic failures: $($failures -join ', ')"
+              }
+          }
+          Write-Host 'core_diagnostics=PASS'
