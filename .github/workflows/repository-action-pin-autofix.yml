@@ -36,6 +36,14 @@ jobs:
       - name: Verify repository-wide action policy after refresh
         run: python scripts/ga/verify_repository_workflow_action_policy.py --root .
 
+      - name: Export refreshed workflow snapshot
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: repository-workflow-pin-refresh-${{ github.run_id }}
+          path: .github/workflows
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Commit deterministic workflow-only refresh
         shell: bash
         run: |
