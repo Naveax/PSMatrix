@@ -13,6 +13,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 _IMPL_PATH = Path(__file__).with_name("_verify_final_release_closure_impl.py")
 _IMMUTABLE_VERIFIER_PATH = Path(__file__).with_name("verify_final_immutable_release.py")
+_DOCUMENTATION_VERIFIER_PATH = Path(__file__).with_name("verify_final_documentation_state.py")
 _READINESS_CONTRACT_PATH = (
     ROOT / "ga-packs" / "03-authoritative-windows" / "final-production-readiness-contract.json"
 )
@@ -45,8 +46,21 @@ def _load_immutable_verifier():
     return module
 
 
+def _load_documentation_verifier():
+    spec = importlib.util.spec_from_file_location(
+        "psmatrix_final_release_closure_documentation_verifier",
+        _DOCUMENTATION_VERIFIER_PATH,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("unable to load canonical final documentation verifier")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 _impl = _load_impl()
 _IMMUTABLE_VERIFIER = _load_immutable_verifier()
+_DOCUMENTATION_VERIFIER = _load_documentation_verifier()
 for _name, _value in vars(_impl).items():
     if not _name.startswith("__"):
         globals()[_name] = _value
@@ -161,6 +175,40 @@ def _reverify_current_immutable_release(
     return fresh
 
 
+def _reverify_current_documentation(
+    documentation_record: dict[str, Any] | None,
+    immutable_release: dict[str, Any],
+    documentation: dict[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(documentation_record, dict):
+        raise FinalReleaseClosureError(
+            "final release closure requires the original documentation record for canonical re-verification"
+        )
+    repository_head = str(documentation.get("documentation_repository_head") or "").lower()
+    verifier = _DOCUMENTATION_VERIFIER
+    try:
+        fresh = verifier.verify(
+            documentation_record,
+            immutable_release,
+            repository_head,
+        )
+    except (
+        OSError,
+        verifier.FinalDocumentationStateError,
+        TypeError,
+        ValueError,
+        KeyError,
+    ) as exc:
+        raise FinalReleaseClosureError(
+            "current final documentation canonical re-verification failed"
+        ) from exc
+    if not isinstance(fresh, dict):
+        raise FinalReleaseClosureError(
+            "canonical final documentation verifier returned an invalid receipt"
+        )
+    return fresh
+
+
 def _write_final_closure_receipt(path: Path, value: dict[str, Any]) -> Path:
     _reject_symlink_components(path, "final release closure output")
     absolute = path.expanduser().absolute()
@@ -253,6 +301,7 @@ def verify(
     final_scan: dict[str, Any],
     *,
     publication_operation: dict[str, Any] | None = None,
+    documentation_record: dict[str, Any] | None = None,
     gh: str = "gh",
 ) -> dict[str, Any]:
     fresh_immutable_release = _reverify_current_immutable_release(
@@ -263,6 +312,15 @@ def verify(
     if fresh_immutable_release != immutable_release:
         raise FinalReleaseClosureError(
             "provided immutable release verification differs from fresh canonical verification of current GitHub release state"
+        )
+    fresh_documentation = _reverify_current_documentation(
+        documentation_record,
+        immutable_release,
+        documentation,
+    )
+    if fresh_documentation != documentation:
+        raise FinalReleaseClosureError(
+            "provided final documentation verification differs from fresh canonical verification of current committed repository state"
         )
     if immutable_release.get(
         "publication_receipt_output_reserved_before_mutation"
@@ -298,6 +356,7 @@ def verify(
         )
     result = dict(value)
     result["immutable_release_canonical_reverification_verified"] = True
+    result["documentation_canonical_reverification_verified"] = True
     result["publication_receipt_output_reserved_before_mutation"] = True
     result["final_ga_attestation_public_asset_verified"] = True
     result["cleanup_audit_transaction_verified"] = True
@@ -316,6 +375,7 @@ def main() -> int:
     parser.add_argument("--release-closure", type=Path, required=True)
     parser.add_argument("--immutable-release-verification", type=Path, required=True)
     parser.add_argument("--publication-operation", type=Path, required=True)
+    parser.add_argument("--documentation-record", type=Path, required=True)
     parser.add_argument("--documentation-verification", type=Path, required=True)
     parser.add_argument("--cleanup-verification", type=Path, required=True)
     parser.add_argument("--final-repository-scan", type=Path, required=True)
@@ -333,6 +393,10 @@ def main() -> int:
                 args.publication_operation,
                 "immutable release publication operation",
             ),
+            documentation_record=_read(
+                args.documentation_record,
+                "final documentation record",
+            ),
             gh=args.gh,
         )
         _write_final_closure_receipt(args.output, value)
@@ -344,6 +408,7 @@ def main() -> int:
         print("post_ga_operations=6/6")
         print("release_asset_set_verified=true")
         print("immutable_release_canonical_reverification_verified=true")
+        print("documentation_canonical_reverification_verified=true")
         print("final_ga_attestation_public_asset_verified=true")
         print("github_release_attestation_verified=true")
         print("post_ga_receipts_bound_before_final_scan=true")

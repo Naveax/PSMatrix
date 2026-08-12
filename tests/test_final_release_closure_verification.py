@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 _BASE_PATH = Path(__file__).with_name("_final_release_closure_verification_base.py")
 
@@ -31,6 +32,13 @@ class FinalReleaseClosureVerificationTests(
             "publication_receipt_output_reserved_before_mutation"
         ] = True
         self.release["final_ga_attestation_public_asset_verified"] = True
+        self.documentation_reverify_patcher = patch.object(
+            self.module,
+            "_reverify_current_documentation",
+            side_effect=lambda *_args, **_kwargs: dict(self.documentation),
+        )
+        self.documentation_reverify = self.documentation_reverify_patcher.start()
+        self.addCleanup(self.documentation_reverify_patcher.stop)
 
     def test_publication_reservation_proof_is_required_for_release_closed(self) -> None:
         field = "publication_receipt_output_reserved_before_mutation"
@@ -130,6 +138,25 @@ class FinalReleaseClosureVerificationTests(
             )
         self.immutable_reverify.assert_called_once_with(self.closure, None, "gh")
 
+    def test_forged_documentation_receipt_is_rejected_when_fresh_authority_disagrees(self) -> None:
+        fresh = dict(self.documentation)
+        fresh["document_count"] = 99
+        self.documentation_reverify.side_effect = None
+        self.documentation_reverify.return_value = fresh
+        with self.assertRaises(self.module.FinalReleaseClosureError):
+            self.module.verify(
+                self.closure,
+                self.release,
+                self.documentation,
+                self.cleanup,
+                self.scan,
+            )
+        self.documentation_reverify.assert_called_once_with(
+            None,
+            self.release,
+            self.documentation,
+        )
+
     def test_release_closed_receipt_carries_bound_safety_proofs(self) -> None:
         value = self.module.verify(
             self.closure,
@@ -139,12 +166,18 @@ class FinalReleaseClosureVerificationTests(
             self.scan,
         )
         self.assertTrue(value["immutable_release_canonical_reverification_verified"])
+        self.assertTrue(value["documentation_canonical_reverification_verified"])
         self.assertTrue(
             value["publication_receipt_output_reserved_before_mutation"]
         )
         self.assertTrue(value["final_ga_attestation_public_asset_verified"])
         self.assertTrue(value["cleanup_audit_transaction_verified"])
         self.immutable_reverify.assert_called_once_with(self.closure, None, "gh")
+        self.documentation_reverify.assert_called_once_with(
+            None,
+            self.release,
+            self.documentation,
+        )
 
     def test_source_is_only_component_allowed_to_emit_release_closed_true(self) -> None:
         public = _base.SCRIPT
@@ -169,6 +202,10 @@ class FinalReleaseClosureVerificationTests(
         self.assertIn("_verify_github_release_attestation", text)
         self.assertIn("--publication-operation", text)
         self.assertIn("immutable_release_canonical_reverification_verified", text)
+        self.assertIn("verify_final_documentation_state.py", text)
+        self.assertIn("_reverify_current_documentation", text)
+        self.assertIn("--documentation-record", text)
+        self.assertIn("documentation_canonical_reverification_verified", text)
 
 
 if __name__ == "__main__":
