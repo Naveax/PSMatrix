@@ -39,7 +39,7 @@ def immutable_release(head: str = "a" * 40) -> dict[str, object]:
         "tag": "v2.0.0",
         "release_execution_control_head": head,
         "publication_operation_verified": True,
-        "publication_asset_count": 8,
+        "publication_asset_count": 9,
         "release_asset_set_verified": True,
         "github_release_attestation_verified": True,
         "release_published": True,
@@ -270,6 +270,12 @@ class StaleReleaseWorkCleanupOperatorTests(unittest.TestCase):
     def test_invalid_immutable_release_is_rejected_before_planning(self) -> None:
         bad = dict(self.immutable)
         bad["release_published"] = False
+        with self.assertRaises(self.module.StaleReleaseWorkCleanupOperationError):
+            self.module.build_plan(self.verifier, self.closure, bad, [{"name": "main"}], [], [])
+
+    def test_old_eight_asset_immutable_release_is_rejected_before_planning(self) -> None:
+        bad = dict(self.immutable)
+        bad["publication_asset_count"] = 8
         with self.assertRaises(self.module.StaleReleaseWorkCleanupOperationError):
             self.module.build_plan(self.verifier, self.closure, bad, [{"name": "main"}], [], [])
 
