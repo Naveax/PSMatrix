@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -18,6 +20,50 @@ def _file_sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _reject_symlink_components(path: Path, label: str) -> None:
+    expanded = path.expanduser()
+    parts = expanded.parts
+    if expanded.is_absolute():
+        current = Path(expanded.anchor)
+        start = 1
+    else:
+        current = Path(".")
+        start = 0
+    for part in parts[start:]:
+        current = current / part
+        if current.is_symlink():
+            raise ReadinessSummaryVerificationError(
+                f"{label} may not traverse a symlink component"
+            )
+
+
+def _resolved_input(path: Path, label: str) -> Path:
+    _reject_symlink_components(path, label)
+    resolved = path.expanduser().resolve()
+    if not resolved.is_file():
+        raise ReadinessSummaryVerificationError(f"{label} is missing or unsafe")
+    try:
+        info = os.lstat(resolved)
+    except OSError as exc:
+        raise ReadinessSummaryVerificationError(
+            f"{label} could not be inspected: {exc}"
+        ) from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise ReadinessSummaryVerificationError(f"{label} is not a regular file")
+    return resolved
+
+
+def _read_json_input(path: Path, label: str) -> tuple[dict[str, Any], Path]:
+    resolved = _resolved_input(path, label)
+    try:
+        value = json.loads(resolved.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ReadinessSummaryVerificationError(f"{label} JSON is invalid") from exc
+    if not isinstance(value, dict):
+        raise ReadinessSummaryVerificationError(f"{label} root must be object")
+    return value, resolved
 
 
 def verify(summary: dict[str, Any], contract: dict[str, Any], run_verification: dict[str, Any]) -> dict[str, Any]:
@@ -72,6 +118,91 @@ def verify(summary: dict[str, Any], contract: dict[str, Any], run_verification: 
     }
 
 
+def _write_readiness_summary_verification_receipt(
+    path: Path,
+    value: dict[str, Any],
+) -> Path:
+    _reject_symlink_components(path, "readiness summary verification output")
+    absolute = path.expanduser().absolute()
+    if absolute.exists():
+        raise ReadinessSummaryVerificationError(
+            "readiness summary verification output must not already exist"
+        )
+    parent = absolute.parent
+    _reject_symlink_components(parent, "readiness summary verification output parent")
+    resolved_parent = parent.resolve()
+    if not resolved_parent.is_dir():
+        raise ReadinessSummaryVerificationError(
+            "readiness summary verification output parent must already exist"
+        )
+    candidate = resolved_parent / absolute.name
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    try:
+        fd = os.open(candidate, flags, 0o600)
+    except FileExistsError as exc:
+        raise ReadinessSummaryVerificationError(
+            "readiness summary verification output appeared before exclusive creation"
+        ) from exc
+    except OSError as exc:
+        raise ReadinessSummaryVerificationError(
+            f"readiness summary verification output could not be created: {exc}"
+        ) from exc
+
+    info = os.fstat(fd)
+    identity = (int(info.st_dev), int(info.st_ino))
+    handle = None
+    success = False
+    try:
+        handle = os.fdopen(fd, "r+", encoding="utf-8", newline="\n")
+        path_info = os.lstat(candidate)
+        if (
+            not stat.S_ISREG(path_info.st_mode)
+            or (int(path_info.st_dev), int(path_info.st_ino)) != identity
+        ):
+            raise ReadinessSummaryVerificationError(
+                "readiness summary verification output path does not name the exclusively created file"
+            )
+        payload = json.dumps(value, indent=2, sort_keys=True) + "\n"
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+        handle.seek(0)
+        if handle.read() != payload:
+            raise ReadinessSummaryVerificationError(
+                "readiness summary verification output read-back verification failed"
+            )
+        path_info = os.lstat(candidate)
+        if (
+            not stat.S_ISREG(path_info.st_mode)
+            or (int(path_info.st_dev), int(path_info.st_ino)) != identity
+        ):
+            raise ReadinessSummaryVerificationError(
+                "readiness summary verification output path identity changed during write"
+            )
+        success = True
+        return candidate
+    finally:
+        if handle is not None:
+            handle.close()
+        else:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if not success:
+            try:
+                path_info = os.lstat(candidate)
+                if (
+                    stat.S_ISREG(path_info.st_mode)
+                    and (int(path_info.st_dev), int(path_info.st_ino)) == identity
+                ):
+                    candidate.unlink()
+            except OSError:
+                pass
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Verify downloaded Production GA readiness summary content against the frozen 12-environment/41-check contract")
     parser.add_argument("--summary", type=Path, required=True)
@@ -80,18 +211,22 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
-        summary_path = args.summary.expanduser().resolve()
-        if not summary_path.is_file() or summary_path.is_symlink():
-            raise ReadinessSummaryVerificationError("readiness summary file is missing or unsafe")
-        value = verify(
-            json.loads(summary_path.read_text(encoding="utf-8")),
-            json.loads(args.contract.read_text(encoding="utf-8")),
-            json.loads(args.run_verification.read_text(encoding="utf-8")),
+        summary, summary_path = _read_json_input(
+            args.summary,
+            "readiness summary file",
         )
+        contract, _ = _read_json_input(
+            args.contract,
+            "production readiness contract",
+        )
+        run_verification, _ = _read_json_input(
+            args.run_verification,
+            "readiness run verification",
+        )
+        value = verify(summary, contract, run_verification)
         value["summary_file_sha256"] = _file_sha256(summary_path)
         value["summary_file_size"] = summary_path.stat().st_size
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        _write_readiness_summary_verification_receipt(args.output, value)
         print("production_readiness_summary_verification=PASS environments=12/12 checks=41/41")
         print(f"summary_file_sha256={value['summary_file_sha256']}")
         print(f"summary_file_size={value['summary_file_size']}")
