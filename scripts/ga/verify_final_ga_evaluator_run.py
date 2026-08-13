@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -19,7 +20,18 @@ class FinalGAEvaluatorRunError(RuntimeError):
     pass
 
 
-def verify(run_id: int, execution_head: str, content_closure: dict[str, Any], run: dict[str, Any], artifacts: list[dict[str, Any]]) -> dict[str, Any]:
+def verify(
+    run_id: int,
+    execution_head: str,
+    content_closure: dict[str, Any],
+    content_closure_verification: dict[str, Any],
+    content_closure_file_sha256: str,
+    content_closure_file_size: int,
+    content_closure_verification_file_sha256: str,
+    content_closure_verification_file_size: int,
+    run: dict[str, Any],
+    artifacts: list[dict[str, Any]],
+) -> dict[str, Any]:
     execution_head = execution_head.lower()
     if type(run_id) is not int or run_id <= 0 or SHA40.fullmatch(execution_head) is None:
         raise FinalGAEvaluatorRunError("invalid evaluator run ID or execution head")
@@ -44,6 +56,40 @@ def verify(run_id: int, execution_head: str, content_closure: dict[str, Any], ru
     gates = content_closure.get("gates")
     if not isinstance(gates, list) or len(gates) != 11 or len({row.get("gate") for row in gates if isinstance(row, dict)}) != 11:
         raise FinalGAEvaluatorRunError("evidence content closure gate rows are incomplete")
+
+    if (
+        content_closure_verification.get("schema") != 1
+        or content_closure_verification.get("kind") != "psmatrix.final-ga-evidence-content-closure-verification"
+        or content_closure_verification.get("version") != "2.0.0"
+        or content_closure_verification.get("status") != "PASS"
+    ):
+        raise FinalGAEvaluatorRunError("canonical content closure reverification identity/status mismatch")
+    if content_closure_verification.get("execution_head") != execution_head:
+        raise FinalGAEvaluatorRunError("canonical content closure reverification execution head mismatch")
+    if (
+        content_closure_verification.get("single_binding_count") != 9
+        or content_closure_verification.get("public_auth_binding_count") != 1
+        or content_closure_verification.get("source_binding_receipt_count") != 10
+        or content_closure_verification.get("verified_gate_count") != 11
+    ):
+        raise FinalGAEvaluatorRunError("canonical content closure reverification source/gate cardinality mismatch")
+    for field in ("repository_owned_rederivation", "closure_exactly_recomputed", "ready_for_final_ga_evaluator_dispatch"):
+        if content_closure_verification.get(field) is not True:
+            raise FinalGAEvaluatorRunError(f"canonical content closure reverification field is not true: {field}")
+    if content_closure_verification.get("final_ga_evaluator_invoked") is not False or content_closure_verification.get("ga_eligible") is not False:
+        raise FinalGAEvaluatorRunError("canonical content closure reverification crossed evaluator/GA boundary")
+    if not re.fullmatch(r"[0-9a-f]{64}", content_closure_file_sha256) or content_closure_file_size <= 0:
+        raise FinalGAEvaluatorRunError("content closure byte provenance is invalid")
+    if content_closure_verification.get("content_closure_file_sha256") != content_closure_file_sha256:
+        raise FinalGAEvaluatorRunError("content closure bytes differ from canonical reverification receipt")
+    closure_canonical_sha256 = hashlib.sha256(
+        json.dumps(content_closure, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    if content_closure_verification.get("closure_canonical_sha256") != closure_canonical_sha256:
+        raise FinalGAEvaluatorRunError("content closure canonical digest differs from canonical reverification receipt")
+    if not re.fullmatch(r"[0-9a-f]{64}", content_closure_verification_file_sha256) or content_closure_verification_file_size <= 0:
+        raise FinalGAEvaluatorRunError("content closure reverification byte provenance is invalid")
+
     if run.get("id") != run_id or run.get("name") != WORKFLOW:
         raise FinalGAEvaluatorRunError("final evaluator run identity mismatch")
     if run.get("event") != "workflow_dispatch" or run.get("status") != "completed" or run.get("conclusion") != "success":
@@ -67,6 +113,15 @@ def verify(run_id: int, execution_head: str, content_closure: dict[str, Any], ru
         "api_verified_gate_count_before_dispatch": 11,
         "content_verified_gate_count_before_dispatch": 11,
         "content_closure_required": True,
+        "content_closure_reverification_required": True,
+        "content_closure_file_sha256": content_closure_file_sha256,
+        "content_closure_file_size": content_closure_file_size,
+        "content_closure_canonical_sha256": closure_canonical_sha256,
+        "content_closure_reverification_kind": "psmatrix.final-ga-evidence-content-closure-verification",
+        "content_closure_reverification_file_sha256": content_closure_verification_file_sha256,
+        "content_closure_reverification_file_size": content_closure_verification_file_size,
+        "content_closure_repository_owned_rederivation": True,
+        "content_closure_exactly_recomputed": True,
         "final_ga_evaluator_run_verified": True,
         "ga_root_signing_run_completed": True,
         "final_attestation_artifact": ARTIFACT,
@@ -106,18 +161,19 @@ def _reject_symlink_components(path: Path, *, label: str) -> Path:
     return raw
 
 
-def _read_content_closure(path: Path) -> dict[str, Any]:
-    raw = _reject_symlink_components(path, label="content closure")
+def _read_json_with_provenance(path: Path, *, label: str) -> tuple[dict[str, Any], str, int]:
+    raw = _reject_symlink_components(path, label=label)
     try:
         resolved = raw.resolve(strict=True)
         if not resolved.is_file():
-            raise FinalGAEvaluatorRunError("content closure must be a regular file")
-        value = json.loads(resolved.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise FinalGAEvaluatorRunError(f"unable to read content closure: {raw}") from exc
+            raise FinalGAEvaluatorRunError(f"{label} must be a regular file")
+        data = resolved.read_bytes()
+        value = json.loads(data.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise FinalGAEvaluatorRunError(f"unable to read {label}: {raw}") from exc
     if not isinstance(value, dict):
-        raise FinalGAEvaluatorRunError("content closure must be a JSON object")
-    return value
+        raise FinalGAEvaluatorRunError(f"{label} must be a JSON object")
+    return value, hashlib.sha256(data).hexdigest(), len(data)
 
 
 def _write_run_api_verification_receipt(path: Path, payload: dict[str, Any]) -> Path:
@@ -176,20 +232,40 @@ def main() -> int:
     parser.add_argument("--run-id", type=int, required=True)
     parser.add_argument("--execution-head", required=True)
     parser.add_argument("--content-closure", type=Path, required=True)
+    parser.add_argument("--content-closure-verification", type=Path, required=True)
     parser.add_argument("--repository", default="Naveax/PSMatrix")
     parser.add_argument("--gh", default="gh")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
-        content_closure = _read_content_closure(args.content_closure)
+        content_closure, content_closure_file_sha256, content_closure_file_size = _read_json_with_provenance(
+            args.content_closure, label="content closure"
+        )
+        (
+            content_closure_verification,
+            content_closure_verification_file_sha256,
+            content_closure_verification_file_size,
+        ) = _read_json_with_provenance(args.content_closure_verification, label="content closure reverification")
         run = _gh_json(args.gh, f"repos/{args.repository}/actions/runs/{args.run_id}")
         listing = _gh_json(args.gh, f"repos/{args.repository}/actions/runs/{args.run_id}/artifacts?per_page=100")
         if not isinstance(listing, dict) or not isinstance(listing.get("artifacts"), list):
             raise FinalGAEvaluatorRunError("invalid final evaluator artifact listing")
-        value = verify(args.run_id, args.execution_head, content_closure, run, listing["artifacts"])
+        value = verify(
+            args.run_id,
+            args.execution_head,
+            content_closure,
+            content_closure_verification,
+            content_closure_file_sha256,
+            content_closure_file_size,
+            content_closure_verification_file_sha256,
+            content_closure_verification_file_size,
+            run,
+            listing["artifacts"],
+        )
         written = _write_run_api_verification_receipt(args.output, value)
         print("final_ga_evaluator_run_api_verification=PASS")
         print("content_verified_gate_count_before_dispatch=11")
+        print("content_closure_reverification_bound=true")
         print("ga_root_signing_run_completed=true")
         print("final_attestation_content_verified=false")
         print("ga_eligible=false")
