@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import stat
@@ -14,7 +15,27 @@ class ReadinessSummaryVerificationError(RuntimeError):
     pass
 
 
-EXPECTED_REPOSITORY = "Naveax/PSMatrix"
+_READINESS_RUN_VERIFIER_PATH = Path(__file__).with_name("verify_production_readiness_run.py")
+
+
+def _load_readiness_run_verifier():
+    spec = importlib.util.spec_from_file_location(
+        "psmatrix_readiness_summary_run_authority",
+        _READINESS_RUN_VERIFIER_PATH,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("unable to load canonical Production readiness run verifier")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_READINESS_RUN_VERIFIER = _load_readiness_run_verifier()
+EXPECTED_REPOSITORY = _READINESS_RUN_VERIFIER.REPOSITORY
+EXPECTED_WORKFLOW = _READINESS_RUN_VERIFIER.EXPECTED_WORKFLOW
+EXPECTED_REF = _READINESS_RUN_VERIFIER.EXPECTED_REF
+EXPECTED_ANCHOR_HEAD = _READINESS_RUN_VERIFIER.EXPECTED_ANCHOR_HEAD
+EXPECTED_ARTIFACT = _READINESS_RUN_VERIFIER.EXPECTED_ARTIFACT
 
 
 def _file_sha256(path: Path) -> str:
@@ -69,24 +90,83 @@ def _read_json_input(path: Path, label: str) -> tuple[dict[str, Any], Path]:
     return value, resolved
 
 
-def verify(summary: dict[str, Any], contract: dict[str, Any], run_verification: dict[str, Any]) -> dict[str, Any]:
-    if contract.get("schema") != 1 or contract.get("kind") != "psmatrix.final-production-readiness-contract" or contract.get("version") != "2.0.0":
+def _verified_run_provenance(run_verification: dict[str, Any]) -> tuple[int, int]:
+    if (
+        run_verification.get("schema") != 1
+        or run_verification.get("kind") != "psmatrix.production-readiness-run-api-verification"
+        or run_verification.get("version") != "2.0.0"
+        or run_verification.get("status") != "PASS"
+        or run_verification.get("repository") != EXPECTED_REPOSITORY
+        or run_verification.get("workflow") != EXPECTED_WORKFLOW
+        or run_verification.get("event") != "workflow_dispatch"
+        or run_verification.get("exact_head") != EXPECTED_ANCHOR_HEAD
+        or run_verification.get("immutable_ref") != EXPECTED_REF
+        or run_verification.get("run_conclusion") != "success"
+        or run_verification.get("readiness_pass_observed") is not True
+        or run_verification.get("artifact") != EXPECTED_ARTIFACT
+        or run_verification.get("artifact_nonexpired") is not True
+        or run_verification.get("summary_content_verified") is not False
+        or run_verification.get("ga_eligible") is not False
+    ):
+        raise ReadinessSummaryVerificationError(
+            "successful frozen-anchor readiness run API provenance is required"
+        )
+    run_id = run_verification.get("run_id")
+    artifact_id = run_verification.get("artifact_id")
+    if type(run_id) is not int or run_id <= 0:
+        raise ReadinessSummaryVerificationError("readiness run ID is invalid")
+    if type(artifact_id) is not int or artifact_id <= 0:
+        raise ReadinessSummaryVerificationError("readiness artifact ID is invalid")
+    return run_id, artifact_id
+
+
+def verify(
+    summary: dict[str, Any],
+    contract: dict[str, Any],
+    run_verification: dict[str, Any],
+) -> dict[str, Any]:
+    if (
+        contract.get("schema") != 1
+        or contract.get("kind") != "psmatrix.final-production-readiness-contract"
+        or contract.get("version") != "2.0.0"
+    ):
         raise ReadinessSummaryVerificationError("production readiness contract identity mismatch")
-    if run_verification.get("schema") != 1 or run_verification.get("kind") != "psmatrix.production-readiness-run-api-verification" or run_verification.get("version") != "2.0.0" or run_verification.get("status") != "PASS" or run_verification.get("readiness_pass_observed") is not True:
-        raise ReadinessSummaryVerificationError("successful readiness run API verification is required")
-    if run_verification.get("repository") != EXPECTED_REPOSITORY:
-        raise ReadinessSummaryVerificationError("readiness run repository identity mismatch")
-    if summary.get("schema") != 1 or summary.get("kind") != "psmatrix.production-readiness-summary" or summary.get("version") != "2.0.0" or summary.get("status") != "PASS":
+    run_id, artifact_id = _verified_run_provenance(run_verification)
+    if (
+        summary.get("schema") != 1
+        or summary.get("kind") != "psmatrix.production-readiness-summary"
+        or summary.get("version") != "2.0.0"
+        or summary.get("status") != "PASS"
+    ):
         raise ReadinessSummaryVerificationError("readiness summary identity/status mismatch")
-    if summary.get("producer_source_anchor") != contract.get("producer_source_anchor") or summary.get("final_release_commit") != contract.get("final_release_commit"):
+    if (
+        summary.get("producer_source_anchor") != contract.get("producer_source_anchor")
+        or summary.get("final_release_commit") != contract.get("final_release_commit")
+    ):
         raise ReadinessSummaryVerificationError("readiness summary frozen source/release identity mismatch")
-    if summary.get("producer_source_coverage") != 11 or summary.get("environment_count") != 12 or summary.get("environment_passed") != 12 or summary.get("environment_failed") != 0 or summary.get("failed_environments") != [] or summary.get("environment_readiness") is not True:
+    if (
+        summary.get("producer_source_coverage") != 11
+        or summary.get("environment_count") != 12
+        or summary.get("environment_passed") != 12
+        or summary.get("environment_failed") != 0
+        or summary.get("failed_environments") != []
+        or summary.get("environment_readiness") is not True
+    ):
         raise ReadinessSummaryVerificationError("readiness summary is not exact 12/12 PASS")
     rows = summary.get("environments")
     contract_rows = contract.get("environments")
-    if not isinstance(rows, list) or len(rows) != 12 or not isinstance(contract_rows, list) or len(contract_rows) != 12:
+    if (
+        not isinstance(rows, list)
+        or len(rows) != 12
+        or not isinstance(contract_rows, list)
+        or len(contract_rows) != 12
+    ):
         raise ReadinessSummaryVerificationError("readiness environment cardinality mismatch")
-    expected = {row["name"]: len(row.get("required_secrets") or []) + len(row.get("required_vars") or []) for row in contract_rows if isinstance(row, dict) and isinstance(row.get("name"), str)}
+    expected = {
+        row["name"]: len(row.get("required_secrets") or []) + len(row.get("required_vars") or [])
+        for row in contract_rows
+        if isinstance(row, dict) and isinstance(row.get("name"), str)
+    }
     if len(expected) != 12 or sum(expected.values()) != 41:
         raise ReadinessSummaryVerificationError("readiness contract check closure mismatch")
     observed: set[str] = set()
@@ -95,23 +175,47 @@ def verify(summary: dict[str, Any], contract: dict[str, Any], run_verification: 
         if not isinstance(row, dict):
             raise ReadinessSummaryVerificationError("readiness environment row must be object")
         name = row.get("environment")
-        if name not in expected or name in observed or row.get("status") != "PASS" or row.get("required_checks") != expected[name] or row.get("missing") != [] or row.get("missing_paths") != []:
+        if (
+            name not in expected
+            or name in observed
+            or row.get("status") != "PASS"
+            or row.get("required_checks") != expected[name]
+            or row.get("missing") != []
+            or row.get("missing_paths") != []
+        ):
             raise ReadinessSummaryVerificationError(f"readiness environment row mismatch: {name}")
         observed.add(name)
         total += row["required_checks"]
     if observed != set(expected) or total != 41:
         raise ReadinessSummaryVerificationError("readiness summary does not close exact 41 checks")
-    for field in ("secret_values_observed", "secret_hashes_observed", "secret_lengths_observed", "production_evidence_runs_complete", "production_evaluator_ready", "final_ga_evaluator_invoked", "ga_eligible"):
+    for field in (
+        "secret_values_observed",
+        "secret_hashes_observed",
+        "secret_lengths_observed",
+        "production_evidence_runs_complete",
+        "production_evaluator_ready",
+        "final_ga_evaluator_invoked",
+        "ga_eligible",
+    ):
         if summary.get(field) is not False:
-            raise ReadinessSummaryVerificationError(f"readiness summary crossed forbidden boundary: {field}")
+            raise ReadinessSummaryVerificationError(
+                f"readiness summary crossed forbidden boundary: {field}"
+            )
     return {
         "schema": 1,
         "kind": "psmatrix.production-readiness-summary-verification",
         "version": "2.0.0",
         "status": "PASS",
         "repository": EXPECTED_REPOSITORY,
-        "run_id": run_verification.get("run_id"),
-        "exact_head": run_verification.get("exact_head"),
+        "run_id": run_id,
+        "workflow": EXPECTED_WORKFLOW,
+        "event": "workflow_dispatch",
+        "exact_head": EXPECTED_ANCHOR_HEAD,
+        "immutable_ref": EXPECTED_REF,
+        "run_conclusion": "success",
+        "artifact": EXPECTED_ARTIFACT,
+        "artifact_id": artifact_id,
+        "artifact_nonexpired": True,
         "environment_count": 12,
         "verified_environment_count": 12,
         "required_check_count": 41,
@@ -210,21 +314,21 @@ def _write_readiness_summary_verification_receipt(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Verify downloaded Production GA readiness summary content against the frozen 12-environment/41-check contract")
+    parser = argparse.ArgumentParser(
+        description="Verify downloaded Production GA readiness summary content against the frozen 12-environment/41-check contract"
+    )
     parser.add_argument("--summary", type=Path, required=True)
     parser.add_argument("--run-verification", type=Path, required=True)
-    parser.add_argument("--contract", type=Path, default=Path("ga-packs/03-authoritative-windows/final-production-readiness-contract.json"))
+    parser.add_argument(
+        "--contract",
+        type=Path,
+        default=Path("ga-packs/03-authoritative-windows/final-production-readiness-contract.json"),
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
-        summary, summary_path = _read_json_input(
-            args.summary,
-            "readiness summary file",
-        )
-        contract, _ = _read_json_input(
-            args.contract,
-            "production readiness contract",
-        )
+        summary, summary_path = _read_json_input(args.summary, "readiness summary file")
+        contract, _ = _read_json_input(args.contract, "production readiness contract")
         run_verification, _ = _read_json_input(
             args.run_verification,
             "readiness run verification",
@@ -239,7 +343,14 @@ def main() -> int:
         print("production_readiness_verified=true")
         print("ga_eligible=false")
         return 0
-    except (OSError, json.JSONDecodeError, ReadinessSummaryVerificationError, TypeError, ValueError, KeyError) as exc:
+    except (
+        OSError,
+        json.JSONDecodeError,
+        ReadinessSummaryVerificationError,
+        TypeError,
+        ValueError,
+        KeyError,
+    ) as exc:
         print(f"production readiness summary verification failed: {exc}", file=sys.stderr)
         return 1
 
