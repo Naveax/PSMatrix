@@ -14,11 +14,24 @@ ROOT = Path(__file__).resolve().parents[2]
 _IMPL_PATH = Path(__file__).with_name("_verify_final_release_closure_impl.py")
 _IMMUTABLE_VERIFIER_PATH = Path(__file__).with_name("verify_final_immutable_release.py")
 _DOCUMENTATION_VERIFIER_PATH = Path(__file__).with_name("verify_final_documentation_state.py")
+_CLEANUP_VERIFIER_PATH = Path(__file__).with_name("verify_stale_release_work_cleanup.py")
 _READINESS_CONTRACT_PATH = (
     ROOT / "ga-packs" / "03-authoritative-windows" / "final-production-readiness-contract.json"
 )
 _PUBLICATION_CONTRACT_PATH = Path(__file__).with_name(
     "final-immutable-release-publication-contract.json"
+)
+_CLEANUP_AUDIT_FIELDS = frozenset(
+    {
+        "cleanup_audit_outputs_reserved_before_mutation",
+        "cleanup_audit_outputs_finalized_inside_rollback_boundary",
+    }
+)
+_CLEANUP_VOLATILE_OBSERVATION_FIELDS = frozenset(
+    {
+        "branch_count_observed",
+        "open_pr_count_observed",
+    }
 )
 
 
@@ -58,9 +71,22 @@ def _load_documentation_verifier():
     return module
 
 
+def _load_cleanup_verifier():
+    spec = importlib.util.spec_from_file_location(
+        "psmatrix_final_release_closure_stale_cleanup_verifier",
+        _CLEANUP_VERIFIER_PATH,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("unable to load canonical stale release-work cleanup verifier")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 _impl = _load_impl()
 _IMMUTABLE_VERIFIER = _load_immutable_verifier()
 _DOCUMENTATION_VERIFIER = _load_documentation_verifier()
+_CLEANUP_VERIFIER = _load_cleanup_verifier()
 for _name, _value in vars(_impl).items():
     if not _name.startswith("__"):
         globals()[_name] = _value
@@ -209,6 +235,67 @@ def _reverify_current_documentation(
     return fresh
 
 
+def _reverify_current_cleanup(
+    release_closure: dict[str, Any],
+    immutable_release: dict[str, Any],
+    gh: str,
+) -> dict[str, Any]:
+    if not isinstance(gh, str) or not gh.strip():
+        raise FinalReleaseClosureError(
+            "final release closure canonical cleanup verifier executable is invalid"
+        )
+    verifier = _CLEANUP_VERIFIER
+    try:
+        branches = verifier._paged_list(
+            gh,
+            f"repos/{verifier.REPOSITORY}/branches",
+        )
+        pulls = verifier._paged_list(
+            gh,
+            f"repos/{verifier.REPOSITORY}/pulls?state=open",
+        )
+        fresh = verifier.verify(
+            release_closure,
+            immutable_release,
+            branches,
+            pulls,
+        )
+    except (
+        OSError,
+        json.JSONDecodeError,
+        subprocess.SubprocessError,
+        verifier.StaleReleaseWorkCleanupError,
+        TypeError,
+        ValueError,
+        KeyError,
+    ) as exc:
+        raise FinalReleaseClosureError(
+            "current stale release-work cleanup canonical re-verification failed"
+        ) from exc
+    if not isinstance(fresh, dict):
+        raise FinalReleaseClosureError(
+            "canonical stale release-work cleanup verifier returned an invalid receipt"
+        )
+    return fresh
+
+
+def _canonical_cleanup_receipt(cleanup: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in cleanup.items()
+        if key not in _CLEANUP_AUDIT_FIELDS
+    }
+
+
+def _cleanup_live_authority_receipt(cleanup: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in cleanup.items()
+        if key not in _CLEANUP_AUDIT_FIELDS
+        and key not in _CLEANUP_VOLATILE_OBSERVATION_FIELDS
+    }
+
+
 def _write_final_closure_receipt(path: Path, value: dict[str, Any]) -> Path:
     _reject_symlink_components(path, "final release closure output")
     absolute = path.expanduser().absolute()
@@ -322,6 +409,17 @@ def verify(
         raise FinalReleaseClosureError(
             "provided final documentation verification differs from fresh canonical verification of current committed repository state"
         )
+    fresh_cleanup = _reverify_current_cleanup(
+        release_closure,
+        immutable_release,
+        gh,
+    )
+    if _cleanup_live_authority_receipt(
+        fresh_cleanup
+    ) != _cleanup_live_authority_receipt(cleanup):
+        raise FinalReleaseClosureError(
+            "provided stale release-work cleanup verification differs from fresh canonical verification of current GitHub branch and open-PR state"
+        )
     if immutable_release.get(
         "publication_receipt_output_reserved_before_mutation"
     ) is not True:
@@ -357,6 +455,7 @@ def verify(
     result = dict(value)
     result["immutable_release_canonical_reverification_verified"] = True
     result["documentation_canonical_reverification_verified"] = True
+    result["cleanup_canonical_reverification_verified"] = True
     result["publication_receipt_output_reserved_before_mutation"] = True
     result["final_ga_attestation_public_asset_verified"] = True
     result["cleanup_audit_transaction_verified"] = True
@@ -409,6 +508,7 @@ def main() -> int:
         print("release_asset_set_verified=true")
         print("immutable_release_canonical_reverification_verified=true")
         print("documentation_canonical_reverification_verified=true")
+        print("cleanup_canonical_reverification_verified=true")
         print("final_ga_attestation_public_asset_verified=true")
         print("github_release_attestation_verified=true")
         print("post_ga_receipts_bound_before_final_scan=true")
