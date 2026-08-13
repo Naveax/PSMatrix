@@ -14,7 +14,7 @@ HEAD = "a" * 40
 
 
 def readiness():
-    return {"schema": 1, "kind": "psmatrix.production-readiness-summary-verification", "version": "2.0.0", "status": "PASS", "verified_environment_count": 12, "verified_check_count": 41, "summary_content_verified": True, "production_readiness_verified": True, "ga_eligible": False}
+    return {"schema": 1, "kind": "psmatrix.production-readiness-summary-verification", "version": "2.0.0", "status": "PASS", "repository": module.EXPECTED_REPOSITORY, "verified_environment_count": 12, "verified_check_count": 41, "summary_content_verified": True, "production_readiness_verified": True, "ga_eligible": False}
 
 
 def lock():
@@ -37,6 +37,7 @@ class ReleaseClosureReadinessTests(unittest.TestCase):
     def test_full_verified_ga_proof_only_marks_release_ready_not_closed(self):
         value = module.build(readiness(), lock(), content_closure(), evaluator(), attestation())
         self.assertEqual(value["status"], "READY_FOR_RELEASE_CLOSURE")
+        self.assertEqual(value["repository"], module.EXPECTED_REPOSITORY)
         self.assertTrue(value["production_readiness_verified"])
         self.assertEqual(value["content_verified_gate_count"], 11)
         self.assertTrue(value["final_ga_attestation_verified"])
@@ -44,6 +45,17 @@ class ReleaseClosureReadinessTests(unittest.TestCase):
         self.assertFalse(value["release_closed"])
         self.assertFalse(value["release_tag_created"])
         self.assertFalse(value["final_repo_secret_scan_completed"])
+
+    def test_readiness_repository_identity_is_required(self):
+        for repository in (None, "someone-else/PSMatrix"):
+            with self.subTest(repository=repository):
+                value = readiness()
+                if repository is None:
+                    value.pop("repository")
+                else:
+                    value["repository"] = repository
+                with self.assertRaises(module.ReleaseClosureReadinessError):
+                    module.build(value, lock(), content_closure(), evaluator(), attestation())
 
     def test_raw_unverified_readiness_is_no_longer_accepted(self):
         raw = {"schema": 1, "kind": "psmatrix.production-readiness-summary", "version": "2.0.0", "status": "PASS", "environment_passed": 12}
@@ -60,6 +72,12 @@ class ReleaseClosureReadinessTests(unittest.TestCase):
         broken["execution_head"] = "b" * 40
         with self.assertRaises(module.ReleaseClosureReadinessError):
             module.build(readiness(), lock(), content_closure(), broken, attestation())
+
+    def test_source_preserves_repository_authority(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('EXPECTED_REPOSITORY = "Naveax/PSMatrix"', text)
+        self.assertIn('readiness.get("repository") == EXPECTED_REPOSITORY', text)
+        self.assertIn('"repository": EXPECTED_REPOSITORY', text)
 
 
 if __name__ == "__main__":

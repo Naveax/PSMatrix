@@ -19,7 +19,7 @@ spec.loader.exec_module(module)
 class ProductionReadinessSummaryVerifierTests(unittest.TestCase):
     def setUp(self):
         self.contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
-        self.run = {"schema": 1, "kind": "psmatrix.production-readiness-run-api-verification", "version": "2.0.0", "status": "PASS", "readiness_pass_observed": True, "run_id": 42, "exact_head": "a" * 40}
+        self.run = {"schema": 1, "kind": "psmatrix.production-readiness-run-api-verification", "version": "2.0.0", "status": "PASS", "repository": module.EXPECTED_REPOSITORY, "readiness_pass_observed": True, "run_id": 42, "exact_head": "a" * 40}
         rows = []
         for item in self.contract["environments"]:
             required = len(item.get("required_secrets") or []) + len(item.get("required_vars") or [])
@@ -40,10 +40,22 @@ class ProductionReadinessSummaryVerifierTests(unittest.TestCase):
 
     def test_exact_twelve_environment_forty_one_check_pass_is_verified(self):
         value = module.verify(self.summary, self.contract, self.run)
+        self.assertEqual(value["repository"], module.EXPECTED_REPOSITORY)
         self.assertEqual(value["verified_environment_count"], 12)
         self.assertEqual(value["verified_check_count"], 41)
         self.assertTrue(value["production_readiness_verified"])
         self.assertFalse(value["ga_eligible"])
+
+    def test_readiness_run_repository_identity_is_required(self):
+        for repository in (None, "someone-else/PSMatrix"):
+            with self.subTest(repository=repository):
+                run = dict(self.run)
+                if repository is None:
+                    run.pop("repository")
+                else:
+                    run["repository"] = repository
+                with self.assertRaises(module.ReadinessSummaryVerificationError):
+                    module.verify(self.summary, self.contract, run)
 
     def test_missing_environment_check_fails_closed(self):
         self.summary["environments"][0]["required_checks"] -= 1
@@ -173,6 +185,8 @@ class ProductionReadinessSummaryVerifierTests(unittest.TestCase):
 
     def test_source_emits_exact_summary_file_digest_and_size(self):
         text = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('EXPECTED_REPOSITORY = "Naveax/PSMatrix"', text)
+        self.assertIn('"repository": EXPECTED_REPOSITORY', text)
         self.assertIn("summary_file_sha256", text)
         self.assertIn("summary_file_size", text)
         self.assertIn("_file_sha256(summary_path)", text)

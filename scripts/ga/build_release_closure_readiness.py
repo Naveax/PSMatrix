@@ -13,9 +13,12 @@ class ReleaseClosureReadinessError(RuntimeError):
     pass
 
 
+EXPECTED_REPOSITORY = "Naveax/PSMatrix"
+
+
 def build(readiness: dict[str, Any], lock: dict[str, Any], content_closure: dict[str, Any], evaluator: dict[str, Any], attestation: dict[str, Any]) -> dict[str, Any]:
     checks = {
-        "production_readiness": readiness.get("schema") == 1 and readiness.get("kind") == "psmatrix.production-readiness-summary-verification" and readiness.get("version") == "2.0.0" and readiness.get("status") == "PASS" and readiness.get("verified_environment_count") == 12 and readiness.get("verified_check_count") == 41 and readiness.get("summary_content_verified") is True and readiness.get("production_readiness_verified") is True and readiness.get("ga_eligible") is False,
+        "production_readiness": readiness.get("schema") == 1 and readiness.get("kind") == "psmatrix.production-readiness-summary-verification" and readiness.get("version") == "2.0.0" and readiness.get("status") == "PASS" and readiness.get("repository") == EXPECTED_REPOSITORY and readiness.get("verified_environment_count") == 12 and readiness.get("verified_check_count") == 41 and readiness.get("summary_content_verified") is True and readiness.get("production_readiness_verified") is True and readiness.get("ga_eligible") is False,
         "final_lock_content": lock.get("schema") == 1 and lock.get("kind") == "psmatrix.final-release-lock-repository-content-verification" and lock.get("version") == "2.0.0" and lock.get("status") == "PASS" and lock.get("repository_target_content_verified") is True and lock.get("release_signing_executed") is False and lock.get("ga_eligible") is False,
         "final_evidence_content": content_closure.get("schema") == 1 and content_closure.get("kind") == "psmatrix.final-ga-evidence-content-closure" and content_closure.get("version") == "2.0.0" and content_closure.get("status") == "PASS" and content_closure.get("api_verified_gate_count") == 11 and content_closure.get("content_verified_gate_count") == 11 and content_closure.get("all_gate_contents_verified") is True and content_closure.get("ready_for_final_ga_evaluator_dispatch") is True and content_closure.get("ga_eligible") is False,
         "final_evaluator_run": evaluator.get("schema") == 1 and evaluator.get("kind") == "psmatrix.final-ga-evaluator-run-api-verification" and evaluator.get("version") == "2.0.0" and evaluator.get("status") == "PASS" and evaluator.get("content_verified_gate_count_before_dispatch") == 11 and evaluator.get("content_closure_required") is True and evaluator.get("final_ga_evaluator_run_verified") is True and evaluator.get("ga_root_signing_run_completed") is True and evaluator.get("final_attestation_content_verified") is False and evaluator.get("ga_eligible") is False,
@@ -32,6 +35,7 @@ def build(readiness: dict[str, Any], lock: dict[str, Any], content_closure: dict
         "kind": "psmatrix.release-closure-readiness",
         "version": "2.0.0",
         "status": "READY_FOR_RELEASE_CLOSURE",
+        "repository": EXPECTED_REPOSITORY,
         "execution_head": next(iter(heads)),
         "precondition_count": 5,
         "preconditions_passed": 5,
