@@ -14,7 +14,27 @@ HEAD = "a" * 40
 
 
 def readiness():
-    return {"schema": 1, "kind": "psmatrix.production-readiness-summary-verification", "version": "2.0.0", "status": "PASS", "repository": module.EXPECTED_REPOSITORY, "verified_environment_count": 12, "verified_check_count": 41, "summary_content_verified": True, "production_readiness_verified": True, "ga_eligible": False}
+    return {
+        "schema": 1,
+        "kind": "psmatrix.production-readiness-summary-verification",
+        "version": "2.0.0",
+        "status": "PASS",
+        "repository": module.EXPECTED_REPOSITORY,
+        "run_id": 42,
+        "workflow": module.EXPECTED_READINESS_WORKFLOW,
+        "event": "workflow_dispatch",
+        "exact_head": module.EXPECTED_READINESS_HEAD,
+        "immutable_ref": module.EXPECTED_READINESS_REF,
+        "run_conclusion": "success",
+        "artifact": module.EXPECTED_READINESS_ARTIFACT,
+        "artifact_id": 99,
+        "artifact_nonexpired": True,
+        "verified_environment_count": 12,
+        "verified_check_count": 41,
+        "summary_content_verified": True,
+        "production_readiness_verified": True,
+        "ga_eligible": False,
+    }
 
 
 def lock():
@@ -38,22 +58,42 @@ class ReleaseClosureReadinessTests(unittest.TestCase):
         value = module.build(readiness(), lock(), content_closure(), evaluator(), attestation())
         self.assertEqual(value["status"], "READY_FOR_RELEASE_CLOSURE")
         self.assertEqual(value["repository"], module.EXPECTED_REPOSITORY)
+        self.assertEqual(value["production_readiness_run_id"], 42)
+        self.assertEqual(value["production_readiness_workflow"], module.EXPECTED_READINESS_WORKFLOW)
+        self.assertEqual(value["production_readiness_exact_head"], module.EXPECTED_READINESS_HEAD)
+        self.assertEqual(value["production_readiness_immutable_ref"], module.EXPECTED_READINESS_REF)
+        self.assertEqual(value["production_readiness_artifact"], module.EXPECTED_READINESS_ARTIFACT)
+        self.assertEqual(value["production_readiness_artifact_id"], 99)
+        self.assertTrue(value["production_readiness_artifact_nonexpired"])
         self.assertTrue(value["production_readiness_verified"])
         self.assertEqual(value["content_verified_gate_count"], 11)
         self.assertTrue(value["final_ga_attestation_verified"])
         self.assertTrue(value["ga_eligible"])
         self.assertFalse(value["release_closed"])
-        self.assertFalse(value["release_tag_created"])
-        self.assertFalse(value["final_repo_secret_scan_completed"])
 
-    def test_readiness_repository_identity_is_required(self):
-        for repository in (None, "someone-else/PSMatrix"):
-            with self.subTest(repository=repository):
+    def test_readiness_run_provenance_is_required(self):
+        cases = (
+            ("repository", "someone-else/PSMatrix"),
+            ("workflow", "wrong-workflow"),
+            ("event", "push"),
+            ("exact_head", "0" * 40),
+            ("immutable_ref", "wrong-ref"),
+            ("run_conclusion", "failure"),
+            ("artifact", "wrong-artifact"),
+            ("artifact_nonexpired", False),
+            ("run_id", 0),
+            ("artifact_id", 0),
+        )
+        for field, invalid in cases:
+            with self.subTest(field=field):
                 value = readiness()
-                if repository is None:
-                    value.pop("repository")
-                else:
-                    value["repository"] = repository
+                value[field] = invalid
+                with self.assertRaises(module.ReleaseClosureReadinessError):
+                    module.build(value, lock(), content_closure(), evaluator(), attestation())
+        for field in ("workflow", "immutable_ref", "artifact", "artifact_id"):
+            with self.subTest(missing=field):
+                value = readiness()
+                value.pop(field)
                 with self.assertRaises(module.ReleaseClosureReadinessError):
                     module.build(value, lock(), content_closure(), evaluator(), attestation())
 
@@ -73,11 +113,12 @@ class ReleaseClosureReadinessTests(unittest.TestCase):
         with self.assertRaises(module.ReleaseClosureReadinessError):
             module.build(readiness(), lock(), content_closure(), broken, attestation())
 
-    def test_source_preserves_repository_authority(self):
+    def test_source_preserves_readiness_run_provenance(self):
         text = SCRIPT.read_text(encoding="utf-8")
-        self.assertIn('EXPECTED_REPOSITORY = "Naveax/PSMatrix"', text)
-        self.assertIn('readiness.get("repository") == EXPECTED_REPOSITORY', text)
-        self.assertIn('"repository": EXPECTED_REPOSITORY', text)
+        self.assertIn("verify_production_readiness_summary.py", text)
+        self.assertIn("_readiness_provenance", text)
+        self.assertIn('"production_readiness_immutable_ref": EXPECTED_READINESS_REF', text)
+        self.assertIn('"production_readiness_artifact_id": artifact_id', text)
 
 
 if __name__ == "__main__":

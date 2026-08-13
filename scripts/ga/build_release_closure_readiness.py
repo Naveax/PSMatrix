@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import stat
@@ -13,23 +14,128 @@ class ReleaseClosureReadinessError(RuntimeError):
     pass
 
 
-EXPECTED_REPOSITORY = "Naveax/PSMatrix"
+_READINESS_SUMMARY_VERIFIER_PATH = Path(__file__).with_name(
+    "verify_production_readiness_summary.py"
+)
 
 
-def build(readiness: dict[str, Any], lock: dict[str, Any], content_closure: dict[str, Any], evaluator: dict[str, Any], attestation: dict[str, Any]) -> dict[str, Any]:
+def _load_readiness_summary_verifier():
+    spec = importlib.util.spec_from_file_location(
+        "psmatrix_release_closure_readiness_summary_authority",
+        _READINESS_SUMMARY_VERIFIER_PATH,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("unable to load canonical Production readiness summary verifier")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_READINESS_SUMMARY_VERIFIER = _load_readiness_summary_verifier()
+EXPECTED_REPOSITORY = _READINESS_SUMMARY_VERIFIER.EXPECTED_REPOSITORY
+EXPECTED_READINESS_WORKFLOW = _READINESS_SUMMARY_VERIFIER.EXPECTED_WORKFLOW
+EXPECTED_READINESS_REF = _READINESS_SUMMARY_VERIFIER.EXPECTED_REF
+EXPECTED_READINESS_HEAD = _READINESS_SUMMARY_VERIFIER.EXPECTED_ANCHOR_HEAD
+EXPECTED_READINESS_ARTIFACT = _READINESS_SUMMARY_VERIFIER.EXPECTED_ARTIFACT
+
+
+def _readiness_provenance(readiness: dict[str, Any]) -> tuple[int, int]:
+    if (
+        readiness.get("schema") != 1
+        or readiness.get("kind") != "psmatrix.production-readiness-summary-verification"
+        or readiness.get("version") != "2.0.0"
+        or readiness.get("status") != "PASS"
+        or readiness.get("repository") != EXPECTED_REPOSITORY
+        or readiness.get("workflow") != EXPECTED_READINESS_WORKFLOW
+        or readiness.get("event") != "workflow_dispatch"
+        or readiness.get("exact_head") != EXPECTED_READINESS_HEAD
+        or readiness.get("immutable_ref") != EXPECTED_READINESS_REF
+        or readiness.get("run_conclusion") != "success"
+        or readiness.get("artifact") != EXPECTED_READINESS_ARTIFACT
+        or readiness.get("artifact_nonexpired") is not True
+        or readiness.get("verified_environment_count") != 12
+        or readiness.get("verified_check_count") != 41
+        or readiness.get("summary_content_verified") is not True
+        or readiness.get("production_readiness_verified") is not True
+        or readiness.get("ga_eligible") is not False
+    ):
+        raise ReleaseClosureReadinessError(
+            "production readiness verification lost frozen run/artifact provenance"
+        )
+    run_id = readiness.get("run_id")
+    artifact_id = readiness.get("artifact_id")
+    if type(run_id) is not int or run_id <= 0:
+        raise ReleaseClosureReadinessError("production readiness run ID is invalid")
+    if type(artifact_id) is not int or artifact_id <= 0:
+        raise ReleaseClosureReadinessError("production readiness artifact ID is invalid")
+    return run_id, artifact_id
+
+
+def build(
+    readiness: dict[str, Any],
+    lock: dict[str, Any],
+    content_closure: dict[str, Any],
+    evaluator: dict[str, Any],
+    attestation: dict[str, Any],
+) -> dict[str, Any]:
+    run_id, artifact_id = _readiness_provenance(readiness)
     checks = {
-        "production_readiness": readiness.get("schema") == 1 and readiness.get("kind") == "psmatrix.production-readiness-summary-verification" and readiness.get("version") == "2.0.0" and readiness.get("status") == "PASS" and readiness.get("repository") == EXPECTED_REPOSITORY and readiness.get("verified_environment_count") == 12 and readiness.get("verified_check_count") == 41 and readiness.get("summary_content_verified") is True and readiness.get("production_readiness_verified") is True and readiness.get("ga_eligible") is False,
-        "final_lock_content": lock.get("schema") == 1 and lock.get("kind") == "psmatrix.final-release-lock-repository-content-verification" and lock.get("version") == "2.0.0" and lock.get("status") == "PASS" and lock.get("repository_target_content_verified") is True and lock.get("release_signing_executed") is False and lock.get("ga_eligible") is False,
-        "final_evidence_content": content_closure.get("schema") == 1 and content_closure.get("kind") == "psmatrix.final-ga-evidence-content-closure" and content_closure.get("version") == "2.0.0" and content_closure.get("status") == "PASS" and content_closure.get("api_verified_gate_count") == 11 and content_closure.get("content_verified_gate_count") == 11 and content_closure.get("all_gate_contents_verified") is True and content_closure.get("ready_for_final_ga_evaluator_dispatch") is True and content_closure.get("ga_eligible") is False,
-        "final_evaluator_run": evaluator.get("schema") == 1 and evaluator.get("kind") == "psmatrix.final-ga-evaluator-run-api-verification" and evaluator.get("version") == "2.0.0" and evaluator.get("status") == "PASS" and evaluator.get("content_verified_gate_count_before_dispatch") == 11 and evaluator.get("content_closure_required") is True and evaluator.get("final_ga_evaluator_run_verified") is True and evaluator.get("ga_root_signing_run_completed") is True and evaluator.get("final_attestation_content_verified") is False and evaluator.get("ga_eligible") is False,
-        "final_attestation": attestation.get("schema") == 1 and attestation.get("kind") == "psmatrix.final-ga-attestation-bundle-verification" and attestation.get("version") == "2.0.0" and attestation.get("status") == "PASS" and attestation.get("required_gate_count") == 11 and attestation.get("provenance_run_count") == 11 and attestation.get("dsse_cryptographically_verified") is True and attestation.get("root_release_authorities_independent") is True and attestation.get("final_ga_attestation_verified") is True and attestation.get("ga_eligible") is True,
+        "production_readiness": True,
+        "final_lock_content": lock.get("schema") == 1
+        and lock.get("kind") == "psmatrix.final-release-lock-repository-content-verification"
+        and lock.get("version") == "2.0.0"
+        and lock.get("status") == "PASS"
+        and lock.get("repository_target_content_verified") is True
+        and lock.get("release_signing_executed") is False
+        and lock.get("ga_eligible") is False,
+        "final_evidence_content": content_closure.get("schema") == 1
+        and content_closure.get("kind") == "psmatrix.final-ga-evidence-content-closure"
+        and content_closure.get("version") == "2.0.0"
+        and content_closure.get("status") == "PASS"
+        and content_closure.get("api_verified_gate_count") == 11
+        and content_closure.get("content_verified_gate_count") == 11
+        and content_closure.get("all_gate_contents_verified") is True
+        and content_closure.get("ready_for_final_ga_evaluator_dispatch") is True
+        and content_closure.get("ga_eligible") is False,
+        "final_evaluator_run": evaluator.get("schema") == 1
+        and evaluator.get("kind") == "psmatrix.final-ga-evaluator-run-api-verification"
+        and evaluator.get("version") == "2.0.0"
+        and evaluator.get("status") == "PASS"
+        and evaluator.get("content_verified_gate_count_before_dispatch") == 11
+        and evaluator.get("content_closure_required") is True
+        and evaluator.get("final_ga_evaluator_run_verified") is True
+        and evaluator.get("ga_root_signing_run_completed") is True
+        and evaluator.get("final_attestation_content_verified") is False
+        and evaluator.get("ga_eligible") is False,
+        "final_attestation": attestation.get("schema") == 1
+        and attestation.get("kind") == "psmatrix.final-ga-attestation-bundle-verification"
+        and attestation.get("version") == "2.0.0"
+        and attestation.get("status") == "PASS"
+        and attestation.get("required_gate_count") == 11
+        and attestation.get("provenance_run_count") == 11
+        and attestation.get("dsse_cryptographically_verified") is True
+        and attestation.get("root_release_authorities_independent") is True
+        and attestation.get("final_ga_attestation_verified") is True
+        and attestation.get("ga_eligible") is True,
     }
     if not all(checks.values()):
         missing = [name for name, passed in checks.items() if not passed]
-        raise ReleaseClosureReadinessError(f"release closure preconditions are incomplete: {','.join(missing)}")
-    heads = {value for value in (content_closure.get("execution_head"), evaluator.get("execution_head"), attestation.get("execution_control_head")) if isinstance(value, str) and value}
+        raise ReleaseClosureReadinessError(
+            f"release closure preconditions are incomplete: {','.join(missing)}"
+        )
+    heads = {
+        value
+        for value in (
+            content_closure.get("execution_head"),
+            evaluator.get("execution_head"),
+            attestation.get("execution_control_head"),
+        )
+        if isinstance(value, str) and value
+    }
     if len(heads) != 1:
-        raise ReleaseClosureReadinessError("content closure/evaluator/attestation must share one exact execution head")
+        raise ReleaseClosureReadinessError(
+            "content closure/evaluator/attestation must share one exact execution head"
+        )
     return {
         "schema": 1,
         "kind": "psmatrix.release-closure-readiness",
@@ -37,6 +143,15 @@ def build(readiness: dict[str, Any], lock: dict[str, Any], content_closure: dict
         "status": "READY_FOR_RELEASE_CLOSURE",
         "repository": EXPECTED_REPOSITORY,
         "execution_head": next(iter(heads)),
+        "production_readiness_run_id": run_id,
+        "production_readiness_workflow": EXPECTED_READINESS_WORKFLOW,
+        "production_readiness_event": "workflow_dispatch",
+        "production_readiness_exact_head": EXPECTED_READINESS_HEAD,
+        "production_readiness_immutable_ref": EXPECTED_READINESS_REF,
+        "production_readiness_run_conclusion": "success",
+        "production_readiness_artifact": EXPECTED_READINESS_ARTIFACT,
+        "production_readiness_artifact_id": artifact_id,
+        "production_readiness_artifact_nonexpired": True,
         "precondition_count": 5,
         "preconditions_passed": 5,
         "preconditions": checks,
@@ -96,7 +211,6 @@ def _write_release_closure_readiness_receipt(
         raise ReleaseClosureReadinessError(
             "release closure readiness output must not already exist"
         )
-
     parent = absolute.parent
     _reject_symlink_components(parent, "release closure readiness output parent")
     resolved_parent = parent.resolve()
@@ -105,7 +219,6 @@ def _write_release_closure_readiness_receipt(
             "release closure readiness output parent must already exist"
         )
     candidate = resolved_parent / absolute.name
-
     flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_BINARY"):
         flags |= os.O_BINARY
@@ -134,7 +247,6 @@ def _write_release_closure_readiness_receipt(
             raise ReleaseClosureReadinessError(
                 "release closure readiness output path does not name the exclusively created file"
             )
-
         payload = json.dumps(value, indent=2, sort_keys=True) + "\n"
         handle.write(payload)
         handle.flush()
@@ -144,7 +256,6 @@ def _write_release_closure_readiness_receipt(
             raise ReleaseClosureReadinessError(
                 "release closure readiness output read-back verification failed"
             )
-
         path_info = os.lstat(candidate)
         if (
             not stat.S_ISREG(path_info.st_mode)
@@ -176,7 +287,9 @@ def _write_release_closure_readiness_receipt(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build a fail-closed post-GA readiness receipt for final release-closure operations")
+    parser = argparse.ArgumentParser(
+        description="Build a fail-closed post-GA readiness receipt for final release-closure operations"
+    )
     parser.add_argument("--readiness-verification", type=Path, required=True)
     parser.add_argument("--lock-verification", type=Path, required=True)
     parser.add_argument("--content-closure", type=Path, required=True)
@@ -200,7 +313,13 @@ def main() -> int:
         print("ga_eligible=true")
         print("release_closed=false")
         return 0
-    except (OSError, json.JSONDecodeError, ReleaseClosureReadinessError, TypeError, ValueError) as exc:
+    except (
+        OSError,
+        json.JSONDecodeError,
+        ReleaseClosureReadinessError,
+        TypeError,
+        ValueError,
+    ) as exc:
         print(f"release closure readiness failed: {exc}", file=sys.stderr)
         return 1
 
