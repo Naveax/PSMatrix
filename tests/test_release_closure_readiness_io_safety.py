@@ -107,11 +107,20 @@ class ReleaseClosureReadinessIOSafetyTests(unittest.TestCase):
         for source in (
             "args.readiness_verification",
             "args.lock_verification",
-            "args.content_closure",
             "args.evaluator_verification",
             "args.attestation_verification",
         ):
             self.assertIn(f"_read({source}", main_text)
+        self.assertIn("_read_json_with_provenance(", main_text)
+        self.assertIn("args.content_closure", main_text)
+        self.assertIn(
+            "content_closure_file_sha256=content_closure_file_sha256",
+            main_text,
+        )
+        self.assertIn(
+            "content_closure_file_size=content_closure_file_size",
+            main_text,
+        )
         self.assertIn("_write_release_closure_readiness_receipt(args.output, value)", main_text)
 
 
