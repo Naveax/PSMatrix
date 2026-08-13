@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "ga" / "build_release_closure_readiness.py"
@@ -38,22 +39,89 @@ def readiness():
 
 
 def lock():
-    return {"schema": 1, "kind": "psmatrix.final-release-lock-repository-content-verification", "version": "2.0.0", "status": "PASS", "repository_target_content_verified": True, "release_signing_executed": False, "ga_eligible": False}
+    return {
+        "schema": 1,
+        "kind": "psmatrix.final-release-lock-repository-content-verification",
+        "version": "2.0.0",
+        "status": "PASS",
+        "repository_target_content_verified": True,
+        "release_signing_executed": False,
+        "ga_eligible": False,
+    }
 
 
 def content_closure():
-    return {"schema": 1, "kind": "psmatrix.final-ga-evidence-content-closure", "version": "2.0.0", "status": "PASS", "execution_head": HEAD, "api_verified_gate_count": 11, "content_verified_gate_count": 11, "all_gate_contents_verified": True, "ready_for_final_ga_evaluator_dispatch": True, "ga_eligible": False}
+    return {
+        "schema": 1,
+        "kind": "psmatrix.final-ga-evidence-content-closure",
+        "version": "2.0.0",
+        "status": "PASS",
+        "execution_head": HEAD,
+        "api_verified_gate_count": 11,
+        "content_verified_gate_count": 11,
+        "all_gate_contents_verified": True,
+        "ready_for_final_ga_evaluator_dispatch": True,
+        "ga_eligible": False,
+    }
 
 
 def evaluator():
-    return {"schema": 1, "kind": "psmatrix.final-ga-evaluator-run-api-verification", "version": "2.0.0", "status": "PASS", "execution_head": HEAD, "content_verified_gate_count_before_dispatch": 11, "content_closure_required": True, "final_ga_evaluator_run_verified": True, "ga_root_signing_run_completed": True, "final_attestation_content_verified": False, "ga_eligible": False}
+    return {
+        "schema": 1,
+        "kind": "psmatrix.final-ga-evaluator-run-api-verification",
+        "version": "2.0.0",
+        "status": "PASS",
+        "execution_head": HEAD,
+        "content_verified_gate_count_before_dispatch": 11,
+        "content_closure_required": True,
+        "final_ga_evaluator_run_verified": True,
+        "ga_root_signing_run_completed": True,
+        "final_attestation_content_verified": False,
+        "ga_eligible": False,
+    }
 
 
 def attestation():
-    return {"schema": 1, "kind": "psmatrix.final-ga-attestation-bundle-verification", "version": "2.0.0", "status": "PASS", "execution_control_head": HEAD, "required_gate_count": 11, "provenance_run_count": 11, "dsse_cryptographically_verified": True, "root_release_authorities_independent": True, "final_ga_attestation_verified": True, "ga_eligible": True}
+    return {
+        "schema": 1,
+        "kind": "psmatrix.final-ga-attestation-bundle-verification",
+        "version": "2.0.0",
+        "status": "PASS",
+        "execution_control_head": HEAD,
+        "required_gate_count": 11,
+        "provenance_run_count": 11,
+        "dsse_cryptographically_verified": True,
+        "root_release_authorities_independent": True,
+        "final_ga_attestation_verified": True,
+        "ga_eligible": True,
+    }
+
+
+def live_lock_authority():
+    return {
+        "status": "PASS",
+        "self_describing_receipt_provenance_verified": True,
+        "live_repository_authority_verified": True,
+        "repository_target_content_verified": True,
+        "repository_public_key_bytes_verified": True,
+        "release_signing_executed": False,
+        "ga_eligible": False,
+        "historical_input_ledger_execution_reverified": False,
+        "historical_review_execution_reverified": False,
+        "historical_promotion_execution_reverified": False,
+    }
 
 
 class ReleaseClosureReadinessTests(unittest.TestCase):
+    def setUp(self):
+        self.live_authority_patch = patch.object(
+            module,
+            "_verify_final_lock_live_authority",
+            return_value=live_lock_authority(),
+        )
+        self.live_authority_mock = self.live_authority_patch.start()
+        self.addCleanup(self.live_authority_patch.stop)
+
     def test_full_verified_ga_proof_only_marks_release_ready_not_closed(self):
         value = module.build(readiness(), lock(), content_closure(), evaluator(), attestation())
         self.assertEqual(value["status"], "READY_FOR_RELEASE_CLOSURE")
@@ -66,10 +134,15 @@ class ReleaseClosureReadinessTests(unittest.TestCase):
         self.assertEqual(value["production_readiness_artifact_id"], 99)
         self.assertTrue(value["production_readiness_artifact_nonexpired"])
         self.assertTrue(value["production_readiness_verified"])
+        self.assertTrue(value["final_lock_live_repository_authority_verified"])
+        self.assertFalse(value["final_lock_historical_input_ledger_execution_reverified"])
+        self.assertFalse(value["final_lock_historical_review_execution_reverified"])
+        self.assertFalse(value["final_lock_historical_promotion_execution_reverified"])
         self.assertEqual(value["content_verified_gate_count"], 11)
         self.assertTrue(value["final_ga_attestation_verified"])
         self.assertTrue(value["ga_eligible"])
         self.assertFalse(value["release_closed"])
+        self.live_authority_mock.assert_called_once()
 
     def test_readiness_run_provenance_is_required(self):
         cases = (
@@ -98,12 +171,25 @@ class ReleaseClosureReadinessTests(unittest.TestCase):
                     module.build(value, lock(), content_closure(), evaluator(), attestation())
 
     def test_raw_unverified_readiness_is_no_longer_accepted(self):
-        raw = {"schema": 1, "kind": "psmatrix.production-readiness-summary", "version": "2.0.0", "status": "PASS", "environment_passed": 12}
+        raw = {
+            "schema": 1,
+            "kind": "psmatrix.production-readiness-summary",
+            "version": "2.0.0",
+            "status": "PASS",
+            "environment_passed": 12,
+        }
         with self.assertRaises(module.ReleaseClosureReadinessError):
             module.build(raw, lock(), content_closure(), evaluator(), attestation())
 
     def test_api_only_evidence_is_no_longer_accepted(self):
-        api_only = {"schema": 1, "kind": "psmatrix.final-ga-evidence-api-verification", "version": "2.0.0", "status": "PASS", "execution_head": HEAD, "verified_gate_count": 11}
+        api_only = {
+            "schema": 1,
+            "kind": "psmatrix.final-ga-evidence-api-verification",
+            "version": "2.0.0",
+            "status": "PASS",
+            "execution_head": HEAD,
+            "verified_gate_count": 11,
+        }
         with self.assertRaises(module.ReleaseClosureReadinessError):
             module.build(readiness(), lock(), api_only, evaluator(), attestation())
 
@@ -116,9 +202,13 @@ class ReleaseClosureReadinessTests(unittest.TestCase):
     def test_source_preserves_readiness_run_provenance(self):
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("verify_production_readiness_summary.py", text)
+        self.assertIn("verify_final_lock_live_repository_authority.py", text)
         self.assertIn("_readiness_provenance", text)
+        self.assertIn("_verify_final_lock_live_authority", text)
         self.assertIn('"production_readiness_immutable_ref": EXPECTED_READINESS_REF', text)
         self.assertIn('"production_readiness_artifact_id": artifact_id', text)
+        self.assertIn('"final_lock_live_repository_authority_verified": True', text)
+        self.assertIn('"final_lock_historical_review_execution_reverified": False', text)
 
 
 if __name__ == "__main__":
