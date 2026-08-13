@@ -14,6 +14,9 @@ class ReadinessSummaryVerificationError(RuntimeError):
     pass
 
 
+EXPECTED_REPOSITORY = "Naveax/PSMatrix"
+
+
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -71,6 +74,8 @@ def verify(summary: dict[str, Any], contract: dict[str, Any], run_verification: 
         raise ReadinessSummaryVerificationError("production readiness contract identity mismatch")
     if run_verification.get("schema") != 1 or run_verification.get("kind") != "psmatrix.production-readiness-run-api-verification" or run_verification.get("version") != "2.0.0" or run_verification.get("status") != "PASS" or run_verification.get("readiness_pass_observed") is not True:
         raise ReadinessSummaryVerificationError("successful readiness run API verification is required")
+    if run_verification.get("repository") != EXPECTED_REPOSITORY:
+        raise ReadinessSummaryVerificationError("readiness run repository identity mismatch")
     if summary.get("schema") != 1 or summary.get("kind") != "psmatrix.production-readiness-summary" or summary.get("version") != "2.0.0" or summary.get("status") != "PASS":
         raise ReadinessSummaryVerificationError("readiness summary identity/status mismatch")
     if summary.get("producer_source_anchor") != contract.get("producer_source_anchor") or summary.get("final_release_commit") != contract.get("final_release_commit"):
@@ -104,6 +109,7 @@ def verify(summary: dict[str, Any], contract: dict[str, Any], run_verification: 
         "kind": "psmatrix.production-readiness-summary-verification",
         "version": "2.0.0",
         "status": "PASS",
+        "repository": EXPECTED_REPOSITORY,
         "run_id": run_verification.get("run_id"),
         "exact_head": run_verification.get("exact_head"),
         "environment_count": 12,

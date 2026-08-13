@@ -27,6 +27,7 @@ class FinalReleaseClosureVerificationTests(unittest.TestCase):
             "kind": "psmatrix.release-closure-readiness",
             "version": "2.0.0",
             "status": "READY_FOR_RELEASE_CLOSURE",
+            "repository": "Naveax/PSMatrix",
             "execution_head": self.execution_head,
             "precondition_count": 5,
             "preconditions_passed": 5,
