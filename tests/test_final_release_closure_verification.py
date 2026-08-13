@@ -39,6 +39,24 @@ class FinalReleaseClosureVerificationTests(
         )
         self.documentation_reverify = self.documentation_reverify_patcher.start()
         self.addCleanup(self.documentation_reverify_patcher.stop)
+        self.cleanup.update(
+            {
+                "branch_count_observed": 4,
+                "open_pr_count_observed": 0,
+                "stale_prefixes": list(self.module._CLEANUP_VERIFIER.STALE_PREFIXES),
+                "allowed_branches": sorted(self.module._CLEANUP_VERIFIER.ALLOWED_BRANCHES),
+                "documentation_final_state_closed": False,
+                "final_repo_secret_scan_completed": False,
+            }
+        )
+        self.fresh_cleanup = self.module._canonical_cleanup_receipt(self.cleanup)
+        self.cleanup_reverify_patcher = patch.object(
+            self.module,
+            "_reverify_current_cleanup",
+            side_effect=lambda *_args, **_kwargs: dict(self.fresh_cleanup),
+        )
+        self.cleanup_reverify = self.cleanup_reverify_patcher.start()
+        self.addCleanup(self.cleanup_reverify_patcher.stop)
 
     def test_publication_reservation_proof_is_required_for_release_closed(self) -> None:
         field = "publication_receipt_output_reserved_before_mutation"
@@ -157,6 +175,34 @@ class FinalReleaseClosureVerificationTests(
             self.documentation,
         )
 
+    def test_forged_cleanup_receipt_is_rejected_when_fresh_authority_disagrees(self) -> None:
+        self.cleanup["allowed_branches"] = ["forged-authority"]
+        with self.assertRaises(self.module.FinalReleaseClosureError):
+            self.module.verify(
+                self.closure,
+                self.release,
+                self.documentation,
+                self.cleanup,
+                self.scan,
+            )
+        self.cleanup_reverify.assert_called_once_with(
+            self.closure,
+            self.release,
+            "gh",
+        )
+
+    def test_cleanup_observation_counts_may_drift_without_weakening_live_authority(self) -> None:
+        self.cleanup["branch_count_observed"] = 99
+        self.cleanup["open_pr_count_observed"] = 88
+        value = self.module.verify(
+            self.closure,
+            self.release,
+            self.documentation,
+            self.cleanup,
+            self.scan,
+        )
+        self.assertTrue(value["cleanup_canonical_reverification_verified"])
+
     def test_release_closed_receipt_carries_bound_safety_proofs(self) -> None:
         value = self.module.verify(
             self.closure,
@@ -167,6 +213,7 @@ class FinalReleaseClosureVerificationTests(
         )
         self.assertTrue(value["immutable_release_canonical_reverification_verified"])
         self.assertTrue(value["documentation_canonical_reverification_verified"])
+        self.assertTrue(value["cleanup_canonical_reverification_verified"])
         self.assertTrue(
             value["publication_receipt_output_reserved_before_mutation"]
         )
@@ -177,6 +224,11 @@ class FinalReleaseClosureVerificationTests(
             None,
             self.release,
             self.documentation,
+        )
+        self.cleanup_reverify.assert_called_once_with(
+            self.closure,
+            self.release,
+            "gh",
         )
 
     def test_source_is_only_component_allowed_to_emit_release_closed_true(self) -> None:
@@ -206,6 +258,9 @@ class FinalReleaseClosureVerificationTests(
         self.assertIn("_reverify_current_documentation", text)
         self.assertIn("--documentation-record", text)
         self.assertIn("documentation_canonical_reverification_verified", text)
+        self.assertIn("verify_stale_release_work_cleanup.py", text)
+        self.assertIn("_reverify_current_cleanup", text)
+        self.assertIn("cleanup_canonical_reverification_verified", text)
 
 
 if __name__ == "__main__":
