@@ -78,7 +78,7 @@ def _validate_documentation(
         or value.get("execution_control_head") != execution_head
         or value.get("documentation_repository_head") != repository_head
         or value.get("immutable_publication_operation_verified") is not True
-        or value.get("immutable_publication_asset_count") != 8
+        or value.get("immutable_publication_asset_count") != 9
         or value.get("immutable_release_asset_set_verified") is not True
         or value.get("immutable_release_attestation_verified") is not True
         or value.get("release_immutable") is not True
@@ -114,7 +114,7 @@ def _validate_cleanup(
         or value.get("stale_branch_count") != 0
         or value.get("stale_open_pr_count") != 0
         or value.get("immutable_publication_operation_verified_before_cleanup") is not True
-        or value.get("immutable_publication_asset_count") != 8
+        or value.get("immutable_publication_asset_count") != 9
         or value.get("immutable_release_asset_set_verified_before_cleanup") is not True
         or value.get("immutable_release_attestation_verified_before_cleanup") is not True
         or value.get("immutable_release_verified_before_cleanup") is not True
