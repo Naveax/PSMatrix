@@ -15,6 +15,7 @@ _IMPL_PATH = Path(__file__).with_name("_verify_final_release_closure_impl.py")
 _IMMUTABLE_VERIFIER_PATH = Path(__file__).with_name("verify_final_immutable_release.py")
 _DOCUMENTATION_VERIFIER_PATH = Path(__file__).with_name("verify_final_documentation_state.py")
 _CLEANUP_VERIFIER_PATH = Path(__file__).with_name("verify_stale_release_work_cleanup.py")
+_FINAL_SCAN_CERTIFIER_PATH = Path(__file__).with_name("certify_final_repository_private_material_scan.py")
 _READINESS_CONTRACT_PATH = (
     ROOT / "ga-packs" / "03-authoritative-windows" / "final-production-readiness-contract.json"
 )
@@ -83,10 +84,23 @@ def _load_cleanup_verifier():
     return module
 
 
+def _load_final_scan_certifier():
+    spec = importlib.util.spec_from_file_location(
+        "psmatrix_final_release_closure_repository_scan_certifier",
+        _FINAL_SCAN_CERTIFIER_PATH,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("unable to load canonical final repository scan certifier")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 _impl = _load_impl()
 _IMMUTABLE_VERIFIER = _load_immutable_verifier()
 _DOCUMENTATION_VERIFIER = _load_documentation_verifier()
 _CLEANUP_VERIFIER = _load_cleanup_verifier()
+_FINAL_SCAN_CERTIFIER = _load_final_scan_certifier()
 for _name, _value in vars(_impl).items():
     if not _name.startswith("__"):
         globals()[_name] = _value
@@ -296,6 +310,37 @@ def _cleanup_live_authority_receipt(cleanup: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _reverify_current_final_scan(
+    release_closure: dict[str, Any],
+    documentation: dict[str, Any],
+    cleanup: dict[str, Any],
+) -> dict[str, Any]:
+    certifier = _FINAL_SCAN_CERTIFIER
+    try:
+        fresh = certifier.certify(
+            ROOT,
+            release_closure,
+            documentation,
+            cleanup,
+        )
+    except (
+        OSError,
+        subprocess.SubprocessError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+        KeyError,
+    ) as exc:
+        raise FinalReleaseClosureError(
+            "current final repository private-material scan canonical re-verification failed"
+        ) from exc
+    if not isinstance(fresh, dict):
+        raise FinalReleaseClosureError(
+            "canonical final repository scan certifier returned an invalid receipt"
+        )
+    return fresh
+
+
 def _write_final_closure_receipt(path: Path, value: dict[str, Any]) -> Path:
     _reject_symlink_components(path, "final release closure output")
     absolute = path.expanduser().absolute()
@@ -420,6 +465,15 @@ def verify(
         raise FinalReleaseClosureError(
             "provided stale release-work cleanup verification differs from fresh canonical verification of current GitHub branch and open-PR state"
         )
+    fresh_final_scan = _reverify_current_final_scan(
+        release_closure,
+        documentation,
+        cleanup,
+    )
+    if fresh_final_scan != final_scan:
+        raise FinalReleaseClosureError(
+            "provided final repository private-material scan differs from fresh canonical verification of current committed repository state"
+        )
     if immutable_release.get(
         "publication_receipt_output_reserved_before_mutation"
     ) is not True:
@@ -456,6 +510,7 @@ def verify(
     result["immutable_release_canonical_reverification_verified"] = True
     result["documentation_canonical_reverification_verified"] = True
     result["cleanup_canonical_reverification_verified"] = True
+    result["final_repository_scan_canonical_reverification_verified"] = True
     result["publication_receipt_output_reserved_before_mutation"] = True
     result["final_ga_attestation_public_asset_verified"] = True
     result["cleanup_audit_transaction_verified"] = True
@@ -509,6 +564,7 @@ def main() -> int:
         print("immutable_release_canonical_reverification_verified=true")
         print("documentation_canonical_reverification_verified=true")
         print("cleanup_canonical_reverification_verified=true")
+        print("final_repository_scan_canonical_reverification_verified=true")
         print("final_ga_attestation_public_asset_verified=true")
         print("github_release_attestation_verified=true")
         print("post_ga_receipts_bound_before_final_scan=true")

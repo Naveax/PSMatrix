@@ -57,6 +57,23 @@ class FinalReleaseClosureVerificationTests(
         )
         self.cleanup_reverify = self.cleanup_reverify_patcher.start()
         self.addCleanup(self.cleanup_reverify_patcher.stop)
+        self.scan.update(
+            {
+                "tracked_file_count": 123,
+                "scanner_repository_owned": True,
+                "secret_values_emitted": False,
+                "secret_hashes_emitted": False,
+                "secret_lengths_emitted": False,
+            }
+        )
+        self.fresh_final_scan = dict(self.scan)
+        self.final_scan_reverify_patcher = patch.object(
+            self.module,
+            "_reverify_current_final_scan",
+            side_effect=lambda *_args, **_kwargs: dict(self.fresh_final_scan),
+        )
+        self.final_scan_reverify = self.final_scan_reverify_patcher.start()
+        self.addCleanup(self.final_scan_reverify_patcher.stop)
 
     def test_publication_reservation_proof_is_required_for_release_closed(self) -> None:
         field = "publication_receipt_output_reserved_before_mutation"
@@ -203,6 +220,22 @@ class FinalReleaseClosureVerificationTests(
         )
         self.assertTrue(value["cleanup_canonical_reverification_verified"])
 
+    def test_forged_final_scan_receipt_is_rejected_when_fresh_authority_disagrees(self) -> None:
+        self.scan["scanner_repository_owned"] = False
+        with self.assertRaises(self.module.FinalReleaseClosureError):
+            self.module.verify(
+                self.closure,
+                self.release,
+                self.documentation,
+                self.cleanup,
+                self.scan,
+            )
+        self.final_scan_reverify.assert_called_once_with(
+            self.closure,
+            self.documentation,
+            self.cleanup,
+        )
+
     def test_release_closed_receipt_carries_bound_safety_proofs(self) -> None:
         value = self.module.verify(
             self.closure,
@@ -214,6 +247,7 @@ class FinalReleaseClosureVerificationTests(
         self.assertTrue(value["immutable_release_canonical_reverification_verified"])
         self.assertTrue(value["documentation_canonical_reverification_verified"])
         self.assertTrue(value["cleanup_canonical_reverification_verified"])
+        self.assertTrue(value["final_repository_scan_canonical_reverification_verified"])
         self.assertTrue(
             value["publication_receipt_output_reserved_before_mutation"]
         )
@@ -229,6 +263,11 @@ class FinalReleaseClosureVerificationTests(
             self.closure,
             self.release,
             "gh",
+        )
+        self.final_scan_reverify.assert_called_once_with(
+            self.closure,
+            self.documentation,
+            self.cleanup,
         )
 
     def test_source_is_only_component_allowed_to_emit_release_closed_true(self) -> None:
@@ -261,6 +300,9 @@ class FinalReleaseClosureVerificationTests(
         self.assertIn("verify_stale_release_work_cleanup.py", text)
         self.assertIn("_reverify_current_cleanup", text)
         self.assertIn("cleanup_canonical_reverification_verified", text)
+        self.assertIn("certify_final_repository_private_material_scan.py", text)
+        self.assertIn("_reverify_current_final_scan", text)
+        self.assertIn("final_repository_scan_canonical_reverification_verified", text)
 
 
 if __name__ == "__main__":
