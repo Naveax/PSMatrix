@@ -71,7 +71,7 @@ class FinalRepositoryPrivateMaterialScanCertificationTests(unittest.TestCase):
             "release_id": 77,
             "execution_control_head": execution_head,
             "immutable_publication_operation_verified": True,
-            "immutable_publication_asset_count": 8,
+            "immutable_publication_asset_count": 9,
             "immutable_release_asset_set_verified": True,
             "immutable_release_attestation_verified": True,
             "release_immutable": True,
@@ -93,7 +93,7 @@ class FinalRepositoryPrivateMaterialScanCertificationTests(unittest.TestCase):
             "stale_branch_count": 0,
             "stale_open_pr_count": 0,
             "immutable_publication_operation_verified_before_cleanup": True,
-            "immutable_publication_asset_count": 8,
+            "immutable_publication_asset_count": 9,
             "immutable_release_asset_set_verified_before_cleanup": True,
             "immutable_release_attestation_verified_before_cleanup": True,
             "immutable_release_verified_before_cleanup": True,
@@ -137,6 +137,15 @@ class FinalRepositoryPrivateMaterialScanCertificationTests(unittest.TestCase):
         self.assertTrue(value["final_repo_secret_scan_completed"])
         self.assertFalse(value["preflight_only"])
         self.assertFalse(value["release_closed"])
+
+    def test_stale_eight_asset_documentation_or_cleanup_receipt_fails_closed(self) -> None:
+        for receipt_name in ("documentation", "cleanup"):
+            with self.subTest(receipt=receipt_name):
+                closure, documentation, cleanup = self.receipts()
+                target = documentation if receipt_name == "documentation" else cleanup
+                target["immutable_publication_asset_count"] = 8
+                with self.assertRaises(self.module.FinalRepositoryScanCertificationError):
+                    self.module.certify(self.root, closure, documentation, cleanup)
 
     def test_partial_final_receipt_set_fails_closed(self) -> None:
         closure, documentation, cleanup = self.receipts()
