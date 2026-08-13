@@ -9,10 +9,18 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "ga" / "verify_production_readiness_run.py"
+TERMINAL_SCRIPT = ROOT / "scripts" / "ga" / "verify_final_release_closure.py"
 spec = importlib.util.spec_from_file_location("readiness_run_verifier", SCRIPT)
 assert spec and spec.loader
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
+terminal_spec = importlib.util.spec_from_file_location(
+    "terminal_readiness_run_verifier",
+    TERMINAL_SCRIPT,
+)
+assert terminal_spec and terminal_spec.loader
+terminal = importlib.util.module_from_spec(terminal_spec)
+terminal_spec.loader.exec_module(terminal)
 
 HEAD = module.EXPECTED_ANCHOR_HEAD
 REF = module.EXPECTED_REF
@@ -24,6 +32,9 @@ class ProductionReadinessRunAPIVerifierTests(unittest.TestCase):
 
     def _artifacts(self):
         return [{"id": 99, "name": module.EXPECTED_ARTIFACT, "expired": False}]
+
+    def _verification(self):
+        return module.verify_records(42, HEAD, REF, self._run(), self._artifacts())
 
     def _symlink_or_skip(
         self,
@@ -38,7 +49,7 @@ class ProductionReadinessRunAPIVerifierTests(unittest.TestCase):
             self.skipTest(f"symlink creation unavailable on this runner: {exc}")
 
     def test_successful_readiness_run_is_provenance_verified(self):
-        value = module.verify_records(42, HEAD, REF, self._run(), self._artifacts())
+        value = self._verification()
         self.assertEqual(value["repository"], module.REPOSITORY)
         self.assertEqual(value["exact_head"], module.EXPECTED_ANCHOR_HEAD)
         self.assertEqual(value["immutable_ref"], module.EXPECTED_REF)
@@ -70,6 +81,68 @@ class ProductionReadinessRunAPIVerifierTests(unittest.TestCase):
                 self._artifacts(),
                 repository="someone-else/PSMatrix",
             )
+
+    def test_terminal_requeries_current_readiness_run_and_artifact_authority(self):
+        verifier = terminal._READINESS_RUN_VERIFIER
+        run = {
+            "id": 42,
+            "name": verifier.EXPECTED_WORKFLOW,
+            "event": "workflow_dispatch",
+            "status": "completed",
+            "conclusion": "success",
+            "head_sha": verifier.EXPECTED_ANCHOR_HEAD,
+            "head_branch": verifier.EXPECTED_REF,
+        }
+        listing = {
+            "artifacts": [
+                {
+                    "id": 99,
+                    "name": verifier.EXPECTED_ARTIFACT,
+                    "expired": False,
+                }
+            ]
+        }
+        supplied = {
+            "run_id": 42,
+            "artifact_id": 99,
+        }
+        with patch.object(
+            verifier,
+            "_gh_json",
+            side_effect=[run, listing],
+        ) as api:
+            value = terminal._reverify_current_readiness_run(supplied, "gh")
+        self.assertEqual(value["repository"], verifier.REPOSITORY)
+        self.assertEqual(value["artifact_id"], 99)
+        self.assertEqual(value["exact_head"], verifier.EXPECTED_ANCHOR_HEAD)
+        self.assertEqual(value["immutable_ref"], verifier.EXPECTED_REF)
+        self.assertEqual(api.call_count, 2)
+        self.assertIn("actions/runs/42", api.call_args_list[0].args[1])
+        self.assertIn("actions/runs/42/artifacts", api.call_args_list[1].args[1])
+
+    def test_terminal_live_authority_remains_provenance_only(self):
+        fresh = self._verification()
+        fresh["summary_content_verified"] = True
+        with self.assertRaises(terminal.FinalReleaseClosureError):
+            terminal._readiness_run_live_authority(fresh)
+
+    def test_terminal_cli_requires_fresh_readiness_marker_before_output(self):
+        text = TERMINAL_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("verify_production_readiness_run.py", text)
+        self.assertIn("_reverify_current_readiness_run", text)
+        self.assertIn("actions/runs/", text)
+        self.assertIn(
+            'parser.add_argument("--production-readiness-verification", type=Path, required=True)',
+            text,
+        )
+        self.assertIn(
+            "production_readiness_run_canonical_reverification_verified",
+            text,
+        )
+        self.assertIn(
+            "terminal Production readiness run freshness proof is missing",
+            text,
+        )
 
     def test_verification_output_is_write_once_and_exact(self):
         with tempfile.TemporaryDirectory() as tmp:
