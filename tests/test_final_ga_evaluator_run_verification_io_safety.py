@@ -18,11 +18,14 @@ spec.loader.exec_module(module)
 
 
 class FinalGAEvaluatorRunVerificationIOSafetyTests(unittest.TestCase):
-    def test_read_content_closure_accepts_regular_json_object(self) -> None:
+    def test_read_content_closure_accepts_regular_json_object_and_returns_byte_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "content-closure.json"
             path.write_text('{"status":"PASS"}\n', encoding="utf-8")
-            self.assertEqual(module._read_content_closure(path), {"status": "PASS"})
+            value, digest, size = module._read_json_with_provenance(path, label="content closure")
+            self.assertEqual(value, {"status": "PASS"})
+            self.assertRegex(digest, r"^[0-9a-f]{64}$")
+            self.assertEqual(size, path.stat().st_size)
 
     def test_read_content_closure_rejects_leaf_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -35,7 +38,7 @@ class FinalGAEvaluatorRunVerificationIOSafetyTests(unittest.TestCase):
             except OSError as exc:
                 self.skipTest(f"symlinks unavailable: {exc}")
             with self.assertRaises(module.FinalGAEvaluatorRunError):
-                module._read_content_closure(link)
+                module._read_json_with_provenance(link, label="content closure")
 
     def test_read_content_closure_rejects_parent_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -50,7 +53,7 @@ class FinalGAEvaluatorRunVerificationIOSafetyTests(unittest.TestCase):
             except OSError as exc:
                 self.skipTest(f"directory symlinks unavailable: {exc}")
             with self.assertRaises(module.FinalGAEvaluatorRunError):
-                module._read_content_closure(linked / "content-closure.json")
+                module._read_json_with_provenance(linked / "content-closure.json", label="content closure")
 
     def test_write_receipt_is_exclusive_and_preserves_existing_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -95,6 +98,8 @@ class FinalGAEvaluatorRunVerificationIOSafetyTests(unittest.TestCase):
     def test_source_contract_has_safe_input_and_write_once_output(self) -> None:
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("resolve(strict=True)", text)
+        self.assertIn("read_bytes()", text)
+        self.assertIn("--content-closure-verification", text)
         self.assertIn("os.O_EXCL", text)
         self.assertIn("os.fsync", text)
         self.assertIn("read-back mismatch", text)
