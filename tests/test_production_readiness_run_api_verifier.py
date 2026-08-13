@@ -14,8 +14,8 @@ assert spec and spec.loader
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
-HEAD = "a" * 40
-REF = "final/2.0.0-production-control-plane-publication-anchor"
+HEAD = module.EXPECTED_ANCHOR_HEAD
+REF = module.EXPECTED_REF
 
 
 class ProductionReadinessRunAPIVerifierTests(unittest.TestCase):
@@ -40,6 +40,8 @@ class ProductionReadinessRunAPIVerifierTests(unittest.TestCase):
     def test_successful_readiness_run_is_provenance_verified(self):
         value = module.verify_records(42, HEAD, REF, self._run(), self._artifacts())
         self.assertEqual(value["repository"], module.REPOSITORY)
+        self.assertEqual(value["exact_head"], module.EXPECTED_ANCHOR_HEAD)
+        self.assertEqual(value["immutable_ref"], module.EXPECTED_REF)
         self.assertTrue(value["readiness_pass_observed"])
         self.assertFalse(value["summary_content_verified"])
         self.assertFalse(value["ga_eligible"])
@@ -48,9 +50,13 @@ class ProductionReadinessRunAPIVerifierTests(unittest.TestCase):
         value = module.verify_records(42, HEAD, REF, self._run("failure"), self._artifacts())
         self.assertFalse(value["readiness_pass_observed"])
 
-    def test_wrong_ref_or_duplicate_artifact_fails_closed(self):
+    def test_caller_cannot_select_different_execution_anchor(self):
+        with self.assertRaises(module.ReadinessRunVerificationError):
+            module.verify_records(42, "a" * 40, REF, self._run(), self._artifacts())
         with self.assertRaises(module.ReadinessRunVerificationError):
             module.verify_records(42, HEAD, "wrong-ref", self._run(), self._artifacts())
+
+    def test_duplicate_artifact_fails_closed(self):
         with self.assertRaises(module.ReadinessRunVerificationError):
             module.verify_records(42, HEAD, REF, self._run(), self._artifacts() * 2)
 
@@ -154,10 +160,12 @@ class ProductionReadinessRunAPIVerifierTests(unittest.TestCase):
 
             self.assertFalse(output.exists())
 
-    def test_source_freezes_repository_and_hardens_output(self):
+    def test_source_uses_frozen_execution_anchor_authority_and_hardens_output(self):
         text = SCRIPT.read_text(encoding="utf-8")
-        self.assertIn('REPOSITORY = "Naveax/PSMatrix"', text)
-        self.assertIn("_validate_repository", text)
+        self.assertIn("verify_production_execution_anchor.py", text)
+        self.assertIn("EXPECTED_ANCHOR_HEAD", text)
+        self.assertIn("EXPECTED_REF", text)
+        self.assertIn("_validate_execution_anchor", text)
         self.assertIn('"repository": REPOSITORY', text)
         self.assertIn("_reject_symlink_components", text)
         self.assertIn("os.O_EXCL", text)

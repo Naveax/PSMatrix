@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -15,8 +16,28 @@ class ReadinessRunVerificationError(RuntimeError):
     pass
 
 
-REPOSITORY = "Naveax/PSMatrix"
-EXPECTED_WORKFLOW = "production-ga-final-production-readiness"
+_EXECUTION_ANCHOR_VERIFIER_PATH = Path(__file__).with_name(
+    "verify_production_execution_anchor.py"
+)
+
+
+def _load_execution_anchor_verifier():
+    spec = importlib.util.spec_from_file_location(
+        "psmatrix_readiness_run_execution_anchor_authority",
+        _EXECUTION_ANCHOR_VERIFIER_PATH,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("unable to load frozen Production execution-anchor authority")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_EXECUTION_ANCHOR_VERIFIER = _load_execution_anchor_verifier()
+REPOSITORY = _EXECUTION_ANCHOR_VERIFIER.EXPECTED_REPOSITORY
+EXPECTED_REF = _EXECUTION_ANCHOR_VERIFIER.EXPECTED_REF
+EXPECTED_ANCHOR_HEAD = _EXECUTION_ANCHOR_VERIFIER.EXPECTED_ANCHOR_HEAD
+EXPECTED_WORKFLOW = _EXECUTION_ANCHOR_VERIFIER.READINESS_WORKFLOW
 EXPECTED_ARTIFACT = "psmatrix-2.0.0-production-readiness"
 
 
@@ -25,6 +46,21 @@ def _validate_repository(repository: str) -> None:
         raise ReadinessRunVerificationError(
             f"Production readiness run verification repository is frozen to {REPOSITORY}"
         )
+
+
+def _validate_execution_anchor(expected_head: str, expected_ref: str) -> str:
+    normalized_head = str(expected_head or "").lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", normalized_head):
+        raise ReadinessRunVerificationError("expected head must be lowercase 40-hex")
+    if normalized_head != EXPECTED_ANCHOR_HEAD:
+        raise ReadinessRunVerificationError(
+            "readiness run expected head is not the frozen Production execution anchor"
+        )
+    if expected_ref != EXPECTED_REF:
+        raise ReadinessRunVerificationError(
+            "readiness run expected ref is not the frozen Production execution anchor ref"
+        )
+    return normalized_head
 
 
 def verify_records(
@@ -36,18 +72,16 @@ def verify_records(
     repository: str = REPOSITORY,
 ) -> dict[str, Any]:
     _validate_repository(repository)
-    expected_head = expected_head.lower()
-    if not re.fullmatch(r"[0-9a-f]{40}", expected_head):
-        raise ReadinessRunVerificationError("expected head must be lowercase 40-hex")
+    expected_head = _validate_execution_anchor(expected_head, expected_ref)
     if type(run_id) is not int or run_id <= 0:
         raise ReadinessRunVerificationError("run ID must be positive")
     if run.get("id") != run_id or run.get("name") != EXPECTED_WORKFLOW:
         raise ReadinessRunVerificationError("readiness run identity mismatch")
     if run.get("event") != "workflow_dispatch" or run.get("status") != "completed":
         raise ReadinessRunVerificationError("readiness run must be a completed workflow_dispatch")
-    if str(run.get("head_sha") or "").lower() != expected_head:
+    if str(run.get("head_sha") or "").lower() != EXPECTED_ANCHOR_HEAD:
         raise ReadinessRunVerificationError("readiness run exact head mismatch")
-    if str(run.get("head_branch") or "") != expected_ref:
+    if str(run.get("head_branch") or "") != EXPECTED_REF:
         raise ReadinessRunVerificationError("readiness run immutable ref mismatch")
     candidates = [item for item in artifacts if isinstance(item, dict) and item.get("name") == EXPECTED_ARTIFACT and item.get("expired") is False]
     if len(candidates) != 1:
@@ -67,8 +101,8 @@ def verify_records(
         "run_id": run_id,
         "workflow": EXPECTED_WORKFLOW,
         "event": "workflow_dispatch",
-        "exact_head": expected_head,
-        "immutable_ref": expected_ref,
+        "exact_head": EXPECTED_ANCHOR_HEAD,
+        "immutable_ref": EXPECTED_REF,
         "run_conclusion": conclusion,
         "readiness_pass_observed": conclusion == "success",
         "artifact": EXPECTED_ARTIFACT,
@@ -202,6 +236,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         _validate_repository(args.repository)
+        _validate_execution_anchor(args.expected_head, args.expected_ref)
         run = _gh_json(args.gh, f"repos/{REPOSITORY}/actions/runs/{args.run_id}")
         listing = _gh_json(args.gh, f"repos/{REPOSITORY}/actions/runs/{args.run_id}/artifacts?per_page=100")
         if not isinstance(listing, dict) or not isinstance(listing.get("artifacts"), list):
