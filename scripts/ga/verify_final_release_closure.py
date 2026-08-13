@@ -16,6 +16,7 @@ _IMMUTABLE_VERIFIER_PATH = Path(__file__).with_name("verify_final_immutable_rele
 _DOCUMENTATION_VERIFIER_PATH = Path(__file__).with_name("verify_final_documentation_state.py")
 _CLEANUP_VERIFIER_PATH = Path(__file__).with_name("verify_stale_release_work_cleanup.py")
 _FINAL_SCAN_CERTIFIER_PATH = Path(__file__).with_name("certify_final_repository_private_material_scan.py")
+_RELEASE_CLOSURE_BUILDER_PATH = Path(__file__).with_name("build_release_closure_readiness.py")
 _READINESS_CONTRACT_PATH = (
     ROOT / "ga-packs" / "03-authoritative-windows" / "final-production-readiness-contract.json"
 )
@@ -96,11 +97,24 @@ def _load_final_scan_certifier():
     return module
 
 
+def _load_release_closure_builder():
+    spec = importlib.util.spec_from_file_location(
+        "psmatrix_final_release_closure_readiness_builder",
+        _RELEASE_CLOSURE_BUILDER_PATH,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("unable to load canonical release-closure readiness builder")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 _impl = _load_impl()
 _IMMUTABLE_VERIFIER = _load_immutable_verifier()
 _DOCUMENTATION_VERIFIER = _load_documentation_verifier()
 _CLEANUP_VERIFIER = _load_cleanup_verifier()
 _FINAL_SCAN_CERTIFIER = _load_final_scan_certifier()
+_RELEASE_CLOSURE_BUILDER = _load_release_closure_builder()
 for _name, _value in vars(_impl).items():
     if not _name.startswith("__"):
         globals()[_name] = _value
@@ -135,6 +149,44 @@ def _read(path: Path, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise FinalReleaseClosureError(f"{label} root must be object")
     return value
+
+
+def _reverify_release_closure_readiness(
+    production_readiness_verification: dict[str, Any] | None,
+    final_lock_verification: dict[str, Any] | None,
+    content_closure: dict[str, Any] | None,
+    evaluator_verification: dict[str, Any] | None,
+    attestation_verification: dict[str, Any] | None,
+) -> dict[str, Any]:
+    inputs = (
+        production_readiness_verification,
+        final_lock_verification,
+        content_closure,
+        evaluator_verification,
+        attestation_verification,
+    )
+    if any(not isinstance(value, dict) for value in inputs):
+        raise FinalReleaseClosureError(
+            "final release closure requires all five upstream readiness receipts for canonical re-verification"
+        )
+    builder = _RELEASE_CLOSURE_BUILDER
+    try:
+        fresh = builder.build(*inputs)
+    except (
+        OSError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+        KeyError,
+    ) as exc:
+        raise FinalReleaseClosureError(
+            "release-closure readiness canonical re-verification failed"
+        ) from exc
+    if not isinstance(fresh, dict):
+        raise FinalReleaseClosureError(
+            "canonical release-closure readiness builder returned an invalid receipt"
+        )
+    return fresh
 
 
 def _reverify_current_immutable_release(
@@ -434,8 +486,24 @@ def verify(
     *,
     publication_operation: dict[str, Any] | None = None,
     documentation_record: dict[str, Any] | None = None,
+    production_readiness_verification: dict[str, Any] | None = None,
+    final_lock_verification: dict[str, Any] | None = None,
+    content_closure: dict[str, Any] | None = None,
+    evaluator_verification: dict[str, Any] | None = None,
+    attestation_verification: dict[str, Any] | None = None,
     gh: str = "gh",
 ) -> dict[str, Any]:
+    fresh_release_closure = _reverify_release_closure_readiness(
+        production_readiness_verification,
+        final_lock_verification,
+        content_closure,
+        evaluator_verification,
+        attestation_verification,
+    )
+    if fresh_release_closure != release_closure:
+        raise FinalReleaseClosureError(
+            "provided release-closure readiness differs from fresh canonical composition of the five upstream readiness receipts"
+        )
     fresh_immutable_release = _reverify_current_immutable_release(
         release_closure,
         publication_operation,
@@ -507,6 +575,7 @@ def verify(
             "final release closure implementation returned an invalid receipt"
         )
     result = dict(value)
+    result["release_closure_readiness_canonical_reverification_verified"] = True
     result["immutable_release_canonical_reverification_verified"] = True
     result["documentation_canonical_reverification_verified"] = True
     result["cleanup_canonical_reverification_verified"] = True
@@ -527,6 +596,11 @@ def main() -> int:
         description="Make the sole final release_closed=true decision after exact GA preconditions and six post-GA operations are independently verified"
     )
     parser.add_argument("--release-closure", type=Path, required=True)
+    parser.add_argument("--production-readiness-verification", type=Path, required=True)
+    parser.add_argument("--final-lock-verification", type=Path, required=True)
+    parser.add_argument("--content-closure", type=Path, required=True)
+    parser.add_argument("--evaluator-verification", type=Path, required=True)
+    parser.add_argument("--attestation-verification", type=Path, required=True)
     parser.add_argument("--immutable-release-verification", type=Path, required=True)
     parser.add_argument("--publication-operation", type=Path, required=True)
     parser.add_argument("--documentation-record", type=Path, required=True)
@@ -551,6 +625,26 @@ def main() -> int:
                 args.documentation_record,
                 "final documentation record",
             ),
+            production_readiness_verification=_read(
+                args.production_readiness_verification,
+                "production readiness verification",
+            ),
+            final_lock_verification=_read(
+                args.final_lock_verification,
+                "final release lock verification",
+            ),
+            content_closure=_read(
+                args.content_closure,
+                "final GA evidence content closure",
+            ),
+            evaluator_verification=_read(
+                args.evaluator_verification,
+                "final GA evaluator verification",
+            ),
+            attestation_verification=_read(
+                args.attestation_verification,
+                "final GA attestation verification",
+            ),
             gh=args.gh,
         )
         _write_final_closure_receipt(args.output, value)
@@ -561,6 +655,7 @@ def main() -> int:
         print("preconditions=5/5")
         print("post_ga_operations=6/6")
         print("release_asset_set_verified=true")
+        print("release_closure_readiness_canonical_reverification_verified=true")
         print("immutable_release_canonical_reverification_verified=true")
         print("documentation_canonical_reverification_verified=true")
         print("cleanup_canonical_reverification_verified=true")
