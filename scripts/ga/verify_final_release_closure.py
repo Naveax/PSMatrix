@@ -17,6 +17,7 @@ _DOCUMENTATION_VERIFIER_PATH = Path(__file__).with_name("verify_final_documentat
 _CLEANUP_VERIFIER_PATH = Path(__file__).with_name("verify_stale_release_work_cleanup.py")
 _FINAL_SCAN_CERTIFIER_PATH = Path(__file__).with_name("certify_final_repository_private_material_scan.py")
 _RELEASE_CLOSURE_BUILDER_PATH = Path(__file__).with_name("build_release_closure_readiness.py")
+_READINESS_RUN_VERIFIER_PATH = Path(__file__).with_name("verify_production_readiness_run.py")
 _READINESS_CONTRACT_PATH = (
     ROOT / "ga-packs" / "03-authoritative-windows" / "final-production-readiness-contract.json"
 )
@@ -109,12 +110,25 @@ def _load_release_closure_builder():
     return module
 
 
+def _load_readiness_run_verifier():
+    spec = importlib.util.spec_from_file_location(
+        "psmatrix_final_release_closure_readiness_run_verifier",
+        _READINESS_RUN_VERIFIER_PATH,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("unable to load canonical Production readiness run verifier")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 _impl = _load_impl()
 _IMMUTABLE_VERIFIER = _load_immutable_verifier()
 _DOCUMENTATION_VERIFIER = _load_documentation_verifier()
 _CLEANUP_VERIFIER = _load_cleanup_verifier()
 _FINAL_SCAN_CERTIFIER = _load_final_scan_certifier()
 _RELEASE_CLOSURE_BUILDER = _load_release_closure_builder()
+_READINESS_RUN_VERIFIER = _load_readiness_run_verifier()
 for _name, _value in vars(_impl).items():
     if not _name.startswith("__"):
         globals()[_name] = _value
@@ -185,6 +199,112 @@ def _reverify_release_closure_readiness(
     if not isinstance(fresh, dict):
         raise FinalReleaseClosureError(
             "canonical release-closure readiness builder returned an invalid receipt"
+        )
+    return fresh
+
+
+def _production_readiness_verification_run_authority(
+    readiness: dict[str, Any],
+) -> dict[str, Any]:
+    run_id = readiness.get("run_id")
+    artifact_id = readiness.get("artifact_id")
+    if type(run_id) is not int or run_id <= 0:
+        raise FinalReleaseClosureError(
+            "Production readiness verification run ID is invalid"
+        )
+    if type(artifact_id) is not int or artifact_id <= 0:
+        raise FinalReleaseClosureError(
+            "Production readiness verification artifact ID is invalid"
+        )
+    return {
+        "repository": readiness.get("repository"),
+        "run_id": run_id,
+        "workflow": readiness.get("workflow"),
+        "event": readiness.get("event"),
+        "exact_head": readiness.get("exact_head"),
+        "immutable_ref": readiness.get("immutable_ref"),
+        "run_conclusion": readiness.get("run_conclusion"),
+        "artifact": readiness.get("artifact"),
+        "artifact_id": artifact_id,
+        "artifact_nonexpired": readiness.get("artifact_nonexpired"),
+    }
+
+
+def _readiness_run_live_authority(fresh: dict[str, Any]) -> dict[str, Any]:
+    if (
+        fresh.get("readiness_pass_observed") is not True
+        or fresh.get("summary_content_verified") is not False
+        or fresh.get("ga_eligible") is not False
+    ):
+        raise FinalReleaseClosureError(
+            "current Production readiness run verifier crossed its provenance-only boundary"
+        )
+    return {
+        "repository": fresh.get("repository"),
+        "run_id": fresh.get("run_id"),
+        "workflow": fresh.get("workflow"),
+        "event": fresh.get("event"),
+        "exact_head": fresh.get("exact_head"),
+        "immutable_ref": fresh.get("immutable_ref"),
+        "run_conclusion": fresh.get("run_conclusion"),
+        "artifact": fresh.get("artifact"),
+        "artifact_id": fresh.get("artifact_id"),
+        "artifact_nonexpired": fresh.get("artifact_nonexpired"),
+    }
+
+
+def _reverify_current_readiness_run(
+    production_readiness_verification: dict[str, Any],
+    gh: str,
+) -> dict[str, Any]:
+    if not isinstance(gh, str) or not gh.strip():
+        raise FinalReleaseClosureError(
+            "final release closure canonical Production readiness run verifier executable is invalid"
+        )
+    run_id = production_readiness_verification.get("run_id")
+    if type(run_id) is not int or run_id <= 0:
+        raise FinalReleaseClosureError(
+            "final release closure requires a positive Production readiness run ID"
+        )
+    verifier = _READINESS_RUN_VERIFIER
+    try:
+        run = verifier._gh_json(
+            gh,
+            f"repos/{verifier.REPOSITORY}/actions/runs/{run_id}",
+        )
+        listing = verifier._gh_json(
+            gh,
+            f"repos/{verifier.REPOSITORY}/actions/runs/{run_id}/artifacts?per_page=100",
+        )
+        if not isinstance(listing, dict) or not isinstance(
+            listing.get("artifacts"), list
+        ):
+            raise verifier.ReadinessRunVerificationError(
+                "invalid readiness artifact listing"
+            )
+        fresh = verifier.verify_records(
+            run_id,
+            verifier.EXPECTED_ANCHOR_HEAD,
+            verifier.EXPECTED_REF,
+            run,
+            listing["artifacts"],
+            repository=verifier.REPOSITORY,
+        )
+    except (
+        OSError,
+        json.JSONDecodeError,
+        subprocess.SubprocessError,
+        verifier.ReadinessRunVerificationError,
+        TypeError,
+        ValueError,
+        KeyError,
+    ) as exc:
+        raise FinalReleaseClosureError(
+            "current Production readiness run canonical re-verification failed"
+        ) from exc
+    if not isinstance(fresh, dict):
+        raise FinalReleaseClosureError(
+            "canonical Production readiness run verifier returned an invalid receipt"
         )
     return fresh
 
@@ -504,6 +624,21 @@ def verify(
         raise FinalReleaseClosureError(
             "provided release-closure readiness differs from fresh canonical composition of the five upstream readiness receipts"
         )
+    readiness_run_reverified = False
+    if production_readiness_verification is not None:
+        fresh_readiness_run = _reverify_current_readiness_run(
+            production_readiness_verification,
+            gh,
+        )
+        if _readiness_run_live_authority(
+            fresh_readiness_run
+        ) != _production_readiness_verification_run_authority(
+            production_readiness_verification
+        ):
+            raise FinalReleaseClosureError(
+                "provided Production readiness verification differs from fresh canonical verification of current GitHub run and artifact state"
+            )
+        readiness_run_reverified = True
     fresh_immutable_release = _reverify_current_immutable_release(
         release_closure,
         publication_operation,
@@ -576,6 +711,9 @@ def verify(
         )
     result = dict(value)
     result["release_closure_readiness_canonical_reverification_verified"] = True
+    result["production_readiness_run_canonical_reverification_verified"] = (
+        readiness_run_reverified
+    )
     result["immutable_release_canonical_reverification_verified"] = True
     result["documentation_canonical_reverification_verified"] = True
     result["cleanup_canonical_reverification_verified"] = True
@@ -647,6 +785,12 @@ def main() -> int:
             ),
             gh=args.gh,
         )
+        if value.get(
+            "production_readiness_run_canonical_reverification_verified"
+        ) is not True:
+            raise FinalReleaseClosureError(
+                "terminal Production readiness run freshness proof is missing"
+            )
         _write_final_closure_receipt(args.output, value)
         print(
             f"final_release_closure=RELEASE_CLOSED tag={value['release_tag']} "
@@ -656,6 +800,7 @@ def main() -> int:
         print("post_ga_operations=6/6")
         print("release_asset_set_verified=true")
         print("release_closure_readiness_canonical_reverification_verified=true")
+        print("production_readiness_run_canonical_reverification_verified=true")
         print("immutable_release_canonical_reverification_verified=true")
         print("documentation_canonical_reverification_verified=true")
         print("cleanup_canonical_reverification_verified=true")
