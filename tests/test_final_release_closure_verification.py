@@ -182,6 +182,8 @@ class FinalReleaseClosureVerificationTests(
             None,
             None,
             None,
+            None,
+            None,
         )
 
     def test_forged_immutable_release_receipt_is_rejected_when_fresh_authority_disagrees(self) -> None:
@@ -198,6 +200,8 @@ class FinalReleaseClosureVerificationTests(
                 self.scan,
             )
         self.release_closure_reverify.assert_called_once_with(
+            None,
+            None,
             None,
             None,
             None,
