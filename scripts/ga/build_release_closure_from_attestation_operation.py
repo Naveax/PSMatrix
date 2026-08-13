@@ -4,6 +4,8 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
+import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -23,6 +25,31 @@ def _load_builder():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _reject_symlink_components(path: Path, label: str) -> None:
+    expanded = path.expanduser()
+    parts = expanded.parts
+    if expanded.is_absolute():
+        current = Path(expanded.anchor)
+        start = 1
+    else:
+        current = Path(".")
+        start = 0
+    for part in parts[start:]:
+        current = current / part
+        if current.is_symlink():
+            raise ReleaseClosureAttestationHandoffError(
+                f"{label} may not traverse a symlink component"
+            )
+
+
+def _resolved_input(path: Path, label: str) -> Path:
+    _reject_symlink_components(path, label)
+    resolved = path.expanduser().resolve()
+    if not resolved.is_file():
+        raise ReleaseClosureAttestationHandoffError(f"{label} is missing or unsafe")
+    return resolved
 
 
 def _sha256(path: Path) -> str:
@@ -48,10 +75,13 @@ def resolve_attestation_verification(operation: dict[str, Any], operation_path: 
     digest = operation.get("verification_receipt_sha256")
     if not isinstance(raw, str) or not raw or not isinstance(digest, str) or len(digest) != 64:
         raise ReleaseClosureAttestationHandoffError("final attestation verification receipt reference is invalid")
+    operation_resolved = _resolved_input(
+        operation_path,
+        "final attestation content operation",
+    )
     supplied = Path(raw).expanduser()
-    path = (supplied if supplied.is_absolute() else operation_path.resolve().parent / supplied).resolve()
-    if not path.is_file() or path.is_symlink():
-        raise ReleaseClosureAttestationHandoffError("final attestation verification receipt is missing or unsafe")
+    candidate = supplied if supplied.is_absolute() else operation_resolved.parent / supplied
+    path = _resolved_input(candidate, "final attestation verification receipt")
     if _sha256(path) != digest:
         raise ReleaseClosureAttestationHandoffError("final attestation verification receipt digest mismatch")
     try:
@@ -64,9 +94,7 @@ def resolve_attestation_verification(operation: dict[str, Any], operation_path: 
 
 
 def _read(path: Path, label: str) -> dict[str, Any]:
-    resolved = path.expanduser().resolve()
-    if not resolved.is_file() or resolved.is_symlink():
-        raise ReleaseClosureAttestationHandoffError(f"{label} is missing or unsafe")
+    resolved = _resolved_input(path, label)
     try:
         value = json.loads(resolved.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
@@ -74,6 +102,95 @@ def _read(path: Path, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ReleaseClosureAttestationHandoffError(f"{label} root must be object")
     return value
+
+
+def _write_release_closure_handoff_receipt(
+    path: Path,
+    value: dict[str, Any],
+) -> Path:
+    _reject_symlink_components(path, "release closure attestation handoff output")
+    absolute = path.expanduser().absolute()
+    if absolute.exists():
+        raise ReleaseClosureAttestationHandoffError(
+            "release closure attestation handoff output must not already exist"
+        )
+
+    parent = absolute.parent
+    _reject_symlink_components(parent, "release closure attestation handoff output parent")
+    resolved_parent = parent.resolve()
+    if not resolved_parent.is_dir():
+        raise ReleaseClosureAttestationHandoffError(
+            "release closure attestation handoff output parent must already exist"
+        )
+    candidate = resolved_parent / absolute.name
+
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    try:
+        fd = os.open(candidate, flags, 0o600)
+    except FileExistsError as exc:
+        raise ReleaseClosureAttestationHandoffError(
+            "release closure attestation handoff output appeared before exclusive creation"
+        ) from exc
+    except OSError as exc:
+        raise ReleaseClosureAttestationHandoffError(
+            f"release closure attestation handoff output could not be created: {exc}"
+        ) from exc
+
+    info = os.fstat(fd)
+    identity = (int(info.st_dev), int(info.st_ino))
+    handle = None
+    success = False
+    try:
+        handle = os.fdopen(fd, "r+", encoding="utf-8", newline="\n")
+        path_info = os.lstat(candidate)
+        if (
+            not stat.S_ISREG(path_info.st_mode)
+            or (int(path_info.st_dev), int(path_info.st_ino)) != identity
+        ):
+            raise ReleaseClosureAttestationHandoffError(
+                "release closure attestation handoff output path does not name the exclusively created file"
+            )
+
+        payload = json.dumps(value, indent=2, sort_keys=True) + "\n"
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+        handle.seek(0)
+        if handle.read() != payload:
+            raise ReleaseClosureAttestationHandoffError(
+                "release closure attestation handoff output read-back verification failed"
+            )
+
+        path_info = os.lstat(candidate)
+        if (
+            not stat.S_ISREG(path_info.st_mode)
+            or (int(path_info.st_dev), int(path_info.st_ino)) != identity
+        ):
+            raise ReleaseClosureAttestationHandoffError(
+                "release closure attestation handoff output path identity changed during write"
+            )
+        success = True
+        return candidate
+    finally:
+        if handle is not None:
+            handle.close()
+        else:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if not success:
+            try:
+                path_info = os.lstat(candidate)
+                if (
+                    stat.S_ISREG(path_info.st_mode)
+                    and (int(path_info.st_dev), int(path_info.st_ino)) == identity
+                ):
+                    candidate.unlink()
+            except OSError:
+                pass
 
 
 def main() -> int:
@@ -86,7 +203,10 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
-        operation_path = args.attestation_operation.expanduser().resolve()
+        operation_path = _resolved_input(
+            args.attestation_operation,
+            "final attestation content operation",
+        )
         operation = _read(operation_path, "final attestation content operation")
         attestation, _ = resolve_attestation_verification(operation, operation_path)
         readiness = _read(args.readiness_verification, "readiness verification")
@@ -97,8 +217,7 @@ def main() -> int:
         value = builder.build(readiness, lock, closure, evaluator, attestation)
         if value.get("status") != "READY_FOR_RELEASE_CLOSURE" or value.get("ga_eligible") is not True or value.get("release_closed") is not False or value.get("execution_head") != operation.get("execution_head"):
             raise ReleaseClosureAttestationHandoffError("release closure builder did not preserve exact attestation execution head/boundaries")
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        _write_release_closure_handoff_receipt(args.output, value)
         print("release_closure_attestation_handoff=PASS")
         print("release_closure_readiness=READY_FOR_RELEASE_CLOSURE")
         print("final_ga_attestation_verified=true")
