@@ -28,6 +28,14 @@ class FinalReleaseClosureVerificationTests(
 ):
     def setUp(self) -> None:
         super().setUp()
+        self.fresh_release_closure = dict(self.closure)
+        self.release_closure_reverify_patcher = patch.object(
+            self.module,
+            "_reverify_release_closure_readiness",
+            side_effect=lambda *_args, **_kwargs: dict(self.fresh_release_closure),
+        )
+        self.release_closure_reverify = self.release_closure_reverify_patcher.start()
+        self.addCleanup(self.release_closure_reverify_patcher.stop)
         self.release[
             "publication_receipt_output_reserved_before_mutation"
         ] = True
@@ -158,6 +166,24 @@ class FinalReleaseClosureVerificationTests(
                 self.scan,
             )
 
+    def test_forged_release_closure_readiness_is_rejected_when_canonical_composition_disagrees(self) -> None:
+        self.closure["production_readiness_verified"] = False
+        with self.assertRaises(self.module.FinalReleaseClosureError):
+            self.module.verify(
+                self.closure,
+                self.release,
+                self.documentation,
+                self.cleanup,
+                self.scan,
+            )
+        self.release_closure_reverify.assert_called_once_with(
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+
     def test_forged_immutable_release_receipt_is_rejected_when_fresh_authority_disagrees(self) -> None:
         fresh = dict(self.release)
         fresh["release_id"] = 78
@@ -171,6 +197,13 @@ class FinalReleaseClosureVerificationTests(
                 self.cleanup,
                 self.scan,
             )
+        self.release_closure_reverify.assert_called_once_with(
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
         self.immutable_reverify.assert_called_once_with(self.closure, None, "gh")
 
     def test_forged_documentation_receipt_is_rejected_when_fresh_authority_disagrees(self) -> None:
@@ -244,6 +277,7 @@ class FinalReleaseClosureVerificationTests(
             self.cleanup,
             self.scan,
         )
+        self.assertTrue(value["release_closure_readiness_canonical_reverification_verified"])
         self.assertTrue(value["immutable_release_canonical_reverification_verified"])
         self.assertTrue(value["documentation_canonical_reverification_verified"])
         self.assertTrue(value["cleanup_canonical_reverification_verified"])
@@ -288,6 +322,14 @@ class FinalReleaseClosureVerificationTests(
         self.assertIn("cleanup_audit_outputs_reserved_before_mutation", text)
         self.assertIn("cleanup_audit_outputs_finalized_inside_rollback_boundary", text)
         self.assertIn("cleanup_audit_transaction_verified", text)
+        self.assertIn("build_release_closure_readiness.py", text)
+        self.assertIn("_reverify_release_closure_readiness", text)
+        self.assertIn("--production-readiness-verification", text)
+        self.assertIn("--final-lock-verification", text)
+        self.assertIn("--content-closure", text)
+        self.assertIn("--evaluator-verification", text)
+        self.assertIn("--attestation-verification", text)
+        self.assertIn("release_closure_readiness_canonical_reverification_verified", text)
         self.assertIn("verify_final_immutable_release.py", text)
         self.assertIn("_reverify_current_immutable_release", text)
         self.assertIn("_verify_github_release_attestation", text)
