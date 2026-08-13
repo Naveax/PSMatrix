@@ -17,21 +17,36 @@ class ReleaseClosureReadinessError(RuntimeError):
 _READINESS_SUMMARY_VERIFIER_PATH = Path(__file__).with_name(
     "verify_production_readiness_summary.py"
 )
+_FINAL_LOCK_LIVE_VERIFIER_PATH = Path(__file__).with_name(
+    "verify_final_lock_live_repository_authority.py"
+)
+_FINAL_LOCK_CONTRACT_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "ga-packs"
+    / "03-authoritative-windows"
+    / "final-release-lock-signing-control-contract.json"
+)
 
 
-def _load_readiness_summary_verifier():
-    spec = importlib.util.spec_from_file_location(
-        "psmatrix_release_closure_readiness_summary_authority",
-        _READINESS_SUMMARY_VERIFIER_PATH,
-    )
+def _load_module(path: Path, name: str, label: str):
+    spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
-        raise RuntimeError("unable to load canonical Production readiness summary verifier")
+        raise RuntimeError(f"unable to load {label}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-_READINESS_SUMMARY_VERIFIER = _load_readiness_summary_verifier()
+_READINESS_SUMMARY_VERIFIER = _load_module(
+    _READINESS_SUMMARY_VERIFIER_PATH,
+    "psmatrix_release_closure_readiness_summary_authority",
+    "canonical Production readiness summary verifier",
+)
+_FINAL_LOCK_LIVE_VERIFIER = _load_module(
+    _FINAL_LOCK_LIVE_VERIFIER_PATH,
+    "psmatrix_release_closure_final_lock_live_authority",
+    "canonical final-lock live repository authority verifier",
+)
 EXPECTED_REPOSITORY = _READINESS_SUMMARY_VERIFIER.EXPECTED_REPOSITORY
 EXPECTED_READINESS_WORKFLOW = _READINESS_SUMMARY_VERIFIER.EXPECTED_WORKFLOW
 EXPECTED_READINESS_REF = _READINESS_SUMMARY_VERIFIER.EXPECTED_REF
@@ -71,14 +86,55 @@ def _readiness_provenance(readiness: dict[str, Any]) -> tuple[int, int]:
     return run_id, artifact_id
 
 
+def _verify_final_lock_live_authority(
+    lock: dict[str, Any],
+    gh: str = "gh",
+) -> dict[str, Any]:
+    contract = _read(
+        _FINAL_LOCK_CONTRACT_PATH,
+        "final release lock/signing control contract",
+    )
+    try:
+        value = _FINAL_LOCK_LIVE_VERIFIER.verify_receipt_live_authority(
+            lock,
+            contract,
+            gh=gh,
+            repository=EXPECTED_REPOSITORY,
+        )
+    except _FINAL_LOCK_LIVE_VERIFIER.FinalLockLiveAuthorityError as exc:
+        raise ReleaseClosureReadinessError(
+            "final-lock live repository authority re-verification failed"
+        ) from exc
+    if (
+        not isinstance(value, dict)
+        or value.get("status") != "PASS"
+        or value.get("self_describing_receipt_provenance_verified") is not True
+        or value.get("live_repository_authority_verified") is not True
+        or value.get("repository_target_content_verified") is not True
+        or value.get("repository_public_key_bytes_verified") is not True
+        or value.get("release_signing_executed") is not False
+        or value.get("ga_eligible") is not False
+        or value.get("historical_input_ledger_execution_reverified") is not False
+        or value.get("historical_review_execution_reverified") is not False
+        or value.get("historical_promotion_execution_reverified") is not False
+    ):
+        raise ReleaseClosureReadinessError(
+            "final-lock live repository authority receipt is incomplete or overclaims historical freshness"
+        )
+    return value
+
+
 def build(
     readiness: dict[str, Any],
     lock: dict[str, Any],
     content_closure: dict[str, Any],
     evaluator: dict[str, Any],
     attestation: dict[str, Any],
+    *,
+    gh: str = "gh",
 ) -> dict[str, Any]:
     run_id, artifact_id = _readiness_provenance(readiness)
+    final_lock_live = _verify_final_lock_live_authority(lock, gh)
     checks = {
         "production_readiness": True,
         "final_lock_content": lock.get("schema") == 1
@@ -87,7 +143,8 @@ def build(
         and lock.get("status") == "PASS"
         and lock.get("repository_target_content_verified") is True
         and lock.get("release_signing_executed") is False
-        and lock.get("ga_eligible") is False,
+        and lock.get("ga_eligible") is False
+        and final_lock_live.get("live_repository_authority_verified") is True,
         "final_evidence_content": content_closure.get("schema") == 1
         and content_closure.get("kind") == "psmatrix.final-ga-evidence-content-closure"
         and content_closure.get("version") == "2.0.0"
@@ -156,6 +213,10 @@ def build(
         "preconditions_passed": 5,
         "preconditions": checks,
         "production_readiness_verified": True,
+        "final_lock_live_repository_authority_verified": True,
+        "final_lock_historical_input_ledger_execution_reverified": False,
+        "final_lock_historical_review_execution_reverified": False,
+        "final_lock_historical_promotion_execution_reverified": False,
         "content_verified_gate_count": 11,
         "final_ga_evaluator_run_verified": True,
         "final_ga_attestation_verified": True,
@@ -295,6 +356,7 @@ def main() -> int:
     parser.add_argument("--content-closure", type=Path, required=True)
     parser.add_argument("--evaluator-verification", type=Path, required=True)
     parser.add_argument("--attestation-verification", type=Path, required=True)
+    parser.add_argument("--gh", default="gh")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
@@ -304,10 +366,12 @@ def main() -> int:
             _read(args.content_closure, "final GA evidence content closure"),
             _read(args.evaluator_verification, "final GA evaluator verification"),
             _read(args.attestation_verification, "final GA attestation verification"),
+            gh=args.gh,
         )
         _write_release_closure_readiness_receipt(args.output, value)
         print("release_closure_readiness=READY_FOR_RELEASE_CLOSURE")
         print("production_readiness_verified=true")
+        print("final_lock_live_repository_authority_verified=true")
         print("content_verified_gate_count=11")
         print("final_ga_attestation_verified=true")
         print("ga_eligible=true")
