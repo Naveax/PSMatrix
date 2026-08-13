@@ -29,6 +29,10 @@ def verify(ledger: dict[str, Any], contract: dict[str, Any], lock: dict[str, Any
         pattern = SHA40 if name == "lock_control_repository_commit" else SHA256
         if not isinstance(value, str) or pattern.fullmatch(value) is None:
             raise FinalLockContentError(f"invalid ledger field: {name}")
+    for name in ("review_run_id", "promotion_run_id"):
+        value = ledger.get(name)
+        if type(value) is not int or value <= 0:
+            raise FinalLockContentError(f"invalid ledger field: {name}")
     if lock.get("schema") != 1 or lock.get("kind") != "psmatrix.windows-authority-final-release-staging-lock" or lock.get("version") != "2.0.0":
         raise FinalLockContentError("active lock identity mismatch")
     final_commit = contract.get("final_release_commit")
@@ -42,8 +46,8 @@ def verify(ledger: dict[str, Any], contract: dict[str, Any], lock: dict[str, Any
     expected = {
         "reviewed_draft_sha256": ledger["reviewed_draft_sha256"],
         "reviewed_public_key_sha256": ledger["reviewed_public_key_sha256"],
-        "review_run_id": str(ledger.get("review_run_id")),
-        "promotion_run_id": str(ledger.get("promotion_run_id")),
+        "review_run_id": str(ledger["review_run_id"]),
+        "promotion_run_id": str(ledger["promotion_run_id"]),
     }
     for name, value in expected.items():
         if str(promotion.get(name) or "") != value:
@@ -70,7 +74,13 @@ def verify(ledger: dict[str, Any], contract: dict[str, Any], lock: dict[str, Any
         "version": "2.0.0",
         "status": "PASS",
         "repository_commit": ledger["lock_control_repository_commit"],
+        "lock_control_repository_commit": ledger["lock_control_repository_commit"],
         "final_release_commit": final_commit,
+        "final_candidate_commit": ledger["final_candidate_commit"],
+        "review_run_id": ledger["review_run_id"],
+        "promotion_run_id": ledger["promotion_run_id"],
+        "reviewed_draft_sha256": ledger["reviewed_draft_sha256"],
+        "reviewed_public_key_sha256": ledger["reviewed_public_key_sha256"],
         "reviewed_draft_digest_bound": True,
         "reviewed_public_key_digest_bound": True,
         "promotion_run_bound": True,
