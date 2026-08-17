@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -151,17 +152,26 @@ def _reject_symlink_components(path: Path, label: str) -> None:
             raise FinalReleaseClosureError(f"{label} may not traverse a symlink component")
 
 
-def _read(path: Path, label: str) -> dict[str, Any]:
+def _read_json_with_provenance(
+    path: Path,
+    label: str,
+) -> tuple[dict[str, Any], str, int]:
     _reject_symlink_components(path, label)
     resolved = path.expanduser().resolve()
     if not resolved.is_file():
         raise FinalReleaseClosureError(f"{label} is missing or unsafe")
     try:
-        value = json.loads(resolved.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
+        data = resolved.read_bytes()
+        value = json.loads(data.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise FinalReleaseClosureError(f"{label} JSON is invalid") from exc
     if not isinstance(value, dict):
         raise FinalReleaseClosureError(f"{label} root must be object")
+    return value, hashlib.sha256(data).hexdigest(), len(data)
+
+
+def _read(path: Path, label: str) -> dict[str, Any]:
+    value, _, _ = _read_json_with_provenance(path, label)
     return value
 
 
@@ -171,6 +181,8 @@ def _reverify_release_closure_readiness(
     content_closure: dict[str, Any] | None,
     evaluator_verification: dict[str, Any] | None,
     attestation_verification: dict[str, Any] | None,
+    content_closure_file_sha256: str | None,
+    content_closure_file_size: int | None,
 ) -> dict[str, Any]:
     inputs = (
         production_readiness_verification,
@@ -185,7 +197,11 @@ def _reverify_release_closure_readiness(
         )
     builder = _RELEASE_CLOSURE_BUILDER
     try:
-        fresh = builder.build(*inputs)
+        fresh = builder.build(
+            *inputs,
+            content_closure_file_sha256=content_closure_file_sha256,
+            content_closure_file_size=content_closure_file_size,
+        )
     except (
         OSError,
         RuntimeError,
@@ -609,6 +625,8 @@ def verify(
     production_readiness_verification: dict[str, Any] | None = None,
     final_lock_verification: dict[str, Any] | None = None,
     content_closure: dict[str, Any] | None = None,
+    content_closure_file_sha256: str | None = None,
+    content_closure_file_size: int | None = None,
     evaluator_verification: dict[str, Any] | None = None,
     attestation_verification: dict[str, Any] | None = None,
     gh: str = "gh",
@@ -619,6 +637,8 @@ def verify(
         content_closure,
         evaluator_verification,
         attestation_verification,
+        content_closure_file_sha256,
+        content_closure_file_size,
     )
     if fresh_release_closure != release_closure:
         raise FinalReleaseClosureError(
@@ -749,6 +769,14 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
+        (
+            content_closure,
+            content_closure_file_sha256,
+            content_closure_file_size,
+        ) = _read_json_with_provenance(
+            args.content_closure,
+            "final GA evidence content closure",
+        )
         value = verify(
             _read(args.release_closure, "release-closure readiness"),
             _read(args.immutable_release_verification, "immutable release verification"),
@@ -771,10 +799,9 @@ def main() -> int:
                 args.final_lock_verification,
                 "final release lock verification",
             ),
-            content_closure=_read(
-                args.content_closure,
-                "final GA evidence content closure",
-            ),
+            content_closure=content_closure,
+            content_closure_file_sha256=content_closure_file_sha256,
+            content_closure_file_size=content_closure_file_size,
             evaluator_verification=_read(
                 args.evaluator_verification,
                 "final GA evaluator verification",

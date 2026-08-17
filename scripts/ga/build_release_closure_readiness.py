@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
+import re
 import stat
 import sys
 from pathlib import Path
@@ -26,6 +28,10 @@ _FINAL_LOCK_CONTRACT_PATH = (
     / "03-authoritative-windows"
     / "final-release-lock-signing-control-contract.json"
 )
+_CONTENT_CLOSURE_REVERIFICATION_KIND = (
+    "psmatrix.final-ga-evidence-content-closure-verification"
+)
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _load_module(path: Path, name: str, label: str):
@@ -124,6 +130,90 @@ def _verify_final_lock_live_authority(
     return value
 
 
+def _canonical_json_sha256(value: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _verify_content_closure_provenance(
+    content_closure: dict[str, Any],
+    evaluator: dict[str, Any],
+    content_closure_file_sha256: str,
+    content_closure_file_size: int,
+) -> dict[str, Any]:
+    if (
+        not isinstance(content_closure_file_sha256, str)
+        or _SHA256.fullmatch(content_closure_file_sha256) is None
+        or type(content_closure_file_size) is not int
+        or content_closure_file_size <= 0
+    ):
+        raise ReleaseClosureReadinessError(
+            "final GA evidence content closure byte provenance is invalid"
+        )
+    if evaluator.get("content_closure_reverification_required") is not True:
+        raise ReleaseClosureReadinessError(
+            "final GA evaluator verification does not require canonical content-closure re-verification"
+        )
+    if (
+        evaluator.get("content_closure_reverification_kind")
+        != _CONTENT_CLOSURE_REVERIFICATION_KIND
+    ):
+        raise ReleaseClosureReadinessError(
+            "final GA evaluator verification content-closure re-verification kind mismatch"
+        )
+    reverification_sha256 = evaluator.get(
+        "content_closure_reverification_file_sha256"
+    )
+    reverification_size = evaluator.get("content_closure_reverification_file_size")
+    if (
+        not isinstance(reverification_sha256, str)
+        or _SHA256.fullmatch(reverification_sha256) is None
+        or type(reverification_size) is not int
+        or reverification_size <= 0
+    ):
+        raise ReleaseClosureReadinessError(
+            "final GA evaluator verification content-closure re-verification byte provenance is invalid"
+        )
+    if evaluator.get("content_closure_repository_owned_rederivation") is not True:
+        raise ReleaseClosureReadinessError(
+            "final GA evaluator verification lacks repository-owned content-closure rederivation"
+        )
+    if evaluator.get("content_closure_exactly_recomputed") is not True:
+        raise ReleaseClosureReadinessError(
+            "final GA evaluator verification lacks exact content-closure recomputation"
+        )
+    if evaluator.get("content_closure_file_sha256") != content_closure_file_sha256:
+        raise ReleaseClosureReadinessError(
+            "supplied final GA evidence content closure bytes differ from evaluator verification provenance"
+        )
+    if evaluator.get("content_closure_file_size") != content_closure_file_size:
+        raise ReleaseClosureReadinessError(
+            "supplied final GA evidence content closure size differs from evaluator verification provenance"
+        )
+    canonical_sha256 = _canonical_json_sha256(content_closure)
+    if evaluator.get("content_closure_canonical_sha256") != canonical_sha256:
+        raise ReleaseClosureReadinessError(
+            "supplied final GA evidence content closure canonical digest differs from evaluator verification provenance"
+        )
+    return {
+        "content_closure_reverification_required": True,
+        "content_closure_file_sha256": content_closure_file_sha256,
+        "content_closure_file_size": content_closure_file_size,
+        "content_closure_canonical_sha256": canonical_sha256,
+        "content_closure_reverification_kind": _CONTENT_CLOSURE_REVERIFICATION_KIND,
+        "content_closure_reverification_file_sha256": reverification_sha256,
+        "content_closure_reverification_file_size": reverification_size,
+        "content_closure_repository_owned_rederivation": True,
+        "content_closure_exactly_recomputed": True,
+    }
+
+
 def build(
     readiness: dict[str, Any],
     lock: dict[str, Any],
@@ -131,10 +221,18 @@ def build(
     evaluator: dict[str, Any],
     attestation: dict[str, Any],
     *,
+    content_closure_file_sha256: str,
+    content_closure_file_size: int,
     gh: str = "gh",
 ) -> dict[str, Any]:
     run_id, artifact_id = _readiness_provenance(readiness)
     final_lock_live = _verify_final_lock_live_authority(lock, gh)
+    content_closure_provenance = _verify_content_closure_provenance(
+        content_closure,
+        evaluator,
+        content_closure_file_sha256,
+        content_closure_file_size,
+    )
     checks = {
         "production_readiness": True,
         "final_lock_content": lock.get("schema") == 1
@@ -218,6 +316,7 @@ def build(
         "final_lock_historical_review_execution_reverified": False,
         "final_lock_historical_promotion_execution_reverified": False,
         "content_verified_gate_count": 11,
+        **content_closure_provenance,
         "final_ga_evaluator_run_verified": True,
         "final_ga_attestation_verified": True,
         "ga_eligible": True,
@@ -249,17 +348,26 @@ def _reject_symlink_components(path: Path, label: str) -> None:
 
 
 def _read(path: Path, label: str) -> dict[str, Any]:
+    value, _, _ = _read_json_with_provenance(path, label)
+    return value
+
+
+def _read_json_with_provenance(
+    path: Path,
+    label: str,
+) -> tuple[dict[str, Any], str, int]:
     _reject_symlink_components(path, label)
     resolved = path.expanduser().resolve()
     if not resolved.is_file():
         raise ReleaseClosureReadinessError(f"{label} is missing or unsafe")
     try:
-        value = json.loads(resolved.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
+        data = resolved.read_bytes()
+        value = json.loads(data.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ReleaseClosureReadinessError(f"{label} JSON is invalid") from exc
     if not isinstance(value, dict):
         raise ReleaseClosureReadinessError(f"{label} root must be object")
-    return value
+    return value, hashlib.sha256(data).hexdigest(), len(data)
 
 
 def _write_release_closure_readiness_receipt(
@@ -360,12 +468,22 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
+        (
+            content_closure,
+            content_closure_file_sha256,
+            content_closure_file_size,
+        ) = _read_json_with_provenance(
+            args.content_closure,
+            "final GA evidence content closure",
+        )
         value = build(
             _read(args.readiness_verification, "production readiness verification"),
             _read(args.lock_verification, "final release lock verification"),
-            _read(args.content_closure, "final GA evidence content closure"),
+            content_closure,
             _read(args.evaluator_verification, "final GA evaluator verification"),
             _read(args.attestation_verification, "final GA attestation verification"),
+            content_closure_file_sha256=content_closure_file_sha256,
+            content_closure_file_size=content_closure_file_size,
             gh=args.gh,
         )
         _write_release_closure_readiness_receipt(args.output, value)
@@ -373,6 +491,7 @@ def main() -> int:
         print("production_readiness_verified=true")
         print("final_lock_live_repository_authority_verified=true")
         print("content_verified_gate_count=11")
+        print("content_closure_reverification_bound=true")
         print("final_ga_attestation_verified=true")
         print("ga_eligible=true")
         print("release_closed=false")
