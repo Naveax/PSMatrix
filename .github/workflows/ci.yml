@@ -39,11 +39,79 @@ jobs:
           Write-Host 'runner_assignment=PASS'
           Write-Host "runner_name=$env:RUNNER_NAME"
 
-      - name: Check out exact revision
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
-        with:
-          fetch-depth: 1
-          persist-credentials: false
+      - name: Check out exact revision with native git
+        shell: pwsh
+        env:
+          PSMATRIX_CI_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected = ([string]$env:GITHUB_SHA).ToLowerInvariant()
+          $eventRef = [string]$env:GITHUB_REF
+          if ($expected -cnotmatch '^[0-9a-f]{40}$') {
+              throw 'GITHUB_SHA is not an exact lowercase 40-hex commit.'
+          }
+          if ([string]::IsNullOrWhiteSpace($eventRef) -or $eventRef -notmatch '^refs/(heads|pull)/') {
+              throw "Unsupported CI event ref: $eventRef"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_CI_TOKEN)) {
+              throw 'GitHub token is unavailable for exact native checkout.'
+          }
+          Push-Location $env:GITHUB_WORKSPACE
+          try {
+              Get-ChildItem -Force | Remove-Item -Recurse -Force -ErrorAction Stop
+              & git init .
+              if ($LASTEXITCODE -ne 0) {
+                  throw "git init failed: $LASTEXITCODE"
+              }
+              & git remote add origin "https://github.com/$env:GITHUB_REPOSITORY.git"
+              if ($LASTEXITCODE -ne 0) {
+                  throw "git remote add failed: $LASTEXITCODE"
+              }
+              $basic = [Convert]::ToBase64String(
+                  [Text.Encoding]::UTF8.GetBytes("x-access-token:$env:PSMATRIX_CI_TOKEN")
+              )
+              $env:GIT_CONFIG_COUNT = '1'
+              $env:GIT_CONFIG_KEY_0 = 'http.https://github.com/.extraheader'
+              $env:GIT_CONFIG_VALUE_0 = "AUTHORIZATION: basic $basic"
+              try {
+                  & git fetch --no-tags --prune origin '+refs/heads/*:refs/remotes/origin/*'
+                  if ($LASTEXITCODE -ne 0) {
+                      throw "Frozen branch-object fetch failed: $LASTEXITCODE"
+                  }
+                  & git fetch --no-tags origin $eventRef
+                  if ($LASTEXITCODE -ne 0) {
+                      throw "Exact event-ref fetch failed: $LASTEXITCODE"
+                  }
+              }
+              finally {
+                  Remove-Item Env:GIT_CONFIG_COUNT -ErrorAction SilentlyContinue
+                  Remove-Item Env:GIT_CONFIG_KEY_0 -ErrorAction SilentlyContinue
+                  Remove-Item Env:GIT_CONFIG_VALUE_0 -ErrorAction SilentlyContinue
+                  $basic = $null
+              }
+              $fetched = (git rev-parse FETCH_HEAD).Trim().ToLowerInvariant()
+              if ($LASTEXITCODE -ne 0 -or $fetched -cnotmatch '^[0-9a-f]{40}$') {
+                  throw 'Unable to resolve fetched event revision.'
+              }
+              if ($fetched -ne $expected) {
+                  throw "Fetched event revision $fetched does not match GITHUB_SHA $expected."
+              }
+              & git checkout --detach --force $expected
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Exact detached checkout failed: $LASTEXITCODE"
+              }
+              & git clean -ffdx
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Unable to clean exact native checkout: $LASTEXITCODE"
+              }
+              if (-not [string]::IsNullOrWhiteSpace((git status --porcelain --untracked-files=all))) {
+                  throw 'Native CI checkout is not clean.'
+              }
+              Write-Host "native_checkout=PASS event_ref=$eventRef head=$expected frozen_branch_objects=true"
+          }
+          finally {
+              Pop-Location
+          }
 
       - name: Verify exact clean checkout and Python runtime
         shell: pwsh
@@ -207,6 +275,7 @@ jobs:
         shell: pwsh
         run: |
           Write-Host 'ci_policy=trusted-self-hosted-pr-and-main-platform-neutral-core-gate'
+          Write-Host 'ci_checkout_policy=native-git-exact-event-ref-all-heads-no-codeload-action'
           Write-Host 'ci_input_policy=tracked-files-only-explicit-workspace-clean'
           Write-Host 'release_candidate_runtime_policy=rc4-modules-deferred-on-non-rc4-source'
           Write-Host 'heavy_integration_policy=manual-full-workflow'
@@ -233,11 +302,79 @@ jobs:
           }
           Write-Host 'matrix_runner_assignment=PASS'
 
-      - name: Check out exact revision
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
-        with:
-          fetch-depth: 1
-          persist-credentials: false
+      - name: Check out exact revision with native git
+        shell: pwsh
+        env:
+          PSMATRIX_CI_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected = ([string]$env:GITHUB_SHA).ToLowerInvariant()
+          $eventRef = [string]$env:GITHUB_REF
+          if ($expected -cnotmatch '^[0-9a-f]{40}$') {
+              throw 'GITHUB_SHA is not an exact lowercase 40-hex commit.'
+          }
+          if ([string]::IsNullOrWhiteSpace($eventRef) -or $eventRef -notmatch '^refs/(heads|pull)/') {
+              throw "Unsupported CI event ref: $eventRef"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_CI_TOKEN)) {
+              throw 'GitHub token is unavailable for exact native checkout.'
+          }
+          Push-Location $env:GITHUB_WORKSPACE
+          try {
+              Get-ChildItem -Force | Remove-Item -Recurse -Force -ErrorAction Stop
+              & git init .
+              if ($LASTEXITCODE -ne 0) {
+                  throw "git init failed: $LASTEXITCODE"
+              }
+              & git remote add origin "https://github.com/$env:GITHUB_REPOSITORY.git"
+              if ($LASTEXITCODE -ne 0) {
+                  throw "git remote add failed: $LASTEXITCODE"
+              }
+              $basic = [Convert]::ToBase64String(
+                  [Text.Encoding]::UTF8.GetBytes("x-access-token:$env:PSMATRIX_CI_TOKEN")
+              )
+              $env:GIT_CONFIG_COUNT = '1'
+              $env:GIT_CONFIG_KEY_0 = 'http.https://github.com/.extraheader'
+              $env:GIT_CONFIG_VALUE_0 = "AUTHORIZATION: basic $basic"
+              try {
+                  & git fetch --no-tags --prune origin '+refs/heads/*:refs/remotes/origin/*'
+                  if ($LASTEXITCODE -ne 0) {
+                      throw "Frozen branch-object fetch failed: $LASTEXITCODE"
+                  }
+                  & git fetch --no-tags origin $eventRef
+                  if ($LASTEXITCODE -ne 0) {
+                      throw "Exact event-ref fetch failed: $LASTEXITCODE"
+                  }
+              }
+              finally {
+                  Remove-Item Env:GIT_CONFIG_COUNT -ErrorAction SilentlyContinue
+                  Remove-Item Env:GIT_CONFIG_KEY_0 -ErrorAction SilentlyContinue
+                  Remove-Item Env:GIT_CONFIG_VALUE_0 -ErrorAction SilentlyContinue
+                  $basic = $null
+              }
+              $fetched = (git rev-parse FETCH_HEAD).Trim().ToLowerInvariant()
+              if ($LASTEXITCODE -ne 0 -or $fetched -cnotmatch '^[0-9a-f]{40}$') {
+                  throw 'Unable to resolve fetched event revision.'
+              }
+              if ($fetched -ne $expected) {
+                  throw "Fetched event revision $fetched does not match GITHUB_SHA $expected."
+              }
+              & git checkout --detach --force $expected
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Exact detached checkout failed: $LASTEXITCODE"
+              }
+              & git clean -ffdx
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Unable to clean exact native checkout: $LASTEXITCODE"
+              }
+              if (-not [string]::IsNullOrWhiteSpace((git status --porcelain --untracked-files=all))) {
+                  throw 'Native CI checkout is not clean.'
+              }
+              Write-Host "native_checkout=PASS event_ref=$eventRef head=$expected frozen_branch_objects=true"
+          }
+          finally {
+              Pop-Location
+          }
 
       - name: Materialize and diagnose canonical matrix contract
         shell: pwsh

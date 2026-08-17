@@ -48,10 +48,13 @@ class WindowsAuthorityFinalWindowsEvidenceRebindTests(unittest.TestCase):
         self.assertEqual(final["protected_signing_workflow"], "production-ga-windows-authority-final-release-sign-from-lock")
         self.assertEqual(final["protected_signing_artifact"], "psmatrix-2.0.0-protected-release")
         equivalence = value["source_equivalence"]
-        self.assertTrue(equivalence["rc4_must_be_ancestor_of_final"])
+        self.assertEqual(equivalence["comparison_mode"], "independent-frozen-anchors")
+        self.assertTrue(equivalence["frozen_release_anchors_must_exist"])
+        self.assertFalse(equivalence["rc4_must_be_ancestor_of_final"])
         self.assertEqual(equivalence["runtime_changed_paths"], ["src/psmatrix/__init__.py"])
         self.assertEqual(equivalence["authoritative_fixture_changed_paths"], [])
         self.assertTrue(equivalence["normalized_init_must_match"])
+        self.assertTrue(equivalence["normalized_pyproject_must_match"])
         windows = value["windows_authority"]
         self.assertEqual(windows["protected_environment"], "production-ga-windows-lab")
         self.assertEqual(windows["private_key_secret"], "PSMATRIX_WINDOWS_LAB_PRIVATE_KEY")
@@ -72,7 +75,9 @@ class WindowsAuthorityFinalWindowsEvidenceRebindTests(unittest.TestCase):
         result = self.builder._validate_source_equivalence(ROOT, ROOT, self.contract)
         self.assertEqual(result["rc4_release_commit"], RC4_RELEASE_COMMIT)
         self.assertEqual(result["final_release_commit"], FINAL_RELEASE_COMMIT)
-        self.assertTrue(result["rc4_is_ancestor_of_final"])
+        self.assertEqual(result["comparison_mode"], "independent-frozen-anchors")
+        self.assertTrue(result["frozen_release_anchors_available"])
+        self.assertFalse(result["rc4_is_ancestor_of_final"])
         self.assertEqual(result["runtime_changed_paths"], ["src/psmatrix/__init__.py"])
         self.assertEqual(result["authoritative_fixture_changed_paths"], [])
         self.assertTrue(result["initializer_normalized_equal"])
@@ -217,6 +222,7 @@ class WindowsAuthorityFinalWindowsEvidenceRebindTests(unittest.TestCase):
             "final_windows_rebind_source_contract=PASS",
             "rebind_control_changed_paths=5",
             "runtime_source_changes=0",
+            "rc4_final_source_equivalence=PASS comparison_mode=independent-frozen-anchors",
             "production_rebind_executed=false",
             "final_ga_evaluator_invoked=false",
             "ga_eligible=false",

@@ -96,7 +96,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Verify active final lock, exact source lineage, and RC4 control ancestry
+      - name: Verify active release locks and frozen source equivalence
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -123,10 +123,18 @@ jobs:
           if ([string]$finalLock.version -ne '2.0.0' -or [string]$finalLock.release_commit -ne $env:FINAL_RELEASE_COMMIT) { throw 'Active final lock identity mismatch.' }
           $rc4Lock = Get-Content (Join-Path $rc4Control 'ga-packs\03-authoritative-windows\rc4-release-lock.json') -Raw | ConvertFrom-Json
           if ([string]$rc4Lock.version -ne '2.0.0rc4' -or [string]$rc4Lock.release_commit -ne $env:RC4_RELEASE_COMMIT) { throw 'Active RC4 lock identity mismatch.' }
-          git -C $finalSource merge-base --is-ancestor $env:RC4_RELEASE_COMMIT $env:FINAL_RELEASE_COMMIT
-          if ($LASTEXITCODE -ne 0) { throw 'RC4 release source is not an ancestor of final release source.' }
+          $rebindContract = Get-Content (Join-Path $control 'ga-packs\03-authoritative-windows\final-windows-evidence-rebind-control-contract.json') -Raw | ConvertFrom-Json
+          if ([string]$rebindContract.source_equivalence.comparison_mode -ne 'independent-frozen-anchors' -or [bool]$rebindContract.source_equivalence.frozen_release_anchors_must_exist -ne $true -or [bool]$rebindContract.source_equivalence.rc4_must_be_ancestor_of_final -ne $false) { throw 'Final Windows rebind frozen-source topology contract mismatch.' }
+          foreach ($sha in @($env:RC4_RELEASE_COMMIT,$env:FINAL_RELEASE_COMMIT)) {
+              git -C $finalSource cat-file -e "$sha^{commit}"
+              if ($LASTEXITCODE -ne 0) { throw "Frozen release source commit is unavailable: $sha" }
+          }
+          $runtimeChanges = @((git -C $finalSource diff --name-only "$env:RC4_RELEASE_COMMIT..$env:FINAL_RELEASE_COMMIT" -- src/psmatrix) | ForEach-Object { $_.Trim().Replace('\','/') } | Where-Object { $_ })
+          if ($runtimeChanges.Count -ne 1 -or $runtimeChanges[0] -ne 'src/psmatrix/__init__.py') { throw "RC4/final runtime-source equivalence changed: $($runtimeChanges -join ',')" }
+          $fixtureChanges = @((git -C $finalSource diff --name-only "$env:RC4_RELEASE_COMMIT..$env:FINAL_RELEASE_COMMIT" -- fixtures/windows-authoritative) | Where-Object { $_ })
+          if ($fixtureChanges.Count -ne 0) { throw "Authoritative Windows fixtures changed between RC4 and final: $($fixtureChanges -join ',')" }
           Write-Host 'active_release_locks=PASS'
-          Write-Host 'rc4_final_source_lineage=PASS'
+          Write-Host 'rc4_final_source_equivalence=PASS comparison_mode=independent-frozen-anchors'
 
       - name: Validate exact upstream run and artifact provenance before download
         shell: pwsh

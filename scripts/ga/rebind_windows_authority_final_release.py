@@ -62,6 +62,15 @@ def _contract() -> dict[str, Any]:
     for label, supplied in (("rc4 release commit", rc4.get("release_commit")), ("final release commit", final.get("release_commit"))):
         if not _SHA40.fullmatch(str(supplied or "")):
             raise RuntimeError(f"Frozen {label} is invalid")
+    equivalence = value.get("source_equivalence") if isinstance(value.get("source_equivalence"), dict) else {}
+    if equivalence.get("comparison_mode") != "independent-frozen-anchors":
+        raise RuntimeError("Final rebind source-equivalence mode mismatch")
+    if equivalence.get("frozen_release_anchors_must_exist") is not True:
+        raise RuntimeError("Final rebind must require both frozen release anchors")
+    if equivalence.get("rc4_must_be_ancestor_of_final") is not False:
+        raise RuntimeError("Final rebind must not claim ancestry between independent frozen release anchors")
+    if equivalence.get("normalized_init_must_match") is not True or equivalence.get("normalized_pyproject_must_match") is not True:
+        raise RuntimeError("Final rebind normalized source-equivalence requirements are incomplete")
     windows = value.get("windows_authority") if isinstance(value.get("windows_authority"), dict) else {}
     if windows.get("reuse_existing_campaign_records") is not True:
         raise RuntimeError("Final rebind must explicitly reuse the verified campaign records")
@@ -112,15 +121,16 @@ def _normalize_version_line(text: str, version: str, *, python: bool) -> str:
 def _validate_source_equivalence(rc4_source: Path, final_source: Path, contract: dict[str, Any]) -> dict[str, Any]:
     rc4_commit = str(contract["rc4_release"]["release_commit"])
     final_commit = str(contract["final_release"]["release_commit"])
-    ancestor = subprocess.run(
-        ["git", "-C", str(final_source), "merge-base", "--is-ancestor", rc4_commit, final_commit],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
-    )
-    if ancestor.returncode != 0:
-        raise RuntimeError("Frozen RC4 release commit is not an ancestor of the final release commit")
+    equivalence = contract["source_equivalence"]
+    if equivalence.get("comparison_mode") != "independent-frozen-anchors":
+        raise RuntimeError("Frozen release source-equivalence mode is not independent-frozen-anchors")
+    if equivalence.get("frozen_release_anchors_must_exist") is not True or equivalence.get("rc4_must_be_ancestor_of_final") is not False:
+        raise RuntimeError("Frozen release anchor topology contract mismatch")
+    for label, commit in (("RC4", rc4_commit), ("final", final_commit)):
+        try:
+            _git(final_source, "cat-file", "-e", f"{commit}^{{commit}}")
+        except RuntimeError as exc:
+            raise RuntimeError(f"Frozen {label} release commit is unavailable in the source object store: {commit}") from exc
 
     runtime_changed = sorted(
         line.strip().replace("\\", "/")
@@ -152,7 +162,9 @@ def _validate_source_equivalence(rc4_source: Path, final_source: Path, contract:
     return {
         "rc4_release_commit": rc4_commit,
         "final_release_commit": final_commit,
-        "rc4_is_ancestor_of_final": True,
+        "comparison_mode": "independent-frozen-anchors",
+        "frozen_release_anchors_available": True,
+        "rc4_is_ancestor_of_final": False,
         "runtime_changed_paths": runtime_changed,
         "authoritative_fixture_changed_paths": fixture_changed,
         "initializer_normalized_equal": True,
