@@ -57,6 +57,11 @@ jobs:
           python scripts/ga/verify_repository_workflow_action_policy.py
           --root .
 
+      - name: Run verification maintenance contract tests
+        run: >-
+          python -m unittest -v
+          tests.test_verification_hardening_maintenance
+
       - name: Resolve exact maintenance base and candidate
         shell: bash
         run: |
