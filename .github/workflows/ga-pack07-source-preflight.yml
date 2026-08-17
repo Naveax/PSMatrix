@@ -6,6 +6,18 @@ name: production-ga-pack07-source-preflight
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/ga-pack07-source-preflight.yml"
+      - ".github/workflows/ga-final-closure.yml"
+      - "ga-packs/07-final-ga/**"
+      - "scripts/ga/final_ga_closure.py"
+      - "scripts/ga/final_ga_closure_legacy.py"
+      - "src/psmatrix/ga.py"
+      - "src/psmatrix/signing.py"
+      - "tests/test_ga.py"
+      - "tests/test_final_ga_closure_contract.py"
   push:
     branches: [main]
     paths:
@@ -13,6 +25,7 @@ on:
       - ".github/workflows/ga-final-closure.yml"
       - "ga-packs/07-final-ga/**"
       - "scripts/ga/final_ga_closure.py"
+      - "scripts/ga/final_ga_closure_legacy.py"
       - "src/psmatrix/ga.py"
       - "src/psmatrix/signing.py"
       - "tests/test_ga.py"
@@ -97,6 +110,7 @@ jobs:
           {
             python -m py_compile \
               scripts/ga/final_ga_closure.py \
+              scripts/ga/final_ga_closure_legacy.py \
               tests/test_final_ga_closure_contract.py
             echo "py_compile=PASS"
           } 2>&1 | tee "$PSMATRIX_PACK07_EVIDENCE/py-compile.log"
