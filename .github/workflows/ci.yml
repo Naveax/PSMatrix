@@ -49,6 +49,10 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          & git clean -ffdx
+          if ($LASTEXITCODE -ne 0) {
+              throw "Unable to clean trusted CI workspace: $LASTEXITCODE"
+          }
           $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
           if ($LASTEXITCODE -ne 0 -or $head -cnotmatch '^[0-9a-f]{40}$') {
               throw 'Unable to resolve exact checkout head.'
@@ -56,8 +60,8 @@ jobs:
           if ($head -ne $env:GITHUB_SHA.ToLowerInvariant()) {
               throw "Checkout head $head does not match GITHUB_SHA $env:GITHUB_SHA."
           }
-          if (-not [string]::IsNullOrWhiteSpace((git status --porcelain))) {
-              throw 'CI checkout is not clean.'
+          if (-not [string]::IsNullOrWhiteSpace((git status --porcelain --untracked-files=all))) {
+              throw 'CI checkout is not clean after explicit git clean -ffdx.'
           }
           $python = (python -c "import platform; print(platform.python_version())").Trim()
           if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($python)) {
@@ -65,53 +69,79 @@ jobs:
           }
           Write-Host "control_head=$head"
           Write-Host "python_version=$python"
+          Write-Host 'workspace_clean=PASS'
 
-      - name: Compile Python source and tests
+      - name: Compile tracked Python source and tests
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          & python -m compileall -q src tests
-          if ($LASTEXITCODE -ne 0) {
-              throw "compileall failed: $LASTEXITCODE"
+          $trackedPython = @(
+              git ls-files -- 'src' 'tests' |
+                  Where-Object { $_ -match '^(src|tests)/.+\.py$' } |
+                  Sort-Object -Unique
+          )
+          if ($LASTEXITCODE -ne 0 -or $trackedPython.Count -lt 1) {
+              throw 'Unable to enumerate tracked Python source/tests.'
           }
-          Write-Host 'python_compile=PASS'
+          foreach ($relative in $trackedPython) {
+              $path = Join-Path $env:GITHUB_WORKSPACE ($relative -replace '/', [IO.Path]::DirectorySeparatorChar)
+              & python -m py_compile $path
+              if ($LASTEXITCODE -ne 0) {
+                  throw "py_compile failed for tracked file: $relative"
+              }
+          }
+          Write-Host "python_compile=PASS tracked_files=$($trackedPython.Count)"
 
-      - name: Parse repository PowerShell source
+      - name: Parse tracked repository PowerShell source
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $parseFailures = @()
-          $files = @(
-              Get-ChildItem -LiteralPath $env:GITHUB_WORKSPACE -Recurse -File -Filter '*.ps1' |
-                  Where-Object {
-                      $_.FullName -notmatch '[\\/]\.git[\\/]' -and
-                      $_.FullName -notmatch '[\\/]\.venv[\\/]'
-                  }
+          $trackedPowerShell = @(
+              git ls-files |
+                  Where-Object { $_ -match '\.ps1$' } |
+                  Sort-Object -Unique
           )
-          foreach ($file in $files) {
+          if ($LASTEXITCODE -ne 0) {
+              throw 'Unable to enumerate tracked PowerShell source.'
+          }
+          foreach ($relative in $trackedPowerShell) {
+              $path = Join-Path $env:GITHUB_WORKSPACE ($relative -replace '/', [IO.Path]::DirectorySeparatorChar)
               $tokens = $null
               $errors = $null
               [void][System.Management.Automation.Language.Parser]::ParseFile(
-                  $file.FullName,
+                  $path,
                   [ref]$tokens,
                   [ref]$errors
               )
               if ($errors.Count -ne 0) {
                   foreach ($error in $errors) {
-                      $parseFailures += "${($file.FullName)}: $($error.Message)"
+                      $parseFailures += "${relative}: $($error.Message)"
                   }
               }
           }
           if ($parseFailures.Count -ne 0) {
               throw ($parseFailures -join [Environment]::NewLine)
           }
-          Write-Host "powershell_parse=PASS files=$($files.Count)"
+          Write-Host "powershell_parse=PASS tracked_files=$($trackedPowerShell.Count)"
 
-      - name: Run platform-neutral core test modules in isolated processes
+      - name: Run tracked platform-neutral core test modules in isolated processes
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $files = @(Get-ChildItem -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'tests') -File -Filter 'test_*.py' | Sort-Object Name)
+          $trackedTests = @(
+              git ls-files -- 'tests' |
+                  Where-Object { $_ -match '^tests/test_[^/]+\.py$' } |
+                  Sort-Object -Unique
+          )
+          if ($LASTEXITCODE -ne 0 -or $trackedTests.Count -lt 1) {
+              throw 'Unable to enumerate tracked core test modules.'
+          }
+          $files = @(
+              foreach ($relative in $trackedTests) {
+                  Get-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE ($relative -replace '/', [IO.Path]::DirectorySeparatorChar))
+              }
+          )
           $linuxNativeModules = @(
               'test_integration.py'
           )
@@ -157,7 +187,7 @@ jobs:
           if ($packageVersion -eq '2.0.0' -and $releaseCandidateDeferred.Count -lt 1) {
               throw 'Final-version CI expected RC4-only historical runtime modules to be explicitly deferred.'
           }
-          Write-Host "core_tests=PASS modules=$executedModules"
+          Write-Host "core_tests=PASS tracked_modules=$executedModules"
           Write-Host "current_package_version=$packageVersion"
           Write-Host "rc4_release_preflight_deferred_modules=$($releaseCandidateDeferred.Count)"
           Write-Host "manual_linux_modules=$($deferredModules -join ','),test_oci.py::integration-cases"
@@ -177,6 +207,7 @@ jobs:
         shell: pwsh
         run: |
           Write-Host 'ci_policy=trusted-self-hosted-pr-and-main-platform-neutral-core-gate'
+          Write-Host 'ci_input_policy=tracked-files-only-explicit-workspace-clean'
           Write-Host 'release_candidate_runtime_policy=rc4-modules-deferred-on-non-rc4-source'
           Write-Host 'heavy_integration_policy=manual-full-workflow'
           Write-Host 'linux_native_fixture_policy=manual-linux-integration'
