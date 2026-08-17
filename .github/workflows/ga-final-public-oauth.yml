@@ -7,6 +7,10 @@ on:
         description: Successful shared final public-auth live-probe workflow run ID from this exact control head
         required: true
         type: string
+      release_signing_run_id:
+        description: Successful protected final 2.0.0 signing workflow run ID recorded by the shared live report
+        required: true
+        type: string
 
 concurrency:
   group: production-ga-final-public-oauth
@@ -27,6 +31,8 @@ jobs:
       actions: read
     env:
       LIVE_PROBE_RUN_ID: ${{ inputs.live_probe_run_id }}
+      RELEASE_SIGNING_RUN_ID: ${{ inputs.release_signing_run_id }}
+      FINAL_RELEASE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
 
     steps:
       - name: Validate OAuth proof dispatch identity
@@ -34,6 +40,8 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$LIVE_PROBE_RUN_ID" =~ ^[0-9]+$ ]] || { echo 'live_probe_run_id must contain only decimal digits.' >&2; exit 1; }
+          [[ "$RELEASE_SIGNING_RUN_ID" =~ ^[0-9]+$ ]] || { echo 'release_signing_run_id must contain only decimal digits.' >&2; exit 1; }
+          [[ "$LIVE_PROBE_RUN_ID" != "$RELEASE_SIGNING_RUN_ID" ]] || { echo 'live probe and release-signing run IDs must be distinct.' >&2; exit 1; }
           echo 'public_oauth_dispatch_identity=PASS'
 
       - name: Check out exact deployment producer controls
@@ -98,6 +106,15 @@ jobs:
           run-id: ${{ inputs.live_probe_run_id }}
           github-token: ${{ github.token }}
 
+      - name: Download exact protected final release for proof semantics
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-protected-release
+          path: signed-release
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.release_signing_run_id }}
+          github-token: ${{ github.token }}
+
       - name: Validate live report and frozen final-signing provenance before deployment-key access
         shell: bash
         env:
@@ -130,8 +147,8 @@ jobs:
           if len(artifacts)!=1 or artifacts[0].get('name')!='public-auth-live-report.json' or artifacts[0].get('sha256')!=expected:
               raise SystemExit('OAuth proof result does not bind the exact shared live report')
           release_run=str(report.get('release_signing_run_id') or '')
-          if not release_run.isdecimal():
-              raise SystemExit('shared live report release-signing run ID is invalid')
+          if not release_run.isdecimal() or release_run!=os.environ['RELEASE_SIGNING_RUN_ID']:
+              raise SystemExit('shared live report release-signing run ID does not match explicit proof input')
           headers={'Accept':'application/vnd.github+json','Authorization':f'Bearer {os.environ["GH_TOKEN"]}','X-GitHub-Api-Version':'2026-03-10','User-Agent':'psmatrix-final-public-oauth'}
           def fetch(path):
               req=urllib.request.Request(f'https://api.github.com/repos/Naveax/PSMatrix/{path}',headers=headers)
@@ -149,6 +166,73 @@ jobs:
           print(f'public_oauth_pre_secret=PASS live_report_sha256={expected} release_run_id={release_run}')
           PY
           echo "PSMATRIX_OAUTH_UNSIGNED=$output" >> "$GITHUB_ENV"
+
+      - name: Install exact signed release wheel before deployment-key access
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime="$RUNNER_TEMP/psmatrix-final-public-oauth-runtime"
+          wheel_path_file="$RUNNER_TEMP/psmatrix-final-public-oauth-wheel.txt"
+          rm -rf "$runtime"
+          rm -f "$wheel_path_file"
+          mkdir -p "$runtime"
+          PSMATRIX_OAUTH_WHEEL_PATH_FILE="$wheel_path_file" PYTHONPATH=control/src python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from psmatrix.release import verify_release_manifest
+          from psmatrix.util import sha256_file
+
+          release=Path('signed-release')
+          manifest=release/'psmatrix-2.0.0-release.json'
+          public=release/'psmatrix-2.0.0-release-public.pem'
+          status_path=release/'psmatrix-2.0.0-protected-release-signing-status.json'
+          verified=verify_release_manifest(manifest,release,signing_public_key=public)
+          if verified.get('valid') is not True or verified.get('version')!='2.0.0':
+              raise SystemExit('OAuth proof protected release verification failed')
+          status=json.loads(status_path.read_text(encoding='utf-8'))
+          if status.get('release_artifacts_signed') is not True or status.get('version')!='2.0.0' or status.get('release_commit')!=os.environ['FINAL_RELEASE_COMMIT']:
+              raise SystemExit('OAuth proof protected release status is not exact final/signed')
+          manifest_root=json.loads(manifest.read_text(encoding='utf-8'))
+          artifacts=((manifest_root.get('manifest') or {}).get('artifacts') or []) if isinstance(manifest_root,dict) else []
+          wheels=[item for item in artifacts if isinstance(item,dict) and str(item.get('name') or '').endswith('.whl')]
+          if len(wheels)!=1:
+              raise SystemExit(f'OAuth proof expected exactly one signed release wheel; found {len(wheels)}')
+          wheel=wheels[0]
+          path=release/str(wheel.get('name') or '')
+          if not path.is_file() or path.is_symlink():
+              raise SystemExit('OAuth proof signed release wheel is missing or unsafe')
+          digest=sha256_file(path)
+          if int(wheel.get('size') or 0)!=path.stat().st_size or str(wheel.get('sha256') or '').lower()!=digest:
+              raise SystemExit('OAuth proof signed release wheel identity mismatch')
+          result=json.loads((Path(os.environ['PSMATRIX_OAUTH_UNSIGNED'])/'public-oauth-result.json').read_text(encoding='utf-8'))
+          assertions=result.get('assertions') or {}
+          if assertions.get('release_commit')!=os.environ['FINAL_RELEASE_COMMIT'] or assertions.get('release_wheel_sha256')!=digest or assertions.get('release_manifest_sha256')!=sha256_file(manifest):
+              raise SystemExit('OAuth proof result does not bind exact downloaded protected release bytes')
+          Path(os.environ['PSMATRIX_OAUTH_WHEEL_PATH_FILE']).write_text(str(path.resolve())+'\n',encoding='utf-8')
+          print(f'public_oauth_release_pre_secret=PASS wheel={path.name} sha256={digest}')
+          PY
+          wheel_path="$(cat "$wheel_path_file")"
+          [[ -n "$wheel_path" && -f "$wheel_path" ]] || { echo 'OAuth verified release wheel path is missing' >&2; exit 1; }
+          python -m pip install --disable-pip-version-check --no-index --no-deps --target "$runtime" "$wheel_path"
+          PSMATRIX_EXPECTED_RUNTIME_ROOT="$runtime" PYTHONPATH="$runtime" python - <<'PY'
+          import importlib.metadata
+          import os
+          from pathlib import Path
+          import psmatrix
+          import psmatrix.ga
+          import psmatrix.signing
+          root=Path(os.environ['PSMATRIX_EXPECTED_RUNTIME_ROOT']).resolve()
+          for path in (Path(psmatrix.__file__).resolve(),Path(psmatrix.ga.__file__).resolve(),Path(psmatrix.signing.__file__).resolve(),Path(importlib.metadata.distribution('psmatrix').locate_file('')).resolve()):
+              try: path.relative_to(root)
+              except ValueError as exc: raise SystemExit(f'OAuth proof runtime escaped exact wheel target: {path}') from exc
+          if importlib.metadata.version('psmatrix')!='2.0.0':
+              raise SystemExit('OAuth proof exact wheel runtime version mismatch')
+          print('public_oauth_exact_wheel_runtime=PASS version=2.0.0')
+          PY
+          rm -f "$wheel_path_file"
+          echo "PSMATRIX_FINAL_PUBLIC_OAUTH_RUNTIME=$runtime" >> "$GITHUB_ENV"
+          echo 'public_oauth_checkout_product_source=false'
+          echo 'public_oauth_wheel_install_mode=offline-no-index-no-deps'
 
       - name: Materialize deployment authority, sign exact OAuth proof, verify, and remove private key
         shell: bash
@@ -174,24 +258,27 @@ jobs:
           trap cleanup EXIT
           cp "$PSMATRIX_OAUTH_UNSIGNED/public-oauth-result.json" "$output/public-oauth-result.json"
           cp live/public-auth-live-report.json "$output/public-auth-live-report.json"
-          PYTHONPATH=control/src python -m psmatrix.cli ga proof-create \
+          PYTHONPATH="$PSMATRIX_FINAL_PUBLIC_OAUTH_RUNTIME" python -m psmatrix.cli ga proof-create \
             --type public-oauth \
             --input "$output/public-oauth-result.json" \
             --private-key "$key_root/deployment.private.pem" \
             --public-key "$key_root/deployment.public.pem" \
             --output "$output/public-oauth.dsse.json"
-          PYTHONPATH=control/src python -m psmatrix.cli ga proof-verify \
+          PYTHONPATH="$PSMATRIX_FINAL_PUBLIC_OAUTH_RUNTIME" python -m psmatrix.cli ga proof-verify \
             --type public-oauth \
             --attestation "$output/public-oauth.dsse.json" \
             --public-key "$key_root/deployment.public.pem" >/dev/null
           cp "$key_root/deployment.public.pem" "$output/deployment-public.pem"
-          PSMATRIX_OAUTH_SIGNED="$output" PYTHONPATH=control/src python - <<'PY'
+          PSMATRIX_OAUTH_SIGNED="$output" PYTHONPATH="$PSMATRIX_FINAL_PUBLIC_OAUTH_RUNTIME" python - <<'PY'
+          import importlib.metadata
           import os
           from pathlib import Path
           from psmatrix.ga import verify_ga_proof
           from psmatrix.signing import public_key_id
           from psmatrix.util import atomic_write_json, read_json, sha256_file
 
+          if importlib.metadata.version('psmatrix')!='2.0.0':
+              raise SystemExit('OAuth proof verification is not running from exact final wheel')
           root=Path(os.environ['PSMATRIX_OAUTH_SIGNED'])
           verified=verify_ga_proof(read_json(root/'public-oauth.dsse.json'),expected_type='public-oauth',public_key=root/'deployment-public.pem')
           result=verified.get('result')
@@ -208,7 +295,7 @@ jobs:
           status={
               'schema':1,'kind':'psmatrix.final-public-oauth-producer-status','status':'PASS','version':'2.0.0',
               'endpoint':assertions.get('endpoint'),'live_report_sha256':live_sha,
-              'release_commit':assertions.get('release_commit'),'release_manifest_sha256':assertions.get('release_manifest_sha256'),'release_wheel_sha256':assertions.get('release_wheel_sha256'),
+              'release_commit':assertions.get('release_commit'),'release_manifest_sha256':assertions.get('release_manifest_sha256'),'release_wheel_sha256':assertions.get('release_wheel_sha256'),'exact_release_wheel_runtime':True,
               'deployment_public_key_sha256':sha256_file(root/'deployment-public.pem'),'deployment_key_id':public_key_id(root/'deployment-public.pem'),
               'proof_verified':True,'deployment_private_key_copied_to_output':False,'final_ga_evaluator_invoked':False,'ga_eligible':False,
           }
@@ -217,7 +304,7 @@ jobs:
           for path in root.rglob('*'):
               if path.is_file() and any(marker in path.read_bytes() for marker in markers):
                   raise SystemExit(f'private-key material found in signed OAuth output: {path.name}')
-          print('signed_public_oauth=PASS')
+          print('signed_public_oauth=PASS exact_release_wheel=true')
           print('final_ga_evaluator_invoked=false')
           print('ga_eligible=false')
           PY
