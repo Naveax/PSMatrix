@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -65,6 +66,96 @@ class AuthorityMaterialMapFragmentTests(unittest.TestCase):
             (authority_root / "ci.private.pem").unlink()
             with self.assertRaises(self.fragment.AuthorityFragmentError):
                 self.fragment.build_fragment(authority_root)
+
+    def test_manifest_cannot_redirect_authority_file_outside_root(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="psmatrix-authority-fragment-escape-") as temporary:
+            root = Path(temporary)
+            authority_root = root / "authorities"
+            self.provision.provision_authorities(authority_root)
+            outside = root / "outside.private.pem"
+            outside.write_text("sentinel\n", encoding="utf-8")
+            manifest_path = authority_root / "production-ga-authorities.manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            release = next(row for row in manifest["authorities"] if row["role"] == "release")
+            release["private_file"] = "../outside.private.pem"
+            manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(self.fragment.AuthorityFragmentError, "authority file identity mismatch"):
+                self.fragment.build_fragment(authority_root)
+            self.assertEqual(outside.read_text(encoding="utf-8"), "sentinel\n")
+
+    def test_absolute_manifest_authority_path_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="psmatrix-authority-fragment-absolute-") as temporary:
+            root = Path(temporary)
+            authority_root = root / "authorities"
+            self.provision.provision_authorities(authority_root)
+            outside = root / "outside.public.pem"
+            outside.write_text("sentinel\n", encoding="utf-8")
+            manifest_path = authority_root / "production-ga-authorities.manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            release = next(row for row in manifest["authorities"] if row["role"] == "release")
+            release["public_file"] = str(outside)
+            manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(self.fragment.AuthorityFragmentError, "authority file identity mismatch"):
+                self.fragment.build_fragment(authority_root)
+
+    def test_hardlinked_authority_file_is_rejected_when_supported(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="psmatrix-authority-fragment-hardlink-") as temporary:
+            root = Path(temporary)
+            authority_root = root / "authorities"
+            self.provision.provision_authorities(authority_root)
+            private_path = authority_root / "release.private.pem"
+            target = root / "release-private-target.pem"
+            try:
+                target.write_bytes(private_path.read_bytes())
+                private_path.unlink()
+                os.link(target, private_path)
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"hardlink creation is unavailable: {exc}")
+            with self.assertRaisesRegex(self.fragment.AuthorityFragmentError, "must not be hardlinked"):
+                self.fragment.build_fragment(authority_root)
+
+    def test_hardlinked_manifest_is_rejected_when_supported(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="psmatrix-authority-fragment-manifest-hardlink-") as temporary:
+            root = Path(temporary)
+            authority_root = root / "authorities"
+            self.provision.provision_authorities(authority_root)
+            manifest = authority_root / "production-ga-authorities.manifest.json"
+            alias_target = root / "manifest-target.json"
+            try:
+                alias_target.write_bytes(manifest.read_bytes())
+                manifest.unlink()
+                os.link(alias_target, manifest)
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"hardlink creation is unavailable: {exc}")
+            with self.assertRaisesRegex(self.fragment.AuthorityFragmentError, "must not be hardlinked"):
+                self.fragment.build_fragment(authority_root)
+
+    def test_hardlinked_fragment_output_is_rejected_without_target_mutation_when_supported(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="psmatrix-authority-fragment-output-hardlink-") as temporary:
+            root = Path(temporary)
+            authority_root = root / "authorities"
+            self.provision.provision_authorities(authority_root)
+            value = self.fragment.build_fragment(authority_root)
+            target = root / "target.json"
+            output = root / "fragment.json"
+            target.write_text("sentinel\n", encoding="utf-8")
+            try:
+                os.link(target, output)
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"hardlink creation is unavailable: {exc}")
+            with self.assertRaisesRegex(self.fragment.AuthorityFragmentError, "must not be hardlinked"):
+                self.fragment.write_fragment(output, value)
+            self.assertEqual(target.read_text(encoding="utf-8"), "sentinel\n")
+
+    def test_source_freezes_direct_child_and_atomic_output_contract(self) -> None:
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('expected_private_name = f"{role}.private.pem"', source)
+        self.assertIn('expected_public_name = f"{role}.public.pem"', source)
+        self.assertIn("private_name != expected_private_name", source)
+        self.assertIn(".lstat()", source)
+        self.assertIn("st_nlink", source)
+        self.assertIn("FILE_ATTRIBUTE_REPARSE_POINT", source)
+        self.assertIn("atomic_write_json(target, value)", source)
 
 
 if __name__ == "__main__":
