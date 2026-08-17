@@ -95,6 +95,11 @@ def verify(
     if require_candidate_ancestor_of_head:
         _git(root, 'merge-base', '--is-ancestor', certified, head)
 
+    added = _paths(_git(root, 'diff', '--diff-filter=A', '--name-only', '-z', f'{baseline}..{certified}'))
+    if added:
+        raise RepositoryWorkflowPinRefreshError(
+            'certified pin-only refresh may not add paths: ' + ','.join(sorted(added))
+        )
     deleted = _paths(_git(root, 'diff', '--diff-filter=D', '--name-only', '-z', f'{baseline}..{certified}'))
     if deleted:
         raise RepositoryWorkflowPinRefreshError(
@@ -173,9 +178,7 @@ def verify(
         'baseline_commit': baseline,
         'certified_head': certified,
         'repository_head': head,
-        'historical_candidate_ancestor_of_repository_head': (
-            require_candidate_ancestor_of_head
-        ),
+        'historical_candidate_ancestor_of_repository_head': require_candidate_ancestor_of_head,
         'replacement_map': dict(PIN_REPLACEMENTS),
         'file_count': len(manifest),
         'replacement_count': total_replacements,
@@ -187,6 +190,7 @@ def verify(
         'modified_workflow_paths': [item['path'] for item in workflow_files],
         'modified_companion_paths': [item['path'] for item in companion_files],
         'files': manifest,
+        'baseline_files_added': 0,
         'baseline_files_deleted': 0,
         'baseline_modifications_outside_certified_pin_refresh': 0,
         'pin_only_transform_verified': True,
