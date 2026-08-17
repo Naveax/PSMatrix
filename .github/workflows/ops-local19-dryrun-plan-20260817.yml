@@ -1,0 +1,139 @@
+name: ops-local19-dryrun-plan-20260817
+
+on:
+  push:
+    branches:
+      - ops/local19-secure-bootstrap-20260817
+    paths:
+      - .github/workflows/ops-local19-dryrun-plan-20260817.yml
+
+concurrency:
+  group: ops-local19-dryrun-plan-20260817
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 10
+    env:
+      SOURCE_SHA: 8498fef23788c5e3ee37ace736215a03f11118e8
+      PROVISIONING_ROOT: C:\ProgramData\PSMatrix\ProductionGA\provisioning
+      FRESH_READINESS_RUN_ID: '32045478887'
+      FRESH_READINESS_REQUIRED: '41'
+      FRESH_READINESS_PRESENT: '0'
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Build exact local 19-check dry-run provisioning plan
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $root = [IO.Path]::GetFullPath($env:PROVISIONING_ROOT)
+          $summaryPath = Join-Path $root 'local-provisioning-summary.json'
+          if (-not (Test-Path -LiteralPath $summaryPath -PathType Leaf)) { throw 'local provisioning summary is missing' }
+          $prepared = Get-Content -LiteralPath $summaryPath -Raw | ConvertFrom-Json
+          if ($prepared.status -ne 'PASS' -or [int]$prepared.locally_prepared_check_count -ne 19) { throw 'local provisioning workspace is not exact PASS 19/41' }
+
+          $localMap = Join-Path $root 'local-19.material-map.json'
+          $offlineInventory = Join-Path $root 'fresh-readiness-empty-name-inventory.json'
+          $auditPath = Join-Path $root 'fresh-readiness-inventory-audit.json'
+          $selectedMap = Join-Path $root 'selected-local-19.material-map.json'
+          $planSummary = Join-Path $root 'local-19-dryrun-plan.json'
+          $python = (Get-Command python -ErrorAction Stop).Source
+
+          & $python scripts/ga/compose_partial_production_ga_material_map.py `
+            --fragment ([string]$prepared.fragments.signing_authorities) `
+            --fragment ([string]$prepared.fragments.full_matrix) `
+            --output $localMap
+          if ($LASTEXITCODE -ne 0) { throw 'local 19 material-map composition failed' }
+          $map = Get-Content -LiteralPath $localMap -Raw | ConvertFrom-Json -AsHashtable -Depth 30
+          if ([int]$map.check_count -ne 19 -or $map.partial -ne $true) { throw 'local material map is not exact partial 19/41' }
+
+          $contract = Get-Content -LiteralPath 'ga-packs/03-authoritative-windows/final-production-readiness-contract.json' -Raw | ConvertFrom-Json
+          if (@($contract.environments).Count -ne 12) { throw 'readiness contract environment count mismatch' }
+          $inventoryEnvironments = [ordered]@{}
+          foreach ($row in @($contract.environments)) {
+            $inventoryEnvironments[[string]$row.name] = [ordered]@{ secrets=@(); vars=@() }
+          }
+          $inventory = [ordered]@{
+            schema=1
+            kind='psmatrix.production-ga-environment-name-inventory'
+            version='2.0.0'
+            environments=$inventoryEnvironments
+          }
+          [IO.File]::WriteAllText($offlineInventory,(($inventory | ConvertTo-Json -Depth 20)+[Environment]::NewLine),[Text.UTF8Encoding]::new($false))
+
+          & $python scripts/ga/audit_production_ga_environment_inventory.py `
+            --inventory $offlineInventory `
+            --output $auditPath
+          $auditRc = $LASTEXITCODE
+          if ($auditRc -ne 2) { throw "expected incomplete 0/41 offline audit exit=2, got $auditRc" }
+          $audit = Get-Content -LiteralPath $auditPath -Raw | ConvertFrom-Json
+          if ([int]$audit.required_check_count -ne 41 -or [int]$audit.present_check_count -ne 0 -or [int]$audit.missing_check_count -ne 41) {
+            throw 'fresh readiness inventory binding mismatch'
+          }
+
+          & $python scripts/ga/select_missing_production_ga_material.py `
+            --material-map $localMap `
+            --inventory-audit $auditPath `
+            --output $selectedMap
+          if ($LASTEXITCODE -ne 0) { throw 'missing local material selection failed' }
+          $selected = Get-Content -LiteralPath $selectedMap -Raw | ConvertFrom-Json -AsHashtable -Depth 30
+          if ([int]$selected.check_count -ne 19) { throw 'selected local plan must contain exact 19 checks' }
+          $environments = @($selected.environments.Keys | Sort-Object)
+          if ($environments.Count -eq 0) { throw 'selected local plan has zero environments' }
+
+          & .\scripts\ga\Invoke-ProductionGAEnvironmentProvisioning.ps1 `
+            -MaterialMap $selectedMap `
+            -Repository 'Naveax/PSMatrix' `
+            -Environment $environments `
+            -AllowPartialEnvironment `
+            -DryRun
+          if ($LASTEXITCODE -ne 0) { throw 'official environment provisioning dry-run failed' }
+
+          $rows = @()
+          foreach ($environment in $environments) {
+            $entry = $selected.environments[$environment]
+            $secretNames = @($entry.secrets.Keys | Sort-Object)
+            $varNames = @($entry.vars.Keys | Sort-Object)
+            $rows += [ordered]@{
+              environment=$environment
+              secret_names=$secretNames
+              variable_names=$varNames
+              check_count=$secretNames.Count + $varNames.Count
+            }
+          }
+          $out = [ordered]@{
+            schema=1
+            kind='psmatrix.production-ga-local19-dryrun-plan'
+            version='2.0.0'
+            status='PASS'
+            source_sha=$env:SOURCE_SHA
+            fresh_readiness_run_id=[long]$env:FRESH_READINESS_RUN_ID
+            fresh_readiness_present=0
+            fresh_readiness_required=41
+            selected_check_count=19
+            selected_environment_count=$environments.Count
+            environments=$rows
+            secret_values_logged=$false
+            github_environment_mutation_executed=$false
+            ga_eligible=$false
+          }
+          [IO.File]::WriteAllText($planSummary,(($out | ConvertTo-Json -Depth 20)+[Environment]::NewLine),[Text.UTF8Encoding]::new($false))
+
+          Write-Host 'production_ga_local19_dryrun_plan=PASS'
+          Write-Host 'selected_checks=19'
+          Write-Host "selected_environments=$($environments.Count)"
+          Write-Host "environment_names=$($environments -join ',')"
+          Write-Host 'secret_values_logged=false'
+          Write-Host 'github_environment_mutation_executed=false'
+          Write-Host 'ga_eligible=false'
