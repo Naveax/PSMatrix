@@ -75,9 +75,12 @@ class VerificationHardeningMaintenanceTests(unittest.TestCase):
             self.assertEqual(result['repository_head'], head)
             self.assertTrue(result['historical_candidate_ancestor_of_repository_head'])
             self.assertTrue(result['pin_only_transform_verified'])
+            self.assertFalse(result['historical_candidate_additions_outside_pin_proof'])
 
             with self.assertRaises(self.pin.RepositoryWorkflowPinRefreshError):
                 self.pin.verify(root, baseline, candidate=head)
+            with self.assertRaisesRegex(self.pin.RepositoryWorkflowPinRefreshError, 'immutable historical candidate'):
+                self.pin.verify(root, baseline, candidate=head, allow_historical_candidate_additions=True)
 
     def test_historical_pin_receipt_is_fixed_and_current_head_bound(self) -> None:
         candidate = 'a' * 40
@@ -92,9 +95,14 @@ class VerificationHardeningMaintenanceTests(unittest.TestCase):
             'historical_candidate_ancestor_of_repository_head': True,
             'workflow_file_count': self.maintenance.HISTORICAL_WORKFLOW_FILES,
             'workflow_replacement_count': self.maintenance.HISTORICAL_WORKFLOW_REPLACEMENTS,
+            'baseline_files_added': 3,
+            'historical_candidate_additions_allowed': True,
+            'historical_candidate_additions_outside_pin_proof': True,
+            'added_paths_sha256': 'd' * 64,
             'baseline_files_deleted': 0,
             'baseline_modifications_outside_certified_pin_refresh': 0,
             'pin_only_transform_verified': True,
+            'pin_only_transform_verified_for_baseline_modifications': True,
             'replacement_map': {'old1': 'new1', 'old2': 'new2'},
             'file_count': 1,
             'files': [{'path': '.github/workflows/example.yml'}],
@@ -109,6 +117,10 @@ class VerificationHardeningMaintenanceTests(unittest.TestCase):
         stale['repository_head'] = 'c' * 40
         with self.assertRaisesRegex(self.maintenance.VerificationMaintenanceError, 'current candidate HEAD'):
             self.maintenance._verify_historical_pin_receipt(stale, candidate)
+        ambiguous = dict(receipt)
+        ambiguous['historical_candidate_additions_outside_pin_proof'] = False
+        with self.assertRaisesRegex(self.maintenance.VerificationMaintenanceError, 'historical_candidate_additions_outside_pin_proof'):
+            self.maintenance._verify_historical_pin_receipt(ambiguous, candidate)
 
     def test_critical_control_self_modification_requires_companion_test(self) -> None:
         critical = ['scripts/ga/certify_verification_hardening_maintenance.py']
@@ -130,6 +142,7 @@ class VerificationHardeningMaintenanceTests(unittest.TestCase):
         self.assertIn('may not certify runtime product source changes', text)
         self.assertIn("'current_base_to_candidate_only': True", text)
         self.assertIn("'historical_publication_proof_separate': True", text)
+        self.assertIn("'historical_additions_outside_pin_proof': True", text)
         self.assertIn("'runtime_product_source_certified': False", text)
         self.assertNotIn("f'{self.maintenance.HISTORICAL_PIN_BASELINE}..{candidate}'", text)
 
@@ -137,10 +150,15 @@ class VerificationHardeningMaintenanceTests(unittest.TestCase):
         text = WORKFLOW.read_text(encoding='utf-8')
         required = (
             'Resolve exact maintenance base and candidate',
+            "base_ref != 'main'",
+            "base = git('rev-parse', 'origin/main')",
+            "first_parent = git('rev-parse', 'HEAD^1')",
+            "merge_base = git('merge-base', 'origin/main', 'HEAD')",
             'Certify immutable historical repository workflow action-pin refresh',
             f'--baseline {self.maintenance.HISTORICAL_PIN_BASELINE}',
             f'--candidate {self.maintenance.HISTORICAL_PIN_CANDIDATE}',
             '--require-candidate-ancestor-of-head',
+            '--allow-historical-candidate-additions',
             'Certify current-base verification maintenance',
             'certify_verification_hardening_maintenance.py',
             '--base "$PSMATRIX_VERIFICATION_MAINTENANCE_BASE"',
