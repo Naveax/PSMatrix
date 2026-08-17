@@ -22,6 +22,18 @@ The secret-free source preflight validates:
 
 A green source preflight does not prove an external collector exists and cannot complete Pack 05.
 
+Verified source-preflight evidence:
+
+```text
+workflow run     31572417730
+release commit   06c80421ecb8c6668e5e4334f9138a55ae56e1fd
+artifact         9131838214
+artifact SHA256  445f65b8bf01057e44b98b20563b3ad4b2740a6369ef1e1a441462f716e91ff9
+status           PASS
+```
+
+The source receipt still records `external_collector_proven=false` and `ga_eligible=false`.
+
 ## Final evaluator preflight
 
 Workflow: `production-ga-pack05-final-evaluator-preflight`
@@ -40,6 +52,18 @@ The evaluator preflight runs the complete GA regression suite plus Pack 05-speci
 - recovery within 300 seconds.
 
 RC proofs may be operationally valid but cannot satisfy the final Production GA evaluator.
+
+Verified evaluator-preflight evidence:
+
+```text
+workflow run     31572417745
+release commit   06c80421ecb8c6668e5e4334f9138a55ae56e1fd
+artifact         9131841085
+artifact SHA256  0342b93f09cdad59c730a930a72a1ac78cc0b4f132bc29c9dd7c6e5f26e925b5
+status           PASS
+```
+
+That run passed the existing GA regression suite, the external-OTLP contract regression and the final-release cross-binding regression. It remains preflight evidence only: `external_collector_proven=false` and `ga_eligible=false`.
 
 ## Protected external authority workflow
 
@@ -125,4 +149,4 @@ The signed proof binds only the sanitized `external-otlp-live-report.json` diges
 
 ## Current state
 
-`FINAL_EVALUATOR_PREFLIGHT_PENDING_EXTERNAL_WORKFLOW_READY` — the source preflight is green, the final evaluator hardening and protected live workflow are implemented, and fresh evaluator CI is required. The live collector deployment, protected secrets, receipt/restart interfaces and signed external operation remain external prerequisites.
+`SOURCE_AND_FINAL_EVALUATOR_PREFLIGHT_PASS_EXTERNAL_DEPLOYMENT_PENDING` — both secret-free source/evaluator preflights are verified green. The remaining boundary is real external infrastructure: deploy or provision the independent authenticated TLS OTLP collector, expose its health/receipt/restart controls, configure protected operations authority material, execute the live workflow, and bind fresh collector evidence to the exact final signed release. Until that happens, `external_collector_proven=false` and `ga_eligible=false`.
