@@ -127,7 +127,6 @@ def provision_authorities(output_root: Path, *, force: bool = False) -> dict[str
             "private_key_hashes_serialized": False,
             "private_key_lengths_serialized": False,
             "private_keys_written_outside_repository": True,
-            "output_slots_link_free": True,
         },
     }
     if result["authority_count"] != 9 or result["readiness_secret_check_count"] != 17:
@@ -148,7 +147,6 @@ def main() -> int:
             f"authorities={result['authority_count']} readiness_secret_checks={result['readiness_secret_check_count']}"
         )
         print("private_key_values_serialized=false")
-        print("authority_output_slots_link_free=true")
         print("next_action=copy_each_named_secret_to_its_matching_GitHub_environment_without_committing_private_files")
         return 0
     except (OSError, ValueError, TypeError, AuthorityProvisioningError) as exc:
