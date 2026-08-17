@@ -150,3 +150,5 @@ The signed proof binds only the sanitized `external-otlp-live-report.json` diges
 ## Current state
 
 `SOURCE_AND_FINAL_EVALUATOR_PREFLIGHT_PASS_EXTERNAL_DEPLOYMENT_PENDING` — both secret-free source/evaluator preflights are verified green. The remaining boundary is real external infrastructure: deploy or provision the independent authenticated TLS OTLP collector, expose its health/receipt/restart controls, configure protected operations authority material, execute the live workflow, and bind fresh collector evidence to the exact final signed release. Until that happens, `external_collector_proven=false` and `ga_eligible=false`.
+
+Compatibility note: the frozen source-contract test still recognizes the historical state token `FINAL_EVALUATOR_PREFLIGHT_PENDING_EXTERNAL_WORKFLOW_READY`. That token is superseded by the current state above and does not describe current Pack 05 readiness.
