@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_BASELINE = '3ffc6b6d7cd58d64224f780aa819b50f50f72491'
+HISTORICAL_CANDIDATE = '3b06770cb925add391f4552e5f1cbd0ed6aa96b5'
 PIN_REPLACEMENTS = {
     '34e114876b0b11c390a56381ad16ebd13914f8d5': '11d5960a326750d5838078e36cf38b85af677262',
     'a309ff8b426b58ec0e2a45f0f869d46889d02405': 'ece7cb06caefa5fff74198d8649806c4678c61a1',
@@ -38,6 +39,13 @@ def _git(root: Path, *args: str) -> bytes:
     return completed.stdout
 
 
+def _exact_commit(value: str, label: str) -> str:
+    text = str(value or '').lower()
+    if len(text) != 40 or any(ch not in '0123456789abcdef' for ch in text):
+        raise RepositoryWorkflowPinRefreshError(f'{label} must be exact lowercase 40-hex')
+    return text
+
+
 def _paths(raw: bytes) -> list[str]:
     try:
         values = [item for item in raw.decode('utf-8').split('\x00') if item]
@@ -64,29 +72,56 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _path_manifest_sha256(paths: list[str]) -> str:
+    payload = ''.join(f'{path}\n' for path in sorted(paths)).encode('utf-8')
+    return hashlib.sha256(payload).hexdigest()
+
+
 def verify(
     root: Path,
     baseline: str,
     *,
+    candidate: str | None = None,
+    require_candidate_ancestor_of_head: bool = False,
+    allow_historical_candidate_additions: bool = False,
     expected_files: int | None = None,
     expected_replacements: int | None = None,
 ) -> dict[str, Any]:
     root = root.resolve()
     if not root.is_dir():
         raise RepositoryWorkflowPinRefreshError('repository root is missing')
-    if len(baseline) != 40 or any(ch not in '0123456789abcdef' for ch in baseline):
-        raise RepositoryWorkflowPinRefreshError('baseline must be exact lowercase 40-hex')
-    _git(root, 'merge-base', '--is-ancestor', baseline, 'HEAD')
-    head = _git(root, 'rev-parse', 'HEAD').decode('ascii').strip().lower()
-    if len(head) != 40 or any(ch not in '0123456789abcdef' for ch in head):
-        raise RepositoryWorkflowPinRefreshError('unable to resolve exact HEAD')
+    baseline = _exact_commit(baseline, 'baseline')
+    head = _exact_commit(_git(root, 'rev-parse', 'HEAD').decode('ascii').strip(), 'HEAD')
+    certified = _exact_commit(candidate or head, 'candidate')
+    _git(root, 'cat-file', '-e', f'{baseline}^{{commit}}')
+    _git(root, 'cat-file', '-e', f'{certified}^{{commit}}')
+    _git(root, 'merge-base', '--is-ancestor', baseline, certified)
+    if certified == baseline:
+        raise RepositoryWorkflowPinRefreshError('pin refresh candidate must differ from baseline')
+    if require_candidate_ancestor_of_head:
+        _git(root, 'merge-base', '--is-ancestor', certified, head)
 
-    deleted = _paths(_git(root, 'diff', '--diff-filter=D', '--name-only', '-z', f'{baseline}..HEAD'))
+    added = _paths(_git(root, 'diff', '--diff-filter=A', '--name-only', '-z', f'{baseline}..{certified}'))
+    additions_allowed = False
+    if added:
+        if not allow_historical_candidate_additions or certified != HISTORICAL_CANDIDATE:
+            raise RepositoryWorkflowPinRefreshError(
+                'certified pin-only refresh may not add paths unless the exact immutable historical candidate is explicitly selected: '
+                + ','.join(sorted(added))
+            )
+        additions_allowed = True
+    elif allow_historical_candidate_additions:
+        if certified != HISTORICAL_CANDIDATE:
+            raise RepositoryWorkflowPinRefreshError(
+                'historical-candidate addition allowance may only target the immutable historical candidate'
+            )
+
+    deleted = _paths(_git(root, 'diff', '--diff-filter=D', '--name-only', '-z', f'{baseline}..{certified}'))
     if deleted:
         raise RepositoryWorkflowPinRefreshError(
             'certified pin refresh may not delete baseline paths: ' + ','.join(sorted(deleted))
         )
-    modified = _paths(_git(root, 'diff', '--diff-filter=M', '--name-only', '-z', f'{baseline}..HEAD'))
+    modified = _paths(_git(root, 'diff', '--diff-filter=M', '--name-only', '-z', f'{baseline}..{certified}'))
     forbidden = sorted(path for path in modified if not _is_certified_path(path))
     if forbidden:
         raise RepositoryWorkflowPinRefreshError(
@@ -101,7 +136,7 @@ def verify(
     manifest: list[dict[str, Any]] = []
     for path in sorted(modified):
         before = _blob(root, baseline, path)
-        after = _blob(root, head, path)
+        after = _blob(root, certified, path)
         transformed = before
         replacements = 0
         for old, new in PIN_REPLACEMENTS.items():
@@ -135,8 +170,8 @@ def verify(
                 'replacements': replacements,
                 'baseline_sha256': _sha256(before),
                 'baseline_bytes': len(before),
-                'current_sha256': _sha256(after),
-                'current_bytes': len(after),
+                'candidate_sha256': _sha256(after),
+                'candidate_bytes': len(after),
             }
         )
 
@@ -157,7 +192,9 @@ def verify(
         'version': '2.0.0',
         'status': 'PASS',
         'baseline_commit': baseline,
-        'certified_head': head,
+        'certified_head': certified,
+        'repository_head': head,
+        'historical_candidate_ancestor_of_repository_head': require_candidate_ancestor_of_head,
         'replacement_map': dict(PIN_REPLACEMENTS),
         'file_count': len(manifest),
         'replacement_count': total_replacements,
@@ -169,17 +206,25 @@ def verify(
         'modified_workflow_paths': [item['path'] for item in workflow_files],
         'modified_companion_paths': [item['path'] for item in companion_files],
         'files': manifest,
+        'baseline_files_added': len(added),
+        'historical_candidate_additions_allowed': additions_allowed,
+        'historical_candidate_additions_outside_pin_proof': bool(added),
+        'added_paths_sha256': _path_manifest_sha256(added),
         'baseline_files_deleted': 0,
         'baseline_modifications_outside_certified_pin_refresh': 0,
         'pin_only_transform_verified': True,
+        'pin_only_transform_verified_for_baseline_modifications': True,
         'ga_eligible': False,
     }
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description='Certify exact repository workflow and companion action-pin-only refresh')
+    parser = argparse.ArgumentParser(description='Certify an exact historical repository workflow/companion action-pin-only refresh')
     parser.add_argument('--root', type=Path, default=Path('.'))
     parser.add_argument('--baseline', default=DEFAULT_BASELINE)
+    parser.add_argument('--candidate')
+    parser.add_argument('--require-candidate-ancestor-of-head', action='store_true')
+    parser.add_argument('--allow-historical-candidate-additions', action='store_true')
     parser.add_argument('--expected-files', type=int)
     parser.add_argument('--expected-replacements', type=int)
     parser.add_argument('--output', type=Path, required=True)
@@ -188,6 +233,9 @@ def main() -> int:
         value = verify(
             args.root,
             args.baseline,
+            candidate=args.candidate,
+            require_candidate_ancestor_of_head=args.require_candidate_ancestor_of_head,
+            allow_historical_candidate_additions=args.allow_historical_candidate_additions,
             expected_files=args.expected_files,
             expected_replacements=args.expected_replacements,
         )
@@ -204,9 +252,12 @@ def main() -> int:
         )
         print(f"certified_modified_files={value['file_count']}")
         print(f"certified_replacements={value['replacement_count']}")
+        print(f"historical_candidate_additions_outside_pin_proof={value['baseline_files_added']}")
         print(f"baseline={value['baseline_commit']}")
         print(f"certified_head={value['certified_head']}")
-        print('pin_only_transform_verified=true')
+        print(f"repository_head={value['repository_head']}")
+        print(f"historical_candidate_ancestor_of_repository_head={str(value['historical_candidate_ancestor_of_repository_head']).lower()}")
+        print('pin_only_transform_verified_for_baseline_modifications=true')
         print('ga_eligible=false')
         return 0
     except (OSError, TypeError, ValueError, subprocess.SubprocessError, RepositoryWorkflowPinRefreshError) as exc:

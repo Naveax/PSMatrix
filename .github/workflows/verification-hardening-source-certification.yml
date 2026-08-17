@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 jobs:
-  certify-additive-hardening:
+  certify-maintenance-hardening:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -57,11 +57,67 @@ jobs:
           python scripts/ga/verify_repository_workflow_action_policy.py
           --root .
 
-      - name: Certify exact repository workflow action-pin refresh
+      - name: Run verification maintenance contract tests
+        run: >-
+          python -m unittest -v
+          tests.test_verification_hardening_maintenance
+          tests.test_verification_hardening_event_head_policy
+
+      - name: Resolve exact maintenance base and candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip().lower()
+
+          head = git('rev-parse', 'HEAD')
+          expected = os.environ['GITHUB_SHA'].lower()
+          if head != expected or re.fullmatch(r'[0-9a-f]{40}', head) is None:
+              raise SystemExit('checked-out maintenance candidate differs from exact workflow/event HEAD')
+          event = json.load(open(os.environ['GITHUB_EVENT_PATH'], encoding='utf-8'))
+          name = os.environ['GITHUB_EVENT_NAME']
+          if name == 'pull_request':
+              pull = event.get('pull_request') or {}
+              base_ref = str((pull.get('base') or {}).get('ref') or '')
+              if base_ref != 'main' or os.environ.get('GITHUB_BASE_REF') != 'main':
+                  raise SystemExit('verification maintenance pull request must target current main')
+              base = git('rev-parse', 'origin/main')
+              first_parent = git('rev-parse', 'HEAD^1')
+              merge_base = git('merge-base', 'origin/main', 'HEAD')
+              if first_parent != base or merge_base != base:
+                  raise SystemExit('pull-request maintenance base does not equal current origin/main merge parent')
+          elif name == 'push':
+              base = str(event.get('before') or '').lower()
+              if base == '0' * 40:
+                  base = git('rev-parse', 'HEAD^')
+          else:
+              raise SystemExit(f'unsupported verification-maintenance event: {name}')
+          if re.fullmatch(r'[0-9a-f]{40}', base) is None:
+              raise SystemExit('maintenance base is not an exact lowercase 40-hex commit')
+          completed = subprocess.run(['git','merge-base','--is-ancestor',base,head], check=False)
+          if completed.returncode != 0:
+              raise SystemExit('maintenance base is not an ancestor of exact candidate HEAD')
+          if base == head:
+              raise SystemExit('maintenance base and candidate must differ')
+          with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as stream:
+              stream.write(f'PSMATRIX_VERIFICATION_MAINTENANCE_BASE={base}\n')
+          print(f'verification_maintenance_range=PASS base={base} candidate={head}')
+          PY
+
+      - name: Certify immutable historical repository workflow action-pin refresh
         run: >-
           python scripts/ga/verify_repository_workflow_pin_refresh.py
           --root .
           --baseline 3ffc6b6d7cd58d64224f780aa819b50f50f72491
+          --candidate 3b06770cb925add391f4552e5f1cbd0ed6aa96b5
+          --require-candidate-ancestor-of-head
+          --allow-historical-candidate-additions
           --expected-files 76
           --expected-replacements 167
           --output "$RUNNER_TEMP/repository-workflow-pin-refresh.json"
@@ -73,16 +129,15 @@ jobs:
           --expected-head "$GITHUB_SHA"
           --output "$RUNNER_TEMP/repository-private-material-scan.json"
 
-      - name: Certify verification hardening with exact workflow pin refresh
+      - name: Certify current-base verification maintenance
         run: >-
-          python scripts/ga/certify_verification_hardening_source_with_pin_refresh.py
+          python scripts/ga/certify_verification_hardening_maintenance.py
           --root .
-          --baseline 3ffc6b6d7cd58d64224f780aa819b50f50f72491
+          --base "$PSMATRIX_VERIFICATION_MAINTENANCE_BASE"
+          --candidate "$GITHUB_SHA"
+          --historical-workflow-pin-refresh "$RUNNER_TEMP/repository-workflow-pin-refresh.json"
           --private-scan "$RUNNER_TEMP/repository-private-material-scan.json"
-          --workflow-pin-refresh "$RUNNER_TEMP/repository-workflow-pin-refresh.json"
-          --expected-workflow-pin-files 76
-          --expected-workflow-pin-replacements 167
-          --output "$RUNNER_TEMP/verification-hardening-source-certification.json"
+          --output "$RUNNER_TEMP/verification-hardening-maintenance-certification.json"
 
       - name: Upload exact-head certification receipts
         if: always()
@@ -92,6 +147,6 @@ jobs:
           path: |
             ${{ runner.temp }}/repository-workflow-pin-refresh.json
             ${{ runner.temp }}/repository-private-material-scan.json
-            ${{ runner.temp }}/verification-hardening-source-certification.json
+            ${{ runner.temp }}/verification-hardening-maintenance-certification.json
           if-no-files-found: warn
           retention-days: 30
