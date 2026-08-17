@@ -72,12 +72,18 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _path_manifest_sha256(paths: list[str]) -> str:
+    payload = ''.join(f'{path}\n' for path in sorted(paths)).encode('utf-8')
+    return hashlib.sha256(payload).hexdigest()
+
+
 def verify(
     root: Path,
     baseline: str,
     *,
     candidate: str | None = None,
     require_candidate_ancestor_of_head: bool = False,
+    allow_historical_candidate_additions: bool = False,
     expected_files: int | None = None,
     expected_replacements: int | None = None,
 ) -> dict[str, Any]:
@@ -96,10 +102,20 @@ def verify(
         _git(root, 'merge-base', '--is-ancestor', certified, head)
 
     added = _paths(_git(root, 'diff', '--diff-filter=A', '--name-only', '-z', f'{baseline}..{certified}'))
+    additions_allowed = False
     if added:
-        raise RepositoryWorkflowPinRefreshError(
-            'certified pin-only refresh may not add paths: ' + ','.join(sorted(added))
-        )
+        if not allow_historical_candidate_additions or certified != HISTORICAL_CANDIDATE:
+            raise RepositoryWorkflowPinRefreshError(
+                'certified pin-only refresh may not add paths unless the exact immutable historical candidate is explicitly selected: '
+                + ','.join(sorted(added))
+            )
+        additions_allowed = True
+    elif allow_historical_candidate_additions:
+        if certified != HISTORICAL_CANDIDATE:
+            raise RepositoryWorkflowPinRefreshError(
+                'historical-candidate addition allowance may only target the immutable historical candidate'
+            )
+
     deleted = _paths(_git(root, 'diff', '--diff-filter=D', '--name-only', '-z', f'{baseline}..{certified}'))
     if deleted:
         raise RepositoryWorkflowPinRefreshError(
@@ -190,10 +206,14 @@ def verify(
         'modified_workflow_paths': [item['path'] for item in workflow_files],
         'modified_companion_paths': [item['path'] for item in companion_files],
         'files': manifest,
-        'baseline_files_added': 0,
+        'baseline_files_added': len(added),
+        'historical_candidate_additions_allowed': additions_allowed,
+        'historical_candidate_additions_outside_pin_proof': bool(added),
+        'added_paths_sha256': _path_manifest_sha256(added),
         'baseline_files_deleted': 0,
         'baseline_modifications_outside_certified_pin_refresh': 0,
         'pin_only_transform_verified': True,
+        'pin_only_transform_verified_for_baseline_modifications': True,
         'ga_eligible': False,
     }
 
@@ -204,6 +224,7 @@ def main() -> int:
     parser.add_argument('--baseline', default=DEFAULT_BASELINE)
     parser.add_argument('--candidate')
     parser.add_argument('--require-candidate-ancestor-of-head', action='store_true')
+    parser.add_argument('--allow-historical-candidate-additions', action='store_true')
     parser.add_argument('--expected-files', type=int)
     parser.add_argument('--expected-replacements', type=int)
     parser.add_argument('--output', type=Path, required=True)
@@ -214,6 +235,7 @@ def main() -> int:
             args.baseline,
             candidate=args.candidate,
             require_candidate_ancestor_of_head=args.require_candidate_ancestor_of_head,
+            allow_historical_candidate_additions=args.allow_historical_candidate_additions,
             expected_files=args.expected_files,
             expected_replacements=args.expected_replacements,
         )
@@ -230,11 +252,12 @@ def main() -> int:
         )
         print(f"certified_modified_files={value['file_count']}")
         print(f"certified_replacements={value['replacement_count']}")
+        print(f"historical_candidate_additions_outside_pin_proof={value['baseline_files_added']}")
         print(f"baseline={value['baseline_commit']}")
         print(f"certified_head={value['certified_head']}")
         print(f"repository_head={value['repository_head']}")
         print(f"historical_candidate_ancestor_of_repository_head={str(value['historical_candidate_ancestor_of_repository_head']).lower()}")
-        print('pin_only_transform_verified=true')
+        print('pin_only_transform_verified_for_baseline_modifications=true')
         print('ga_eligible=false')
         return 0
     except (OSError, TypeError, ValueError, subprocess.SubprocessError, RepositoryWorkflowPinRefreshError) as exc:
