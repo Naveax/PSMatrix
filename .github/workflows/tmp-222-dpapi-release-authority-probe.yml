@@ -54,7 +54,8 @@ jobs:
             public_key_sha256 = $null
             private_bytes_logged = $false
             private_bytes_artifacted = $false
-            signing_executed = $false
+            challenge_signing_executed = $false
+            artifact_signing_executed = $false
             secret_uploaded = $false
             authority_rotated = $false
             ga_eligible = $false
@@ -96,7 +97,7 @@ jobs:
                   $tempPrivate = Join-Path $tempRoot 'authority.private.pem'
                   [System.IO.File]::WriteAllBytes($tempPrivate, $decrypted)
 
-                  $probeJson = & python - $tempPrivate $publicKey "$env:GITHUB_WORKSPACE\src" <<'PY'
+                  $py = @'
           import hashlib
           import json
           import sys
@@ -118,7 +119,10 @@ jobs:
           except Exception:
               pass
           print(json.dumps(safe, sort_keys=True, separators=(",", ":")))
-          PY
+          '@
+                  $result.challenge_signing_executed = $true
+                  $sourceRoot = Join-Path $env:GITHUB_WORKSPACE 'src'
+                  $probeJson = & python -c $py $tempPrivate $publicKey $sourceRoot
                   if ($LASTEXITCODE -ne 0) { throw 'Safe authority identity check failed to execute.' }
                   $safe = ($probeJson | Out-String).Trim() | ConvertFrom-Json
                   $result.private_public_match = [bool]$safe.ok
