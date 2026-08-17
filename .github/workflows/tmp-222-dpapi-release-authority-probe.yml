@@ -1,0 +1,152 @@
+name: temporary-dpapi-release-authority-probe
+
+on:
+  push:
+    branches:
+      - ops/222-dpapi-release-authority-probe
+    paths:
+      - .github/workflows/tmp-222-dpapi-release-authority-probe.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Probe bounded RC4 DPAPI release-authority escrow
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact probe source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up controller Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Probe historical RC4 CurrentUser DPAPI escrow without exporting authority
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.Security
+
+          $escrowRoot = Join-Path $env:LOCALAPPDATA 'PSMatrix\ProductionInputEscrow\2.0.0rc4'
+          $privateEscrow = Join-Path $escrowRoot 'release-authority.private.pem.dpapi'
+          $publicKey = Join-Path $escrowRoot 'release-authority.public.pem'
+          $entropy = [System.Text.Encoding]::UTF8.GetBytes('PSMatrix RC4 Production GA input escrow v1')
+          $decrypted = $null
+          $tempPrivate = $null
+
+          $result = [ordered]@{
+            schema = 1
+            kind = 'psmatrix.release-authority-dpapi-escrow-probe'
+            status = 'MISSING'
+            escrow_root_source = 'historical-rc4-default-localappdata'
+            dpapi_scope = 'CurrentUser'
+            private_escrow_present = (Test-Path -LiteralPath $privateEscrow -PathType Leaf)
+            public_key_present = (Test-Path -LiteralPath $publicKey -PathType Leaf)
+            decryptable = $false
+            private_public_match = $false
+            key_id = $null
+            public_key_sha256 = $null
+            private_bytes_logged = $false
+            private_bytes_artifacted = $false
+            signing_executed = $false
+            secret_uploaded = $false
+            authority_rotated = $false
+            ga_eligible = $false
+          }
+
+          try {
+            if (-not $result.private_escrow_present) {
+              $result.status = 'MISSING'
+            }
+            else {
+              try {
+                $cipher = [System.IO.File]::ReadAllBytes($privateEscrow)
+                $decrypted = [System.Security.Cryptography.ProtectedData]::Unprotect(
+                  $cipher,
+                  $entropy,
+                  [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+                )
+                [Array]::Clear($cipher, 0, $cipher.Length)
+                $result.decryptable = ($null -ne $decrypted -and $decrypted.Length -gt 0)
+              }
+              catch {
+                $result.decryptable = $false
+                $result.status = 'DECRYPT_FAILED'
+              }
+
+              if ($result.decryptable) {
+                if (-not $result.public_key_present) {
+                  $result.status = 'DECRYPTED_NO_PUBLIC_KEY'
+                }
+                else {
+                  $tempRoot = Join-Path $env:RUNNER_TEMP 'psmatrix-dpapi-authority-probe'
+                  if (Test-Path -LiteralPath $tempRoot) {
+                    Remove-Item -LiteralPath $tempRoot -Recurse -Force
+                  }
+                  New-Item -ItemType Directory -Path $tempRoot | Out-Null
+                  $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+                  & icacls.exe $tempRoot /inheritance:r /grant:r "${identity}:(OI)(CI)F" | Out-Null
+                  if ($LASTEXITCODE -ne 0) { throw 'Failed to restrict DPAPI probe temporary directory ACL.' }
+                  $tempPrivate = Join-Path $tempRoot 'authority.private.pem'
+                  [System.IO.File]::WriteAllBytes($tempPrivate, $decrypted)
+
+                  $probeJson = & python - $tempPrivate $publicKey "$env:GITHUB_WORKSPACE\src" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          private_key = Path(sys.argv[1])
+          public_key = Path(sys.argv[2])
+          source_root = Path(sys.argv[3])
+          sys.path.insert(0, str(source_root))
+
+          safe = {"ok": False, "key_id": None, "public_key_sha256": None}
+          try:
+              from psmatrix.signing import public_key_id, sign_bytes, verify_bytes
+              challenge = b"PSMatrix RC4 production-input escrow release authority v1\n"
+              signature = sign_bytes(challenge, private_key)
+              safe["ok"] = bool(verify_bytes(challenge, signature, public_key))
+              safe["key_id"] = public_key_id(public_key)
+              safe["public_key_sha256"] = hashlib.sha256(public_key.read_bytes()).hexdigest()
+          except Exception:
+              pass
+          print(json.dumps(safe, sort_keys=True, separators=(",", ":")))
+          PY
+                  if ($LASTEXITCODE -ne 0) { throw 'Safe authority identity check failed to execute.' }
+                  $safe = ($probeJson | Out-String).Trim() | ConvertFrom-Json
+                  $result.private_public_match = [bool]$safe.ok
+                  $result.key_id = [string]$safe.key_id
+                  $result.public_key_sha256 = [string]$safe.public_key_sha256
+                  $result.status = $(if ($result.private_public_match) { 'MATCH' } else { 'MISMATCH' })
+                }
+              }
+            }
+          }
+          finally {
+            if ($null -ne $decrypted) {
+              [Array]::Clear($decrypted, 0, $decrypted.Length)
+            }
+            [Array]::Clear($entropy, 0, $entropy.Length)
+            if ($null -ne $tempPrivate -and (Test-Path -LiteralPath $tempPrivate -PathType Leaf)) {
+              try {
+                $length = [int64](Get-Item -LiteralPath $tempPrivate).Length
+                if ($length -gt 0) {
+                  $zero = New-Object byte[] $length
+                  [System.IO.File]::WriteAllBytes($tempPrivate, $zero)
+                  [Array]::Clear($zero, 0, $zero.Length)
+                }
+              }
+              catch {}
+              Remove-Item -LiteralPath $tempPrivate -Force -ErrorAction SilentlyContinue
+              Remove-Item -LiteralPath (Split-Path -Parent $tempPrivate) -Recurse -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+          $result | ConvertTo-Json -Compress
