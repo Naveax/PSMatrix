@@ -46,9 +46,8 @@ repository. `scripts/ga/Initialize-ProductionGAProvisioningWorkspace.ps1` create
 provisioning workspace outside the checkout and generates the production authority material
 without claiming readiness. `scripts/ga/Invoke-ProductionGAEnvironmentProvisioning.ps1`
 consumes a path-only material map and writes selected values to the declared GitHub Environments
-through authenticated `gh ... set --env ...` commands without logging secret values. The
-repository-side automation does not make missing protected secrets magically appear, because
-apparently even cryptographic keys refuse to be created by optimism.
+through authenticated `gh ... set --env ...` commands without logging secret values. Repository
+source and CI evidence do not themselves provision missing protected environment secrets.
 
 Release-authority recovery has an additional continuity constraint: a replacement key cannot be
 silently substituted into a frozen release-candidate lock. Follow the Pack 03 RC4
