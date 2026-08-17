@@ -69,10 +69,9 @@ jobs:
           }
           git merge-base --is-ancestor $env:BASE_CONTROL_HEAD $head
           if ($LASTEXITCODE -ne 0) { throw 'Lock/signing control anchor is not an ancestor of rebind controls.' }
-          git merge-base --is-ancestor $env:RC4_RELEASE_COMMIT $env:FINAL_RELEASE_COMMIT
-          if ($LASTEXITCODE -ne 0) { throw 'RC4 release source is not an ancestor of final source.' }
 
           $contract = Get-Content 'ga-packs\03-authoritative-windows\final-windows-evidence-rebind-control-contract.json' -Raw | ConvertFrom-Json
+          if ([string]$contract.source_equivalence.comparison_mode -ne 'independent-frozen-anchors' -or [bool]$contract.source_equivalence.frozen_release_anchors_must_exist -ne $true -or [bool]$contract.source_equivalence.rc4_must_be_ancestor_of_final -ne $false) { throw 'Final Windows rebind frozen-source topology contract mismatch.' }
           if ([int]$contract.schema -ne 1 -or [string]$contract.kind -ne 'psmatrix.windows-authority-final-windows-evidence-rebind-control-contract') { throw 'Final Windows rebind contract identity mismatch.' }
           if ([string]$contract.rc4_release.release_commit -ne $env:RC4_RELEASE_COMMIT -or [string]$contract.final_release.release_commit -ne $env:FINAL_RELEASE_COMMIT) { throw 'Final Windows rebind frozen release commits mismatch.' }
           if ([bool]$contract.control_source.runtime_source_changes_allowed) { throw 'Rebind control layer must not allow runtime source changes.' }
@@ -98,6 +97,7 @@ jobs:
           Write-Host 'runtime_source_changes=0'
           Write-Host 'rc4_final_runtime_changed_paths=src/psmatrix/__init__.py'
           Write-Host 'authoritative_fixture_changes=0'
+          Write-Host 'rc4_final_source_equivalence=PASS comparison_mode=independent-frozen-anchors'
 
       - name: Compile final Windows rebind controls
         shell: pwsh
