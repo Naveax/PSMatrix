@@ -60,16 +60,8 @@ def verify(root: Path) -> dict[str, object]:
         'Scan git-tracked repository for private material',
         SCANNER_WORKFLOW.as_posix(),
     )
-    _require_exact_once(
-        scanner_step,
-        'python scripts/ga/scan_repository_private_material.py',
-        'standalone scanner command',
-    )
-    _require_exact_once(
-        scanner_step,
-        '--expected-head "${GITHUB_SHA}"',
-        'standalone scanner GITHUB_SHA binding',
-    )
+    _require_exact_once(scanner_step, 'python scripts/ga/scan_repository_private_material.py', 'standalone scanner command')
+    _require_exact_once(scanner_step, '--expected-head "${GITHUB_SHA}"', 'standalone scanner GITHUB_SHA binding')
 
     range_step = _step_block(
         source_cert,
@@ -79,11 +71,21 @@ def verify(root: Path) -> dict[str, object]:
     for token in (
         "expected = os.environ['GITHUB_SHA'].lower()",
         "if name == 'pull_request':",
+        "base_ref = str((pull.get('base') or {}).get('ref') or '')",
+        "if base_ref != 'main' or os.environ.get('GITHUB_BASE_REF') != 'main':",
+        "base = git('rev-parse', 'origin/main')",
+        "first_parent = git('rev-parse', 'HEAD^1')",
+        "merge_base = git('merge-base', 'origin/main', 'HEAD')",
+        'if first_parent != base or merge_base != base:',
         "elif name == 'push':",
         "['git','merge-base','--is-ancestor',base,head]",
         'PSMATRIX_VERIFICATION_MAINTENANCE_BASE',
     ):
         _require_exact_once(range_step, token, f'maintenance range token {token}')
+    if "(event.get('pull_request') or {}).get('base') or {}).get('sha')" in range_step:
+        raise VerificationHardeningEventHeadPolicyError(
+            'pull-request maintenance range may not trust stale event base.sha as current main'
+        )
 
     pin_refresh_step = _step_block(
         source_cert,
@@ -95,6 +97,7 @@ def verify(root: Path) -> dict[str, object]:
         f'--baseline {HISTORICAL_BASELINE}',
         f'--candidate {HISTORICAL_CANDIDATE}',
         '--require-candidate-ancestor-of-head',
+        '--allow-historical-candidate-additions',
         '--expected-files 76',
         '--expected-replacements 167',
     ):
@@ -105,16 +108,8 @@ def verify(root: Path) -> dict[str, object]:
         'Scan exact tracked tree for private material',
         SOURCE_CERT_WORKFLOW.as_posix(),
     )
-    _require_exact_once(
-        source_scan_step,
-        'python scripts/ga/scan_repository_private_material.py',
-        'source-cert scanner command',
-    )
-    _require_exact_once(
-        source_scan_step,
-        '--expected-head "$GITHUB_SHA"',
-        'source-cert scanner GITHUB_SHA binding',
-    )
+    _require_exact_once(source_scan_step, 'python scripts/ga/scan_repository_private_material.py', 'source-cert scanner command')
+    _require_exact_once(source_scan_step, '--expected-head "$GITHUB_SHA"', 'source-cert scanner GITHUB_SHA binding')
 
     source_certify_step = _step_block(
         source_cert,
@@ -154,11 +149,7 @@ def verify(root: Path) -> dict[str, object]:
         '[[ "$actual" != "$GITHUB_SHA" ]]',
         'echo "workflow_event_head_verified=true"',
     ):
-        _require_exact_once(
-            powershell_verify_step,
-            token,
-            f'PowerShell event-head token {token}',
-        )
+        _require_exact_once(powershell_verify_step, token, f'PowerShell event-head token {token}')
     positions = [
         powershell_verify_step.index('actual="$(git rev-parse HEAD)"'),
         powershell_verify_step.index('[[ "$actual" != "$GITHUB_SHA" ]]'),
@@ -166,12 +157,8 @@ def verify(root: Path) -> dict[str, object]:
     ]
     if positions != sorted(positions):
         raise VerificationHardeningEventHeadPolicyError('PowerShell event-head proof is out of order')
-    if powershell.index('- name: Verify exact workflow event revision') > powershell.index(
-        '- name: Parse every tracked PowerShell script'
-    ):
-        raise VerificationHardeningEventHeadPolicyError(
-            'PowerShell event-head verification must complete before parsing'
-        )
+    if powershell.index('- name: Verify exact workflow event revision') > powershell.index('- name: Parse every tracked PowerShell script'):
+        raise VerificationHardeningEventHeadPolicyError('PowerShell event-head verification must complete before parsing')
 
     return {
         'schema': 1,
@@ -183,13 +170,14 @@ def verify(root: Path) -> dict[str, object]:
         'powershell_event_head_preflights': 1,
         'historical_pin_refresh_receipt_bindings': 1,
         'maintenance_base_candidate_bindings': 1,
+        'current_main_merge_parent_bindings': 1,
         'ga_eligible': False,
     }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description='Verify exact workflow-event HEAD, historical publication, and current-base maintenance boundaries in verification-hardening workflows'
+        description='Verify exact workflow-event HEAD, immutable historical publication proof, and current-main maintenance boundaries in verification-hardening workflows'
     )
     parser.add_argument('--root', type=Path, default=Path('.'))
     args = parser.parse_args()
@@ -200,6 +188,7 @@ def main() -> int:
         print(f"powershell_event_head_preflights={value['powershell_event_head_preflights']}")
         print(f"historical_pin_refresh_receipt_bindings={value['historical_pin_refresh_receipt_bindings']}")
         print(f"maintenance_base_candidate_bindings={value['maintenance_base_candidate_bindings']}")
+        print(f"current_main_merge_parent_bindings={value['current_main_merge_parent_bindings']}")
         print('ga_eligible=false')
         return 0
     except (OSError, TypeError, ValueError, VerificationHardeningEventHeadPolicyError) as exc:
