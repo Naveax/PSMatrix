@@ -28,6 +28,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
@@ -37,6 +38,7 @@ jobs:
     environment: production-ga-windows-lab
     timeout-minutes: 35
     permissions:
+      actions: read
       contents: read
     env:
       PSMATRIX_WINDOWS_GA_ROOT: ${{ vars.PSMATRIX_WINDOWS_GA_ROOT }}
@@ -159,6 +161,97 @@ jobs:
           Write-Host "control_head=$controlHead"
           Write-Host "release_source_head=$releaseHead"
 
+      - name: Download exact operation-package workflow audit evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: windows-authority-rc3-operation-package
+          path: ${{ runner.temp }}\psmatrix-operation-run-audit
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.operation_run_id }}
+
+      - name: Verify exact operation-package workflow run authority
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) { throw 'GitHub Actions token is unavailable for operation-run verification.' }
+          if ($env:GITHUB_REPOSITORY -ne 'Naveax/PSMatrix') { throw "Operation-run authority is frozen to Naveax/PSMatrix; observed $env:GITHUB_REPOSITORY" }
+
+          $runId = [int64]$env:OPERATION_RUN_ID
+          $runAttempt = [int]$env:OPERATION_RUN_ATTEMPT
+          $expectedWorkflow = '.github/workflows/ga-windows-authority-operation-package-selfhosted.yml'
+          $expectedWorkflowName = 'production-ga-windows-authority-operation-package-selfhosted'
+          $expectedArtifact = 'windows-authority-rc3-operation-package'
+          $headers = @{
+              Accept = 'application/vnd.github+json'
+              Authorization = "Bearer $env:GH_TOKEN"
+              'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $runUri = "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/actions/runs/$runId"
+          $run = Invoke-RestMethod -Method Get -Uri $runUri -Headers $headers
+          if ([int64]$run.id -ne $runId) { throw 'Operation-package workflow run ID mismatch.' }
+          if ([string]$run.name -ne $expectedWorkflowName -or [string]$run.path -ne $expectedWorkflow) { throw 'Operation-package workflow identity mismatch.' }
+          if ([string]$run.event -ne 'workflow_dispatch' -or [string]$run.status -ne 'completed' -or [string]$run.conclusion -ne 'success') { throw 'Operation-package run must be a successful completed workflow_dispatch.' }
+          if ([int]$run.run_attempt -ne $runAttempt) { throw 'Operation-package workflow run-attempt mismatch.' }
+          if ([string]$run.head_branch -ne 'main') { throw 'Operation-package workflow run must be anchored to main.' }
+          $runHead = ([string]$run.head_sha).ToLowerInvariant()
+          if ($runHead -cnotmatch '^[0-9a-f]{40}$' -or $runHead -ne $env:PSMATRIX_WINDOWS_CONTROL_HEAD) { throw 'Operation-package workflow run head does not match the exact infrastructure control head.' }
+
+          $artifactListing = Invoke-RestMethod -Method Get -Uri "$runUri/artifacts?per_page=100" -Headers $headers
+          $artifacts = @($artifactListing.artifacts | Where-Object { [string]$_.name -eq $expectedArtifact -and [bool]$_.expired -eq $false })
+          if ($artifacts.Count -ne 1) { throw "Expected exactly one nonexpired $expectedArtifact artifact; observed $($artifacts.Count)." }
+          $artifact = $artifacts[0]
+          $artifactId = [int64]$artifact.id
+          if ($artifactId -le 0) { throw 'Operation-package workflow artifact ID is invalid.' }
+
+          $extract = Join-Path $env:RUNNER_TEMP 'psmatrix-operation-run-audit'
+          if (-not (Test-Path -LiteralPath $extract -PathType Container)) { throw 'Downloaded operation-package workflow audit evidence is missing.' }
+          $statusFiles = @(Get-ChildItem -LiteralPath $extract -File -Recurse | Where-Object { $_.Name -eq 'operation-package-status.json' })
+          if ($statusFiles.Count -ne 1) { throw "Expected exactly one operation-package-status.json in workflow evidence; observed $($statusFiles.Count)." }
+          $status = Get-Content -LiteralPath $statusFiles[0].FullName -Raw | ConvertFrom-Json
+          $metadata = Get-Content -LiteralPath $env:PSMATRIX_WINDOWS_OPERATION_METADATA -Raw | ConvertFrom-Json
+          if ([int]$status.schema -ne 1 -or [string]$status.kind -ne 'psmatrix.windows-authority-operation-package-workflow-status' -or [string]$status.status -ne 'READY_FOR_WINDOWS_HOST') { throw 'Operation-package workflow status identity is invalid.' }
+          if ([string]$status.release_version -ne '2.0.0rc3' -or [string]$status.release_commit -ne $env:RELEASE_COMMIT) { throw 'Operation-package workflow status release identity mismatch.' }
+          if ([string]$status.operation_output -ne $env:PSMATRIX_WINDOWS_OPERATION_ROOT) { throw 'Operation-package workflow status does not name the selected protected operation root.' }
+          if ([string]$status.operation_zip_name -ne [string]$metadata.artifact.name -or [string]$status.operation_zip_sha256 -ne [string]$metadata.artifact.sha256 -or [int64]$status.operation_zip_size -ne [int64]$metadata.artifact.size) { throw 'Operation-package workflow evidence does not bind the selected local operation artifact.' }
+          if ([string]$status.release_binding_sha256 -ne [string]$metadata.release_binding.binding_sha256 -or [string]$status.release_manifest_sha256 -ne [string]$metadata.release_binding.release_manifest_sha256) { throw 'Operation-package workflow evidence does not bind the selected release closure.' }
+          if ([bool]$status.deterministic_rebuild -ne $true -or [string]$status.private_key_scan -ne 'PASS' -or [bool]$status.authoritative -ne $false -or [bool]$status.ga_eligible -ne $false) { throw 'Operation-package workflow evidence violates the non-authoritative deterministic package contract.' }
+
+          $receipt = [ordered]@{
+              schema = 1
+              kind = 'psmatrix.windows-authority-operation-run-api-verification'
+              status = 'PASS'
+              repository = $env:GITHUB_REPOSITORY
+              workflow = $expectedWorkflow
+              workflow_name = $expectedWorkflowName
+              event = 'workflow_dispatch'
+              run_id = $runId
+              run_attempt = $runAttempt
+              run_conclusion = 'success'
+              exact_head = $runHead
+              immutable_ref = 'main'
+              artifact = $expectedArtifact
+              artifact_id = $artifactId
+              artifact_nonexpired = $true
+              artifact_status_bound_to_local_package = $true
+              release_commit = $env:RELEASE_COMMIT
+              release_version = '2.0.0rc3'
+              authoritative = $false
+              ga_eligible = $false
+          }
+          $receiptPath = Join-Path $env:PSMATRIX_WINDOWS_INFRA_EVIDENCE 'operation-run-api-verification.json'
+          [System.IO.File]::WriteAllText(
+              $receiptPath,
+              (($receipt | ConvertTo-Json -Depth 8) + [Environment]::NewLine),
+              [System.Text.UTF8Encoding]::new($false)
+          )
+          "PSMATRIX_WINDOWS_OPERATION_RUN_HEAD=$runHead" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_WINDOWS_OPERATION_RUN_ARTIFACT_ID=$artifactId" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_WINDOWS_OPERATION_RUN_VERIFICATION=$receiptPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "operation_run_api_verification=PASS run=$runId attempt=$runAttempt artifact=$artifactId"
+
       - name: Install exact signed RC3 controller package offline
         shell: pwsh
         env:
@@ -247,6 +340,13 @@ jobs:
               control_head = $env:PSMATRIX_WINDOWS_CONTROL_HEAD
               operation_run_id = [int64]$env:OPERATION_RUN_ID
               operation_run_attempt = [int]$env:OPERATION_RUN_ATTEMPT
+              operation_run_api_verified = $true
+              operation_run_workflow = '.github/workflows/ga-windows-authority-operation-package-selfhosted.yml'
+              operation_run_head = $env:PSMATRIX_WINDOWS_OPERATION_RUN_HEAD
+              operation_run_artifact = 'windows-authority-rc3-operation-package'
+              operation_run_artifact_id = [int64]$env:PSMATRIX_WINDOWS_OPERATION_RUN_ARTIFACT_ID
+              operation_run_artifact_nonexpired = $true
+              operation_run_artifact_status_bound_to_local_package = $true
               worker_timeout_seconds = [int]$env:PSMATRIX_WINDOWS_INFRA_TIMEOUT
               release_public_key_source = 'verified-protected-rc3-bundle'
               release_public_key_secret_used = $false
@@ -281,6 +381,7 @@ jobs:
               release_commit = $env:RELEASE_COMMIT
               operation_run_id = $env:OPERATION_RUN_ID
               operation_run_attempt = $env:OPERATION_RUN_ATTEMPT
+              operation_run_api_verified = $false
               runner_name = $env:RUNNER_NAME
               authority_level = 'protected-infrastructure-preflight'
               authoritative_campaign_evidence = $false
