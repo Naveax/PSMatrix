@@ -123,6 +123,48 @@ class ProductionGALocalProvisioningWorkspaceTests(unittest.TestCase):
                 if target.exists():
                     shutil.rmtree(target)
 
+    def test_existing_authority_root_symlink_or_junction_is_rejected_before_key_generation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="psmatrix-local-ga-authority-root-link-") as temporary:
+            external = Path(temporary)
+            workspace = external / "workspace"
+            target = external / "authority-target"
+            alias = workspace / "authorities"
+            kind = ""
+            workspace.mkdir()
+            target.mkdir()
+            try:
+                kind = self._create_directory_alias(alias, target)
+                completed = self._run(workspace)
+                self.assertNotEqual(completed.returncode, 0, completed.stdout)
+                self.assertIn("must not contain links or reparse points", completed.stdout)
+                self.assertEqual(list(target.iterdir()), [])
+                self.assertFalse((workspace / "fragments").exists())
+            finally:
+                self._remove_directory_alias(alias, kind)
+
+    def test_hardlinked_fragment_output_is_rejected_before_key_generation_when_supported(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="psmatrix-local-ga-fragment-hardlink-") as temporary:
+            external = Path(temporary)
+            workspace = external / "workspace"
+            fragment_root = workspace / "fragments"
+            fragment_root.mkdir(parents=True)
+            target = ROOT / ".tmp-production-ga-authority-fragment-target.json"
+            alias = fragment_root / "signing-authorities.material-map.json"
+            try:
+                target.write_text("sentinel\n", encoding="utf-8")
+                try:
+                    os.link(target, alias)
+                except (NotImplementedError, OSError) as exc:
+                    self.skipTest(f"hardlink creation is unavailable across these paths: {exc}")
+                completed = self._run(workspace)
+                self.assertNotEqual(completed.returncode, 0, completed.stdout)
+                self.assertIn("must not contain links or reparse points", completed.stdout)
+                self.assertFalse((workspace / "authorities").exists())
+                self.assertEqual(target.read_text(encoding="utf-8"), "sentinel\n")
+            finally:
+                alias.unlink(missing_ok=True)
+                target.unlink(missing_ok=True)
+
     def test_hardlinked_summary_alias_is_rejected_before_workspace_creation_when_supported(self) -> None:
         with tempfile.TemporaryDirectory(prefix="psmatrix-local-ga-summary-hardlink-") as temporary:
             external = Path(temporary)
@@ -144,15 +186,25 @@ class ProductionGALocalProvisioningWorkspaceTests(unittest.TestCase):
                 alias.unlink(missing_ok=True)
                 target.unlink(missing_ok=True)
 
-    def test_source_preflights_workspace_and_summary_before_creation(self) -> None:
+    def test_source_preflights_workspace_summary_and_child_outputs_before_generation(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
         workspace_guard = "workspace = Assert-NoExistingLinkOrReparseComponents"
         summary_guard = "Assert-NoExistingLinkOrReparseComponents $summaryPath"
         first_workspace_create = "New-Item -ItemType Directory -Path $workspace -Force"
+        authority_generation = "provision_production_ga_authorities.py"
         self.assertIn(workspace_guard, source)
         self.assertIn(summary_guard, source)
         self.assertLess(source.index(workspace_guard), source.index(first_workspace_create))
         self.assertLess(source.index(summary_guard), source.index(first_workspace_create))
+        for token in (
+            "$authorityRoot,",
+            "$fullMatrixRoot,",
+            "$authorityFragment,",
+            "$fullMatrixFragment,",
+            "$fullMatrixReceipt",
+        ):
+            self.assertIn(token, source)
+            self.assertLess(source.index(token), source.index(authority_generation))
         self.assertIn("[IO.FileAttributes]::ReparsePoint", source)
         self.assertIn("Properties['LinkType']", source)
 
