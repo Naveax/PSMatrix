@@ -1,0 +1,196 @@
+name: ops-local19-secure-bootstrap-20260817
+
+on:
+  push:
+    branches:
+      - ops/local19-secure-bootstrap-20260817
+    paths:
+      - .github/workflows/ops-local19-secure-bootstrap-20260817.yml
+
+concurrency:
+  group: ops-local19-secure-bootstrap-20260817
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap:
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 20
+    env:
+      SOURCE_SHA: 8498fef23788c5e3ee37ace736215a03f11118e8
+      PROVISIONING_ROOT: C:\ProgramData\PSMatrix\ProductionGA\provisioning
+    steps:
+      - name: Check out exact current main
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify exact clean source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($actual -ne $env:SOURCE_SHA) { throw "source SHA mismatch: $actual" }
+          if (git status --porcelain) { throw 'checkout is dirty' }
+          Write-Host "exact_source_sha=$actual"
+
+      - name: Secure external provisioning root and bootstrap local 19 checks
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+
+          $root = [IO.Path]::GetFullPath($env:PROVISIONING_ROOT)
+          $summaryPath = Join-Path $root 'local-provisioning-summary.json'
+          $systemSid = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+          $adminsSid = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+          $allowedSids = @($systemSid.Value, $adminsSid.Value)
+
+          function Assert-NoReparseChain([string]$Path) {
+            $cursor = [IO.Path]::GetFullPath($Path)
+            while (-not [string]::IsNullOrWhiteSpace($cursor)) {
+              $item = Get-Item -LiteralPath $cursor -Force -ErrorAction SilentlyContinue
+              if ($null -ne $item) {
+                $link = $item.PSObject.Properties['LinkType']
+                $linkType = if ($null -ne $link) { [string]$link.Value } else { '' }
+                if ((($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) -or $linkType) {
+                  throw "reparse/link component rejected: $($item.FullName)"
+                }
+              }
+              $parent = Split-Path -Parent $cursor
+              if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $cursor) { break }
+              $cursor = $parent
+            }
+          }
+
+          function Set-SecureDirectoryAcl([string]$Path) {
+            $security = [System.Security.AccessControl.DirectorySecurity]::new()
+            $security.SetAccessRuleProtection($true, $false)
+            $security.SetOwner($adminsSid)
+            $inherit = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+            $prop = [System.Security.AccessControl.PropagationFlags]::None
+            $allow = [System.Security.AccessControl.AccessControlType]::Allow
+            $full = [System.Security.AccessControl.FileSystemRights]::FullControl
+            [void]$security.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($systemSid,$full,$inherit,$prop,$allow))
+            [void]$security.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($adminsSid,$full,$inherit,$prop,$allow))
+            Set-Acl -LiteralPath $Path -AclObject $security
+          }
+
+          function Set-SecureFileAcl([string]$Path) {
+            $security = [System.Security.AccessControl.FileSecurity]::new()
+            $security.SetAccessRuleProtection($true, $false)
+            $security.SetOwner($adminsSid)
+            $allow = [System.Security.AccessControl.AccessControlType]::Allow
+            $full = [System.Security.AccessControl.FileSystemRights]::FullControl
+            [void]$security.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($systemSid,$full,$allow))
+            [void]$security.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($adminsSid,$full,$allow))
+            Set-Acl -LiteralPath $Path -AclObject $security
+          }
+
+          function Protect-Tree([string]$Path) {
+            Assert-NoReparseChain $Path
+            Set-SecureDirectoryAcl $Path
+            $stack = [System.Collections.Generic.Stack[string]]::new()
+            $stack.Push($Path)
+            while ($stack.Count -gt 0) {
+              $dir = $stack.Pop()
+              foreach ($child in Get-ChildItem -LiteralPath $dir -Force -ErrorAction Stop) {
+                $link = $child.PSObject.Properties['LinkType']
+                $linkType = if ($null -ne $link) { [string]$link.Value } else { '' }
+                if ((($child.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) -or $linkType) {
+                  throw "existing workspace contains reparse/link entry: $($child.FullName)"
+                }
+                if ($child.PSIsContainer) {
+                  Set-SecureDirectoryAcl $child.FullName
+                  $stack.Push($child.FullName)
+                } else {
+                  Set-SecureFileAcl $child.FullName
+                }
+              }
+            }
+          }
+
+          function Assert-AclRestricted([string]$Path) {
+            $acl = Get-Acl -LiteralPath $Path
+            foreach ($rule in $acl.Access) {
+              if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
+              try {
+                $sid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
+              } catch {
+                throw "cannot resolve ACL identity for $Path"
+              }
+              if ($sid -notin $allowedSids) {
+                throw "unexpected allowed ACL identity on protected material: $sid"
+              }
+            }
+          }
+
+          Assert-NoReparseChain $root
+          $rootExists = Test-Path -LiteralPath $root -PathType Container
+          if (-not $rootExists) {
+            New-Item -ItemType Directory -Path $root -Force | Out-Null
+            Write-Host 'workspace_preexisting=false'
+          } else {
+            Write-Host 'workspace_preexisting=true'
+          }
+          Protect-Tree $root
+          Assert-AclRestricted $root
+
+          $items = @(Get-ChildItem -LiteralPath $root -Force -ErrorAction Stop)
+          $hasSummary = Test-Path -LiteralPath $summaryPath -PathType Leaf
+          if ($items.Count -eq 0) {
+            Write-Host 'workspace_state=EMPTY_SECURED'
+            & .\scripts\ga\Initialize-ProductionGAProvisioningWorkspace.ps1 `
+              -Root $root `
+              -SummaryOutput $summaryPath
+            if ($LASTEXITCODE -ne 0) { throw 'official local provisioning bootstrap failed' }
+          } elseif ($hasSummary) {
+            Write-Host 'workspace_state=EXISTING_REUSE_NO_REGENERATION'
+          } else {
+            throw 'workspace contains material but no canonical summary; refusing partial regeneration'
+          }
+
+          Protect-Tree $root
+          Assert-NoReparseChain $summaryPath
+          if (-not (Test-Path -LiteralPath $summaryPath -PathType Leaf)) { throw 'canonical local provisioning summary missing' }
+          $summary = Get-Content -LiteralPath $summaryPath -Raw | ConvertFrom-Json
+          if ($summary.status -ne 'PASS') { throw 'local provisioning summary is not PASS' }
+          if ([int]$summary.locally_prepared_check_count -ne 19) { throw 'local prepared check count mismatch' }
+          if ([int]$summary.total_readiness_check_count -ne 41) { throw 'total readiness check count mismatch' }
+          if ([int]$summary.remaining_external_or_review_check_count -ne 22) { throw 'remaining external/review count mismatch' }
+          if ([int]$summary.authority_count -ne 9) { throw 'authority count mismatch' }
+          if ($summary.safety.github_environment_mutation_executed -ne $false) { throw 'unexpected GitHub mutation claim' }
+          if ($summary.safety.ga_eligible -ne $false) { throw 'local workspace must not claim GA eligibility' }
+
+          $authorityFragment = [string]$summary.fragments.signing_authorities
+          $matrixFragment = [string]$summary.fragments.full_matrix
+          foreach ($fragment in @($authorityFragment,$matrixFragment)) {
+            Assert-NoReparseChain $fragment
+            if (-not (Test-Path -LiteralPath $fragment -PathType Leaf)) { throw "fragment missing: $fragment" }
+          }
+          $authorityMap = Get-Content -LiteralPath $authorityFragment -Raw | ConvertFrom-Json
+          $matrixMap = Get-Content -LiteralPath $matrixFragment -Raw | ConvertFrom-Json
+          if ([int]$authorityMap.check_count -ne 17) { throw 'authority fragment cardinality mismatch' }
+          if ([int]$matrixMap.check_count -ne 2) { throw 'full-matrix fragment cardinality mismatch' }
+
+          $privateFiles = @(Get-ChildItem -LiteralPath (Join-Path $root 'authorities') -Filter '*.private.pem' -File -Force)
+          $publicFiles = @(Get-ChildItem -LiteralPath (Join-Path $root 'authorities') -Filter '*.public.pem' -File -Force)
+          if ($privateFiles.Count -ne 9 -or $publicFiles.Count -ne 9) {
+            throw "authority keypair cardinality mismatch: private=$($privateFiles.Count) public=$($publicFiles.Count)"
+          }
+          foreach ($file in $privateFiles) { Assert-AclRestricted $file.FullName }
+
+          Write-Host 'production_ga_local19_workspace=PASS'
+          Write-Host 'local_readiness_material=19/41'
+          Write-Host 'remaining_external_or_review=22'
+          Write-Host 'authority_count=9'
+          Write-Host 'private_key_file_count=9'
+          Write-Host 'public_key_file_count=9'
+          Write-Host 'private_material_uploaded=false'
+          Write-Host 'private_material_logged=false'
+          Write-Host 'github_environment_mutation=false'
+          Write-Host 'ga_eligible=false'
