@@ -49,6 +49,26 @@ reset_after = UNAVAILABLE_ON_GITHUB_HOSTED_RUNNER
 
 The hosted Windows PowerShell 5.1 preflight has completed successfully. It remains partial evidence only and does not replace the protected Hyper-V campaign.
 
+## Protected operation-package gate
+
+Workflow: `production-ga-windows-authority-operation-package-selfhosted`
+
+The protected infrastructure preflight cannot run without a successful RC3 operation package. The operation-package workflow runs on the protected Hyper-V controller, requires the reviewed RC3 release commit, validates the protected release intake and canonical media/provisioning state, builds the Windows authoritative operation package twice, and rejects the result unless both builds are byte-identical and bound to the current RC3 protected state.
+
+Required workflow input:
+
+```text
+release_commit  Exact reviewed RC3 release commit
+```
+
+A successful run materializes its protected output under a run-scoped path:
+
+```text
+PSMATRIX_WINDOWS_GA_ROOT\operation\2.0.0rc3\run-<run_id>-attempt-<run_attempt>
+```
+
+Record that exact successful `run_id` and `run_attempt`. The infrastructure preflight consumes those values and refuses to invent, reuse or silently substitute a different operation-package identity.
+
 ## Protected infrastructure preflight
 
 Workflow: `production-ga-windows-authority-infrastructure-preflight`
@@ -113,6 +133,8 @@ The release public authority is not supplied through a GitHub secret. The workfl
 
 The Windows-lab private key is materialized only under the controller's `RUNNER_TEMP`, ACL-restricted to the current runner identity, never copied into a guest VM, never uploaded as evidence and removed on every success or failure path.
 
+The campaign bootstrap first verifies the signed protected release bundle using the exact checked-out release source. Only after that verification succeeds does the controller install the exact protected release wheel offline with `--no-index --no-deps` into an isolated campaign target. Campaign execution fails closed unless the imported `psmatrix` package originates from that isolated wheel target and its installed distribution version exactly matches the protected release version. Checkout source remains control/bootstrap material rather than the product runtime being certified.
+
 ## Controller layout
 
 `PSMATRIX_WINDOWS_GA_ROOT` must contain the protected release media and lab configuration. For the release being certified:
@@ -171,4 +193,4 @@ Provisioning remains disabled unless explicitly requested. Existing VM/image sta
 
 ## Current state
 
-The hosted Windows PowerShell 5.1 preflight is `PASS_PARTIAL` and remains non-authoritative. The protected release-authority preflight is ready to run on the repaired workflow. After that, the immediate Pack 03 path is the protected infrastructure preflight followed by repeated clean-snapshot Windows PowerShell 4.0/5.0/5.1 campaigns with signed reset-before/reset-after evidence. Production GA remains blocked until those authoritative campaigns and the remaining GA packs are complete.
+The hosted Windows PowerShell 5.1 preflight is `PASS_PARTIAL` and remains non-authoritative. The protected release-authority preflight is ready to run on the repaired workflow. The current protected execution order is: release-authority preflight, successful RC3 operation-package build, infrastructure preflight using that exact operation-package `run_id` / `run_attempt`, then repeated clean-snapshot Windows PowerShell 4.0/5.0/5.1 campaigns with signed reset-before/reset-after evidence. The authoritative campaign itself now executes the exact verified protected release wheel rather than checkout product source. Production GA remains blocked until those authoritative campaigns and the remaining GA packs are complete.
