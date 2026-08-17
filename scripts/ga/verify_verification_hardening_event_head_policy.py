@@ -7,6 +7,8 @@ from pathlib import Path
 SCANNER_WORKFLOW = Path('.github/workflows/ga-repository-private-material-scan.yml')
 SOURCE_CERT_WORKFLOW = Path('.github/workflows/verification-hardening-source-certification.yml')
 POWERSHELL_WORKFLOW = Path('.github/workflows/powershell-source-parse-diagnostic.yml')
+HISTORICAL_BASELINE = '3ffc6b6d7cd58d64224f780aa819b50f50f72491'
+HISTORICAL_CANDIDATE = '3b06770cb925add391f4552e5f1cbd0ed6aa96b5'
 
 
 class VerificationHardeningEventHeadPolicyError(RuntimeError):
@@ -69,26 +71,34 @@ def verify(root: Path) -> dict[str, object]:
         'standalone scanner GITHUB_SHA binding',
     )
 
-    pin_refresh_step = _step_block(
+    range_step = _step_block(
         source_cert,
-        'Certify exact repository workflow action-pin refresh',
+        'Resolve exact maintenance base and candidate',
         SOURCE_CERT_WORKFLOW.as_posix(),
     )
-    _require_exact_once(
-        pin_refresh_step,
+    for token in (
+        "expected = os.environ['GITHUB_SHA'].lower()",
+        "if name == 'pull_request':",
+        "elif name == 'push':",
+        "['git','merge-base','--is-ancestor',base,head]",
+        'PSMATRIX_VERIFICATION_MAINTENANCE_BASE',
+    ):
+        _require_exact_once(range_step, token, f'maintenance range token {token}')
+
+    pin_refresh_step = _step_block(
+        source_cert,
+        'Certify immutable historical repository workflow action-pin refresh',
+        SOURCE_CERT_WORKFLOW.as_posix(),
+    )
+    for token in (
         'python scripts/ga/verify_repository_workflow_pin_refresh.py',
-        'workflow pin-refresh certification command',
-    )
-    _require_exact_once(
-        pin_refresh_step,
+        f'--baseline {HISTORICAL_BASELINE}',
+        f'--candidate {HISTORICAL_CANDIDATE}',
+        '--require-candidate-ancestor-of-head',
         '--expected-files 76',
-        'workflow pin-refresh exact file count',
-    )
-    _require_exact_once(
-        pin_refresh_step,
         '--expected-replacements 167',
-        'workflow pin-refresh exact replacement count',
-    )
+    ):
+        _require_exact_once(pin_refresh_step, token, f'historical pin-refresh token {token}')
 
     source_scan_step = _step_block(
         source_cert,
@@ -108,26 +118,30 @@ def verify(root: Path) -> dict[str, object]:
 
     source_certify_step = _step_block(
         source_cert,
-        'Certify verification hardening with exact workflow pin refresh',
+        'Certify current-base verification maintenance',
         SOURCE_CERT_WORKFLOW.as_posix(),
     )
-    _require_exact_once(
-        source_certify_step,
-        'python scripts/ga/certify_verification_hardening_source_with_pin_refresh.py',
-        'certified source certification command',
-    )
-    _require_exact_once(
-        source_certify_step,
-        '--workflow-pin-refresh "$RUNNER_TEMP/repository-workflow-pin-refresh.json"',
-        'source certification workflow pin-refresh receipt binding',
-    )
+    for token in (
+        'python scripts/ga/certify_verification_hardening_maintenance.py',
+        '--base "$PSMATRIX_VERIFICATION_MAINTENANCE_BASE"',
+        '--candidate "$GITHUB_SHA"',
+        '--historical-workflow-pin-refresh "$RUNNER_TEMP/repository-workflow-pin-refresh.json"',
+        '--private-scan "$RUNNER_TEMP/repository-private-material-scan.json"',
+    ):
+        _require_exact_once(source_certify_step, token, f'maintenance certification token {token}')
 
-    pin_pos = source_cert.index('- name: Certify exact repository workflow action-pin refresh')
+    range_pos = source_cert.index('- name: Resolve exact maintenance base and candidate')
+    pin_pos = source_cert.index('- name: Certify immutable historical repository workflow action-pin refresh')
     scan_pos = source_cert.index('- name: Scan exact tracked tree for private material')
-    certify_pos = source_cert.index('- name: Certify verification hardening with exact workflow pin refresh')
-    if not pin_pos < scan_pos < certify_pos:
+    certify_pos = source_cert.index('- name: Certify current-base verification maintenance')
+    if not range_pos < pin_pos < scan_pos < certify_pos:
         raise VerificationHardeningEventHeadPolicyError(
-            'workflow pin-refresh certification, private scan, and source certification are out of order'
+            'maintenance range, historical pin proof, private scan, and maintenance certification are out of order'
+        )
+
+    if 'certify_verification_hardening_source_with_pin_refresh.py' in source_cert:
+        raise VerificationHardeningEventHeadPolicyError(
+            'current maintenance workflow may not bind current HEAD to the legacy publication-baseline wrapper'
         )
 
     powershell_verify_step = _step_block(
@@ -167,14 +181,15 @@ def verify(root: Path) -> dict[str, object]:
         'workflow_count': 3,
         'scanner_event_head_bindings': 2,
         'powershell_event_head_preflights': 1,
-        'workflow_pin_refresh_receipt_bindings': 1,
+        'historical_pin_refresh_receipt_bindings': 1,
+        'maintenance_base_candidate_bindings': 1,
         'ga_eligible': False,
     }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description='Verify exact workflow-event HEAD binding in verification-hardening workflows'
+        description='Verify exact workflow-event HEAD, historical publication, and current-base maintenance boundaries in verification-hardening workflows'
     )
     parser.add_argument('--root', type=Path, default=Path('.'))
     args = parser.parse_args()
@@ -183,7 +198,8 @@ def main() -> int:
         print(f"verification_hardening_event_head_policy=PASS workflows={value['workflow_count']}")
         print(f"scanner_event_head_bindings={value['scanner_event_head_bindings']}")
         print(f"powershell_event_head_preflights={value['powershell_event_head_preflights']}")
-        print(f"workflow_pin_refresh_receipt_bindings={value['workflow_pin_refresh_receipt_bindings']}")
+        print(f"historical_pin_refresh_receipt_bindings={value['historical_pin_refresh_receipt_bindings']}")
+        print(f"maintenance_base_candidate_bindings={value['maintenance_base_candidate_bindings']}")
         print('ga_eligible=false')
         return 0
     except (OSError, TypeError, ValueError, VerificationHardeningEventHeadPolicyError) as exc:
