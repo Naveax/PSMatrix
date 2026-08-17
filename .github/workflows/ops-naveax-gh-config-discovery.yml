@@ -1,0 +1,77 @@
+name: ops-naveax-gh-config-discovery
+
+on:
+  push:
+    branches:
+      - ops/fresh-production-readiness-20260817
+    paths:
+      - .github/workflows/ops-naveax-gh-config-discovery.yml
+
+concurrency:
+  group: ops-naveax-gh-config-discovery
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 5
+    steps:
+      - name: Discover usable GitHub CLI profile without reading credentials
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gh = Get-Command gh -ErrorAction Stop
+          Write-Host "runner_name=$env:RUNNER_NAME"
+          Write-Host "runner_user=$([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
+          Write-Host "gh_path=$($gh.Source)"
+
+          $candidates = [System.Collections.Generic.List[string]]::new()
+          if ($env:APPDATA) {
+            $candidates.Add((Join-Path $env:APPDATA 'GitHub CLI'))
+          }
+          if (Test-Path -LiteralPath 'C:\Users' -PathType Container) {
+            Get-ChildItem -LiteralPath 'C:\Users' -Directory -Force -ErrorAction SilentlyContinue |
+              ForEach-Object {
+                $candidates.Add((Join-Path $_.FullName 'AppData\Roaming\GitHub CLI'))
+              }
+          }
+
+          $seen = @{}
+          $usable = 0
+          foreach ($dir in $candidates) {
+            $full = [System.IO.Path]::GetFullPath($dir)
+            if ($seen.ContainsKey($full)) { continue }
+            $seen[$full] = $true
+            $hosts = Join-Path $full 'hosts.yml'
+            if (-not (Test-Path -LiteralPath $hosts -PathType Leaf)) { continue }
+
+            $profileName = Split-Path (Split-Path (Split-Path (Split-Path $full -Parent) -Parent) -Parent) -Leaf
+            Write-Host "gh_profile_candidate=$profileName"
+            $old = $env:GH_CONFIG_DIR
+            try {
+              $env:GH_CONFIG_DIR = $full
+              & $gh.Source auth status --hostname github.com *> $null
+              $authRc = $LASTEXITCODE
+              if ($authRc -eq 0) {
+                $login = (& $gh.Source api user --jq '.login' 2>$null | Select-Object -First 1).Trim()
+                if ($LASTEXITCODE -eq 0 -and $login) {
+                  Write-Host "gh_profile_authenticated=true profile=$profileName login=$login"
+                  $usable++
+                } else {
+                  Write-Host "gh_profile_authenticated=false profile=$profileName reason=api-user-failed"
+                }
+              } else {
+                Write-Host "gh_profile_authenticated=false profile=$profileName reason=auth-status-failed"
+              }
+            }
+            finally {
+              $env:GH_CONFIG_DIR = $old
+            }
+          }
+
+          Write-Host "usable_gh_profile_count=$usable"
+          Write-Host 'credential_content_read=false'
+          Write-Host 'secret_mutation=false'
