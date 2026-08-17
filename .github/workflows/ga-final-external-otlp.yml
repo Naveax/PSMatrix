@@ -110,9 +110,11 @@ jobs:
           set -euo pipefail
           runtime="$RUNNER_TEMP/psmatrix-final-otlp-runtime"
           probe_root="$RUNNER_TEMP/psmatrix-final-otlp-probe-control"
+          wheel_path_file="$RUNNER_TEMP/psmatrix-final-otlp-wheel-path.txt"
           rm -rf "$runtime" "$probe_root"
+          rm -f "$wheel_path_file"
           mkdir -p "$runtime" "$probe_root/scripts/ga"
-          PYTHONPATH=control/src python - <<'PY'
+          PSMATRIX_FINAL_OTLP_WHEEL_PATH_FILE="$wheel_path_file" PYTHONPATH=control/src python - <<'PY'
           import json, os
           from pathlib import Path
           from psmatrix.release import verify_release_manifest
@@ -138,14 +140,18 @@ jobs:
           path=release/str(wheel.get('name') or '')
           if not path.is_file() or path.is_symlink():
               raise SystemExit('declared signed final wheel is missing or unsafe')
-          if int(wheel.get('size') or 0)!=path.stat().st_size or str(wheel.get('sha256') or '').lower()!=sha256_file(path):
+          digest=sha256_file(path)
+          if int(wheel.get('size') or 0)!=path.stat().st_size or str(wheel.get('sha256') or '').lower()!=digest:
               raise SystemExit('declared signed final wheel identity differs from verified bytes')
+          Path(os.environ['PSMATRIX_FINAL_OTLP_WHEEL_PATH_FILE']).write_text(str(path.resolve())+'\n',encoding='utf-8')
           with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as stream:
               stream.write(f'PSMATRIX_FINAL_OTLP_WHEEL={path.resolve()}\n')
-              stream.write(f'PSMATRIX_FINAL_OTLP_WHEEL_SHA256={sha256_file(path)}\n')
-          print(f'external_otlp_release_pre_secret=PASS wheel={path.name} sha256={sha256_file(path)}')
+              stream.write(f'PSMATRIX_FINAL_OTLP_WHEEL_SHA256={digest}\n')
+          print(f'external_otlp_release_pre_secret=PASS wheel={path.name} sha256={digest}')
           PY
-          python -m pip install --disable-pip-version-check --no-index --no-deps --target "$runtime" "$PSMATRIX_FINAL_OTLP_WHEEL"
+          wheel_path="$(cat "$wheel_path_file")"
+          [[ -n "$wheel_path" && -f "$wheel_path" ]] || { echo 'verified final OTLP wheel path was not materialized' >&2; exit 1; }
+          python -m pip install --disable-pip-version-check --no-index --no-deps --target "$runtime" "$wheel_path"
           cp control/scripts/ga/probe_final_external_otlp.py "$probe_root/scripts/ga/probe_final_external_otlp.py"
           cmp --silent control/scripts/ga/probe_final_external_otlp.py "$probe_root/scripts/ga/probe_final_external_otlp.py" || { echo 'isolated OTLP probe control differs from exact checkout bytes' >&2; exit 1; }
           [[ ! -e "$probe_root/src" ]] || { echo 'isolated OTLP probe root unexpectedly contains src; refusing checkout-source shadowing' >&2; exit 1; }
@@ -175,6 +181,7 @@ jobs:
               raise SystemExit(f'exact final OTLP runtime version mismatch: {version!r}')
           print(f'external_otlp_exact_wheel_runtime=PASS version={version}')
           PY
+          rm -f "$wheel_path_file"
           echo "PSMATRIX_FINAL_OTLP_RUNTIME=$runtime" >> "$GITHUB_ENV"
           echo "PSMATRIX_FINAL_OTLP_PROBE=$probe_root/scripts/ga/probe_final_external_otlp.py" >> "$GITHUB_ENV"
           echo 'external_otlp_checkout_source_execution=false'
