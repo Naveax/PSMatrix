@@ -67,7 +67,7 @@ class RepositoryWorkflowPinRefreshTests(unittest.TestCase):
         self.assertEqual(value['replacement_count'], 1)
         self.assertTrue(value['pin_only_transform_verified'])
         self.assertEqual(len(value['files'][0]['baseline_sha256']), 64)
-        self.assertEqual(len(value['files'][0]['current_sha256']), 64)
+        self.assertEqual(len(value['files'][0]['candidate_sha256']), 64)
 
     def test_unrelated_workflow_byte_change_fails_closed(self) -> None:
         self.commit_refresh(extra='  # unrelated change\n')
