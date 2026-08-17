@@ -49,6 +49,52 @@ reset_after = UNAVAILABLE_ON_GITHUB_HOSTED_RUNNER
 
 The hosted Windows PowerShell 5.1 preflight has completed successfully. It remains partial evidence only and does not replace the protected Hyper-V campaign.
 
+## Protected release-authority boundary
+
+Workflow: `production-ga-windows-authority-release-authority-preflight`
+
+This workflow proves possession of the private authority corresponding to the frozen RC3 release public key. It is not an authority-rotation workflow. The reviewed RC3 lock freezes the public-key digest and explicitly forbids rotation inside RC3.
+
+On 2026-08-17 the repaired workflow was dispatched twice from exact control head `1d488fac5da45df6ae84fc9164c3168873f2edfc`:
+
+```text
+32012159750  workflow_dispatch  FAIL
+32015694116  workflow_dispatch  FAIL
+```
+
+Both executions reached private-key materialization and failed because `PSMATRIX_RELEASE_PRIVATE_KEY` was absent from the protected `production-ga-release-signing` environment. This means the immediate boundary is protected authority material, not workflow syntax or dispatch availability.
+
+Do not repeatedly rerun this RC3 possession check without restoring the exact frozen RC3 private authority. Supplying an unrelated replacement key cannot satisfy the frozen RC3 lock.
+
+## Lost previous private authority: RC4 recovery
+
+The repository contains a separate reviewed recovery path for the explicit condition `lost_previous_private_authority`. Authority recovery is performed by RC4 rather than mutating or relabelling RC3 evidence.
+
+The final 2.0.0 lock/signing control contract freezes RC4 enrollment to exact control head:
+
+```text
+0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
+```
+
+and workflow:
+
+```text
+production-ga-windows-authority-rc4-release-authority-enrollment
+```
+
+The enrollment binds the new candidate authority to the frozen previous RC3 public authority and lock, while recording `lost_previous_private_authority` as the rotation reason. The resulting reviewed RC4 private authority must then remain the same authority through RC4 protected signing and final 2.0.0 signing. The final release contract does not permit another authority rotation during final release.
+
+If the original RC3 private authority is genuinely unavailable, the protected sequence is:
+
+1. securely provision the intended new private release authority in `production-ga-release-signing` as `PSMATRIX_RELEASE_PRIVATE_KEY`;
+2. run RC4 authority enrollment from the frozen enrollment control head;
+3. complete RC4 staging, release-lock review, reviewed lock promotion/commit, protected signing and protected release intake;
+4. complete RC4 media, provisioning, operation-package and image-identity closure;
+5. run exactly 10 clean-snapshot certification iterations for each of Windows PowerShell 4.0, 5.0 and 5.1;
+6. carry the same reviewed RC4 authority into the final 2.0.0 lock/signing chain and rebind final Windows evidence to the signed final release.
+
+Private authority material must remain protected environment material. It must not be committed to the repository or uploaded in evidence artifacts.
+
 ## Protected operation-package gate
 
 Workflow: `production-ga-windows-authority-operation-package-selfhosted`
@@ -68,6 +114,10 @@ PSMATRIX_WINDOWS_GA_ROOT\operation\2.0.0rc3\run-<run_id>-attempt-<run_attempt>
 ```
 
 Record that exact successful `run_id` and `run_attempt`. The infrastructure preflight consumes those values and refuses to invent, reuse or silently substitute a different operation-package identity.
+
+The infrastructure preflight also validates the selected operation-package run through the GitHub Actions API. It requires the exact workflow identity, successful `workflow_dispatch`, exact attempt, `main` control head, one nonexpired `windows-authority-rc3-operation-package` artifact, and status/hash/release-binding agreement with the protected local operation package.
+
+The canonical RC3 release-intake, media-readiness, provisioning-manifest and operation-package workflows currently have no completed protected production run. Therefore an RC3 infrastructure campaign cannot truthfully proceed from a fabricated or unrelated operation `run_id`.
 
 ## Protected infrastructure preflight
 
@@ -193,4 +243,8 @@ Provisioning remains disabled unless explicitly requested. Existing VM/image sta
 
 ## Current state
 
-The hosted Windows PowerShell 5.1 preflight is `PASS_PARTIAL` and remains non-authoritative. The protected release-authority preflight is ready to run on the repaired workflow. The current protected execution order is: release-authority preflight, successful RC3 operation-package build, infrastructure preflight using that exact operation-package `run_id` / `run_attempt`, then repeated clean-snapshot Windows PowerShell 4.0/5.0/5.1 campaigns with signed reset-before/reset-after evidence. The authoritative campaign itself now executes the exact verified protected release wheel rather than checkout product source. Production GA remains blocked until those authoritative campaigns and the remaining GA packs are complete.
+The hosted Windows PowerShell 5.1 preflight is `PASS_PARTIAL` and remains non-authoritative. The repaired RC3 release-authority preflight has been exercised on the current control head and now fails at the real protected boundary: `PSMATRIX_RELEASE_PRIVATE_KEY` is absent from `production-ga-release-signing`.
+
+If the original frozen RC3 private authority is recoverable, restore that exact authority and continue the RC3 protected chain. If it is lost, do not weaken RC3 or substitute an unrelated key; use the frozen RC4 `lost_previous_private_authority` enrollment and certification path, then carry that reviewed authority into final 2.0.0 signing.
+
+The authoritative product runtime remains bound to the exact verified protected release wheel rather than checkout product source. Production GA remains blocked until native Windows PowerShell 4.0/5.0/5.1 clean-snapshot certification and the remaining GA packs are complete.
