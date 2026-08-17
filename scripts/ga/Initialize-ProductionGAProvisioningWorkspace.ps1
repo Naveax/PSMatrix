@@ -7,10 +7,40 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Assert-NoExistingLinkOrReparseComponents([string]$Path, [string]$Label) {
+    $full = [IO.Path]::GetFullPath($Path)
+    $cursor = $full
+    while (-not [string]::IsNullOrWhiteSpace($cursor)) {
+        $item = Get-Item -LiteralPath $cursor -Force -ErrorAction SilentlyContinue
+        if ($null -ne $item) {
+            $linkProperty = $item.PSObject.Properties['LinkType']
+            $linkType = if ($null -ne $linkProperty) { [string]$linkProperty.Value } else { '' }
+            $isReparsePoint = (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+            if ($isReparsePoint -or -not [string]::IsNullOrWhiteSpace($linkType)) {
+                throw "$Label must not contain links or reparse points: $($item.FullName)"
+            }
+        }
+        $parent = Split-Path -Parent $cursor
+        if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $cursor) { break }
+        $cursor = $parent
+    }
+    return $full
+}
+
 $repoRoot = [IO.Path]::GetFullPath((Get-Location).Path).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
-$workspace = [IO.Path]::GetFullPath($Root)
+$workspace = Assert-NoExistingLinkOrReparseComponents $Root 'Production GA provisioning workspace path'
 if ($workspace.StartsWith($repoRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Production GA provisioning workspace must stay outside the repository.' }
+$summaryPath = if ([string]::IsNullOrWhiteSpace($SummaryOutput)) {
+    Join-Path $workspace 'local-provisioning-summary.json'
+}
+else {
+    Assert-NoExistingLinkOrReparseComponents $SummaryOutput 'Production GA provisioning summary path'
+}
+if ($summaryPath.StartsWith($repoRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Production GA provisioning summary must stay outside the repository.' }
+[void](Assert-NoExistingLinkOrReparseComponents $summaryPath 'Production GA provisioning summary path')
+
 New-Item -ItemType Directory -Path $workspace -Force | Out-Null
+[void](Assert-NoExistingLinkOrReparseComponents $workspace 'Production GA provisioning workspace path')
 
 $authorityRoot = Join-Path $workspace 'authorities'
 $fragmentRoot = Join-Path $workspace 'fragments'
@@ -19,7 +49,23 @@ $fullMatrixReceipt = Join-Path $workspace 'receipts/full-matrix-local-paths.json
 $fullMatrixValueRoot = Join-Path $workspace 'values/full-matrix'
 $authorityFragment = Join-Path $fragmentRoot 'signing-authorities.material-map.json'
 $fullMatrixFragment = Join-Path $fragmentRoot 'full-matrix.material-map.json'
-foreach ($path in @($fragmentRoot,(Split-Path -Parent $fullMatrixReceipt),$fullMatrixValueRoot)) { New-Item -ItemType Directory -Path $path -Force | Out-Null }
+
+foreach ($path in @(
+    $authorityRoot,
+    $fragmentRoot,
+    $fullMatrixRoot,
+    (Split-Path -Parent $fullMatrixReceipt),
+    $fullMatrixValueRoot,
+    $authorityFragment,
+    $fullMatrixFragment,
+    $fullMatrixReceipt
+)) {
+    [void](Assert-NoExistingLinkOrReparseComponents $path 'Production GA provisioning workspace child/output path')
+}
+foreach ($path in @($fragmentRoot,(Split-Path -Parent $fullMatrixReceipt),$fullMatrixValueRoot)) {
+    New-Item -ItemType Directory -Path $path -Force | Out-Null
+    [void](Assert-NoExistingLinkOrReparseComponents $path 'Production GA provisioning workspace child path')
+}
 
 $python = (Get-Command python -ErrorAction Stop).Source
 $authorityArgs = @('scripts/ga/provision_production_ga_authorities.py','--output-root',$authorityRoot)
@@ -27,12 +73,17 @@ if ($ForceAuthorities) { $authorityArgs += '--force' }
 & $python @authorityArgs
 if ($LASTEXITCODE -ne 0) { throw 'Production GA authority provisioning failed.' }
 
+[void](Assert-NoExistingLinkOrReparseComponents $authorityFragment 'Production GA authority material-map fragment path')
 & $python 'scripts/ga/build_authority_material_map_fragment.py' '--authority-root' $authorityRoot '--output' $authorityFragment
 if ($LASTEXITCODE -ne 0) { throw 'Production GA authority material-map fragment failed.' }
 
+[void](Assert-NoExistingLinkOrReparseComponents $fullMatrixRoot 'Production GA full-matrix root path')
+[void](Assert-NoExistingLinkOrReparseComponents $fullMatrixReceipt 'Production GA full-matrix receipt path')
 & (Join-Path $repoRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) 'scripts/ga/Initialize-ProductionGAFullMatrixPaths.ps1') -Root $fullMatrixRoot -Output $fullMatrixReceipt
 if ($LASTEXITCODE -ne 0) { throw 'Production GA full-matrix local bootstrap failed.' }
 
+[void](Assert-NoExistingLinkOrReparseComponents $fullMatrixValueRoot 'Production GA full-matrix value root')
+[void](Assert-NoExistingLinkOrReparseComponents $fullMatrixFragment 'Production GA full-matrix material-map fragment path')
 & $python 'scripts/ga/build_full_matrix_material_map_fragment.py' '--receipt' $fullMatrixReceipt '--output-root' $fullMatrixValueRoot '--output-map' $fullMatrixFragment
 if ($LASTEXITCODE -ne 0) { throw 'Production GA full-matrix material-map fragment failed.' }
 
@@ -68,10 +119,12 @@ $summary = [ordered]@{
         ga_eligible = $false
     }
 }
-$summaryPath = if ([string]::IsNullOrWhiteSpace($SummaryOutput)) { Join-Path $workspace 'local-provisioning-summary.json' } else { [IO.Path]::GetFullPath($SummaryOutput) }
-if ($summaryPath.StartsWith($repoRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Production GA provisioning summary must stay outside the repository.' }
 $summaryDirectory = Split-Path -Parent $summaryPath
-if ($summaryDirectory) { New-Item -ItemType Directory -Path $summaryDirectory -Force | Out-Null }
+if ($summaryDirectory) {
+    New-Item -ItemType Directory -Path $summaryDirectory -Force | Out-Null
+    [void](Assert-NoExistingLinkOrReparseComponents $summaryDirectory 'Production GA provisioning summary directory')
+}
+[void](Assert-NoExistingLinkOrReparseComponents $summaryPath 'Production GA provisioning summary path')
 [IO.File]::WriteAllText($summaryPath,(($summary | ConvertTo-Json -Depth 10)+[Environment]::NewLine),[Text.UTF8Encoding]::new($false))
 
 Write-Host 'production_ga_local_provisioning_workspace=PASS'
