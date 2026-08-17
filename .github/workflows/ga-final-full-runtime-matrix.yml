@@ -145,6 +145,11 @@ jobs:
           if ([string]$binding.release_version -ne '2.0.0' -or [string]$binding.release_commit -ne $env:FINAL_RELEASE_COMMIT) {
               throw 'Bootstrap protected-release identity mismatch.'
           }
+          if ($null -eq $binding.wheel) { throw 'Bootstrap binding lacks exact wheel identity.' }
+          if ([string]$binding.wheel.name -ne $wheels[0].Name) { throw 'Selected wheel name differs from signed release binding.' }
+          if ([int64]$binding.wheel.size -ne [int64]$wheels[0].Length) { throw 'Selected wheel size differs from signed release binding.' }
+          $wheelSha256 = (Get-FileHash -LiteralPath $wheels[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ([string]$binding.wheel.sha256 -ne $wheelSha256) { throw 'Selected wheel digest differs from signed release binding.' }
 
           New-Item -ItemType Directory -Path $runtime | Out-Null
           python -m pip install --disable-pip-version-check --no-index --no-deps --target $runtime $wheels[0].FullName
@@ -163,10 +168,15 @@ jobs:
               module.relative_to(root)
           except ValueError as exc:
               raise SystemExit(f'psmatrix import escaped exact wheel runtime: {module}') from exc
+          distribution_root = Path(importlib.metadata.distribution('psmatrix').locate_file('')).resolve()
+          try:
+              distribution_root.relative_to(root)
+          except ValueError as exc:
+              raise SystemExit(f'psmatrix distribution metadata escaped exact wheel runtime: {distribution_root}') from exc
           version = importlib.metadata.version('psmatrix')
           if version != '2.0.0':
               raise SystemExit(f'exact wheel runtime version mismatch: {version!r}')
-          print(f'final_matrix_exact_wheel_runtime=PASS module={module} version={version}')
+          print(f'final_matrix_exact_wheel_runtime=PASS module={module} distribution={distribution_root} version={version}')
           '@ | python -
           if ($LASTEXITCODE -ne 0) { throw 'Exact protected wheel runtime identity verification failed.' }
           "PSMATRIX_FINAL_WHEEL_RUNTIME=$runtime" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
@@ -302,11 +312,8 @@ jobs:
 
           bootstrap = json.loads(Path(os.environ['PSMATRIX_FINAL_BOOTSTRAP_BINDING']).read_text(encoding='utf-8'))
           wheel = json.loads(Path(os.environ['PSMATRIX_WHEEL_BINDING']).read_text(encoding='utf-8'))
-          for field in ('release_version', 'release_commit', 'release_manifest_sha256', 'release_public_key_sha256'):
-              if bootstrap.get(field) != wheel.get(field):
-                  raise SystemExit(f'bootstrap/wheel release binding differs for {field}')
-          if bootstrap.get('artifacts') != wheel.get('artifacts'):
-              raise SystemExit('bootstrap/wheel release binding artifact set differs')
+          if bootstrap != wheel:
+              raise SystemExit('bootstrap/wheel release binding differs')
           print('bootstrap_wheel_release_binding_equivalence=PASS')
           '@ | python -
           if ($LASTEXITCODE -ne 0) { throw 'Bootstrap/wheel release-binding equivalence failed.' }
