@@ -18,9 +18,24 @@ function Read-JsonObject([string]$Path, [string]$Label) {
     if ($null -eq $value -or $value -isnot [Collections.IDictionary]) { throw "$Label root must be an object." }
     return $value
 }
+function Assert-NoLinkOrReparsePath([string]$Path, [string]$Label) {
+    $current = Get-Item -LiteralPath $Path -Force
+    while ($null -ne $current) {
+        $linkProperty = $current.PSObject.Properties['LinkType']
+        $linkType = if ($null -ne $linkProperty) { [string]$linkProperty.Value } else { '' }
+        $isReparsePoint = (($current.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+        if ($isReparsePoint -or -not [string]::IsNullOrWhiteSpace($linkType)) {
+            throw "$Label source path must not contain links or reparse points: $($current.FullName)"
+        }
+        if ($current -is [IO.FileInfo]) { $current = $current.Directory }
+        elseif ($current -is [IO.DirectoryInfo]) { $current = $current.Parent }
+        else { break }
+    }
+}
 function Assert-ExternalMaterialFile([string]$Path, [string]$RepoRoot, [string]$Label) {
     $resolved = [IO.Path]::GetFullPath($Path)
     if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) { throw "$Label source file is missing: $resolved" }
+    Assert-NoLinkOrReparsePath $resolved $Label
     $repo = [IO.Path]::GetFullPath($RepoRoot).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
     if ($resolved.StartsWith($repo, [StringComparison]::OrdinalIgnoreCase)) { throw "$Label source file must stay outside the repository: $resolved" }
     if ((Get-Item -LiteralPath $resolved).Length -le 0) { throw "$Label source file is empty: $resolved" }
