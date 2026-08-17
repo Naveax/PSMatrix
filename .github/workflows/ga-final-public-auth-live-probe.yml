@@ -207,6 +207,69 @@ jobs:
             --timeout "$timeout" \
             --output "$report"
 
+          PSMATRIX_PUBLIC_AUTH_REPORT="$report" PSMATRIX_PUBLIC_AUTH_KEY_ROOT="$key_root" python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import ssl
+          import urllib.request
+          from pathlib import Path
+          from urllib.parse import urlsplit, urlunsplit
+
+          report_path=Path(os.environ['PSMATRIX_PUBLIC_AUTH_REPORT'])
+          key_root=Path(os.environ['PSMATRIX_PUBLIC_AUTH_KEY_ROOT'])
+          timeout=float(os.environ.get('PUBLIC_AUTH_TIMEOUT_SECONDS') or '10')
+          timeout=min(max(timeout,1.0),30.0)
+
+          def health_url(endpoint: str) -> str:
+              parsed=urlsplit(endpoint)
+              if parsed.scheme!='https' or not parsed.netloc:
+                  raise SystemExit('public-auth deployment identity endpoint is not HTTPS')
+              return urlunsplit(('https',parsed.netloc,'/healthz','',''))
+
+          def fetch_health(endpoint: str, *, cert: Path|None=None, key: Path|None=None) -> tuple[dict,str]:
+              context=ssl.create_default_context()
+              context.minimum_version=ssl.TLSVersion.TLSv1_2
+              if cert is not None or key is not None:
+                  if cert is None or key is None:
+                      raise SystemExit('deployment identity mTLS cert/key pair is incomplete')
+                  context.load_cert_chain(certfile=str(cert.resolve()),keyfile=str(key.resolve()))
+              request=urllib.request.Request(health_url(endpoint),headers={'Accept':'application/json'},method='GET')
+              with urllib.request.urlopen(request,timeout=timeout,context=context) as response:
+                  raw=response.read(65537)
+                  if response.status!=200 or len(raw)>65536:
+                      raise SystemExit('deployment identity health response is not bounded HTTP 200')
+                  server=str(response.headers.get('Server') or '')
+              try:
+                  value=json.loads(raw.decode('utf-8'))
+              except (UnicodeDecodeError,json.JSONDecodeError) as exc:
+                  raise SystemExit('deployment identity health response is not JSON') from exc
+              if not isinstance(value,dict) or value.get('status')!='ok' or value.get('transport')!='streamable-http' or value.get('version')!='2.0.0':
+                  raise SystemExit(f'deployed endpoint health identity/version mismatch: {value!r}')
+              return value,server
+
+          oauth_health,_=fetch_health(os.environ['OAUTH_ENDPOINT'])
+          mtls_health,mtls_server=fetch_health(
+              os.environ['MTLS_ENDPOINT'],
+              cert=key_root/'mtls-current.crt',
+              key=key_root/'mtls-current.key',
+          )
+          if 'PSMatrixHTTP/' not in mtls_server:
+              raise SystemExit('direct mTLS endpoint did not expose the PSMatrixHTTP server identity')
+
+          value=json.loads(report_path.read_text(encoding='utf-8'))
+          value['deployment_identity']={
+              'expected_version':'2.0.0',
+              'oauth_health_version_verified':oauth_health.get('version')=='2.0.0',
+              'mtls_health_version_verified':mtls_health.get('version')=='2.0.0',
+              'streamable_http_verified':oauth_health.get('transport')=='streamable-http' and mtls_health.get('transport')=='streamable-http',
+              'direct_mtls_server_identity_verified':True,
+              'direct_mtls_server_header_sha256':hashlib.sha256(mtls_server.encode('utf-8')).hexdigest(),
+          }
+          report_path.write_text(json.dumps(value,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+          print('public_auth_deployed_identity=PASS version=2.0.0 direct_mtls_server=PSMatrixHTTP')
+          PY
+
           PSMATRIX_PUBLIC_AUTH_REPORT="$report" python - <<'PY'
           import json
           import os
@@ -222,6 +285,10 @@ jobs:
               raise SystemExit('public-auth live report release run provenance mismatch')
           if (value.get('oauth') or {}).get('endpoint')==(value.get('mtls') or {}).get('endpoint'):
               raise SystemExit('public-auth live report reused one endpoint for OAuth and mTLS')
+          identity=value.get('deployment_identity') if isinstance(value.get('deployment_identity'),dict) else {}
+          required=('oauth_health_version_verified','mtls_health_version_verified','streamable_http_verified','direct_mtls_server_identity_verified')
+          if identity.get('expected_version')!='2.0.0' or any(identity.get(name) is not True for name in required):
+              raise SystemExit('public-auth live report lacks exact deployed PSMatrix 2.0.0 identity proof')
           secret_names=(
               'OAUTH_VALID_TOKEN','OAUTH_EXPIRED_TOKEN','OAUTH_WRONG_AUDIENCE_TOKEN','OAUTH_MISSING_SCOPE_TOKEN','OAUTH_REPLAY_TOKEN','OAUTH_RATE_LIMIT_TOKEN',
               'MTLS_CURRENT_CERT','MTLS_CURRENT_KEY','MTLS_ROTATION_CERT','MTLS_ROTATION_KEY','MTLS_UNTRUSTED_CERT','MTLS_UNTRUSTED_KEY','MTLS_REVOKED_CERT','MTLS_REVOKED_KEY',
@@ -233,7 +300,7 @@ jobs:
           markers=(b'-----BEGIN PRIVATE KEY-----',b'-----BEGIN RSA PRIVATE KEY-----',b'-----BEGIN EC PRIVATE KEY-----',b'-----BEGIN OPENSSH PRIVATE KEY-----',b'-----BEGIN ED25519 PRIVATE KEY-----')
           if any(marker in raw for marker in markers):
               raise SystemExit('private-key PEM material leaked into public-auth live report')
-          print('public_auth_live_report=PASS secret_material_absent=true')
+          print('public_auth_live_report=PASS deployed_version=2.0.0 secret_material_absent=true')
           PY
           echo "PSMATRIX_PUBLIC_AUTH_LIVE_OUTPUT=$output" >> "$GITHUB_ENV"
 
