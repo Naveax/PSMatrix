@@ -126,10 +126,11 @@ jobs:
           }
           $releaseManifest = $releaseManifests[0].FullName
           $releaseDir = $releaseManifests[0].Directory.FullName
-          if ($releaseManifests[0].BaseName -notmatch '^psmatrix-(2\.0\.0(?:rc[0-9]+)?)-release$') {
+          $versionMatch = [regex]::Match($releaseManifests[0].BaseName, '^psmatrix-(2\.0\.0(?:rc[0-9]+)?)-release$')
+          if (-not $versionMatch.Success) {
             throw 'Protected release manifest version could not be derived.'
           }
-          $releaseVersion = $Matches[1]
+          $releaseVersion = $versionMatch.Groups[1].Value
           $expectedReleaseDir = [System.IO.Path]::GetFullPath((Join-Path $releaseMediaRoot $releaseVersion))
           if ([System.IO.Path]::GetFullPath($releaseDir) -ne $expectedReleaseDir) {
             throw "Protected release manifest is outside its canonical version directory: $releaseDir"
