@@ -183,7 +183,7 @@ jobs:
           PY
           rm -f "$wheel_path_file"
           echo "PSMATRIX_FINAL_OTLP_RUNTIME=$runtime" >> "$GITHUB_ENV"
-          echo "PSMATRIX_FINAL_OTLP_PROBE=$probe_root/scripts/ga/probe_final_external_otlp.py" >> "$GITHUB_ENV"
+          echo "PSMATRIX_FINAL_OTLP_PROBE_ROOT=$probe_root" >> "$GITHUB_ENV"
           echo 'external_otlp_checkout_source_execution=false'
           echo 'external_otlp_wheel_install_mode=offline-no-index-no-deps'
 
@@ -207,15 +207,17 @@ jobs:
             rm -rf "$home"
           }
           trap cleanup EXIT
-          PYTHONPATH="$PSMATRIX_FINAL_OTLP_RUNTIME" python "$PSMATRIX_FINAL_OTLP_PROBE" run \
+          pushd "$PSMATRIX_FINAL_OTLP_PROBE_ROOT/scripts/ga" >/dev/null
+          PYTHONPATH="$PSMATRIX_FINAL_OTLP_RUNTIME" python probe_final_external_otlp.py run \
             --endpoint "$OTLP_ENDPOINT" \
             --headers-json "$secret_root/headers.json" \
-            --release-dir signed-release \
+            --release-dir "$GITHUB_WORKSPACE/signed-release" \
             --release-commit "$FINAL_RELEASE_COMMIT" \
             --release-signing-run-id "$RELEASE_SIGNING_RUN_ID" \
             --home "$home" \
             --timeout "$OTLP_TIMEOUT" \
             --output "$output/external-otlp-live-report.json"
+          popd >/dev/null
           PSMATRIX_OTLP_LIVE="$output" python - <<'PY'
           import json, os
           from pathlib import Path
