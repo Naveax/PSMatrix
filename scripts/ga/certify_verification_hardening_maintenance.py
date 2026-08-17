@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -113,14 +114,23 @@ def _verify_historical_pin_receipt(receipt: dict[str, Any], candidate: str) -> N
         'certified_head': HISTORICAL_PIN_CANDIDATE,
         'workflow_file_count': HISTORICAL_WORKFLOW_FILES,
         'workflow_replacement_count': HISTORICAL_WORKFLOW_REPLACEMENTS,
+        'historical_candidate_additions_allowed': True,
+        'historical_candidate_additions_outside_pin_proof': True,
         'baseline_files_deleted': 0,
         'baseline_modifications_outside_certified_pin_refresh': 0,
         'pin_only_transform_verified': True,
+        'pin_only_transform_verified_for_baseline_modifications': True,
         'ga_eligible': False,
     }
     for key, value in expected.items():
         if receipt.get(key) != value:
             raise VerificationMaintenanceError(f'historical pin-refresh receipt mismatch: {key}')
+    added_count = receipt.get('baseline_files_added')
+    if isinstance(added_count, bool) or not isinstance(added_count, int) or added_count <= 0:
+        raise VerificationMaintenanceError('historical pin-refresh added-path count is invalid')
+    added_digest = str(receipt.get('added_paths_sha256') or '')
+    if re.fullmatch(r'[0-9a-f]{64}', added_digest) is None:
+        raise VerificationMaintenanceError('historical pin-refresh added-path manifest digest is invalid')
     if receipt.get('repository_head') != candidate:
         raise VerificationMaintenanceError('historical pin-refresh receipt is not bound to current candidate HEAD')
     if receipt.get('historical_candidate_ancestor_of_repository_head') is not True:
@@ -250,7 +260,10 @@ def certify(
             'candidate_commit': HISTORICAL_PIN_CANDIDATE,
             'workflow_file_count': HISTORICAL_WORKFLOW_FILES,
             'workflow_replacement_count': HISTORICAL_WORKFLOW_REPLACEMENTS,
-            'pin_only_transform_verified': True,
+            'added_path_count': historical_pin['baseline_files_added'],
+            'added_paths_sha256': historical_pin['added_paths_sha256'],
+            'additions_outside_pin_proof': True,
+            'pin_only_transform_verified_for_baseline_modifications': True,
             'candidate_ancestor_of_certified_head': True,
         },
         'private_material_scan': {
@@ -267,6 +280,7 @@ def certify(
         'boundaries': {
             'current_base_to_candidate_only': True,
             'historical_publication_proof_separate': True,
+            'historical_additions_outside_pin_proof': True,
             'runtime_product_source_certified': False,
             'private_material_findings': 0,
             'production_state_mutated': False,
@@ -322,6 +336,7 @@ def main() -> int:
         print(f"certified_head={value['certified_head']}")
         print('historical_publication_proof_separate=true')
         print('historical_pin_refresh_verified=true')
+        print('historical_additions_outside_pin_proof=true')
         print('private_material_scan_independently_reverified=true')
         print('runtime_source_changes=0')
         print('production_state_mutated=false')
