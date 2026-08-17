@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -82,6 +83,79 @@ class ProductionGAAuthorityProvisioningTests(unittest.TestCase):
         forbidden = ROOT / ".tmp-production-ga-authorities"
         with self.assertRaises(self.module.AuthorityProvisioningError):
             self.module.provision_authorities(forbidden)
+
+    def test_force_rejects_symlinked_private_key_slot_before_generation_when_supported(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="psmatrix-ga-authorities-link-") as temporary:
+            root = Path(temporary) / "authorities"
+            root.mkdir()
+            target = ROOT / ".tmp-production-ga-authority-symlink-target.pem"
+            slot = root / "release.private.pem"
+            try:
+                target.write_text("sentinel\n", encoding="utf-8")
+                try:
+                    slot.symlink_to(target)
+                except (NotImplementedError, OSError) as exc:
+                    self.skipTest(f"file symlink creation is unavailable: {exc}")
+                with self.assertRaisesRegex(
+                    self.module.AuthorityProvisioningError,
+                    "link or reparse authority output slot",
+                ):
+                    self.module.provision_authorities(root, force=True)
+                self.assertEqual(target.read_text(encoding="utf-8"), "sentinel\n")
+                self.assertEqual(list(root.glob("*.public.pem")), [])
+            finally:
+                slot.unlink(missing_ok=True)
+                target.unlink(missing_ok=True)
+
+    def test_hardlinked_manifest_slot_blocks_before_any_private_key_generation_when_supported(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="psmatrix-ga-authorities-hardlink-") as temporary:
+            root = Path(temporary) / "authorities"
+            root.mkdir()
+            target = ROOT / ".tmp-production-ga-authority-manifest-target.json"
+            slot = root / "production-ga-authorities.manifest.json"
+            try:
+                target.write_text("sentinel\n", encoding="utf-8")
+                try:
+                    os.link(target, slot)
+                except (NotImplementedError, OSError) as exc:
+                    self.skipTest(f"hardlink creation is unavailable across these paths: {exc}")
+                with self.assertRaisesRegex(
+                    self.module.AuthorityProvisioningError,
+                    "hardlinked authority output slot",
+                ):
+                    self.module.provision_authorities(root, force=True)
+                self.assertEqual(target.read_text(encoding="utf-8"), "sentinel\n")
+                self.assertEqual(list(root.glob("*.private.pem")), [])
+                self.assertEqual(list(root.glob("*.public.pem")), [])
+            finally:
+                slot.unlink(missing_ok=True)
+                target.unlink(missing_ok=True)
+
+    def test_force_allows_existing_regular_authority_files_and_keeps_manifest_atomic(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="psmatrix-ga-authorities-force-") as temporary:
+            root = Path(temporary) / "authorities"
+            first = self.module.provision_authorities(root)
+            first_ids = {row["role"]: row["public_key_id"] for row in first["authorities"]}
+            second = self.module.provision_authorities(root, force=True)
+            second_ids = {row["role"]: row["public_key_id"] for row in second["authorities"]}
+            self.assertEqual(set(first_ids), set(second_ids))
+            self.assertTrue(all(first_ids[role] != second_ids[role] for role in first_ids))
+            self.assertEqual(
+                json.loads((root / "production-ga-authorities.manifest.json").read_text(encoding="utf-8")),
+                second,
+            )
+
+    def test_source_preflights_all_output_slots_before_key_generation(self) -> None:
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("manifest_path = _preflight_output_slots(root)", source)
+        self.assertLess(
+            source.index("manifest_path = _preflight_output_slots(root)"),
+            source.index("generate_ed25519_keypair(private_path, public_path, force=force)"),
+        )
+        self.assertIn("path.lstat()", source)
+        self.assertIn("st_nlink", source)
+        self.assertIn("FILE_ATTRIBUTE_REPARSE_POINT", source)
+        self.assertIn("atomic_write_json(manifest_path, result)", source)
 
 
 if __name__ == "__main__":
