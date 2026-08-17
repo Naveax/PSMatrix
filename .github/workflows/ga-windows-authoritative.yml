@@ -82,10 +82,9 @@ jobs:
         env:
           WINDOWS_LAB_PRIVATE_KEY: ${{ secrets.PSMATRIX_WINDOWS_LAB_PRIVATE_KEY }}
           WINDOWS_LAB_PUBLIC_KEY: ${{ secrets.PSMATRIX_WINDOWS_LAB_PUBLIC_KEY }}
-          RELEASE_PUBLIC_KEY: ${{ secrets.PSMATRIX_RELEASE_PUBLIC_KEY }}
         run: |
           $ErrorActionPreference = 'Stop'
-          foreach ($name in @('WINDOWS_LAB_PRIVATE_KEY','WINDOWS_LAB_PUBLIC_KEY','RELEASE_PUBLIC_KEY')) {
+          foreach ($name in @('WINDOWS_LAB_PRIVATE_KEY','WINDOWS_LAB_PUBLIC_KEY')) {
             if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name, 'Process'))) {
               throw "$name is missing."
             }
@@ -103,7 +102,6 @@ jobs:
           $utf8 = [System.Text.UTF8Encoding]::new($false)
           [System.IO.File]::WriteAllText((Join-Path $keyRoot 'windows-lab.private.pem'), $env:WINDOWS_LAB_PRIVATE_KEY.Trim() + "`n", $utf8)
           [System.IO.File]::WriteAllText((Join-Path $keyRoot 'windows-lab.public.pem'), $env:WINDOWS_LAB_PUBLIC_KEY.Trim() + "`n", $utf8)
-          [System.IO.File]::WriteAllText((Join-Path $keyRoot 'release.public.pem'), $env:RELEASE_PUBLIC_KEY.Trim() + "`n", $utf8)
 
       - name: Run release-bound authoritative Windows campaign
         shell: pwsh
@@ -115,26 +113,45 @@ jobs:
             Remove-Item -LiteralPath $output -Recurse -Force
           }
 
-          $releaseDir = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'release'
-          if (-not (Test-Path -LiteralPath $releaseDir -PathType Container)) {
-            throw "Release directory is missing: $releaseDir"
+          $releaseMediaRoot = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'media\release'
+          if (-not (Test-Path -LiteralPath $releaseMediaRoot -PathType Container)) {
+            throw "Protected release media root is missing: $releaseMediaRoot"
           }
           $releaseManifests = @(
-            Get-ChildItem -LiteralPath $releaseDir -File |
+            Get-ChildItem -LiteralPath $releaseMediaRoot -File -Recurse |
               Where-Object { $_.Name -match '^psmatrix-2\.0\.0(?:rc[0-9]+)?-release\.json$' }
           )
           if ($releaseManifests.Count -ne 1) {
-            throw "Expected exactly one 2.0.0/2.0.0rcN release manifest; found $($releaseManifests.Count)."
+            throw "Expected exactly one 2.0.0/2.0.0rcN release manifest in protected release media; found $($releaseManifests.Count)."
           }
           $releaseManifest = $releaseManifests[0].FullName
+          $releaseDir = $releaseManifests[0].Directory.FullName
+          $versionMatch = [regex]::Match($releaseManifests[0].BaseName, '^psmatrix-(2\.0\.0(?:rc[0-9]+)?)-release$')
+          if (-not $versionMatch.Success) {
+            throw 'Protected release manifest version could not be derived.'
+          }
+          $releaseVersion = $versionMatch.Groups[1].Value
+          $expectedReleaseDir = [System.IO.Path]::GetFullPath((Join-Path $releaseMediaRoot $releaseVersion))
+          if ([System.IO.Path]::GetFullPath($releaseDir) -ne $expectedReleaseDir) {
+            throw "Protected release manifest is outside its canonical version directory: $releaseDir"
+          }
+          $releasePublicKey = Join-Path $releaseDir "psmatrix-$releaseVersion-release-public.pem"
+          $releaseWheel = Join-Path $releaseDir "psmatrix-$releaseVersion-py3-none-any.whl"
+          foreach ($path in @($releasePublicKey, $releaseWheel)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Required protected release bundle file is missing: $path"
+            }
+          }
           Write-Host "release_manifest=$($releaseManifests[0].Name)"
+          Write-Host "release_public_key_source=verified-protected-release-bundle"
+          Write-Host "release_public_key_secret_used=false"
 
           $params = @{
             SourceRoot = $env:GITHUB_WORKSPACE
             ReleaseCommit = '${{ inputs.release_commit }}'
             ReleaseManifest = $releaseManifest
             ReleaseArtifactDir = $releaseDir
-            ReleasePublicKey = (Join-Path $keyRoot 'release.public.pem')
+            ReleasePublicKey = $releasePublicKey
             LabPrivateKey = (Join-Path $keyRoot 'windows-lab.private.pem')
             LabPublicKey = (Join-Path $keyRoot 'windows-lab.public.pem')
             TrustHome = (Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'trust-home')
