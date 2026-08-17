@@ -47,6 +47,8 @@ reset_before = UNAVAILABLE_ON_GITHUB_HOSTED_RUNNER
 reset_after = UNAVAILABLE_ON_GITHUB_HOSTED_RUNNER
 ```
 
+The hosted Windows PowerShell 5.1 preflight has completed successfully. It remains partial evidence only and does not replace the protected Hyper-V campaign.
+
 ## Protected infrastructure preflight
 
 Workflow: `production-ga-windows-authority-infrastructure-preflight`
@@ -56,8 +58,9 @@ This workflow runs on the protected Hyper-V controller before the expensive repe
 - real Windows execution and exact checked-out commit;
 - Hyper-V PowerShell module, VMMS service and snapshot commands;
 - protected `PSMATRIX_WINDOWS_GA_ROOT` layout;
-- exactly one signed `2.0.0` or `2.0.0rcN` release manifest;
-- release binding for source ZIP, Windows worker package, certification kit and provisioning kit;
+- exact reviewed RC3 protected release bundle and locked public authority;
+- exact signed RC3 controller wheel installed offline;
+- operation-package binding to the exact release commit and protected release artifacts;
 - authoritative fixture-pack schema;
 - 4.0/5.0/5.1 endpoint and image-manifest schemas;
 - endpoint/image worker identity binding;
@@ -68,7 +71,9 @@ The validator is `scripts/ga/validate_windows_authority_infrastructure.py`. It u
 Workflow inputs:
 
 ```text
-release_commit          Full 40-character commit SHA
+release_commit          Exact reviewed RC3 release commit
+operation_run_id        Successful RC3 operation-package workflow run ID
+operation_run_attempt   Successful RC3 operation-package workflow run attempt
 worker_timeout_seconds  5–120; default 30
 ```
 
@@ -102,22 +107,24 @@ Required protected secrets:
 ```text
 PSMATRIX_WINDOWS_LAB_PRIVATE_KEY
 PSMATRIX_WINDOWS_LAB_PUBLIC_KEY
-PSMATRIX_RELEASE_PUBLIC_KEY
 ```
+
+The release public authority is not supplied through a GitHub secret. The workflow obtains `psmatrix-<version>-release-public.pem` from the verified protected release bundle under `PSMATRIX_WINDOWS_GA_ROOT\media\release\<version>` and passes that exact bundle key to the authoritative operator. This matches `runner-contract.json`, which requires `release_public_key_source=verified-protected-release-bundle` and `release_public_key_secret_required=false`.
 
 The Windows-lab private key is materialized only under the controller's `RUNNER_TEMP`, ACL-restricted to the current runner identity, never copied into a guest VM, never uploaded as evidence and removed on every success or failure path.
 
 ## Controller layout
 
-`PSMATRIX_WINDOWS_GA_ROOT` must contain:
+`PSMATRIX_WINDOWS_GA_ROOT` must contain the protected release media and lab configuration. For the release being certified:
 
 ```text
-release/
-  psmatrix-2.0.0-release.json               # final, or exactly one rcN equivalent
-  psmatrix-2.0.0-source.zip
-  psmatrix-2.0.0-windows-workers.zip
-  psmatrix-2.0.0-windows-certification-kit.zip
-  psmatrix-2.0.0-windows-provisioning-kit.zip
+media/
+  release/
+    <version>/
+      psmatrix-<version>-release.json
+      psmatrix-<version>-release-public.pem
+      psmatrix-<version>-py3-none-any.whl
+      ...signed release artifacts bound by the manifest...
 config/
   windows-powershell-4.0-endpoint.json
   windows-powershell-4.0-image.json
@@ -130,9 +137,9 @@ config/
 trust-home/
 ```
 
-For a release candidate, all artifact filenames and the unique manifest use the same `2.0.0rcN` version prefix. Mixing final and RC inventories or leaving multiple matching manifests in the release directory is rejected.
+`<version>` must be `2.0.0` or `2.0.0rcN`. The authoritative workflow fails closed unless exactly one matching release manifest is present under protected release media, that manifest is inside its canonical version directory, and the corresponding bundle public key and wheel exist beside it.
 
-The release manifest must be signed and must bind exactly one source ZIP, Windows worker package, certification kit and provisioning kit. The workflow checks out the exact full 40-character `release_commit` supplied by the operator and refuses a mismatched head.
+The release manifest must be signed and must bind the release artifacts used by the campaign. The workflow checks out the exact full 40-character `release_commit` supplied by the operator and refuses a mismatched head.
 
 ## Required campaign
 
@@ -164,4 +171,4 @@ Provisioning remains disabled unless explicitly requested. Existing VM/image sta
 
 ## Current state
 
-`INFRASTRUCTURE_PREFLIGHT_READY_HOSTED_WINDOWS_5_1_PENDING` — the hosted 5.1 workflow is hardened and ready for an exact-commit run. The protected authoritative campaign remains blocked until the trusted Hyper-V controller, exact Windows media/WMF images, worker endpoints, image manifests, signed release inventory and protected authority credentials are present.
+The hosted Windows PowerShell 5.1 preflight is `PASS_PARTIAL` and remains non-authoritative. The protected release-authority preflight is ready to run on the repaired workflow. After that, the immediate Pack 03 path is the protected infrastructure preflight followed by repeated clean-snapshot Windows PowerShell 4.0/5.0/5.1 campaigns with signed reset-before/reset-after evidence. Production GA remains blocked until those authoritative campaigns and the remaining GA packs are complete.
