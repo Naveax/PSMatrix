@@ -12,6 +12,10 @@ class WindowsAuthorityReleaseAuthorityPreflightTests(unittest.TestCase):
         required = (
             "workflow_dispatch:",
             "environment: production-ga-release-signing",
+            "Initialize release authority preflight paths",
+            "RELEASE_KEY_ROOT: ${{ runner.temp }}/psmatrix-release-authority-preflight-keys",
+            "RELEASE_PREFLIGHT_ROOT: ${{ runner.temp }}/psmatrix-release-authority-preflight",
+            '>> "$GITHUB_ENV"',
             "PSMATRIX_RELEASE_PRIVATE_KEY",
             "rc3-release-lock.json",
             "psmatrix.signing import public_key_id, sign_bytes, verify_bytes",
@@ -38,6 +42,21 @@ class WindowsAuthorityReleaseAuthorityPreflightTests(unittest.TestCase):
         for value in forbidden:
             with self.subTest(value=value):
                 self.assertNotIn(value, text)
+
+    def test_runner_temp_is_not_referenced_from_job_level_env(self) -> None:
+        text = WORKFLOW.read_text(encoding="utf-8")
+        invalid_job_env = (
+            "    env:\n"
+            "      PSMATRIX_RELEASE_KEY_ROOT: ${{ runner.temp }}/psmatrix-release-authority-preflight-keys\n"
+            "      PSMATRIX_RELEASE_PREFLIGHT: ${{ runner.temp }}/psmatrix-release-authority-preflight"
+        )
+        valid_step_env = (
+            "        env:\n"
+            "          RELEASE_KEY_ROOT: ${{ runner.temp }}/psmatrix-release-authority-preflight-keys\n"
+            "          RELEASE_PREFLIGHT_ROOT: ${{ runner.temp }}/psmatrix-release-authority-preflight"
+        )
+        self.assertNotIn(invalid_job_env, text)
+        self.assertIn(valid_step_env, text)
 
     def test_preflight_does_not_build_or_sign_release_artifacts(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")
