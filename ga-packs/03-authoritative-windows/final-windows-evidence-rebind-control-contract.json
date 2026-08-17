@@ -19,10 +19,13 @@
     "release_public_key": "psmatrix-2.0.0-release-public.pem"
   },
   "source_equivalence": {
-    "rc4_must_be_ancestor_of_final": true,
+    "comparison_mode": "independent-frozen-anchors",
+    "frozen_release_anchors_must_exist": true,
+    "rc4_must_be_ancestor_of_final": false,
     "runtime_changed_paths": ["src/psmatrix/__init__.py"],
     "authoritative_fixture_changed_paths": [],
     "normalized_init_must_match": true,
+    "normalized_pyproject_must_match": true,
     "rc4_version_literal": "2.0.0rc4",
     "final_version_literal": "2.0.0"
   },
