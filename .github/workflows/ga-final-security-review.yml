@@ -112,6 +112,82 @@ jobs:
           run-id: ${{ inputs.review_packet_run_id }}
           github-token: ${{ github.token }}
 
+      - name: Bootstrap-verify protected release and install exact security-review runtime wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime="$RUNNER_TEMP/psmatrix-final-security-review-runtime"
+          wheel_path_file="$RUNNER_TEMP/psmatrix-final-security-review-wheel-path.txt"
+          rm -rf "$runtime"
+          rm -f "$wheel_path_file"
+          mkdir -p "$runtime"
+          PSMATRIX_REVIEW_WHEEL_PATH_FILE="$wheel_path_file" PYTHONPATH=control/src python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from psmatrix.release import verify_release_manifest
+          from psmatrix.util import sha256_file
+
+          release=Path('signed-release')
+          manifest=release/'psmatrix-2.0.0-release.json'
+          public=release/'psmatrix-2.0.0-release-public.pem'
+          status_path=release/'psmatrix-2.0.0-protected-release-signing-status.json'
+          verified=verify_release_manifest(manifest,release,signing_public_key=public)
+          if verified.get('valid') is not True or verified.get('version')!='2.0.0':
+              raise SystemExit('security-review protected final release verification failed before wheel execution')
+          status=json.loads(status_path.read_text(encoding='utf-8'))
+          if status.get('release_artifacts_signed') is not True or status.get('version')!='2.0.0' or status.get('release_commit')!=os.environ['FINAL_RELEASE_COMMIT']:
+              raise SystemExit('security-review protected final release signing status is not exact final/signed')
+          root=json.loads(manifest.read_text(encoding='utf-8'))
+          body=root.get('manifest') if isinstance(root,dict) else None
+          artifacts=body.get('artifacts') if isinstance(body,dict) else None
+          wheels=[item for item in artifacts or [] if isinstance(item,dict) and str(item.get('name') or '').endswith('.whl')]
+          if len(wheels)!=1:
+              raise SystemExit(f'signed final release must declare exactly one wheel; found {len(wheels)}')
+          wheel=wheels[0]
+          path=release/str(wheel.get('name') or '')
+          if not path.is_file() or path.is_symlink():
+              raise SystemExit('declared final security-review wheel is missing or unsafe')
+          digest=sha256_file(path)
+          if int(wheel.get('size') or 0)!=path.stat().st_size or str(wheel.get('sha256') or '').lower()!=digest:
+              raise SystemExit('declared final security-review wheel identity differs from verified bytes')
+          Path(os.environ['PSMATRIX_REVIEW_WHEEL_PATH_FILE']).write_text(str(path.resolve())+'\n',encoding='utf-8')
+          with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as stream:
+              stream.write(f'PSMATRIX_FINAL_SECURITY_REVIEW_WHEEL_SHA256={digest}\n')
+          print(f'security_review_release_pre_secret=PASS wheel={path.name} sha256={digest}')
+          PY
+          wheel_path="$(cat "$wheel_path_file")"
+          [[ -n "$wheel_path" && -f "$wheel_path" ]] || { echo 'verified final security-review wheel path was not materialized' >&2; exit 1; }
+          python -m pip install --disable-pip-version-check --no-index --no-deps --target "$runtime" "$wheel_path"
+          PSMATRIX_EXPECTED_RUNTIME_ROOT="$runtime" PYTHONPATH="$runtime" python - <<'PY'
+          import importlib.metadata
+          import os
+          from pathlib import Path
+          import psmatrix
+          import psmatrix.ga
+          import psmatrix.signing
+
+          root=Path(os.environ['PSMATRIX_EXPECTED_RUNTIME_ROOT']).resolve()
+          paths=(
+              Path(psmatrix.__file__).resolve(),
+              Path(psmatrix.ga.__file__).resolve(),
+              Path(psmatrix.signing.__file__).resolve(),
+              Path(importlib.metadata.distribution('psmatrix').locate_file('')).resolve(),
+          )
+          for path in paths:
+              try:
+                  path.relative_to(root)
+              except ValueError as exc:
+                  raise SystemExit(f'security-review runtime escaped exact final wheel target: {path}') from exc
+          version=importlib.metadata.version('psmatrix')
+          if version!='2.0.0':
+              raise SystemExit(f'exact final security-review runtime version mismatch: {version!r}')
+          print(f'security_review_exact_wheel_runtime=PASS version={version}')
+          PY
+          rm -f "$wheel_path_file"
+          echo "PSMATRIX_FINAL_SECURITY_REVIEW_RUNTIME=$runtime" >> "$GITHUB_ENV"
+          echo 'security_review_checkout_source_execution=false'
+          echo 'security_review_wheel_install_mode=offline-no-index-no-deps'
+
       - name: Validate completed independent review before reviewer-private-key access
         shell: bash
         env:
@@ -189,7 +265,7 @@ jobs:
           cp "$PSMATRIX_REVIEW_UNSIGNED/security-review-report.json" "$output/security-review-report.json"
           cp "$PSMATRIX_REVIEW_UNSIGNED/security-review-submission-validation.json" "$output/security-review-submission-validation.json"
           cp review-packet/psmatrix-2.0.0-security-review-packet.zip "$output/psmatrix-2.0.0-security-review-packet.zip"
-          PYTHONPATH=control/src python -m psmatrix.cli ga review-finalize \
+          PYTHONPATH="$PSMATRIX_FINAL_SECURITY_REVIEW_RUNTIME" python -m psmatrix.cli ga review-finalize \
             --report "$output/security-review-report.json" \
             --source-archive signed-release/psmatrix-2.0.0-source.zip \
             --release-manifest signed-release/psmatrix-2.0.0-release.json \
@@ -197,17 +273,20 @@ jobs:
             --public-key "$key_root/security-review.public.pem" \
             --result-output "$output/security-review-result.json" \
             --attestation-output "$output/security-review.dsse.json"
-          PYTHONPATH=control/src python -m psmatrix.cli ga proof-verify \
+          PYTHONPATH="$PSMATRIX_FINAL_SECURITY_REVIEW_RUNTIME" python -m psmatrix.cli ga proof-verify \
             --type security-review \
             --attestation "$output/security-review.dsse.json" \
             --public-key "$key_root/security-review.public.pem" >/dev/null
           cp "$key_root/security-review.public.pem" "$output/security-review-public.pem"
-          PSMATRIX_REVIEW_OUTPUT="$output" PYTHONPATH=control/src python - <<'PY'
+          PSMATRIX_REVIEW_OUTPUT="$output" PYTHONPATH="$PSMATRIX_FINAL_SECURITY_REVIEW_RUNTIME" python - <<'PY'
+          import importlib.metadata
           import os
           from pathlib import Path
           from psmatrix.ga import verify_ga_proof
           from psmatrix.signing import public_key_id
           from psmatrix.util import atomic_write_json, read_json, sha256_file
+          if importlib.metadata.version('psmatrix')!='2.0.0':
+              raise SystemExit('security-review proof verification is not running from final 2.0.0 runtime')
           root=Path(os.environ['PSMATRIX_REVIEW_OUTPUT'])
           verified=verify_ga_proof(read_json(root/'security-review.dsse.json'),public_key=root/'security-review-public.pem',expected_type='security-review')
           result=verified.get('result')
@@ -229,13 +308,13 @@ jobs:
           review_key_id=public_key_id(root/'security-review-public.pem')
           if review_key_id==public_key_id(release_public):
               raise SystemExit('security-review and release authorities must be independent')
-          status={'schema':1,'kind':'psmatrix.final-security-review-producer-status','status':'PASS','version':'2.0.0','reviewed_commit':os.environ['FINAL_RELEASE_COMMIT'].lower(),'review_report_sha256':report_sha,'security_review_key_id':review_key_id,'security_review_public_key_sha256':sha256_file(root/'security-review-public.pem'),'proof_verified':True,'independent_review_attested':True,'reviewer_key_control_attested':True,'critical_high_blockers_absent':True,'security_review_private_key_copied_to_output':False,'final_ga_evaluator_invoked':False,'ga_eligible':False}
+          status={'schema':1,'kind':'psmatrix.final-security-review-producer-status','status':'PASS','version':'2.0.0','reviewed_commit':os.environ['FINAL_RELEASE_COMMIT'].lower(),'review_report_sha256':report_sha,'release_wheel_sha256':os.environ['PSMATRIX_FINAL_SECURITY_REVIEW_WHEEL_SHA256'],'exact_release_wheel_runtime':True,'security_review_key_id':review_key_id,'security_review_public_key_sha256':sha256_file(root/'security-review-public.pem'),'proof_verified':True,'independent_review_attested':True,'reviewer_key_control_attested':True,'critical_high_blockers_absent':True,'security_review_private_key_copied_to_output':False,'final_ga_evaluator_invoked':False,'ga_eligible':False}
           atomic_write_json(root/'security-review-producer-status.json',status)
           markers=(b'-----BEGIN PRIVATE KEY-----',b'-----BEGIN RSA PRIVATE KEY-----',b'-----BEGIN EC PRIVATE KEY-----',b'-----BEGIN OPENSSH PRIVATE KEY-----',b'-----BEGIN ED25519 PRIVATE KEY-----')
           for path in root.rglob('*'):
               if path.is_file() and any(marker in path.read_bytes() for marker in markers):
                   raise SystemExit(f'private-key material found in security-review output: {path.name}')
-          print(f'signed_security_review=PASS key_id={review_key_id} independent_review=true')
+          print(f'signed_security_review=PASS key_id={review_key_id} independent_review=true exact_release_wheel=true')
           print('final_ga_evaluator_invoked=false')
           print('ga_eligible=false')
           PY
