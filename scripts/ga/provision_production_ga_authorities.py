@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
+import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -13,7 +13,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from psmatrix.signing import generate_ed25519_keypair, public_key_id
-from psmatrix.util import sha256_file
+from psmatrix.util import atomic_write_json, sha256_file
 
 
 class AuthorityProvisioningError(RuntimeError):
@@ -49,8 +49,39 @@ def _ensure_external_root(output_root: Path) -> Path:
     return root
 
 
+def _assert_safe_existing_output_slot(root: Path, path: Path, label: str) -> None:
+    if path.parent != root:
+        raise AuthorityProvisioningError(f"authority output slot escaped the authority root: {label}")
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise AuthorityProvisioningError(f"unable to inspect authority output slot: {label}") from exc
+
+    reparse_flag = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+    file_attributes = int(getattr(metadata, "st_file_attributes", 0))
+    if stat.S_ISLNK(metadata.st_mode) or path.is_symlink() or (file_attributes & reparse_flag):
+        raise AuthorityProvisioningError(f"refusing link or reparse authority output slot: {label}")
+    if int(getattr(metadata, "st_nlink", 1)) != 1:
+        raise AuthorityProvisioningError(f"refusing hardlinked authority output slot: {label}")
+    if not stat.S_ISREG(metadata.st_mode):
+        raise AuthorityProvisioningError(f"authority output slot must be a regular file when it already exists: {label}")
+
+
+def _preflight_output_slots(root: Path) -> Path:
+    for authority in AUTHORITIES:
+        role = str(authority["role"])
+        _assert_safe_existing_output_slot(root, root / f"{role}.private.pem", f"{role}.private.pem")
+        _assert_safe_existing_output_slot(root, root / f"{role}.public.pem", f"{role}.public.pem")
+    manifest_path = root / "production-ga-authorities.manifest.json"
+    _assert_safe_existing_output_slot(root, manifest_path, manifest_path.name)
+    return manifest_path
+
+
 def provision_authorities(output_root: Path, *, force: bool = False) -> dict[str, Any]:
     root = _ensure_external_root(output_root)
+    manifest_path = _preflight_output_slots(root)
     rows: list[dict[str, Any]] = []
     private_secret_count = 0
     public_secret_count = 0
@@ -100,8 +131,7 @@ def provision_authorities(output_root: Path, *, force: bool = False) -> dict[str
     }
     if result["authority_count"] != 9 or result["readiness_secret_check_count"] != 17:
         raise AuthorityProvisioningError("Production GA authority cardinality mismatch")
-    manifest_path = root / "production-ga-authorities.manifest.json"
-    manifest_path.write_text(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    atomic_write_json(manifest_path, result)
     return result
 
 
