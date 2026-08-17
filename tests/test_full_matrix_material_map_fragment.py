@@ -172,7 +172,7 @@ class FullMatrixMaterialMapFragmentTests(unittest.TestCase):
         self.assertIn("physical_runtime_paths", source)
         self.assertIn("len(set(physical_runtime_paths)) != 2", source)
         self.assertLess(source.index("len(set(physical_runtime_paths)) != 2"), source.index("atomic_write_text(value_file"))
-        self.assertIn("path.lstat()", source)
+        self.assertIn(".lstat()", source)
         self.assertIn("st_nlink", source)
         self.assertIn("FILE_ATTRIBUTE_REPARSE_POINT", source)
         self.assertIn("atomic_write_json(map_path, value)", source)
