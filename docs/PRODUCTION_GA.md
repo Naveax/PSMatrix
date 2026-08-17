@@ -1,7 +1,9 @@
 # Production GA gate
 
-PSMatrix 2.0.0rc2 implements the final Production GA acceptance mechanism. It
-is not itself a Production GA declaration.
+The Production GA acceptance mechanism was introduced during the `2.0.0rc2` cycle. The
+current source version is `2.0.0`, but that version string is not a Production GA declaration.
+Production GA remains blocked until every mandatory gate below is satisfied with fresh,
+release-bound evidence and the protected final signing chain completes.
 
 ## Mandatory gates
 
@@ -38,6 +40,20 @@ The template contains separate authorities for release, CI artifact signing,
 Windows lab, deployment, operations, recovery, security review, and
 vulnerability scanning.
 Independent roles cannot reuse the same key ID.
+
+For the protected production control plane, private authority material must remain outside the
+repository. `scripts/ga/Initialize-ProductionGAProvisioningWorkspace.ps1` creates the local
+provisioning workspace outside the checkout and generates the production authority material
+without claiming readiness. `scripts/ga/Invoke-ProductionGAEnvironmentProvisioning.ps1`
+consumes a path-only material map and writes selected values to the declared GitHub Environments
+through authenticated `gh ... set --env ...` commands without logging secret values. The
+repository-side automation does not make missing protected secrets magically appear, because
+apparently even cryptographic keys refuse to be created by optimism.
+
+Release-authority recovery has an additional continuity constraint: a replacement key cannot be
+silently substituted into a frozen release-candidate lock. Follow the Pack 03 RC4
+`lost_previous_private_authority` enrollment path when the previous frozen authority is genuinely
+lost.
 
 ## Sign CI artifacts
 
@@ -121,6 +137,11 @@ Exit codes:
 
 `ga sign` re-evaluates the policy at signing time. It does not accept a caller
 supplied evaluation as authoritative input.
+
+The command above documents the local CLI contract. Production final signing must use the
+reviewed protected release authority and the frozen final release-lock/signing workflows; a
+private key copied into the repository or an ad-hoc replacement authority is not acceptable
+Production GA evidence.
 
 ## Verification
 
