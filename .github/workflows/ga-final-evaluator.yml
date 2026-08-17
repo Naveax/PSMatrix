@@ -314,6 +314,7 @@ jobs:
           New-Item -ItemType Directory -Path $runtime | Out-Null
           $env:PSMATRIX_EVALUATOR_RELEASE_ROOT = $releaseRoot
           $env:PSMATRIX_EVALUATOR_WHEEL_PATH_FILE = $wheelPathFile
+          $env:PYTHONPATH = (Join-Path $env:GITHUB_WORKSPACE 'control\src')
           @'
           import json
           import os
