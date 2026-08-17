@@ -25,10 +25,19 @@ jobs:
       PSMATRIX_FINAL_GA_ROOT: ${{ vars.PSMATRIX_FINAL_GA_ROOT }}
 
     steps:
-      - name: Check out exact final revision
+      - name: Check out exact final release source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
         with:
           ref: ${{ inputs.release_commit }}
+          path: release-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out exact trusted final closure control
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          path: control
           fetch-depth: 1
           persist-credentials: false
 
@@ -37,15 +46,19 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Validate final release controller and evidence root
+      - name: Validate trusted control, exact final source, and evidence root
         shell: bash
         run: |
           set -euo pipefail
           expected='${{ inputs.release_commit }}'
           [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || { echo 'release_commit must be 40 lowercase hex characters' >&2; exit 1; }
-          actual="$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')"
-          [[ "$actual" == "$expected" ]] || { echo 'checked-out commit does not match release_commit' >&2; exit 1; }
-          [[ -z "$(git status --porcelain)" ]] || { echo 'final source checkout is not clean' >&2; exit 1; }
+          control_expected="${GITHUB_SHA,,}"
+          control_actual="$(git -C control rev-parse HEAD | tr '[:upper:]' '[:lower:]')"
+          release_actual="$(git -C release-source rev-parse HEAD | tr '[:upper:]' '[:lower:]')"
+          [[ "$control_actual" == "$control_expected" ]] || { echo 'trusted final closure control checkout does not match workflow SHA' >&2; exit 1; }
+          [[ "$release_actual" == "$expected" ]] || { echo 'checked-out release source does not match release_commit' >&2; exit 1; }
+          [[ -z "$(git -C control status --porcelain)" ]] || { echo 'trusted final closure control checkout is not clean' >&2; exit 1; }
+          [[ -z "$(git -C release-source status --porcelain)" ]] || { echo 'final release source checkout is not clean' >&2; exit 1; }
           [[ -n "${PSMATRIX_FINAL_GA_ROOT:-}" ]] || { echo 'PSMATRIX_FINAL_GA_ROOT environment variable is missing' >&2; exit 1; }
           root="$(realpath "$PSMATRIX_FINAL_GA_ROOT")"
           [[ -d "$root" ]] || { echo 'final GA evidence root is missing' >&2; exit 1; }
@@ -55,25 +68,200 @@ jobs:
           rm -rf "$output" "$keys"
           install -d -m 0700 "$output" "$keys"
           {
-            echo "PYTHONPATH=$GITHUB_WORKSPACE/src"
             echo "PSMATRIX_FINAL_GA_POLICY=$root/ga-policy.json"
             echo "PSMATRIX_FINAL_GA_OUTPUT=$output"
             echo "PSMATRIX_FINAL_GA_KEYS=$keys"
-            echo "PSMATRIX_FINAL_GA_COMMIT=$actual"
+            echo "PSMATRIX_FINAL_GA_COMMIT=$release_actual"
+            echo "PSMATRIX_FINAL_GA_CONTROL_COMMIT=$control_actual"
+            echo "PSMATRIX_FINAL_GA_SOURCE=$GITHUB_WORKSPACE/release-source"
+            echo "PSMATRIX_FINAL_GA_CONTROL=$GITHUB_WORKSPACE/control"
           } >> "$GITHUB_ENV"
-          python - <<'PY'
+          python - "$expected" <<'PY'
+          import json
+          import sys
           import tomllib
           from pathlib import Path
 
-          with Path('pyproject.toml').open('rb') as handle:
+          expected = sys.argv[1]
+          control = Path('control')
+          source = Path('release-source')
+          contracts = (
+              control / 'ga-packs/03-authoritative-windows/final-ga-evaluator-control-contract.json',
+              control / 'ga-packs/03-authoritative-windows/final-execution-control-contract.json',
+          )
+          for path in contracts:
+              value = json.loads(path.read_text(encoding='utf-8'))
+              if value.get('schema') != 1 or value.get('version') != '2.0.0':
+                  raise SystemExit(f'final closure control contract identity mismatch: {path.name}')
+              if value.get('final_release_commit') != expected:
+                  raise SystemExit(f'release_commit differs from frozen final control contract: {path.name}')
+          with (source / 'pyproject.toml').open('rb') as handle:
               version = str(tomllib.load(handle)['project']['version'])
           if version != '2.0.0':
               raise SystemExit('protected final closure requires pyproject version 2.0.0')
-          package = Path('src/psmatrix/__init__.py').read_text(encoding='utf-8')
+          package = (source / 'src/psmatrix/__init__.py').read_text(encoding='utf-8')
           if '__version__ = "2.0.0"' not in package:
               raise SystemExit('protected final closure requires package version 2.0.0')
-          print('final_source_version=2.0.0')
+          print(f'final_source_version=2.0.0 final_release_commit={expected}')
           PY
+
+      - name: Install exact signed release wheel before final signer key access
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime="$RUNNER_TEMP/psmatrix-final-ga-closure-runtime"
+          wheel_path_file="$RUNNER_TEMP/psmatrix-final-ga-closure-wheel.txt"
+          runtime_provenance="$RUNNER_TEMP/psmatrix-final-ga-runtime-provenance.json"
+          rm -rf "$runtime"
+          rm -f "$wheel_path_file" "$runtime_provenance"
+          install -d -m 0700 "$runtime"
+          PSMATRIX_FINAL_WHEEL_PATH_FILE="$wheel_path_file" PYTHONPATH="$PSMATRIX_FINAL_GA_CONTROL/src" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from psmatrix.ga import load_ga_policy
+          from psmatrix.release import verify_release_manifest
+          from psmatrix.util import sha256_file
+
+          policy_path = Path(os.environ['PSMATRIX_FINAL_GA_POLICY']).resolve()
+          policy, base = load_ga_policy(policy_path)
+          evidence = policy.get('evidence') if isinstance(policy.get('evidence'), dict) else {}
+          authorities = policy.get('authorities') if isinstance(policy.get('authorities'), dict) else {}
+          release_record = evidence.get('signed-release') if isinstance(evidence.get('signed-release'), dict) else None
+          release_authority = authorities.get('release') if isinstance(authorities.get('release'), dict) else None
+          if release_record is None or release_authority is None or release_record.get('authority') != 'release':
+              raise SystemExit('final closure policy does not contain the canonical signed-release authority binding')
+
+          def safe_path(value, label, *, directory=False):
+              text = str(value or '')
+              if not text or '\x00' in text:
+                  raise SystemExit(f'{label} path is missing or invalid')
+              supplied = Path(text)
+              path = (supplied if supplied.is_absolute() else base / supplied).resolve()
+              try:
+                  relative = path.relative_to(base.resolve())
+              except ValueError as exc:
+                  raise SystemExit(f'{label} escapes the final GA evidence root') from exc
+              cursor = base.resolve()
+              for part in relative.parts:
+                  cursor = cursor / part
+                  if cursor.is_symlink():
+                      raise SystemExit(f'{label} traverses a symlink')
+              if directory:
+                  if not path.is_dir():
+                      raise SystemExit(f'{label} directory is missing')
+              elif not path.is_file():
+                  raise SystemExit(f'{label} file is missing')
+              return path
+
+          manifest = safe_path(release_record.get('manifest'), 'signed release manifest')
+          artifact_dir = safe_path(release_record.get('artifact_dir'), 'signed release artifact root', directory=True)
+          public = safe_path(release_authority.get('public_key'), 'release public key')
+          verified = verify_release_manifest(manifest, artifact_dir, signing_public_key=public)
+          if verified.get('valid') is not True or verified.get('version') != '2.0.0':
+              raise SystemExit('final closure protected release verification failed before runtime install')
+          root = json.loads(manifest.read_text(encoding='utf-8'))
+          body = root.get('manifest') if isinstance(root, dict) and isinstance(root.get('manifest'), dict) else {}
+          artifacts = body.get('artifacts') if isinstance(body.get('artifacts'), list) else []
+          wheels = [item for item in artifacts if isinstance(item, dict) and str(item.get('name') or '').endswith('.whl')]
+          if len(wheels) != 1:
+              raise SystemExit(f'final closure requires exactly one signed release wheel; found {len(wheels)}')
+          wheel = wheels[0]
+          path = artifact_dir / str(wheel.get('name') or '')
+          if not path.is_file() or path.is_symlink():
+              raise SystemExit('final closure signed release wheel is missing or unsafe')
+          digest = sha256_file(path)
+          if int(wheel.get('size') or 0) != path.stat().st_size or str(wheel.get('sha256') or '').lower() != digest:
+              raise SystemExit('final closure signed release wheel byte identity mismatch')
+          Path(os.environ['PSMATRIX_FINAL_WHEEL_PATH_FILE']).write_text(str(path.resolve()) + '\n', encoding='utf-8')
+          print(f'final_closure_release_bootstrap=PASS wheel={path.name} sha256={digest}')
+          PY
+          wheel_path="$(cat "$wheel_path_file")"
+          [[ -n "$wheel_path" && -f "$wheel_path" ]] || { echo 'final closure verified wheel path is missing' >&2; exit 1; }
+          wheel_sha256="$(python -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$wheel_path")"
+          python -m pip install --disable-pip-version-check --no-index --no-deps --target "$runtime" "$wheel_path"
+          PSMATRIX_EXPECTED_RUNTIME_ROOT="$runtime" PYTHONPATH="$runtime" python - <<'PY'
+          import importlib.metadata
+          import os
+          from pathlib import Path
+          import psmatrix
+          import psmatrix.ga
+          import psmatrix.signing
+
+          root = Path(os.environ['PSMATRIX_EXPECTED_RUNTIME_ROOT']).resolve()
+          paths = (
+              Path(psmatrix.__file__).resolve(),
+              Path(psmatrix.ga.__file__).resolve(),
+              Path(psmatrix.signing.__file__).resolve(),
+              Path(importlib.metadata.distribution('psmatrix').locate_file('')).resolve(),
+          )
+          for path in paths:
+              try:
+                  path.relative_to(root)
+              except ValueError as exc:
+                  raise SystemExit(f'final closure runtime escaped exact signed wheel target: {path}') from exc
+          version = importlib.metadata.version('psmatrix')
+          if version != '2.0.0':
+              raise SystemExit(f'final closure exact wheel runtime version mismatch: {version!r}')
+          print(f'final_closure_exact_wheel_runtime=PASS version={version}')
+          PY
+          PSMATRIX_FINAL_GA_POLICY="$PSMATRIX_FINAL_GA_POLICY" PYTHONPATH="$runtime" python - <<'PY'
+          from pathlib import Path
+          import os
+          from psmatrix.ga import load_ga_policy
+          from psmatrix.release import verify_release_manifest
+
+          policy, base = load_ga_policy(Path(os.environ['PSMATRIX_FINAL_GA_POLICY']))
+          record = policy['evidence']['signed-release']
+          authority = policy['authorities']['release']
+          manifest = (base / record['manifest']).resolve()
+          artifact_dir = (base / record['artifact_dir']).resolve()
+          public = (base / authority['public_key']).resolve()
+          verified = verify_release_manifest(manifest, artifact_dir, signing_public_key=public)
+          if verified.get('valid') is not True or verified.get('version') != '2.0.0':
+              raise SystemExit('exact final wheel runtime could not re-verify the protected release')
+          print('final_closure_release_reverified_from_exact_wheel=PASS')
+          PY
+          python - "$runtime_provenance" "$PSMATRIX_FINAL_GA_COMMIT" "$PSMATRIX_FINAL_GA_CONTROL_COMMIT" "$wheel_sha256" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          value = {
+              'schema': 1,
+              'kind': 'psmatrix.final-ga-runtime-provenance',
+              'status': 'PASS',
+              'version': '2.0.0',
+              'release_commit': sys.argv[2],
+              'control_commit': sys.argv[3],
+              'release_wheel_sha256': sys.argv[4],
+              'exact_release_wheel_runtime': True,
+              'trusted_control_checkout': True,
+              'wheel_install_mode': 'offline-no-index-no-deps',
+              'checkout_source_used_for_product_semantics': False,
+          }
+          path.write_text(json.dumps(value, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          PY
+          {
+            echo "PSMATRIX_FINAL_GA_RUNTIME=$runtime"
+            echo "PSMATRIX_FINAL_GA_RELEASE_WHEEL_SHA256=$wheel_sha256"
+            echo "PSMATRIX_FINAL_GA_RUNTIME_PROVENANCE=$runtime_provenance"
+          } >> "$GITHUB_ENV"
+          rm -f "$wheel_path_file"
+          echo 'final_closure_release_source_executed_for_bootstrap=false'
+          echo 'final_closure_checkout_source_product_semantics=false'
+          echo 'final_closure_wheel_install_mode=offline-no-index-no-deps'
+
+      - name: Revalidate trusted control before final signer key access
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git -C "$PSMATRIX_FINAL_GA_CONTROL" rev-parse HEAD | tr '[:upper:]' '[:lower:]')" == "$PSMATRIX_FINAL_GA_CONTROL_COMMIT" ]] || { echo 'trusted final closure control head changed before secret access' >&2; exit 1; }
+          [[ -z "$(git -C "$PSMATRIX_FINAL_GA_CONTROL" status --porcelain)" ]] || { echo 'trusted final closure control checkout changed before secret access' >&2; exit 1; }
+          [[ "$(git -C "$PSMATRIX_FINAL_GA_SOURCE" rev-parse HEAD | tr '[:upper:]' '[:lower:]')" == "$PSMATRIX_FINAL_GA_COMMIT" ]] || { echo 'final release source head changed before secret access' >&2; exit 1; }
+          [[ -z "$(git -C "$PSMATRIX_FINAL_GA_SOURCE" status --porcelain)" ]] || { echo 'final release source checkout changed before secret access' >&2; exit 1; }
+          echo 'final_closure_pre_secret_control_revalidation=PASS'
 
       - name: Materialize protected final signer keys
         shell: bash
@@ -94,9 +282,9 @@ jobs:
           set -euo pipefail
           sign_log="$RUNNER_TEMP/psmatrix-final-ga-signing.log"
           rm -f "$sign_log"
-          python scripts/ga/final_ga_closure.py sign \
+          PYTHONPATH="$PSMATRIX_FINAL_GA_RUNTIME" python "$PSMATRIX_FINAL_GA_CONTROL/scripts/ga/final_ga_closure.py" sign \
             --policy "$PSMATRIX_FINAL_GA_POLICY" \
-            --source-root "$GITHUB_WORKSPACE" \
+            --source-root "$PSMATRIX_FINAL_GA_SOURCE" \
             --expected-commit "$PSMATRIX_FINAL_GA_COMMIT" \
             --private-key "$PSMATRIX_FINAL_GA_KEYS/final-ga.private.pem" \
             --public-key "$PSMATRIX_FINAL_GA_KEYS/final-ga.public.pem" \
@@ -118,9 +306,9 @@ jobs:
         run: |
           set -euo pipefail
           [[ ! -e "$PSMATRIX_FINAL_GA_KEYS/final-ga.private.pem" ]] || { echo 'final private key still exists before verification' >&2; exit 1; }
-          python scripts/ga/final_ga_closure.py verify \
+          PYTHONPATH="$PSMATRIX_FINAL_GA_RUNTIME" python "$PSMATRIX_FINAL_GA_CONTROL/scripts/ga/final_ga_closure.py" verify \
             --policy "$PSMATRIX_FINAL_GA_POLICY" \
-            --source-root "$GITHUB_WORKSPACE" \
+            --source-root "$PSMATRIX_FINAL_GA_SOURCE" \
             --expected-commit "$PSMATRIX_FINAL_GA_COMMIT" \
             --evaluation "$PSMATRIX_FINAL_GA_OUTPUT/production-ga-evaluation.json" \
             --ga-attestation "$PSMATRIX_FINAL_GA_OUTPUT/psmatrix-2.0.0-production-ga.dsse.json" \
@@ -128,6 +316,13 @@ jobs:
             --public-key "$PSMATRIX_FINAL_GA_KEYS/final-ga.public.pem" \
             --output "$PSMATRIX_FINAL_GA_OUTPUT/final-closure-verification.json" \
             2>&1 | tee "$PSMATRIX_FINAL_GA_OUTPUT/final-verification.log"
+
+      - name: Attach exact runtime provenance to closure evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -f "$PSMATRIX_FINAL_GA_RUNTIME_PROVENANCE" ]] || { echo 'final closure runtime provenance is missing' >&2; exit 1; }
+          cp "$PSMATRIX_FINAL_GA_RUNTIME_PROVENANCE" "$PSMATRIX_FINAL_GA_OUTPUT/final-runtime-provenance.json"
 
       - name: Enforce private-key-free closure evidence
         shell: bash
@@ -155,7 +350,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python - "$PSMATRIX_FINAL_GA_OUTPUT" "$PSMATRIX_FINAL_GA_COMMIT" <<'PY'
+          python - "$PSMATRIX_FINAL_GA_OUTPUT" "$PSMATRIX_FINAL_GA_COMMIT" "$PSMATRIX_FINAL_GA_RELEASE_WHEEL_SHA256" <<'PY'
           import hashlib
           import json
           import sys
@@ -168,6 +363,7 @@ jobs:
               'psmatrix-2.0.0-final-closure.dsse.json',
               'final-closure-status.json',
               'final-closure-verification.json',
+              'final-runtime-provenance.json',
               'final-signing.log',
               'final-verification.log',
           )
@@ -180,16 +376,24 @@ jobs:
               files.append({'name': name, 'sha256': hashlib.sha256(data).hexdigest(), 'size': len(data)})
           status = json.loads((root / 'final-closure-status.json').read_text(encoding='utf-8'))
           verification = json.loads((root / 'final-closure-verification.json').read_text(encoding='utf-8'))
+          runtime = json.loads((root / 'final-runtime-provenance.json').read_text(encoding='utf-8'))
           if status.get('status') != 'PASS' or status.get('ga_eligible') is not True:
               raise SystemExit('final closure status is not GA eligible')
           if verification.get('valid') is not True or verification.get('ga_eligible') is not True:
               raise SystemExit('final closure verification is not valid')
+          if runtime.get('status') != 'PASS' or runtime.get('exact_release_wheel_runtime') is not True or runtime.get('release_wheel_sha256') != sys.argv[3]:
+              raise SystemExit('final closure runtime provenance does not bind the exact signed release wheel')
+          if runtime.get('trusted_control_checkout') is not True:
+              raise SystemExit('final closure runtime provenance does not bind trusted control checkout')
           inventory = {
               'schema': 1,
               'kind': 'psmatrix.final-ga-evidence-inventory',
               'status': 'PASS',
               'version': '2.0.0',
               'release_commit': sys.argv[2],
+              'release_wheel_sha256': sys.argv[3],
+              'exact_release_wheel_runtime': True,
+              'trusted_control_checkout': True,
               'gate_summary': {'PASS': 11, 'FAIL': 0, 'INCOMPLETE': 0, 'total': 11},
               'private_key_material_absent': True,
               'ga_eligible': True,
@@ -208,7 +412,7 @@ jobs:
           set +e
           output="${PSMATRIX_FINAL_GA_OUTPUT:-$RUNNER_TEMP/psmatrix-final-ga-closure}"
           install -d -m 0700 "$output"
-          python - "$output" "${PSMATRIX_FINAL_GA_COMMIT:-${GITHUB_SHA,,}}" <<'PY'
+          python - "$output" "${PSMATRIX_FINAL_GA_COMMIT:-${{ inputs.release_commit }}}" <<'PY'
           import json
           import sys
           from pathlib import Path
