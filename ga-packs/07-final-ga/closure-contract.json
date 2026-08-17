@@ -14,14 +14,22 @@
   },
   "release_inventory": {
     "signed_release_manifest_required": true,
+    "release_authority_signed_artifact_count": 6,
+    "release_authority_scope_must_remain_unchanged": true,
     "source_zip_required": true,
     "source_tar_gz_required": true,
     "wheel_required": true,
+    "windows_workers_required": true,
+    "windows_certification_kit_required": true,
+    "windows_provisioning_kit_required": true,
     "cyclonedx_1_5_sbom_required": true,
     "sbom_suffix": "-sbom.cdx.json",
     "sha256sums_required": true,
     "sha256sums_suffix": "-SHA256SUMS",
-    "sha256sums_must_bind_every_other_release_artifact": true
+    "closure_metadata_derived_from_signed_release": true,
+    "closure_metadata_must_be_deterministic": true,
+    "sha256sums_must_bind_all_signed_release_artifacts_and_sbom": true,
+    "final_signer_must_bind_closure_metadata": true
   },
   "validation": {
     "clean_install_exit_code": 0,
@@ -40,14 +48,20 @@
     "private_key_in_artifacts": false,
     "private_key_removed_before_verification": true,
     "ga_attestation_required": true,
-    "final_closure_attestation_required": true
+    "final_closure_attestation_required": true,
+    "exact_signed_release_wheel_runtime_required": true,
+    "checkout_runtime_allowed_for_product_semantics": false
   },
   "outputs": {
     "evaluation": "production-ga-evaluation.json",
     "ga_attestation": "psmatrix-2.0.0-production-ga.dsse.json",
     "closure_attestation": "psmatrix-2.0.0-final-closure.dsse.json",
     "status": "final-closure-status.json",
-    "verification": "final-closure-verification.json"
+    "verification": "final-closure-verification.json",
+    "runtime_provenance": "final-runtime-provenance.json",
+    "metadata_preparation": "final-closure-metadata-preparation.json",
+    "sbom": "psmatrix-2.0.0-sbom.cdx.json",
+    "sha256sums": "psmatrix-2.0.0-SHA256SUMS"
   },
   "source_preflight": {
     "workflow": "production-ga-pack07-source-preflight",
@@ -59,7 +73,8 @@
   "protected_workflow": {
     "workflow": "production-ga-final-closure",
     "workflow_path": ".github/workflows/ga-final-closure.yml",
-    "operator": "scripts/ga/final_ga_closure.py",
+    "operator": "scripts/ga/final_ga_closure_hardened.py",
+    "legacy_operator": "scripts/ga/final_ga_closure.py",
     "status": "BLOCKED_UNTIL_ALL_EXTERNAL_EVIDENCE_IS_FINAL"
   },
   "completion": {
