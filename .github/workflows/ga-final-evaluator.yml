@@ -66,6 +66,7 @@ jobs:
       contents: read
       actions: read
     env:
+      FINAL_RELEASE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
       VALIDATION_RUN_ID: ${{ inputs.validation_run_id }}
       RELEASE_SIGNING_RUN_ID: ${{ inputs.release_signing_run_id }}
       WINDOWS_REBIND_RUN_ID: ${{ inputs.windows_rebind_run_id }}
@@ -301,6 +302,101 @@ jobs:
           run-id: ${{ inputs.vulnerability_scan_run_id }}
           github-token: ${{ github.token }}
 
+      - name: Install exact signed release wheel for final evaluator semantics
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $runtime = Join-Path $env:RUNNER_TEMP 'psmatrix-final-ga-evaluator-runtime'
+          $wheelPathFile = Join-Path $env:RUNNER_TEMP 'psmatrix-final-ga-evaluator-wheel-path.txt'
+          $evalControl = Join-Path $env:RUNNER_TEMP 'psmatrix-final-ga-evaluator-isolated-control'
+          Remove-Item -LiteralPath $runtime -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $evalControl -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $wheelPathFile -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $runtime -Force | Out-Null
+          $env:PSMATRIX_FINAL_GA_WHEEL_PATH_FILE = $wheelPathFile
+          $env:PYTHONPATH = Join-Path $env:GITHUB_WORKSPACE 'control\src'
+          @'
+          import json
+          import os
+          from pathlib import Path
+          from psmatrix.release import verify_release_manifest
+          from psmatrix.util import sha256_file
+
+          release=Path('evidence/release')
+          manifest=release/'psmatrix-2.0.0-release.json'
+          public=release/'psmatrix-2.0.0-release-public.pem'
+          status_path=release/'psmatrix-2.0.0-protected-release-signing-status.json'
+          verified=verify_release_manifest(manifest,release,signing_public_key=public)
+          if verified.get('valid') is not True or verified.get('version')!='2.0.0':
+              raise SystemExit('final evaluator protected release verification failed before exact-wheel install')
+          status=json.loads(status_path.read_text(encoding='utf-8'))
+          if status.get('release_artifacts_signed') is not True or status.get('version')!='2.0.0' or status.get('release_commit')!=os.environ['FINAL_RELEASE_COMMIT']:
+              raise SystemExit('final evaluator protected release status is not exact final/signed')
+          root=json.loads(manifest.read_text(encoding='utf-8'))
+          body=root.get('manifest') if isinstance(root,dict) else None
+          if not isinstance(body,dict) or body.get('version')!='2.0.0' or body.get('release_commit')!=os.environ['FINAL_RELEASE_COMMIT']:
+              raise SystemExit('final evaluator signed manifest version/commit mismatch')
+          artifacts=body.get('artifacts') if isinstance(body.get('artifacts'),list) else []
+          wheels=[item for item in artifacts if isinstance(item,dict) and str(item.get('name') or '').endswith('.whl')]
+          if len(wheels)!=1:
+              raise SystemExit(f'signed final release must declare exactly one evaluator wheel; found {len(wheels)}')
+          wheel=wheels[0]
+          path=release/str(wheel.get('name') or '')
+          if not path.is_file() or path.is_symlink():
+              raise SystemExit('declared final evaluator wheel is missing or unsafe')
+          digest=sha256_file(path)
+          if int(wheel.get('size') or 0)!=path.stat().st_size or str(wheel.get('sha256') or '').lower()!=digest:
+              raise SystemExit('declared final evaluator wheel identity differs from verified bytes')
+          Path(os.environ['PSMATRIX_FINAL_GA_WHEEL_PATH_FILE']).write_text(str(path.resolve())+'\n',encoding='utf-8')
+          with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as stream:
+              stream.write(f'PSMATRIX_FINAL_GA_WHEEL_SHA256={digest}\n')
+          print(f'final_ga_exact_wheel_pre_secret=PASS wheel={path.name} sha256={digest}')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Final GA exact signed wheel bootstrap verification failed.' }
+          $wheelPath = (Get-Content -LiteralPath $wheelPathFile -Raw).Trim()
+          if ([string]::IsNullOrWhiteSpace($wheelPath) -or -not (Test-Path -LiteralPath $wheelPath -PathType Leaf)) { throw 'Verified final GA wheel path was not materialized.' }
+          python -m pip install --disable-pip-version-check --no-index --no-deps --target $runtime $wheelPath
+          if ($LASTEXITCODE -ne 0) { throw 'Exact final GA wheel offline installation failed.' }
+          $env:PSMATRIX_EXPECTED_RUNTIME_ROOT = $runtime
+          $env:PYTHONPATH = $runtime
+          @'
+          import importlib.metadata
+          import os
+          from pathlib import Path
+          import psmatrix
+          import psmatrix.ga
+          import psmatrix.signing
+
+          root=Path(os.environ['PSMATRIX_EXPECTED_RUNTIME_ROOT']).resolve()
+          paths=(
+              Path(psmatrix.__file__).resolve(),
+              Path(psmatrix.ga.__file__).resolve(),
+              Path(psmatrix.signing.__file__).resolve(),
+              Path(importlib.metadata.distribution('psmatrix').locate_file('')).resolve(),
+          )
+          for path in paths:
+              try:
+                  path.relative_to(root)
+              except ValueError as exc:
+                  raise SystemExit(f'final evaluator runtime escaped exact signed wheel target: {path}') from exc
+          version=importlib.metadata.version('psmatrix')
+          if version!='2.0.0':
+              raise SystemExit(f'exact final evaluator runtime version mismatch: {version!r}')
+          print(f'final_ga_exact_wheel_runtime=PASS version={version}')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Exact final GA wheel runtime identity verification failed.' }
+
+          New-Item -ItemType Directory -Path (Join-Path $evalControl 'scripts\ga') -Force | Out-Null
+          New-Item -ItemType Directory -Path (Join-Path $evalControl 'ga-packs\03-authoritative-windows') -Force | Out-Null
+          Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'control\scripts\ga\assemble_final_ga_evidence.py') -Destination (Join-Path $evalControl 'scripts\ga\assemble_final_ga_evidence.py')
+          Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'control\ga-packs\03-authoritative-windows\final-ga-evaluator-control-contract.json') -Destination (Join-Path $evalControl 'ga-packs\03-authoritative-windows\final-ga-evaluator-control-contract.json')
+          if (Test-Path -LiteralPath (Join-Path $evalControl 'src')) { throw 'Isolated final GA evaluator control unexpectedly contains checkout runtime source.' }
+          "PSMATRIX_FINAL_GA_EVALUATOR_RUNTIME=$runtime" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_FINAL_GA_EVALUATOR_ASSEMBLER=$(Join-Path $evalControl 'scripts\ga\assemble_final_ga_evidence.py')" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          Remove-Item -LiteralPath $wheelPathFile -Force -ErrorAction SilentlyContinue
+          Write-Host 'final_ga_checkout_source_evaluation=false'
+          Write-Host 'final_ga_wheel_install_mode=offline-no-index-no-deps'
+
       - name: Materialize Windows lab public authority and evaluate all eleven gates
         shell: pwsh
         env:
@@ -317,7 +413,8 @@ jobs:
           $public = Join-Path $keyRoot 'windows-lab-public.pem'
           try {
               [IO.File]::WriteAllText($public,$env:WINDOWS_PUBLIC_KEY_PEM,[Text.UTF8Encoding]::new($false))
-              python (Join-Path $env:GITHUB_WORKSPACE 'control\scripts\ga\assemble_final_ga_evidence.py') `
+              $env:PYTHONPATH = $env:PSMATRIX_FINAL_GA_EVALUATOR_RUNTIME
+              python $env:PSMATRIX_FINAL_GA_EVALUATOR_ASSEMBLER `
                 --validation-root (Join-Path $env:GITHUB_WORKSPACE 'evidence\validation') `
                 --release-root (Join-Path $env:GITHUB_WORKSPACE 'evidence\release') `
                 --windows-root (Join-Path $env:GITHUB_WORKSPACE 'evidence\windows') `
@@ -333,6 +430,25 @@ jobs:
                 --provenance-json $env:PSMATRIX_FINAL_GA_PROVENANCE `
                 --output-root $output
               if ($LASTEXITCODE -ne 0) { throw 'Final GA evidence assembly/evaluation failed.' }
+              $env:PSMATRIX_FINAL_GA_CANDIDATE_MUTATE = $output
+              @'
+              import importlib.metadata
+              import json
+              import os
+              from pathlib import Path
+
+              if importlib.metadata.version('psmatrix')!='2.0.0':
+                  raise SystemExit('final GA candidate mutation is not running from exact 2.0.0 wheel runtime')
+              root=Path(os.environ['PSMATRIX_FINAL_GA_CANDIDATE_MUTATE'])
+              path=root/'final-ga-evaluator-candidate-status.json'
+              value=json.loads(path.read_text(encoding='utf-8'))
+              value['release_wheel_sha256']=os.environ['PSMATRIX_FINAL_GA_WHEEL_SHA256']
+              value['exact_release_wheel_runtime']=True
+              value['checkout_source_evaluation']=False
+              path.write_text(json.dumps(value,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+              print('final_ga_candidate_runtime_binding=PASS exact_release_wheel=true')
+              '@ | python -
+              if ($LASTEXITCODE -ne 0) { throw 'Final GA exact-wheel candidate runtime binding failed.' }
               "PSMATRIX_FINAL_GA_CANDIDATE=$output" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           } finally {
               Remove-Item -LiteralPath $public -Force -ErrorAction SilentlyContinue
@@ -349,6 +465,7 @@ jobs:
           $gates = @($evaluation.gates)
           if ([string]$status.status -ne 'ALL_11_GATES_PASS_ROOT_SIGNING_PENDING') { throw 'Final GA candidate status mismatch.' }
           if ([int]$status.gate_count -ne 11 -or [bool]$status.all_required_gates_pass -ne $true) { throw 'Final GA candidate did not pass all eleven gates.' }
+          if ([bool]$status.exact_release_wheel_runtime -ne $true -or [bool]$status.checkout_source_evaluation -ne $false -or [string]$status.release_wheel_sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'Final GA candidate exact-wheel runtime binding is incomplete.' }
           if ([string]$evaluation.status -ne 'PASS' -or $gates.Count -ne 11) { throw 'Final GA candidate evaluation is not exact 11-gate PASS.' }
           $gateNames = @()
           foreach ($gate in $gates) {
@@ -385,6 +502,8 @@ jobs:
     permissions:
       contents: read
       actions: read
+    env:
+      FINAL_RELEASE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
 
     steps:
       - name: Check out exact GA signing control
@@ -422,6 +541,8 @@ jobs:
           gates = evaluation.get('gates')
           if status.get('status') != 'ALL_11_GATES_PASS_ROOT_SIGNING_PENDING' or status.get('gate_count') != 11 or status.get('all_required_gates_pass') is not True:
               raise SystemExit('root-free final GA candidate status mismatch')
+          if status.get('exact_release_wheel_runtime') is not True or status.get('checkout_source_evaluation') is not False:
+              raise SystemExit('root-free final GA candidate lacks exact signed wheel runtime binding')
           if provenance.get('execution_control_head') != os.environ['GITHUB_SHA'].lower():
               raise SystemExit('root-free candidate execution control head mismatch')
           if evaluation.get('status') != 'PASS' or not isinstance(gates, list) or len(gates) != 11:
@@ -436,6 +557,85 @@ jobs:
               stream.write(f'PSMATRIX_FINAL_GA_INPUT_TREE_SHA256={tree}\n')
           print(f'final_ga_input_tree_sha256={tree}')
           PY
+
+          runtime="$RUNNER_TEMP/psmatrix-final-ga-root-runtime"
+          wheel_path_file="$RUNNER_TEMP/psmatrix-final-ga-root-wheel-path.txt"
+          rm -rf "$runtime"
+          rm -f "$wheel_path_file"
+          mkdir -p "$runtime"
+          PSMATRIX_FINAL_GA_ROOT_WHEEL_PATH_FILE="$wheel_path_file" PYTHONPATH=control/src python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from psmatrix.release import verify_release_manifest
+          from psmatrix.util import sha256_file
+
+          candidate=Path('candidate')
+          release=candidate/'release'
+          manifest=release/'psmatrix-2.0.0-release.json'
+          public=candidate/'keys/release.pem'
+          status_path=candidate/'audit/protected-release-signing-status.json'
+          verified=verify_release_manifest(manifest,release,signing_public_key=public)
+          if verified.get('valid') is not True or verified.get('version')!='2.0.0':
+              raise SystemExit('root-signing candidate release verification failed before private key access')
+          status=json.loads(status_path.read_text(encoding='utf-8'))
+          if status.get('release_artifacts_signed') is not True or status.get('version')!='2.0.0' or status.get('release_commit')!=os.environ['FINAL_RELEASE_COMMIT']:
+              raise SystemExit('root-signing protected release status is not exact final/signed')
+          root=json.loads(manifest.read_text(encoding='utf-8'))
+          body=root.get('manifest') if isinstance(root,dict) else None
+          if not isinstance(body,dict) or body.get('version')!='2.0.0' or body.get('release_commit')!=os.environ['FINAL_RELEASE_COMMIT']:
+              raise SystemExit('root-signing signed manifest version/commit mismatch')
+          artifacts=body.get('artifacts') if isinstance(body.get('artifacts'),list) else []
+          wheels=[item for item in artifacts if isinstance(item,dict) and str(item.get('name') or '').endswith('.whl')]
+          if len(wheels)!=1:
+              raise SystemExit(f'signed final release must declare exactly one root-signing wheel; found {len(wheels)}')
+          wheel=wheels[0]
+          path=release/str(wheel.get('name') or '')
+          if not path.is_file() or path.is_symlink():
+              raise SystemExit('declared final root-signing wheel is missing or unsafe')
+          digest=sha256_file(path)
+          if int(wheel.get('size') or 0)!=path.stat().st_size or str(wheel.get('sha256') or '').lower()!=digest:
+              raise SystemExit('declared final root-signing wheel identity differs from verified bytes')
+          candidate_status=json.loads((candidate/'final-ga-evaluator-candidate-status.json').read_text(encoding='utf-8'))
+          if candidate_status.get('release_wheel_sha256')!=digest or candidate_status.get('exact_release_wheel_runtime') is not True:
+              raise SystemExit('root-signing wheel differs from exact wheel used by final evaluator')
+          Path(os.environ['PSMATRIX_FINAL_GA_ROOT_WHEEL_PATH_FILE']).write_text(str(path.resolve())+'\n',encoding='utf-8')
+          with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as stream:
+              stream.write(f'PSMATRIX_FINAL_GA_ROOT_WHEEL_SHA256={digest}\n')
+          print(f'final_ga_root_exact_wheel_pre_secret=PASS wheel={path.name} sha256={digest}')
+          PY
+          wheel_path="$(cat "$wheel_path_file")"
+          [[ -n "$wheel_path" && -f "$wheel_path" ]] || { echo 'verified final GA root-signing wheel path was not materialized' >&2; exit 1; }
+          python -m pip install --disable-pip-version-check --no-index --no-deps --target "$runtime" "$wheel_path"
+          PSMATRIX_EXPECTED_RUNTIME_ROOT="$runtime" PYTHONPATH="$runtime" python - <<'PY'
+          import importlib.metadata
+          import os
+          from pathlib import Path
+          import psmatrix
+          import psmatrix.ga
+          import psmatrix.signing
+
+          root=Path(os.environ['PSMATRIX_EXPECTED_RUNTIME_ROOT']).resolve()
+          paths=(
+              Path(psmatrix.__file__).resolve(),
+              Path(psmatrix.ga.__file__).resolve(),
+              Path(psmatrix.signing.__file__).resolve(),
+              Path(importlib.metadata.distribution('psmatrix').locate_file('')).resolve(),
+          )
+          for path in paths:
+              try:
+                  path.relative_to(root)
+              except ValueError as exc:
+                  raise SystemExit(f'GA-root runtime escaped exact signed wheel target: {path}') from exc
+          version=importlib.metadata.version('psmatrix')
+          if version!='2.0.0':
+              raise SystemExit(f'exact final GA-root runtime version mismatch: {version!r}')
+          print(f'final_ga_root_exact_wheel_runtime=PASS version={version}')
+          PY
+          rm -f "$wheel_path_file"
+          echo "PSMATRIX_FINAL_GA_ROOT_RUNTIME=$runtime" >> "$GITHUB_ENV"
+          echo 'final_ga_root_checkout_source_signing=false'
+          echo 'final_ga_root_wheel_install_mode=offline-no-index-no-deps'
 
       - name: Materialize independent GA root, re-evaluate, sign, and verify
         shell: bash
@@ -461,15 +661,16 @@ jobs:
           }
           trap try_cleanup EXIT
 
-          PYTHONPATH=control/src python -m psmatrix.cli ga sign \
+          PYTHONPATH="$PSMATRIX_FINAL_GA_ROOT_RUNTIME" python -m psmatrix.cli ga sign \
             --policy candidate/ga-policy.json \
             --private-key "$key_root/root.private.pem" \
             --public-key "$key_root/root.public.pem" \
             --evaluation-output "$signed/ga-evaluation.root-signed.json" \
             --output "$signed/psmatrix-2.0.0-final-ga.dsse.json"
 
-          PSMATRIX_GA_ROOT_PUBLIC_PATH="$key_root/root.public.pem" PSMATRIX_FINAL_GA_SIGNED="$signed" PYTHONPATH=control/src python - <<'PY'
+          PSMATRIX_GA_ROOT_PUBLIC_PATH="$key_root/root.public.pem" PSMATRIX_FINAL_GA_SIGNED="$signed" PYTHONPATH="$PSMATRIX_FINAL_GA_ROOT_RUNTIME" python - <<'PY'
           import hashlib
+          import importlib.metadata
           import json
           import os
           import shutil
@@ -478,9 +679,14 @@ jobs:
           from psmatrix.signing import public_key_id
           from psmatrix.util import atomic_write_json, read_json
 
+          if importlib.metadata.version('psmatrix')!='2.0.0':
+              raise SystemExit('GA-root final verification is not running from exact final 2.0.0 wheel')
           candidate = Path('candidate')
           signed = Path(os.environ['PSMATRIX_FINAL_GA_SIGNED'])
           root_public = Path(os.environ['PSMATRIX_GA_ROOT_PUBLIC_PATH'])
+          candidate_status=json.loads((candidate/'final-ga-evaluator-candidate-status.json').read_text(encoding='utf-8'))
+          if candidate_status.get('release_wheel_sha256')!=os.environ['PSMATRIX_FINAL_GA_ROOT_WHEEL_SHA256'] or candidate_status.get('exact_release_wheel_runtime') is not True:
+              raise SystemExit('GA-root signing runtime wheel does not match evaluator wheel binding')
           evaluation = json.loads((signed / 'ga-evaluation.root-signed.json').read_text(encoding='utf-8'))
           gates = evaluation.get('gates')
           if evaluation.get('status') != 'PASS' or not isinstance(gates, list) or len(gates) != 11:
@@ -506,6 +712,9 @@ jobs:
               'version': '2.0.0',
               'execution_control_head': os.environ['GITHUB_SHA'].lower(),
               'input_tree_sha256': os.environ['PSMATRIX_FINAL_GA_INPUT_TREE_SHA256'],
+              'release_wheel_sha256': os.environ['PSMATRIX_FINAL_GA_ROOT_WHEEL_SHA256'],
+              'exact_release_wheel_runtime': True,
+              'checkout_source_signing': False,
               'required_gate_count': 11,
               'all_required_gates_pass': True,
               'root_key_id': root_id,
