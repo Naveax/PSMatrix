@@ -139,6 +139,12 @@ Verification binds the proof to the exact report SHA-256, final commit, signed r
 - Complete reviewer-signed final `2.0.0` review with exact release binding: eligible for the final GA evaluator, but Pack 06 alone never sets product-level GA eligibility.
 - Missing reviewer independence, signing-key control, required scope, report binding or zero Critical/High condition: failure/incomplete; never PASS.
 
+## Current execution boundary
+
+The source preflight is intentionally independent of the protected release-signing authority and may be refreshed on current source without inventing reviewer evidence. A successful source preflight still leaves `external_reviewer_completed=false` and `ga_eligible=false`.
+
+Do not substitute project-owned CI, repository-owner review or generated proof material for the required external reviewer. The next evidence-bearing Pack 06 transition after source preflight remains a genuinely independent review bound to the exact signed release under review.
+
 ## State
 
 `SOURCE_PREFLIGHT_READY_FOR_REVIEWER` — deterministic dossier, report contract, reviewer-controlled proof generation and verification are implemented. A fresh source-preflight run and a genuinely external completed review are still required.
