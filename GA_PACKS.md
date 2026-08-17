@@ -4,20 +4,28 @@ This document is the canonical execution order for the remaining PSMatrix 2.0.0 
 
 | Order | Pack | Current state | Completion condition |
 |---:|---|---|---|
-| 01 | Vulnerability gate | IN_PROGRESS | Bandit, pip-audit and CodeQL complete; Critical=0 and High=0; protected DSSE proof verified |
-| 02 | Complete runtime matrix | READY_FOR_INFRASTRUCTURE | Canonical 25-target campaign has no missing required target and no failed target |
-| 03 | Authoritative Windows lab | READY_FOR_INFRASTRUCTURE | Exact Windows PowerShell 4.0, 5.0 and 5.1 repeated campaigns are signed and release-bound |
-| 04 | Public OAuth and mTLS | PACK_REQUIRED | Public-domain OAuth and direct mTLS probes pass from an external authority |
-| 05 | External OTLP collector | PACK_REQUIRED | External collector receives authenticated metrics and produces signed proof |
-| 06 | Independent security review | READY_FOR_REVIEWER | Independent reviewer signs a complete conflict-free review bound to the final release |
-| 07 | Final GA closure | BLOCKED | All prior packs PASS, 11/11 GA gates PASS, final 2.0.0 artifacts are reproducible and signed |
+| 01 | Vulnerability gate | PREFLIGHT_PASS_SIGNING_PENDING | Exact final release vulnerability scan; Critical=0 and High=0; protected release-bound proof verified |
+| 02 | Complete runtime matrix | HOSTED_LINUX_PREFLIGHT_PASS_PARTIAL | Canonical final 25-target campaign has 25/25 READY/PASS, no missing/failed/incomplete target and strict zero-allowance differential |
+| 03 | Authoritative Windows lab | BLOCKED_ON_RELEASE_AUTHORITY_RECOVERY | Restore frozen RC3 authority or complete reviewed RC4 lost-key recovery, then exact Windows PowerShell 4.0/5.0/5.1 repeated clean-snapshot certification |
+| 04 | Public OAuth and mTLS | EXTERNAL_DEPLOYMENT_PENDING | Public-domain OAuth and direct mTLS probes pass from an external authority on the exact release |
+| 05 | External OTLP collector | EXTERNAL_DEPLOYMENT_PENDING | Independent collector receives authenticated metrics and produces fresh signed release-bound proof |
+| 06 | Independent security review | SOURCE_PREFLIGHT_READY_FOR_REVIEWER | Independent reviewer signs a complete conflict-free review bound to the exact final release |
+| 07 | Final GA closure | SOURCE_PREFLIGHT_READY_FINAL_SIGNING_BLOCKED | All prior packs PASS, 11/11 GA gates PASS, final 2.0.0 artifacts are reproducible and final closure is independently verified |
 
 ## Execution policy
 
 1. Work strictly in numeric order unless a later pack can be prepared without claiming completion.
-2. A missing external system is `INCOMPLETE`, never `PASS`.
+2. A missing external system, authority, worker or reviewer is `INCOMPLETE`/blocked, never `PASS`.
 3. Every final proof must bind the exact final Git commit and signed release artifacts.
 4. Private authority keys must never be committed, uploaded as artifacts, or exposed to untrusted jobs.
-5. Final `2.0.0` signing remains impossible until Pack 07 verifies every preceding proof.
+5. Final `2.0.0` signing/closure cannot be used to bypass an incomplete preceding pack.
+
+## Observed execution state
+
+- Pack 01's repaired unsigned scanner workflow passed historically with Bandit, pip-audit and CodeQL `security-extended`, including zero Critical and zero High findings. That RC preflight is not final `2.0.0` evidence; the canonical final vulnerability scan depends on a successful protected final release-signing run.
+- Pack 02 has a 10-lane hosted Linux x64 `PASS_PARTIAL`. The canonical final producer is `production-ga-final-full-runtime-matrix`, which requires exact protected release provenance and 25/25 READY targets before execution.
+- Pack 03's protected RC3 possession check was exercised and failed at the missing `PSMATRIX_RELEASE_PRIVATE_KEY` boundary. The repository's frozen RC4 `lost_previous_private_authority` enrollment is the reviewed fail-closed recovery route if the original RC3 authority cannot be restored.
+- Pack 06's current-main source preflight passed but explicitly records `external_reviewer_completed=false` and `ga_eligible=false`.
+- Pack 07's current-main source preflight passed but explicitly records `external_evidence_complete=false`, `final_signing_performed=false`, `production_ga=BLOCKED` and `ga_eligible=false`.
 
 Machine-readable state is stored in `ga-packs/status.json`; pack-specific operator contracts are stored under `ga-packs/NN-name/`.
