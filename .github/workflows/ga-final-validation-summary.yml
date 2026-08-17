@@ -232,6 +232,15 @@ jobs:
           name: psmatrix-2.0.0-final-validation-summary-unsigned
           path: unsigned
 
+      - name: Download exact protected final release for CI signing semantics
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-protected-release
+          path: signed-release
+          repository: Naveax/PSMatrix
+          run-id: ${{ inputs.release_signing_run_id }}
+          github-token: ${{ github.token }}
+
       - name: Validate candidate before CI private-key access
         shell: bash
         run: |
@@ -252,6 +261,71 @@ jobs:
               raise SystemExit('unsigned validation test accounting mismatch')
           print('validation_candidate_pre_secret=PASS')
           PY
+
+      - name: Install exact signed release wheel before CI private-key access
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime="$RUNNER_TEMP/psmatrix-final-validation-sign-runtime"
+          wheel_path_file="$RUNNER_TEMP/psmatrix-final-validation-sign-wheel.txt"
+          rm -rf "$runtime"
+          rm -f "$wheel_path_file"
+          mkdir -p "$runtime"
+          PSMATRIX_VALIDATION_WHEEL_PATH_FILE="$wheel_path_file" PYTHONPATH=control/src python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from psmatrix.release import verify_release_manifest
+          from psmatrix.util import sha256_file
+
+          release=Path('signed-release')
+          manifest=release/'psmatrix-2.0.0-release.json'
+          public=release/'psmatrix-2.0.0-release-public.pem'
+          status_path=release/'psmatrix-2.0.0-protected-release-signing-status.json'
+          verified=verify_release_manifest(manifest,release,signing_public_key=public)
+          if verified.get('valid') is not True or verified.get('version')!='2.0.0':
+              raise SystemExit('validation signing protected release verification failed')
+          status=json.loads(status_path.read_text(encoding='utf-8'))
+          if status.get('release_artifacts_signed') is not True or status.get('version')!='2.0.0' or status.get('release_commit')!='02cef95d40cf524ce00f9d917188343dc49e6f2c':
+              raise SystemExit('validation signing protected release status is not exact final/signed')
+          root=json.loads(manifest.read_text(encoding='utf-8'))
+          artifacts=((root.get('manifest') or {}).get('artifacts') or []) if isinstance(root,dict) else []
+          wheels=[item for item in artifacts if isinstance(item,dict) and str(item.get('name') or '').endswith('.whl')]
+          if len(wheels)!=1:
+              raise SystemExit(f'validation signing expected exactly one signed release wheel; found {len(wheels)}')
+          wheel=wheels[0]
+          path=release/str(wheel.get('name') or '')
+          if not path.is_file() or path.is_symlink():
+              raise SystemExit('validation signing release wheel is missing or unsafe')
+          digest=sha256_file(path)
+          if int(wheel.get('size') or 0)!=path.stat().st_size or str(wheel.get('sha256') or '').lower()!=digest:
+              raise SystemExit('validation signing release wheel identity mismatch')
+          Path(os.environ['PSMATRIX_VALIDATION_WHEEL_PATH_FILE']).write_text(str(path.resolve())+'\n',encoding='utf-8')
+          with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as stream:
+              stream.write(f'PSMATRIX_FINAL_VALIDATION_WHEEL_SHA256={digest}\n')
+          print(f'validation_sign_release_pre_secret=PASS wheel={path.name} sha256={digest}')
+          PY
+          wheel_path="$(cat "$wheel_path_file")"
+          [[ -n "$wheel_path" && -f "$wheel_path" ]] || { echo 'validation signing verified wheel path is missing' >&2; exit 1; }
+          python -m pip install --disable-pip-version-check --no-index --no-deps --target "$runtime" "$wheel_path"
+          PSMATRIX_EXPECTED_RUNTIME_ROOT="$runtime" PYTHONPATH="$runtime" python - <<'PY'
+          import importlib.metadata
+          import os
+          from pathlib import Path
+          import psmatrix
+          import psmatrix.ga
+          import psmatrix.signing
+          root=Path(os.environ['PSMATRIX_EXPECTED_RUNTIME_ROOT']).resolve()
+          for path in (Path(psmatrix.__file__).resolve(),Path(psmatrix.ga.__file__).resolve(),Path(psmatrix.signing.__file__).resolve(),Path(importlib.metadata.distribution('psmatrix').locate_file('')).resolve()):
+              try: path.relative_to(root)
+              except ValueError as exc: raise SystemExit(f'validation signing runtime escaped exact wheel target: {path}') from exc
+          if importlib.metadata.version('psmatrix')!='2.0.0':
+              raise SystemExit('validation signing exact wheel runtime version mismatch')
+          print('validation_sign_exact_wheel_runtime=PASS version=2.0.0')
+          PY
+          rm -f "$wheel_path_file"
+          echo "PSMATRIX_FINAL_VALIDATION_SIGN_RUNTIME=$runtime" >> "$GITHUB_ENV"
+          echo 'validation_sign_checkout_product_source=false'
+          echo 'validation_sign_wheel_install_mode=offline-no-index-no-deps'
 
       - name: Materialize CI authority, sign exact summary, verify, and remove private key
         shell: bash
@@ -279,31 +353,35 @@ jobs:
           cp unsigned/validation-summary.json "$output/validation-summary.json"
           cp unsigned/validation-suite.json "$output/validation-suite.json"
           cp unsigned/deterministic-rebuild-status.json "$output/deterministic-rebuild-status.json"
-          PYTHONPATH=control/src python -m psmatrix.cli ga artifact-sign \
+          PYTHONPATH="$PSMATRIX_FINAL_VALIDATION_SIGN_RUNTIME" python -m psmatrix.cli ga artifact-sign \
             --type validation-summary \
             --artifact "$output/validation-summary.json" \
             --observed-at "$observed" \
             --private-key "$key_root/ci.private.pem" \
             --public-key "$key_root/ci.public.pem" \
             --output "$output/validation-summary.dsse.json"
-          PYTHONPATH=control/src python -m psmatrix.cli ga artifact-verify \
+          PYTHONPATH="$PSMATRIX_FINAL_VALIDATION_SIGN_RUNTIME" python -m psmatrix.cli ga artifact-verify \
             --type validation-summary \
             --artifact "$output/validation-summary.json" \
             --attestation "$output/validation-summary.dsse.json" \
             --public-key "$key_root/ci.public.pem" >/dev/null
           cp "$key_root/ci.public.pem" "$output/ci-public.pem"
-          PSMATRIX_VALIDATION_SIGNED="$output" PYTHONPATH=control/src python - <<'PY'
+          PSMATRIX_VALIDATION_SIGNED="$output" PYTHONPATH="$PSMATRIX_FINAL_VALIDATION_SIGN_RUNTIME" python - <<'PY'
+          import importlib.metadata
           import json, os
           from pathlib import Path
           from psmatrix.ga import verify_ga_artifact_attestation
           from psmatrix.signing import public_key_id
           from psmatrix.util import read_json, sha256_file, atomic_write_json
+          if importlib.metadata.version('psmatrix')!='2.0.0':
+              raise SystemExit('validation attestation verification is not running from exact final wheel')
           root=Path(os.environ['PSMATRIX_VALIDATION_SIGNED'])
           verified=verify_ga_artifact_attestation(read_json(root/'validation-summary.dsse.json'),artifact=root/'validation-summary.json',artifact_type='validation-summary',public_key=root/'ci-public.pem')
           status={
               'schema':1,'kind':'psmatrix.final-validation-summary-producer-status','status':'PASS','version':'2.0.0',
               'validation_summary_sha256':sha256_file(root/'validation-summary.json'),
               'attestation_sha256':sha256_file(root/'validation-summary.dsse.json'),
+              'release_wheel_sha256':os.environ['PSMATRIX_FINAL_VALIDATION_WHEEL_SHA256'],'exact_release_wheel_runtime':True,
               'ci_public_key_sha256':sha256_file(root/'ci-public.pem'),'ci_key_id':public_key_id(root/'ci-public.pem'),
               'attestation_verified':verified.get('valid') is True,'ci_private_key_copied_to_output':False,
               'final_ga_evaluator_invoked':False,'ga_eligible':False,
@@ -315,7 +393,7 @@ jobs:
           for path in root.rglob('*'):
               if path.is_file() and any(marker in path.read_bytes() for marker in markers):
                   raise SystemExit(f'private-key material found in signed validation output: {path.name}')
-          print('signed_validation_summary=PASS')
+          print('signed_validation_summary=PASS exact_release_wheel=true')
           print('final_ga_evaluator_invoked=false')
           print('ga_eligible=false')
           PY
