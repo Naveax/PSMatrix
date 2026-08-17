@@ -1,0 +1,39 @@
+name: ops-actions-token-environment-api-probe
+
+on:
+  push:
+    branches:
+      - ops/fresh-production-readiness-20260817
+    paths:
+      - .github/workflows/ops-actions-token-environment-api-probe.yml
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe environment secret public-key API without mutation
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "repos/${GITHUB_REPOSITORY}/environments/production-ga-release-signing/secrets/public-key" \
+            >/dev/null 2>probe.err
+          rc=$?
+          set -e
+          if [[ $rc -eq 0 ]]; then
+            echo 'environment_secret_public_key_api=PASS'
+          else
+            echo 'environment_secret_public_key_api=DENIED'
+            sed -E 's/(token|authorization|bearer)[^ ]*/[REDACTED]/Ig' probe.err
+          fi
+          echo 'secret_mutation=false'
+          echo 'credential_value_logged=false'
