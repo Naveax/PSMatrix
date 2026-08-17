@@ -61,6 +61,7 @@ jobs:
         run: >-
           python -m unittest -v
           tests.test_verification_hardening_maintenance
+          tests.test_verification_hardening_event_head_policy
 
       - name: Resolve exact maintenance base and candidate
         shell: bash
