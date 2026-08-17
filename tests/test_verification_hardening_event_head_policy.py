@@ -41,9 +41,26 @@ class VerificationHardeningEventHeadPolicyTests(unittest.TestCase):
         )
         (root / self.module.SOURCE_CERT_WORKFLOW).write_text(
             'jobs:\n  test:\n    steps:\n'
-            '      - name: Certify exact repository workflow action-pin refresh\n'
+            '      - name: Resolve exact maintenance base and candidate\n'
+            '        run: |\n'
+            "          expected = os.environ['GITHUB_SHA'].lower()\n"
+            "          if name == 'pull_request':\n"
+            "          base_ref = str((pull.get('base') or {}).get('ref') or '')\n"
+            "          if base_ref != 'main' or os.environ.get('GITHUB_BASE_REF') != 'main':\n"
+            "          base = git('rev-parse', 'origin/main')\n"
+            "          first_parent = git('rev-parse', 'HEAD^1')\n"
+            "          merge_base = git('merge-base', 'origin/main', 'HEAD')\n"
+            '          if first_parent != base or merge_base != base:\n'
+            "          elif name == 'push':\n"
+            "          completed = subprocess.run(['git','merge-base','--is-ancestor',base,head])\n"
+            '          PSMATRIX_VERIFICATION_MAINTENANCE_BASE\n'
+            '      - name: Certify immutable historical repository workflow action-pin refresh\n'
             '        run: >-\n'
             '          python scripts/ga/verify_repository_workflow_pin_refresh.py\n'
+            f'          --baseline {self.module.HISTORICAL_BASELINE}\n'
+            f'          --candidate {self.module.HISTORICAL_CANDIDATE}\n'
+            '          --require-candidate-ancestor-of-head\n'
+            '          --allow-historical-candidate-additions\n'
             '          --expected-files 76\n'
             '          --expected-replacements 167\n'
             '      - name: Scan exact tracked tree for private material\n'
@@ -51,10 +68,13 @@ class VerificationHardeningEventHeadPolicyTests(unittest.TestCase):
             '          python scripts/ga/scan_repository_private_material.py\n'
             '          --root .\n'
             '          --expected-head "$GITHUB_SHA"\n'
-            '      - name: Certify verification hardening with exact workflow pin refresh\n'
+            '      - name: Certify current-base verification maintenance\n'
             '        run: >-\n'
-            '          python scripts/ga/certify_verification_hardening_source_with_pin_refresh.py\n'
-            '          --workflow-pin-refresh "$RUNNER_TEMP/repository-workflow-pin-refresh.json"\n',
+            '          python scripts/ga/certify_verification_hardening_maintenance.py\n'
+            '          --base "$PSMATRIX_VERIFICATION_MAINTENANCE_BASE"\n'
+            '          --candidate "$GITHUB_SHA"\n'
+            '          --historical-workflow-pin-refresh "$RUNNER_TEMP/repository-workflow-pin-refresh.json"\n'
+            '          --private-scan "$RUNNER_TEMP/repository-private-material-scan.json"\n',
             encoding='utf-8',
         )
         (root / self.module.POWERSHELL_WORKFLOW).write_text(
@@ -75,7 +95,9 @@ class VerificationHardeningEventHeadPolicyTests(unittest.TestCase):
         self.assertEqual(value['status'], 'PASS')
         self.assertEqual(value['scanner_event_head_bindings'], 2)
         self.assertEqual(value['powershell_event_head_preflights'], 1)
-        self.assertEqual(value['workflow_pin_refresh_receipt_bindings'], 1)
+        self.assertEqual(value['historical_pin_refresh_receipt_bindings'], 1)
+        self.assertEqual(value['maintenance_base_candidate_bindings'], 1)
+        self.assertEqual(value['current_main_merge_parent_bindings'], 1)
 
     def test_missing_standalone_expected_head_fails_closed(self) -> None:
         root = self.make_root()
@@ -95,7 +117,7 @@ class VerificationHardeningEventHeadPolicyTests(unittest.TestCase):
         text = path.read_text(encoding='utf-8').replace(
             '          --expected-head "${GITHUB_SHA}"\n', ''
         )
-        text += '      - name: Decoy\n        run: echo decoy\n'
+        text += '      - name: Decoy\n        run: echo --expected-head "${GITHUB_SHA}"\n'
         path.write_text(text, encoding='utf-8')
         with self.assertRaises(self.module.VerificationHardeningEventHeadPolicyError):
             self.module.verify(root)
@@ -112,15 +134,38 @@ class VerificationHardeningEventHeadPolicyTests(unittest.TestCase):
         with self.assertRaises(self.module.VerificationHardeningEventHeadPolicyError):
             self.module.verify(root)
 
-    def test_missing_pin_refresh_receipt_binding_fails_closed(self) -> None:
+    def test_missing_historical_pin_refresh_binding_fails_closed(self) -> None:
         root = self.make_root()
         path = root / self.module.SOURCE_CERT_WORKFLOW
         path.write_text(
             path.read_text(encoding='utf-8').replace(
-                '          --workflow-pin-refresh "$RUNNER_TEMP/repository-workflow-pin-refresh.json"\n', ''
+                '          --historical-workflow-pin-refresh "$RUNNER_TEMP/repository-workflow-pin-refresh.json"\n', ''
             ),
             encoding='utf-8',
         )
+        with self.assertRaises(self.module.VerificationHardeningEventHeadPolicyError):
+            self.module.verify(root)
+
+    def test_missing_current_main_merge_parent_binding_fails_closed(self) -> None:
+        root = self.make_root()
+        path = root / self.module.SOURCE_CERT_WORKFLOW
+        path.write_text(
+            path.read_text(encoding='utf-8').replace(
+                "          first_parent = git('rev-parse', 'HEAD^1')\n", ''
+            ),
+            encoding='utf-8',
+        )
+        with self.assertRaises(self.module.VerificationHardeningEventHeadPolicyError):
+            self.module.verify(root)
+
+    def test_stale_pull_request_base_sha_is_rejected(self) -> None:
+        root = self.make_root()
+        path = root / self.module.SOURCE_CERT_WORKFLOW
+        text = path.read_text(encoding='utf-8').replace(
+            "          base = git('rev-parse', 'origin/main')\n",
+            "          base = str(((event.get('pull_request') or {}).get('base') or {}).get('sha') or '').lower()\n",
+        )
+        path.write_text(text, encoding='utf-8')
         with self.assertRaises(self.module.VerificationHardeningEventHeadPolicyError):
             self.module.verify(root)
 
@@ -140,11 +185,13 @@ class VerificationHardeningEventHeadPolicyTests(unittest.TestCase):
         text = SOURCE_CERT.read_text(encoding='utf-8')
         event = text.index('- name: Verify hardening event-head policy')
         repo = text.index('- name: Verify repository-wide workflow action policy')
-        pin = text.index('- name: Certify exact repository workflow action-pin refresh')
+        maintenance_range = text.index('- name: Resolve exact maintenance base and candidate')
+        pin = text.index('- name: Certify immutable historical repository workflow action-pin refresh')
         scan = text.index('- name: Scan exact tracked tree for private material')
-        certify = text.index('- name: Certify verification hardening with exact workflow pin refresh')
+        certify = text.index('- name: Certify current-base verification maintenance')
         self.assertLess(event, repo)
-        self.assertLess(repo, pin)
+        self.assertLess(repo, maintenance_range)
+        self.assertLess(maintenance_range, pin)
         self.assertLess(pin, scan)
         self.assertLess(scan, certify)
 
