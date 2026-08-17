@@ -115,12 +115,12 @@ def build_fragment(receipt_path: Path, output_root: Path) -> dict[str, Any]:
     if not isinstance(variables, dict) or set(variables) != {"PSMATRIX_FULL_MATRIX_ENDPOINT_ROOT", "PSMATRIX_FULL_MATRIX_HOME"}:
         raise FullMatrixFragmentError("full-matrix receipt variable closure mismatch")
 
-    output = _safe_external_directory(output_root, "output root", create=True)
-    mapped: dict[str, str] = {}
-    runtime_paths: list[Path] = []
+    validated: dict[str, Path] = {}
+    physical_runtime_paths: list[Path] = []
     for name, raw in variables.items():
         path = _safe_external_directory(Path(str(raw)), f"required full-matrix path: {name}", create=False)
-        runtime_paths.append(path.resolve(strict=True))
+        physical = path.resolve(strict=True)
+        physical_runtime_paths.append(physical)
         marker_path = _safe_regular_file(
             path / ".psmatrix-production-ga-path.json",
             f"full-matrix marker: {name}",
@@ -131,13 +131,23 @@ def build_fragment(receipt_path: Path, output_root: Path) -> dict[str, Any]:
             raise FullMatrixFragmentError(f"full-matrix marker missing or invalid: {name}") from exc
         if marker != {"schema": 1, "kind": "psmatrix.production-ga-full-matrix-local-path-marker", "version": "2.0.0"}:
             raise FullMatrixFragmentError(f"full-matrix marker identity mismatch: {name}")
+        validated[name] = path
+    if len(set(physical_runtime_paths)) != 2:
+        raise FullMatrixFragmentError("full-matrix endpoint root and home must be distinct")
+
+    output = _safe_external_directory(output_root, "output root", create=True)
+    planned_outputs: dict[str, Path] = {}
+    for name in validated:
         value_file = _safe_external_output_file(output / f"{name}.txt", f"full-matrix value file: {name}")
         if value_file.parent != output:
             raise FullMatrixFragmentError(f"full-matrix value file escaped output root: {name}")
+        planned_outputs[name] = value_file
+
+    mapped: dict[str, str] = {}
+    for name, path in validated.items():
+        value_file = planned_outputs[name]
         atomic_write_text(value_file, str(path) + "\n")
         mapped[name] = str(value_file)
-    if len(set(runtime_paths)) != 2:
-        raise FullMatrixFragmentError("full-matrix endpoint root and home must be distinct")
     return {
         "schema": 1,
         "kind": "psmatrix.production-ga-environment-material-map",
