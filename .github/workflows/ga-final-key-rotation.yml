@@ -98,7 +98,7 @@ jobs:
           run-id: ${{ inputs.release_signing_run_id }}
           github-token: ${{ github.token }}
 
-      - name: Revalidate release authority and install exact final wheel before private-key access
+      - name: Revalidate exact signed release authority before private-key access and install exact final wheel
         shell: bash
         run: |
           set -euo pipefail
