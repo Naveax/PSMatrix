@@ -198,6 +198,111 @@ jobs:
           run-id: ${{ inputs.final_signing_run_id }}
           github-token: ${{ github.token }}
 
+      - name: Bootstrap-verify final release and install exact rebind runtime wheel
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $releaseRoot = Join-Path $env:GITHUB_WORKSPACE 'final-signed'
+          $runtime = Join-Path $env:RUNNER_TEMP 'psmatrix-final-windows-rebind-runtime'
+          $isolated = Join-Path $env:RUNNER_TEMP 'psmatrix-final-windows-rebind-control'
+          $provenance = Join-Path $env:RUNNER_TEMP 'psmatrix-final-windows-rebind-runtime-provenance.json'
+          foreach ($path in @($runtime,$isolated)) { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force } }
+          if (Test-Path -LiteralPath $provenance) { Remove-Item -LiteralPath $provenance -Force }
+          New-Item -ItemType Directory -Path $runtime | Out-Null
+          $env:PSMATRIX_REBIND_RELEASE_ROOT = $releaseRoot
+          $env:PYTHONPATH = (Join-Path $env:GITHUB_WORKSPACE 'control\src')
+          @'
+          import json
+          import os
+          from pathlib import Path
+          from psmatrix.release import verify_release_manifest
+          from psmatrix.util import sha256_file
+
+          release=Path(os.environ['PSMATRIX_REBIND_RELEASE_ROOT'])
+          manifest=release/'psmatrix-2.0.0-release.json'
+          public=release/'psmatrix-2.0.0-release-public.pem'
+          status_path=release/'psmatrix-2.0.0-protected-release-signing-status.json'
+          verified=verify_release_manifest(manifest,release,signing_public_key=public)
+          if verified.get('valid') is not True or verified.get('version')!='2.0.0':
+              raise SystemExit('final Windows rebind protected release verification failed')
+          status=json.loads(status_path.read_text(encoding='utf-8'))
+          if status.get('release_artifacts_signed') is not True or status.get('version')!='2.0.0' or status.get('release_commit')!=os.environ['FINAL_RELEASE_COMMIT']:
+              raise SystemExit('final Windows rebind protected release status is not exact final/signed')
+          root=json.loads(manifest.read_text(encoding='utf-8'))
+          artifacts=((root.get('manifest') or {}).get('artifacts') or []) if isinstance(root,dict) else []
+          wheels=[item for item in artifacts if isinstance(item,dict) and str(item.get('name') or '').endswith('.whl')]
+          if len(wheels)!=1:
+              raise SystemExit(f'final Windows rebind expected exactly one signed release wheel; found {len(wheels)}')
+          wheel=wheels[0]
+          path=release/str(wheel.get('name') or '')
+          if not path.is_file() or path.is_symlink():
+              raise SystemExit('final Windows rebind signed wheel is missing or unsafe')
+          digest=sha256_file(path)
+          if int(wheel.get('size') or 0)!=path.stat().st_size or str(wheel.get('sha256') or '').lower()!=digest:
+              raise SystemExit('final Windows rebind signed wheel identity mismatch')
+          with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as stream:
+              stream.write(f'PSMATRIX_FINAL_WINDOWS_REBIND_WHEEL={path.resolve()}\n')
+              stream.write(f'PSMATRIX_FINAL_WINDOWS_REBIND_WHEEL_SHA256={digest}\n')
+          print(f'final_windows_rebind_release_pre_secret=PASS wheel={path.name} sha256={digest}')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Final Windows rebind release bootstrap verification failed.' }
+          python -m pip install --disable-pip-version-check --no-index --no-deps --target $runtime $env:PSMATRIX_FINAL_WINDOWS_REBIND_WHEEL
+          if ($LASTEXITCODE -ne 0) { throw 'Final Windows rebind exact wheel install failed.' }
+          $env:PYTHONPATH = $runtime
+          $env:PSMATRIX_EXPECTED_RUNTIME_ROOT = $runtime
+          @'
+          import importlib.metadata
+          import os
+          from pathlib import Path
+          import psmatrix
+          import psmatrix.lab_provisioning
+          import psmatrix.release
+          import psmatrix.signing
+          import psmatrix.util
+
+          root=Path(os.environ['PSMATRIX_EXPECTED_RUNTIME_ROOT']).resolve()
+          paths=(
+              Path(psmatrix.__file__).resolve(),
+              Path(psmatrix.lab_provisioning.__file__).resolve(),
+              Path(psmatrix.release.__file__).resolve(),
+              Path(psmatrix.signing.__file__).resolve(),
+              Path(psmatrix.util.__file__).resolve(),
+              Path(importlib.metadata.distribution('psmatrix').locate_file('')).resolve(),
+          )
+          for path in paths:
+              try: path.relative_to(root)
+              except ValueError as exc: raise SystemExit(f'final Windows rebind runtime escaped exact wheel target: {path}') from exc
+          if importlib.metadata.version('psmatrix')!='2.0.0':
+              raise SystemExit('final Windows rebind exact wheel runtime version mismatch')
+          print('final_windows_rebind_exact_wheel_runtime=PASS version=2.0.0')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Final Windows rebind exact wheel runtime identity failed.' }
+          $scriptDest = Join-Path $isolated 'scripts\ga\rebind_windows_authority_final_release.py'
+          $contractDest = Join-Path $isolated 'ga-packs\03-authoritative-windows\final-windows-evidence-rebind-control-contract.json'
+          New-Item -ItemType Directory -Path (Split-Path -Parent $scriptDest) -Force | Out-Null
+          New-Item -ItemType Directory -Path (Split-Path -Parent $contractDest) -Force | Out-Null
+          Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'control\scripts\ga\rebind_windows_authority_final_release.py') -Destination $scriptDest
+          Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'control\ga-packs\03-authoritative-windows\final-windows-evidence-rebind-control-contract.json') -Destination $contractDest
+          if (Test-Path -LiteralPath (Join-Path $isolated 'src')) { throw 'Isolated final Windows rebind control unexpectedly contains product source.' }
+          if ((Get-FileHash -Algorithm SHA256 $scriptDest).Hash -ne (Get-FileHash -Algorithm SHA256 (Join-Path $env:GITHUB_WORKSPACE 'control\scripts\ga\rebind_windows_authority_final_release.py')).Hash) { throw 'Isolated final Windows rebind script copy mismatch.' }
+          if ((Get-FileHash -Algorithm SHA256 $contractDest).Hash -ne (Get-FileHash -Algorithm SHA256 (Join-Path $env:GITHUB_WORKSPACE 'control\ga-packs\03-authoritative-windows\final-windows-evidence-rebind-control-contract.json')).Hash) { throw 'Isolated final Windows rebind contract copy mismatch.' }
+          [ordered]@{
+              schema = 1
+              kind = 'psmatrix.final-windows-evidence-rebind-runtime-provenance'
+              status = 'PASS'
+              version = '2.0.0'
+              release_commit = $env:FINAL_RELEASE_COMMIT
+              release_wheel_sha256 = $env:PSMATRIX_FINAL_WINDOWS_REBIND_WHEEL_SHA256
+              exact_release_wheel_runtime = $true
+              checkout_product_source = $false
+              install_mode = 'offline-no-index-no-deps'
+          } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $provenance -Encoding utf8
+          "PSMATRIX_FINAL_WINDOWS_REBIND_RUNTIME=$runtime" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_FINAL_WINDOWS_REBIND_CONTROL=$isolated" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_FINAL_WINDOWS_REBIND_RUNTIME_PROVENANCE=$provenance" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host 'final_windows_rebind_checkout_product_source=false'
+          Write-Host 'final_windows_rebind_wheel_install_mode=offline-no-index-no-deps'
+
       - name: Materialize Windows lab authority and perform final evidence rebind
         shell: pwsh
         env:
@@ -216,7 +321,8 @@ jobs:
           try {
               [IO.File]::WriteAllText($private,$env:LAB_PRIVATE_KEY_PEM,[Text.UTF8Encoding]::new($false))
               [IO.File]::WriteAllText($public,$env:LAB_PUBLIC_KEY_PEM,[Text.UTF8Encoding]::new($false))
-              python (Join-Path $env:GITHUB_WORKSPACE 'control\scripts\ga\rebind_windows_authority_final_release.py') `
+              $env:PYTHONPATH = $env:PSMATRIX_FINAL_WINDOWS_REBIND_RUNTIME
+              python (Join-Path $env:PSMATRIX_FINAL_WINDOWS_REBIND_CONTROL 'scripts\ga\rebind_windows_authority_final_release.py') `
                 --rc4-closure-root (Join-Path $env:GITHUB_WORKSPACE 'rc4-closure') `
                 --rc4-campaign-root (Join-Path $env:GITHUB_WORKSPACE 'rc4-campaign') `
                 --final-signed-root (Join-Path $env:GITHUB_WORKSPACE 'final-signed') `
@@ -226,6 +332,7 @@ jobs:
                 --lab-public-key $public `
                 --output-root $output
               if ($LASTEXITCODE -ne 0) { throw 'Final Windows evidence rebind builder failed.' }
+              Copy-Item -LiteralPath $env:PSMATRIX_FINAL_WINDOWS_REBIND_RUNTIME_PROVENANCE -Destination (Join-Path $output 'final-windows-evidence-rebind-runtime-provenance.json')
               "PSMATRIX_FINAL_WINDOWS_REBIND=$output" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           } finally {
               Remove-Item -LiteralPath $private -Force -ErrorAction SilentlyContinue
@@ -243,7 +350,8 @@ jobs:
           $bindingPath = Join-Path $env:PSMATRIX_FINAL_WINDOWS_REBIND 'windows-release-binding.json'
           $matrixPath = Join-Path $env:PSMATRIX_FINAL_WINDOWS_REBIND 'windows-authoritative.dsse.json'
           $verificationPath = Join-Path $env:PSMATRIX_FINAL_WINDOWS_REBIND 'authoritative-matrix-verification.json'
-          foreach ($path in @($statusPath,$bindingPath,$matrixPath,$verificationPath)) {
+          $runtimePath = Join-Path $env:PSMATRIX_FINAL_WINDOWS_REBIND 'final-windows-evidence-rebind-runtime-provenance.json'
+          foreach ($path in @($statusPath,$bindingPath,$matrixPath,$verificationPath,$runtimePath)) {
               if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Final rebind output is missing: $path" }
           }
           $status = Get-Content $statusPath -Raw | ConvertFrom-Json
@@ -257,10 +365,15 @@ jobs:
           }
           if (@($status.source_equivalence.runtime_changed_paths).Count -ne 1 -or [string]$status.source_equivalence.runtime_changed_paths[0] -ne 'src/psmatrix/__init__.py') { throw 'Final rebind runtime-source equivalence mismatch.' }
           if (@($status.source_equivalence.authoritative_fixture_changed_paths).Count -ne 0) { throw 'Authoritative Windows fixtures changed between RC4 and final.' }
+          $runtime = Get-Content $runtimePath -Raw | ConvertFrom-Json
+          if ([string]$runtime.status -ne 'PASS' -or [string]$runtime.version -ne '2.0.0' -or [string]$runtime.release_commit -ne $env:FINAL_RELEASE_COMMIT) { throw 'Final rebind exact-wheel runtime provenance identity mismatch.' }
+          if ([bool]$runtime.exact_release_wheel_runtime -ne $true -or [bool]$runtime.checkout_product_source -ne $false -or [string]$runtime.install_mode -ne 'offline-no-index-no-deps') { throw 'Final rebind exact-wheel runtime boundary mismatch.' }
+          if ([string]$runtime.release_wheel_sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'Final rebind release wheel digest is invalid.' }
           Write-Host 'final_windows_evidence_rebind=PASS'
           Write-Host 'campaigns_reused_without_rerun=true'
           Write-Host 'workers_contacted=false'
           Write-Host 'virtual_machines_created_or_mutated=false'
+          Write-Host 'final_windows_rebind_exact_release_wheel_runtime=true'
           Write-Host 'final_ga_evaluator_invoked=false'
           Write-Host 'ga_eligible=false'
 
