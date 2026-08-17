@@ -116,6 +116,65 @@ jobs:
           run-id: ${{ inputs.release_signing_run_id }}
           github-token: ${{ github.token }}
 
+      - name: Bootstrap-verify protected release and install exact wheel runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $releaseRoot = Join-Path $env:GITHUB_WORKSPACE 'signed-release'
+          $manifest = Join-Path $releaseRoot 'psmatrix-2.0.0-release.json'
+          $publicKey = Join-Path $releaseRoot 'psmatrix-2.0.0-release-public.pem'
+          if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { throw 'Protected final release manifest is missing.' }
+          if (-not (Test-Path -LiteralPath $publicKey -PathType Leaf)) { throw 'Protected final release public key is missing.' }
+          $wheels = @(Get-ChildItem -LiteralPath $releaseRoot -File | Where-Object { $_.Name -like 'psmatrix-2.0.0-*.whl' })
+          if ($wheels.Count -ne 1) { throw "Expected exactly one protected final 2.0.0 wheel; found $($wheels.Count)." }
+          $runtime = Join-Path $env:RUNNER_TEMP 'psmatrix-final-full-matrix-runtime'
+          $bootstrap = Join-Path $env:RUNNER_TEMP 'psmatrix-final-full-matrix-bootstrap-binding.json'
+          if (Test-Path -LiteralPath $runtime) { Remove-Item -LiteralPath $runtime -Recurse -Force }
+          if (Test-Path -LiteralPath $bootstrap) { Remove-Item -LiteralPath $bootstrap -Force }
+
+          # Checkout source is allowed only as the bootstrap verifier/control plane.
+          $env:PYTHONPATH = (Join-Path $env:GITHUB_WORKSPACE 'control\src')
+          python -m psmatrix.cli full release-binding `
+            --release-manifest $manifest `
+            --artifact-dir $releaseRoot `
+            --release-public-key $publicKey `
+            --release-commit $env:FINAL_RELEASE_COMMIT `
+            --output $bootstrap
+          if ($LASTEXITCODE -ne 0) { throw 'Bootstrap protected-release verification failed.' }
+          $binding = Get-Content -LiteralPath $bootstrap -Raw | ConvertFrom-Json
+          if ([string]$binding.release_version -ne '2.0.0' -or [string]$binding.release_commit -ne $env:FINAL_RELEASE_COMMIT) {
+              throw 'Bootstrap protected-release identity mismatch.'
+          }
+
+          New-Item -ItemType Directory -Path $runtime | Out-Null
+          python -m pip install --disable-pip-version-check --no-index --no-deps --target $runtime $wheels[0].FullName
+          if ($LASTEXITCODE -ne 0) { throw 'Exact protected final wheel installation failed.' }
+          $env:PYTHONPATH = $runtime
+          $env:PSMATRIX_EXPECTED_RUNTIME_ROOT = $runtime
+          @'
+          import importlib.metadata
+          import os
+          from pathlib import Path
+          import psmatrix
+
+          root = Path(os.environ['PSMATRIX_EXPECTED_RUNTIME_ROOT']).resolve()
+          module = Path(psmatrix.__file__).resolve()
+          try:
+              module.relative_to(root)
+          except ValueError as exc:
+              raise SystemExit(f'psmatrix import escaped exact wheel runtime: {module}') from exc
+          version = importlib.metadata.version('psmatrix')
+          if version != '2.0.0':
+              raise SystemExit(f'exact wheel runtime version mismatch: {version!r}')
+          print(f'final_matrix_exact_wheel_runtime=PASS module={module} version={version}')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Exact protected wheel runtime identity verification failed.' }
+          "PSMATRIX_FINAL_WHEEL_RUNTIME=$runtime" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_FINAL_BOOTSTRAP_BINDING=$bootstrap" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_FINAL_RELEASE_WHEEL=$($wheels[0].FullName)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host 'controller_exact_release_wheel=true'
+          Write-Host 'controller_wheel_install_mode=offline-no-index-no-deps'
+
       - name: Materialize isolated canonical matrix spec and complete endpoint bundle
         shell: pwsh
         env:
@@ -126,7 +185,7 @@ jobs:
           if (Test-Path -LiteralPath $matrixRoot) { Remove-Item -LiteralPath $matrixRoot -Recurse -Force }
           New-Item -ItemType Directory -Path $matrixRoot | Out-Null
           $spec = Join-Path $matrixRoot 'psmatrix.full.json'
-          $env:PYTHONPATH = (Join-Path $env:GITHUB_WORKSPACE 'control\src')
+          $env:PYTHONPATH = $env:PSMATRIX_FINAL_WHEEL_RUNTIME
           python -m psmatrix.cli full init --output $spec
           if ($LASTEXITCODE -ne 0) { throw 'Canonical full-matrix spec initialization failed.' }
           @'
@@ -181,7 +240,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $plan = Join-Path $env:PSMATRIX_FINAL_MATRIX_ROOT 'full-matrix-plan.json'
-          $env:PYTHONPATH = (Join-Path $env:GITHUB_WORKSPACE 'control\src')
+          $env:PYTHONPATH = $env:PSMATRIX_FINAL_WHEEL_RUNTIME
           python -m psmatrix.cli full plan --spec (Join-Path $env:PSMATRIX_FINAL_MATRIX_ROOT 'psmatrix.full.json') --output $plan
           if ($LASTEXITCODE -ne 0) { throw 'Canonical full-matrix readiness plan is not READY.' }
           $value = Get-Content $plan -Raw | ConvertFrom-Json
@@ -191,12 +250,12 @@ jobs:
           }
           Write-Host 'full_matrix_plan=PASS ready=25/25'
 
-      - name: Execute strict canonical twenty-five-target matrix
+      - name: Execute strict canonical twenty-five-target matrix from exact release wheel
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $report = Join-Path $env:RUNNER_TEMP 'psmatrix-final-full-matrix-report.json'
-          $env:PYTHONPATH = (Join-Path $env:GITHUB_WORKSPACE 'control\src')
+          $env:PYTHONPATH = $env:PSMATRIX_FINAL_WHEEL_RUNTIME
           python -m psmatrix.cli full test `
             (Join-Path $env:GITHUB_WORKSPACE 'control\scripts\ga\full_matrix_probe.ps1') `
             --spec (Join-Path $env:PSMATRIX_FINAL_MATRIX_ROOT 'psmatrix.full.json') `
@@ -206,7 +265,16 @@ jobs:
             --jobs 8 `
             --report-json $report
           if ($LASTEXITCODE -ne 0) { throw 'Strict canonical twenty-five-target matrix execution failed.' }
-          python -c "import json,sys;from pathlib import Path;sys.path.insert(0,str(Path(r'$env:GITHUB_WORKSPACE')/'control'/'src'));from psmatrix.full_matrix_ga import validate_canonical_full_matrix_report;value=json.loads(Path(r'$report').read_text(encoding='utf-8'));print(json.dumps(validate_canonical_full_matrix_report(value),sort_keys=True))"
+          $env:PSMATRIX_REPORT_PATH = $report
+          @'
+          import json
+          import os
+          from pathlib import Path
+          from psmatrix.full_matrix_ga import validate_canonical_full_matrix_report
+
+          value = json.loads(Path(os.environ['PSMATRIX_REPORT_PATH']).read_text(encoding='utf-8'))
+          print(json.dumps(validate_canonical_full_matrix_report(value), sort_keys=True))
+          '@ | python -
           if ($LASTEXITCODE -ne 0) { throw 'Canonical GA full-matrix report validation failed.' }
           "PSMATRIX_FINAL_MATRIX_REPORT=$report" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
 
@@ -218,7 +286,7 @@ jobs:
           if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
           New-Item -ItemType Directory -Path $output | Out-Null
           $binding = Join-Path $output 'full-matrix-release-binding.json'
-          $env:PYTHONPATH = (Join-Path $env:GITHUB_WORKSPACE 'control\src')
+          $env:PYTHONPATH = $env:PSMATRIX_FINAL_WHEEL_RUNTIME
           python -m psmatrix.cli full release-binding `
             --release-manifest (Join-Path $env:GITHUB_WORKSPACE 'signed-release\psmatrix-2.0.0-release.json') `
             --artifact-dir (Join-Path $env:GITHUB_WORKSPACE 'signed-release') `
@@ -226,6 +294,22 @@ jobs:
             --release-commit $env:FINAL_RELEASE_COMMIT `
             --output $binding
           if ($LASTEXITCODE -ne 0) { throw 'Final full-matrix release binding failed.' }
+          $env:PSMATRIX_WHEEL_BINDING = $binding
+          @'
+          import json
+          import os
+          from pathlib import Path
+
+          bootstrap = json.loads(Path(os.environ['PSMATRIX_FINAL_BOOTSTRAP_BINDING']).read_text(encoding='utf-8'))
+          wheel = json.loads(Path(os.environ['PSMATRIX_WHEEL_BINDING']).read_text(encoding='utf-8'))
+          for field in ('release_version', 'release_commit', 'release_manifest_sha256', 'release_public_key_sha256'):
+              if bootstrap.get(field) != wheel.get(field):
+                  raise SystemExit(f'bootstrap/wheel release binding differs for {field}')
+          if bootstrap.get('artifacts') != wheel.get('artifacts'):
+              raise SystemExit('bootstrap/wheel release binding artifact set differs')
+          print('bootstrap_wheel_release_binding_equivalence=PASS')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Bootstrap/wheel release-binding equivalence failed.' }
           Copy-Item -LiteralPath $env:PSMATRIX_FINAL_MATRIX_REPORT -Destination (Join-Path $output 'full-matrix-report.json')
           Copy-Item -LiteralPath (Join-Path $env:PSMATRIX_FINAL_MATRIX_ROOT 'full-matrix-plan.json') -Destination (Join-Path $output 'full-matrix-plan.json')
           "PSMATRIX_FINAL_MATRIX_UNSIGNED=$output" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
@@ -256,6 +340,7 @@ jobs:
               if path.is_file() and any(marker in path.read_bytes() for marker in markers):
                   raise SystemExit(f'private-key material found in unsigned full-matrix output: {path.name}')
           print('unsigned_full_matrix=PASS targets=25 passed=25')
+          print('controller_exact_release_wheel=true')
           print('ci_private_key_read=false')
           print('ga_eligible=false')
           '@ | python -
