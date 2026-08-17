@@ -49,6 +49,19 @@ $fullMatrixReceipt = Join-Path $workspace 'receipts/full-matrix-local-paths.json
 $fullMatrixValueRoot = Join-Path $workspace 'values/full-matrix'
 $authorityFragment = Join-Path $fragmentRoot 'signing-authorities.material-map.json'
 $fullMatrixFragment = Join-Path $fragmentRoot 'full-matrix.material-map.json'
+
+foreach ($path in @(
+    $authorityRoot,
+    $fragmentRoot,
+    $fullMatrixRoot,
+    (Split-Path -Parent $fullMatrixReceipt),
+    $fullMatrixValueRoot,
+    $authorityFragment,
+    $fullMatrixFragment,
+    $fullMatrixReceipt
+)) {
+    [void](Assert-NoExistingLinkOrReparseComponents $path 'Production GA provisioning workspace child/output path')
+}
 foreach ($path in @($fragmentRoot,(Split-Path -Parent $fullMatrixReceipt),$fullMatrixValueRoot)) {
     New-Item -ItemType Directory -Path $path -Force | Out-Null
     [void](Assert-NoExistingLinkOrReparseComponents $path 'Production GA provisioning workspace child path')
@@ -60,12 +73,17 @@ if ($ForceAuthorities) { $authorityArgs += '--force' }
 & $python @authorityArgs
 if ($LASTEXITCODE -ne 0) { throw 'Production GA authority provisioning failed.' }
 
+[void](Assert-NoExistingLinkOrReparseComponents $authorityFragment 'Production GA authority material-map fragment path')
 & $python 'scripts/ga/build_authority_material_map_fragment.py' '--authority-root' $authorityRoot '--output' $authorityFragment
 if ($LASTEXITCODE -ne 0) { throw 'Production GA authority material-map fragment failed.' }
 
+[void](Assert-NoExistingLinkOrReparseComponents $fullMatrixRoot 'Production GA full-matrix root path')
+[void](Assert-NoExistingLinkOrReparseComponents $fullMatrixReceipt 'Production GA full-matrix receipt path')
 & (Join-Path $repoRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) 'scripts/ga/Initialize-ProductionGAFullMatrixPaths.ps1') -Root $fullMatrixRoot -Output $fullMatrixReceipt
 if ($LASTEXITCODE -ne 0) { throw 'Production GA full-matrix local bootstrap failed.' }
 
+[void](Assert-NoExistingLinkOrReparseComponents $fullMatrixValueRoot 'Production GA full-matrix value root')
+[void](Assert-NoExistingLinkOrReparseComponents $fullMatrixFragment 'Production GA full-matrix material-map fragment path')
 & $python 'scripts/ga/build_full_matrix_material_map_fragment.py' '--receipt' $fullMatrixReceipt '--output-root' $fullMatrixValueRoot '--output-map' $fullMatrixFragment
 if ($LASTEXITCODE -ne 0) { throw 'Production GA full-matrix material-map fragment failed.' }
 
