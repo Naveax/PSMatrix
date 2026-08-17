@@ -300,7 +300,7 @@ jobs:
           markers=(b'-----BEGIN PRIVATE KEY-----',b'-----BEGIN RSA PRIVATE KEY-----',b'-----BEGIN EC PRIVATE KEY-----',b'-----BEGIN OPENSSH PRIVATE KEY-----',b'-----BEGIN ED25519 PRIVATE KEY-----')
           if any(marker in raw for marker in markers):
               raise SystemExit('private-key PEM material leaked into public-auth live report')
-          print('public_auth_live_report=PASS deployed_version=2.0.0 secret_material_absent=true')
+          print('public_auth_live_report=PASS secret_material_absent=true deployed_version=2.0.0')
           PY
           echo "PSMATRIX_PUBLIC_AUTH_LIVE_OUTPUT=$output" >> "$GITHUB_ENV"
 
