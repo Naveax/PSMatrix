@@ -146,15 +146,120 @@ jobs:
           Write-Host "release_public_key_source=verified-protected-release-bundle"
           Write-Host "release_public_key_secret_used=false"
 
+          # The exact release checkout is bootstrap verifier/control code only. It must verify the
+          # signed protected bundle before the release wheel is installed or executed.
+          $trustHome = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'trust-home'
+          $bootstrapRoot = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-ga-bootstrap'
+          if (Test-Path -LiteralPath $bootstrapRoot) {
+            Remove-Item -LiteralPath $bootstrapRoot -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $bootstrapRoot | Out-Null
+          $bootstrapBinding = Join-Path $bootstrapRoot 'windows-release-binding.json'
+          $checkoutSource = Join-Path $env:GITHUB_WORKSPACE 'src'
+          $previousPythonPath = $env:PYTHONPATH
+          Push-Location $env:RUNNER_TEMP
+          try {
+            $env:PYTHONPATH = $checkoutSource
+            & python -m psmatrix `
+              --home $trustHome `
+              lab release-binding `
+              --release-manifest $releaseManifest `
+              --artifact-dir $releaseDir `
+              --release-public-key $releasePublicKey `
+              --release-commit '${{ inputs.release_commit }}' `
+              --output $bootstrapBinding
+            $bootstrapExit = $LASTEXITCODE
+          }
+          finally {
+            $env:PYTHONPATH = $previousPythonPath
+            Pop-Location
+          }
+          if ($bootstrapExit -ne 0) {
+            throw "Checkout bootstrap release verification failed with exit code $bootstrapExit."
+          }
+          if (-not (Test-Path -LiteralPath $bootstrapBinding -PathType Leaf)) {
+            throw 'Checkout bootstrap release verification did not produce a release binding.'
+          }
+          $bootstrap = Get-Content -LiteralPath $bootstrapBinding -Raw | ConvertFrom-Json
+          if ([string]$bootstrap.release_version -ne $releaseVersion) {
+            throw "Bootstrap release version $($bootstrap.release_version) does not match protected bundle version $releaseVersion."
+          }
+          if ([string]$bootstrap.release_commit -ne '${{ inputs.release_commit }}'.ToLowerInvariant()) {
+            throw 'Bootstrap release binding did not preserve the exact requested release commit.'
+          }
+          Write-Host 'release_bundle_bootstrap_verified=true'
+
+          # Build a hybrid campaign root: operational fixtures remain from the exact release
+          # checkout, while every `python -m psmatrix` product command resolves from the exact
+          # signed wheel installed offline with no index and no dependency resolution.
+          $campaignRoot = Join-Path $env:RUNNER_TEMP 'psmatrix-authoritative-campaign'
+          if (Test-Path -LiteralPath $campaignRoot) {
+            Remove-Item -LiteralPath $campaignRoot -Recurse -Force
+          }
+          $campaignSrc = Join-Path $campaignRoot 'src'
+          $campaignFixtureParent = Join-Path $campaignRoot 'fixtures'
+          New-Item -ItemType Directory -Path $campaignSrc -Force | Out-Null
+          New-Item -ItemType Directory -Path $campaignFixtureParent -Force | Out-Null
+          $checkoutFixtures = Join-Path $env:GITHUB_WORKSPACE 'fixtures\windows-authoritative'
+          if (-not (Test-Path -LiteralPath $checkoutFixtures -PathType Container)) {
+            throw "Authoritative fixture root is missing from the exact checkout: $checkoutFixtures"
+          }
+          Copy-Item -LiteralPath $checkoutFixtures -Destination (Join-Path $campaignFixtureParent 'windows-authoritative') -Recurse -Force
+
+          & python -m pip install `
+            --disable-pip-version-check `
+            --no-index `
+            --no-deps `
+            --target $campaignSrc `
+            $releaseWheel
+          if ($LASTEXITCODE -ne 0) {
+            throw "Offline exact release wheel installation failed with exit code $LASTEXITCODE."
+          }
+
+          $previousPythonPath = $env:PYTHONPATH
+          Push-Location $env:RUNNER_TEMP
+          try {
+            $env:PYTHONPATH = $campaignSrc
+            $packageOrigin = (& python -c 'import pathlib, psmatrix; print(pathlib.Path(psmatrix.__file__).resolve())' 2>&1 | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to resolve installed PSMatrix package origin.`n$packageOrigin"
+            }
+            $installedVersion = (& python -c 'import importlib.metadata; print(importlib.metadata.version("psmatrix"))' 2>&1 | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to resolve installed PSMatrix distribution version.`n$installedVersion"
+            }
+          }
+          finally {
+            $env:PYTHONPATH = $previousPythonPath
+            Pop-Location
+          }
+          $campaignSrcFull = [System.IO.Path]::GetFullPath($campaignSrc)
+          $packageOriginFull = [System.IO.Path]::GetFullPath($packageOrigin)
+          $campaignPrefix = $campaignSrcFull + [System.IO.Path]::DirectorySeparatorChar
+          if (-not $packageOriginFull.StartsWith($campaignPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "PSMatrix import escaped the isolated exact-wheel target: $packageOriginFull"
+          }
+          $checkoutSourceFull = [System.IO.Path]::GetFullPath($checkoutSource) + [System.IO.Path]::DirectorySeparatorChar
+          if ($packageOriginFull.StartsWith($checkoutSourceFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "PSMatrix campaign would execute checkout source instead of the verified wheel: $packageOriginFull"
+          }
+          if ($installedVersion -ne $releaseVersion) {
+            throw "Installed wheel version $installedVersion does not match protected release version $releaseVersion."
+          }
+          Write-Host "controller_package_origin=$packageOriginFull"
+          Write-Host "controller_package_version=$installedVersion"
+          Write-Host 'controller_exact_release_wheel=true'
+          Write-Host 'controller_wheel_install_mode=offline-no-index-no-deps'
+
           $params = @{
-            SourceRoot = $env:GITHUB_WORKSPACE
+            SourceRoot = $campaignRoot
             ReleaseCommit = '${{ inputs.release_commit }}'
             ReleaseManifest = $releaseManifest
             ReleaseArtifactDir = $releaseDir
             ReleasePublicKey = $releasePublicKey
             LabPrivateKey = (Join-Path $keyRoot 'windows-lab.private.pem')
             LabPublicKey = (Join-Path $keyRoot 'windows-lab.public.pem')
-            TrustHome = (Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'trust-home')
+            TrustHome = $trustHome
             ConfigRoot = (Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'config')
             OutputDir = $output
             Iterations = [int]'${{ inputs.iterations }}'
