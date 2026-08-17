@@ -72,18 +72,29 @@ jobs:
           import re
           import subprocess
 
-          head = subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip().lower()
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip().lower()
+
+          head = git('rev-parse', 'HEAD')
           expected = os.environ['GITHUB_SHA'].lower()
           if head != expected or re.fullmatch(r'[0-9a-f]{40}', head) is None:
               raise SystemExit('checked-out maintenance candidate differs from exact workflow/event HEAD')
           event = json.load(open(os.environ['GITHUB_EVENT_PATH'], encoding='utf-8'))
           name = os.environ['GITHUB_EVENT_NAME']
           if name == 'pull_request':
-              base = str(((event.get('pull_request') or {}).get('base') or {}).get('sha') or '').lower()
+              pull = event.get('pull_request') or {}
+              base_ref = str((pull.get('base') or {}).get('ref') or '')
+              if base_ref != 'main' or os.environ.get('GITHUB_BASE_REF') != 'main':
+                  raise SystemExit('verification maintenance pull request must target current main')
+              base = git('rev-parse', 'origin/main')
+              first_parent = git('rev-parse', 'HEAD^1')
+              merge_base = git('merge-base', 'origin/main', 'HEAD')
+              if first_parent != base or merge_base != base:
+                  raise SystemExit('pull-request maintenance base does not equal current origin/main merge parent')
           elif name == 'push':
               base = str(event.get('before') or '').lower()
               if base == '0' * 40:
-                  base = subprocess.check_output(['git','rev-parse','HEAD^'], text=True).strip().lower()
+                  base = git('rev-parse', 'HEAD^')
           else:
               raise SystemExit(f'unsupported verification-maintenance event: {name}')
           if re.fullmatch(r'[0-9a-f]{40}', base) is None:
@@ -105,6 +116,7 @@ jobs:
           --baseline 3ffc6b6d7cd58d64224f780aa819b50f50f72491
           --candidate 3b06770cb925add391f4552e5f1cbd0ed6aa96b5
           --require-candidate-ancestor-of-head
+          --allow-historical-candidate-additions
           --expected-files 76
           --expected-replacements 167
           --output "$RUNNER_TEMP/repository-workflow-pin-refresh.json"
