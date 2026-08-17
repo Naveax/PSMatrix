@@ -1,0 +1,39 @@
+name: temporary-dispatch-release-authority-preflight
+
+on:
+  push:
+    branches:
+      - ops/222-dpapi-release-authority-probe
+    paths:
+      - .github/workflows/tmp-223-dispatch-release-authority-preflight.yml
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch protected release-authority preflight on main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${REPOSITORY}/actions/workflows/ga-windows-authority-release-authority-preflight.yml/dispatches"
+          status="$(curl --silent --show-error --output /tmp/dispatch-response.txt --write-out '%{http_code}' \
+            --request POST \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "${api}" \
+            --data '{"ref":"main"}')"
+          if [[ "${status}" != "204" ]]; then
+            echo "workflow dispatch failed with HTTP ${status}" >&2
+            sed -E 's/(token|secret|private[_-]?key)[^,}]*/REDACTED/Ig' /tmp/dispatch-response.txt >&2 || true
+            exit 1
+          fi
+          echo 'release_authority_preflight_dispatch=PASS'
