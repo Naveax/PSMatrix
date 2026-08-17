@@ -206,10 +206,12 @@ jobs:
           $runtime = Join-Path $env:RUNNER_TEMP 'psmatrix-final-windows-rebind-runtime'
           $isolated = Join-Path $env:RUNNER_TEMP 'psmatrix-final-windows-rebind-control'
           $provenance = Join-Path $env:RUNNER_TEMP 'psmatrix-final-windows-rebind-runtime-provenance.json'
+          $wheelPathFile = Join-Path $env:RUNNER_TEMP 'psmatrix-final-windows-rebind-wheel.txt'
           foreach ($path in @($runtime,$isolated)) { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force } }
-          if (Test-Path -LiteralPath $provenance) { Remove-Item -LiteralPath $provenance -Force }
+          foreach ($path in @($provenance,$wheelPathFile)) { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force } }
           New-Item -ItemType Directory -Path $runtime | Out-Null
           $env:PSMATRIX_REBIND_RELEASE_ROOT = $releaseRoot
+          $env:PSMATRIX_REBIND_WHEEL_PATH_FILE = $wheelPathFile
           $env:PYTHONPATH = (Join-Path $env:GITHUB_WORKSPACE 'control\src')
           @'
           import json
@@ -240,13 +242,14 @@ jobs:
           digest=sha256_file(path)
           if int(wheel.get('size') or 0)!=path.stat().st_size or str(wheel.get('sha256') or '').lower()!=digest:
               raise SystemExit('final Windows rebind signed wheel identity mismatch')
-          with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as stream:
-              stream.write(f'PSMATRIX_FINAL_WINDOWS_REBIND_WHEEL={path.resolve()}\n')
-              stream.write(f'PSMATRIX_FINAL_WINDOWS_REBIND_WHEEL_SHA256={digest}\n')
+          Path(os.environ['PSMATRIX_REBIND_WHEEL_PATH_FILE']).write_text(str(path.resolve())+'\n',encoding='utf-8')
           print(f'final_windows_rebind_release_pre_secret=PASS wheel={path.name} sha256={digest}')
           '@ | python -
           if ($LASTEXITCODE -ne 0) { throw 'Final Windows rebind release bootstrap verification failed.' }
-          python -m pip install --disable-pip-version-check --no-index --no-deps --target $runtime $env:PSMATRIX_FINAL_WINDOWS_REBIND_WHEEL
+          $wheel = (Get-Content -LiteralPath $wheelPathFile -Raw).Trim()
+          if ([string]::IsNullOrWhiteSpace($wheel) -or -not (Test-Path -LiteralPath $wheel -PathType Leaf)) { throw 'Final Windows rebind verified wheel path is missing.' }
+          $wheelSha256 = (Get-FileHash -LiteralPath $wheel -Algorithm SHA256).Hash.ToLowerInvariant()
+          python -m pip install --disable-pip-version-check --no-index --no-deps --target $runtime $wheel
           if ($LASTEXITCODE -ne 0) { throw 'Final Windows rebind exact wheel install failed.' }
           $env:PYTHONPATH = $runtime
           $env:PSMATRIX_EXPECTED_RUNTIME_ROOT = $runtime
@@ -292,7 +295,7 @@ jobs:
               status = 'PASS'
               version = '2.0.0'
               release_commit = $env:FINAL_RELEASE_COMMIT
-              release_wheel_sha256 = $env:PSMATRIX_FINAL_WINDOWS_REBIND_WHEEL_SHA256
+              release_wheel_sha256 = $wheelSha256
               exact_release_wheel_runtime = $true
               checkout_product_source = $false
               install_mode = 'offline-no-index-no-deps'
@@ -300,6 +303,8 @@ jobs:
           "PSMATRIX_FINAL_WINDOWS_REBIND_RUNTIME=$runtime" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           "PSMATRIX_FINAL_WINDOWS_REBIND_CONTROL=$isolated" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           "PSMATRIX_FINAL_WINDOWS_REBIND_RUNTIME_PROVENANCE=$provenance" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_FINAL_WINDOWS_REBIND_WHEEL_SHA256=$wheelSha256" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          Remove-Item -LiteralPath $wheelPathFile -Force -ErrorAction SilentlyContinue
           Write-Host 'final_windows_rebind_checkout_product_source=false'
           Write-Host 'final_windows_rebind_wheel_install_mode=offline-no-index-no-deps'
 
@@ -368,7 +373,7 @@ jobs:
           $runtime = Get-Content $runtimePath -Raw | ConvertFrom-Json
           if ([string]$runtime.status -ne 'PASS' -or [string]$runtime.version -ne '2.0.0' -or [string]$runtime.release_commit -ne $env:FINAL_RELEASE_COMMIT) { throw 'Final rebind exact-wheel runtime provenance identity mismatch.' }
           if ([bool]$runtime.exact_release_wheel_runtime -ne $true -or [bool]$runtime.checkout_product_source -ne $false -or [string]$runtime.install_mode -ne 'offline-no-index-no-deps') { throw 'Final rebind exact-wheel runtime boundary mismatch.' }
-          if ([string]$runtime.release_wheel_sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'Final rebind release wheel digest is invalid.' }
+          if ([string]$runtime.release_wheel_sha256 -cnotmatch '^[0-9a-f]{64}$' -or [string]$runtime.release_wheel_sha256 -ne $env:PSMATRIX_FINAL_WINDOWS_REBIND_WHEEL_SHA256) { throw 'Final rebind release wheel digest is invalid or inconsistent.' }
           Write-Host 'final_windows_evidence_rebind=PASS'
           Write-Host 'campaigns_reused_without_rerun=true'
           Write-Host 'workers_contacted=false'
