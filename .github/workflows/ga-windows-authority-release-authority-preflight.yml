@@ -18,9 +18,6 @@ jobs:
     environment: production-ga-release-signing
     permissions:
       contents: read
-    env:
-      PSMATRIX_RELEASE_KEY_ROOT: ${{ runner.temp }}/psmatrix-release-authority-preflight-keys
-      PSMATRIX_RELEASE_PREFLIGHT: ${{ runner.temp }}/psmatrix-release-authority-preflight
 
     steps:
       - name: Check out signing controls
@@ -34,6 +31,18 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Initialize release authority preflight paths
+        shell: bash
+        env:
+          RELEASE_KEY_ROOT: ${{ runner.temp }}/psmatrix-release-authority-preflight-keys
+          RELEASE_PREFLIGHT_ROOT: ${{ runner.temp }}/psmatrix-release-authority-preflight
+        run: |
+          set -euo pipefail
+          {
+            printf 'PSMATRIX_RELEASE_KEY_ROOT=%s\n' "$RELEASE_KEY_ROOT"
+            printf 'PSMATRIX_RELEASE_PREFLIGHT=%s\n' "$RELEASE_PREFLIGHT_ROOT"
+          } >> "$GITHUB_ENV"
+
       - name: Materialize protected release private key
         shell: bash
         env:
@@ -46,7 +55,7 @@ jobs:
           printf '%s\n' "$RELEASE_PRIVATE_KEY" > "$PSMATRIX_RELEASE_KEY_ROOT/release.private.pem"
           chmod 0600 "$PSMATRIX_RELEASE_KEY_ROOT/release.private.pem"
 
-      - name: Verify private key against locked RC2 release authority
+      - name: Verify private key against locked RC3 release authority
         shell: bash
         run: |
           set -euo pipefail
@@ -73,7 +82,7 @@ jobs:
           challenge = b'PSMatrix protected release authority preflight v1\n'
           signature = sign_bytes(challenge, private_key)
           if not verify_bytes(challenge, signature, public_key):
-              raise SystemExit('PSMATRIX_RELEASE_PRIVATE_KEY does not match the locked RC2 release authority')
+              raise SystemExit('PSMATRIX_RELEASE_PRIVATE_KEY does not match the locked RC3 release authority')
 
           result = {
               'schema': 1,
