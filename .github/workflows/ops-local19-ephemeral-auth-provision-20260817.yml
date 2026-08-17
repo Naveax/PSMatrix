@@ -1,0 +1,213 @@
+name: ops-local19-ephemeral-auth-provision-20260817
+
+on:
+  push:
+    branches:
+      - ops/local19-secure-bootstrap-20260817
+    paths:
+      - .github/workflows/ops-local19-ephemeral-auth-provision-20260817.yml
+
+concurrency:
+  group: ops-local19-ephemeral-auth-provision-20260817
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  authorize-and-provision:
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 20
+    env:
+      SOURCE_SHA: 8498fef23788c5e3ee37ace736215a03f11118e8
+      PROVISIONING_ROOT: C:\ProgramData\PSMatrix\ProductionGA\provisioning
+      HANDOFF_PATH: C:\Users\navea\Desktop\PSMatrix-GitHub-Authorize.txt
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Ephemeral GitHub authorization and exact local19 provisioning
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $gh = (Get-Command gh -ErrorAction Stop).Source
+          $python = (Get-Command python -ErrorAction Stop).Source
+          $root = [IO.Path]::GetFullPath($env:PROVISIONING_ROOT)
+          $authRoot = Join-Path $root ("ephemeral-gh-" + $env:GITHUB_RUN_ID)
+          $handoff = [IO.Path]::GetFullPath($env:HANDOFF_PATH)
+          $stdout = Join-Path $authRoot 'gh-auth.stdout'
+          $stderr = Join-Path $authRoot 'gh-auth.stderr'
+          $stdin = Join-Path $authRoot 'gh-auth.stdin'
+          $browserShim = Join-Path $authRoot 'browser-noop.cmd'
+          $oldConfig = $env:GH_CONFIG_DIR
+          $oldBrowser = $env:GH_BROWSER
+
+          $systemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+          $adminsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+          $userSid = ([Security.Principal.NTAccount]::new($env:COMPUTERNAME,'navea')).Translate([Security.Principal.SecurityIdentifier])
+
+          function Set-SecureDirectory([string]$Path) {
+            $s = [Security.AccessControl.DirectorySecurity]::new()
+            $s.SetAccessRuleProtection($true,$false)
+            $s.SetOwner($adminsSid)
+            $inherit = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+            $prop = [Security.AccessControl.PropagationFlags]::None
+            $allow = [Security.AccessControl.AccessControlType]::Allow
+            $full = [Security.AccessControl.FileSystemRights]::FullControl
+            [void]$s.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($systemSid,$full,$inherit,$prop,$allow))
+            [void]$s.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($adminsSid,$full,$inherit,$prop,$allow))
+            Set-Acl -LiteralPath $Path -AclObject $s
+          }
+          function Set-HandoffAcl([string]$Path) {
+            $s = [Security.AccessControl.FileSecurity]::new()
+            $s.SetAccessRuleProtection($true,$false)
+            $s.SetOwner($adminsSid)
+            $allow = [Security.AccessControl.AccessControlType]::Allow
+            $full = [Security.AccessControl.FileSystemRights]::FullControl
+            $read = [Security.AccessControl.FileSystemRights]::Read
+            [void]$s.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($systemSid,$full,$allow))
+            [void]$s.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($adminsSid,$full,$allow))
+            [void]$s.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($userSid,$read,$allow))
+            Set-Acl -LiteralPath $Path -AclObject $s
+          }
+          function Wipe-File([string]$Path) {
+            if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
+            try {
+              $item = Get-Item -LiteralPath $Path -Force
+              if ($item.Length -gt 0) {
+                $zeros = New-Object byte[] ([int]$item.Length)
+                [IO.File]::WriteAllBytes($Path,$zeros)
+                [Array]::Clear($zeros,0,$zeros.Length)
+              }
+            } catch { }
+            Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+          }
+
+          try {
+            if (Test-Path -LiteralPath $authRoot) { throw 'ephemeral GH auth root already exists' }
+            New-Item -ItemType Directory -Path $authRoot -Force | Out-Null
+            Set-SecureDirectory $authRoot
+            $env:GH_CONFIG_DIR = $authRoot
+            $env:GH_BROWSER = $browserShim
+            [IO.File]::WriteAllText($browserShim,"@echo off`r`nexit /b 0`r`n",[Text.Encoding]::ASCII)
+            [IO.File]::WriteAllText($stdin,"`r`nY`r`n`r`n",[Text.Encoding]::ASCII)
+
+            $args = @('auth','login','--hostname','github.com','--git-protocol','https','--web','--insecure-storage','--skip-ssh-key')
+            $process = Start-Process -FilePath $gh -ArgumentList $args -NoNewWindow -PassThru `
+              -RedirectStandardInput $stdin -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+
+            $deadline = (Get-Date).AddMinutes(12)
+            $deviceCode = $null
+            $handoffWritten = $false
+            while (-not $process.HasExited -and (Get-Date) -lt $deadline) {
+              Start-Sleep -Milliseconds 500
+              $text = ''
+              if (Test-Path -LiteralPath $stdout) { $text += Get-Content -LiteralPath $stdout -Raw -ErrorAction SilentlyContinue }
+              if (Test-Path -LiteralPath $stderr) { $text += "`n" + (Get-Content -LiteralPath $stderr -Raw -ErrorAction SilentlyContinue) }
+              if (-not $deviceCode -and $text -match '(?i)([A-Z0-9]{4}-[A-Z0-9]{4})') {
+                $deviceCode = $Matches[1].ToUpperInvariant()
+              }
+              if ($deviceCode -and -not $handoffWritten) {
+                $handoffDir = Split-Path -Parent $handoff
+                if (-not (Test-Path -LiteralPath $handoffDir -PathType Container)) { throw 'navea Desktop directory is unavailable' }
+                $body = @(
+                  'PSMatrix temporary GitHub authorization',
+                  '',
+                  'Open: https://github.com/login/device',
+                  "Code: $deviceCode",
+                  '',
+                  'Authorize the GitHub account that has admin access to Naveax/PSMatrix.',
+                  'The credential is stored only in an isolated temporary runner directory and is deleted after provisioning.'
+                ) -join [Environment]::NewLine
+                [IO.File]::WriteAllText($handoff,$body,[Text.UTF8Encoding]::new($false))
+                Set-HandoffAcl $handoff
+                $handoffWritten = $true
+                Write-Host "github_device_authorization_handoff=READY path=$handoff"
+                Write-Host 'device_code_logged=false'
+              }
+            }
+            if (-not $process.HasExited) {
+              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+              throw 'temporary GitHub device authorization did not complete'
+            }
+            $process.WaitForExit()
+            if ($process.ExitCode -ne 0) { throw "gh auth login failed with exit $($process.ExitCode)" }
+            & $gh auth status --hostname github.com *> $null
+            if ($LASTEXITCODE -ne 0) { throw 'ephemeral gh authentication did not verify' }
+            $login = (& $gh api user --jq '.login').Trim()
+            $admin = (& $gh api repos/Naveax/PSMatrix --jq '.permissions.admin').Trim()
+            if ($LASTEXITCODE -ne 0 -or $admin -ne 'true') { throw 'ephemeral GitHub identity is not repository admin' }
+            Write-Host "ephemeral_gh_operator_login=$login"
+            Write-Host 'ephemeral_gh_repo_admin=true'
+
+            $summaryPath = Join-Path $root 'local-provisioning-summary.json'
+            $prepared = Get-Content -LiteralPath $summaryPath -Raw | ConvertFrom-Json
+            if ($prepared.status -ne 'PASS' -or [int]$prepared.locally_prepared_check_count -ne 19) { throw 'local 19 workspace is not ready' }
+            $localMap = Join-Path $root 'local-19-ephemeral-live.material-map.json'
+            $preAudit = Join-Path $root 'local-19-ephemeral-pre-audit.json'
+            $selectedMap = Join-Path $root 'local-19-ephemeral-selected.material-map.json'
+            $postAudit = Join-Path $root 'local-19-ephemeral-post-audit.json'
+            $receipt = Join-Path $root 'local-19-ephemeral-receipt.json'
+
+            & $python scripts/ga/compose_partial_production_ga_material_map.py `
+              --fragment ([string]$prepared.fragments.signing_authorities) `
+              --fragment ([string]$prepared.fragments.full_matrix) `
+              --output $localMap
+            if ($LASTEXITCODE -ne 0) { throw 'local 19 material-map composition failed' }
+            & $python scripts/ga/audit_production_ga_environment_inventory.py --repository Naveax/PSMatrix --gh $gh --output $preAudit
+            if ($LASTEXITCODE -notin @(0,2)) { throw 'live pre-provision inventory audit failed' }
+            & $python scripts/ga/select_missing_production_ga_material.py --material-map $localMap --inventory-audit $preAudit --output $selectedMap
+            if ($LASTEXITCODE -ne 0) { throw 'live missing-local selection failed' }
+            $selected = Get-Content -LiteralPath $selectedMap -Raw | ConvertFrom-Json -AsHashtable -Depth 30
+            $selectedCount = [int]$selected.check_count
+            $selectedEnvironments = @($selected.environments.Keys | Sort-Object)
+            if ($selectedCount -gt 0) {
+              & .\scripts\ga\Invoke-ProductionGAEnvironmentProvisioning.ps1 `
+                -MaterialMap $selectedMap -Repository Naveax/PSMatrix `
+                -Environment $selectedEnvironments -AllowPartialEnvironment -GhPath $gh
+              if ($LASTEXITCODE -ne 0) { throw 'live local19 GitHub environment provisioning failed' }
+            }
+            & $python scripts/ga/audit_production_ga_environment_inventory.py --repository Naveax/PSMatrix --gh $gh --output $postAudit
+            if ($LASTEXITCODE -notin @(0,2)) { throw 'live post-provision inventory audit failed' }
+            $after = Get-Content -LiteralPath $postAudit -Raw | ConvertFrom-Json
+            if ($selectedCount -gt 0) {
+              & $python scripts/ga/verify_production_ga_provisioning_receipt.py --material-map $selectedMap --inventory-audit $postAudit --output $receipt
+              if ($LASTEXITCODE -ne 0) { throw 'local19 provisioning receipt verification failed' }
+              $receiptValue = Get-Content -LiteralPath $receipt -Raw | ConvertFrom-Json
+              if ($receiptValue.status -ne 'PASS' -or [int]$receiptValue.verified_check_count -ne $selectedCount) { throw 'local19 receipt cardinality mismatch' }
+            }
+
+            $map = Get-Content -LiteralPath $localMap -Raw | ConvertFrom-Json -AsHashtable -Depth 30
+            $auditRows = @{}
+            foreach ($row in @($after.environments)) { $auditRows[[string]$row.environment] = $row }
+            $localMissing = 0
+            foreach ($environment in @($map.environments.Keys)) {
+              $row = $auditRows[$environment]
+              foreach ($name in @($map.environments[$environment].secrets.Keys)) { if ($name -in @($row.missing_secrets)) { $localMissing++ } }
+              foreach ($name in @($map.environments[$environment].vars.Keys)) { if ($name -in @($row.missing_vars)) { $localMissing++ } }
+            }
+            if ($localMissing -ne 0) { throw "local19 post-provision verification still missing $localMissing checks" }
+            Write-Host 'production_ga_local19_ephemeral_provisioning=PASS'
+            Write-Host 'local_checks_present_after=19/19'
+            Write-Host "global_present_after=$([int]$after.present_check_count)/41"
+            Write-Host "global_missing_after=$([int]$after.missing_check_count)"
+            Write-Host 'provisioning_receipt_verified=true'
+            Write-Host 'production_readiness_claimed=false'
+            Write-Host 'ga_eligible=false'
+          }
+          finally {
+            Remove-Item -LiteralPath $handoff -Force -ErrorAction SilentlyContinue
+            if (Test-Path -LiteralPath $authRoot -PathType Container) {
+              Get-ChildItem -LiteralPath $authRoot -File -Force -ErrorAction SilentlyContinue | ForEach-Object { Wipe-File $_.FullName }
+              Remove-Item -LiteralPath $authRoot -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            $env:GH_CONFIG_DIR = $oldConfig
+            $env:GH_BROWSER = $oldBrowser
+            Write-Host 'ephemeral_gh_config_removed=true'
+            Write-Host 'credential_value_logged=false'
+          }
