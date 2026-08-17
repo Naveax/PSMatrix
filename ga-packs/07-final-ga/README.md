@@ -158,6 +158,12 @@ ga_eligible = true
 
 A source preflight, release candidate, missing external proof, non-PASS gate, reused authority key, installation failure, missing SBOM/checksum artifact or private-key leakage always results in failure or incomplete status.
 
+## Current execution boundary
+
+The secret-free source preflight may be refreshed while upstream Production GA packs are incomplete because it proves only the closure implementation and contract. Such a run must continue to report `external_evidence_complete=false`, `final_signing_performed=false`, `production_ga=BLOCKED` and `ga_eligible=false`.
+
+The protected final workflow is not an acceptable shortcut around upstream blockers. It must not be dispatched as a substitute for unresolved release authority, native runtime certification, external deployment proof or independent review. Final signing begins only after Packs 01 through 06 are complete on the same exact final `2.0.0` commit.
+
 ## State
 
 `SOURCE_PREFLIGHT_READY_FINAL_SIGNING_BLOCKED` — the final closure operator, protected workflow and source contract are implemented. Final signing remains intentionally blocked until Packs 01 through 06 are all complete on an exact final `2.0.0` commit and the protected release controller/evidence root are configured.
