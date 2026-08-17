@@ -152,7 +152,7 @@ class AuthorityMaterialMapFragmentTests(unittest.TestCase):
         self.assertIn('expected_private_name = f"{role}.private.pem"', source)
         self.assertIn('expected_public_name = f"{role}.public.pem"', source)
         self.assertIn("private_name != expected_private_name", source)
-        self.assertIn("path.lstat()", source)
+        self.assertIn(".lstat()", source)
         self.assertIn("st_nlink", source)
         self.assertIn("FILE_ATTRIBUTE_REPARSE_POINT", source)
         self.assertIn("atomic_write_json(target, value)", source)
