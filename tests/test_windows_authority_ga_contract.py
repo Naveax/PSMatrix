@@ -186,16 +186,36 @@ class WindowsAuthorityGAContractTests(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, text)
 
-    def test_authoritative_workflow_discovers_unique_final_or_rc_manifest(self) -> None:
+    def test_authoritative_workflow_uses_verified_protected_release_bundle(self) -> None:
         text = AUTHORITY_WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("^psmatrix-2\\.0\\.0(?:rc[0-9]+)?-release\\.json$", text)
-        self.assertIn("Expected exactly one 2.0.0/2.0.0rcN release manifest", text)
+        required = (
+            "^psmatrix-2\\.0\\.0(?:rc[0-9]+)?-release\\.json$",
+            "Expected exactly one 2.0.0/2.0.0rcN release manifest in protected release media",
+            "Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'media\\release'",
+            '"psmatrix-$releaseVersion-release-public.pem"',
+            '"psmatrix-$releaseVersion-py3-none-any.whl"',
+            "release_public_key_source=verified-protected-release-bundle",
+            "release_public_key_secret_used=false",
+            "ReleasePublicKey = $releasePublicKey",
+            "Remove controller authority keys",
+            "Upload authoritative Windows evidence",
+        )
+        for value in required:
+            with self.subTest(value=value):
+                self.assertIn(value, text)
+        for forbidden in (
+            "PSMATRIX_RELEASE_PUBLIC_KEY",
+            "RELEASE_PUBLIC_KEY",
+            "release.public.pem",
+            "Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'release'",
+            "ReleasePublicKey = (Join-Path $keyRoot 'release.public.pem')",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, text)
         self.assertNotIn(
             "ReleaseManifest = (Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'release\\psmatrix-2.0.0-release.json')",
             text,
         )
-        self.assertIn("Remove controller authority keys", text)
-        self.assertIn("Upload authoritative Windows evidence", text)
 
     def test_operator_enforces_ten_runs_and_rc_is_not_ga_eligible(self) -> None:
         text = OPERATOR.read_text(encoding="utf-8")
