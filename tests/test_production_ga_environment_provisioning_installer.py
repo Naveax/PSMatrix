@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -45,6 +46,45 @@ class ProductionGAEnvironmentProvisioningInstallerTests(unittest.TestCase):
             encoding="utf-8",
         )
         return path
+
+    def _single_release_material_map(self, root: Path, source: Path) -> Path:
+        path = root / "material-map.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "schema": 1,
+                    "kind": "psmatrix.production-ga-environment-material-map",
+                    "version": "2.0.0",
+                    "environments": {
+                        "production-ga-release-signing": {
+                            "secrets": {"PSMATRIX_RELEASE_PRIVATE_KEY": str(source)},
+                            "vars": {},
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def _create_directory_alias(self, alias: Path, target: Path) -> str:
+        try:
+            alias.symlink_to(target, target_is_directory=True)
+            return "symlink"
+        except (NotImplementedError, OSError):
+            pass
+        if os.name == "nt":
+            completed = subprocess.run(
+                ["cmd.exe", "/d", "/c", "mklink", "/J", str(alias), str(target)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+            if completed.returncode == 0:
+                return "junction"
+        self.skipTest("directory symlink/junction creation is unavailable on this platform")
 
     def _run(self, material_map: Path, *extra: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -103,6 +143,46 @@ class ProductionGAEnvironmentProvisioningInstallerTests(unittest.TestCase):
             inside.unlink(missing_ok=True)
             map_path.unlink(missing_ok=True)
 
+    def test_external_parent_symlink_or_junction_alias_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="psmatrix-env-material-link-") as temporary:
+            external = Path(temporary)
+            target_dir = Path(tempfile.mkdtemp(prefix=".tmp-provisioning-link-target-", dir=ROOT))
+            alias = external / "linked-material"
+            alias_kind = ""
+            try:
+                secret = target_dir / "release-private-key.pem"
+                secret.write_text("not-a-real-secret", encoding="utf-8")
+                alias_kind = self._create_directory_alias(alias, target_dir)
+                material_map = self._single_release_material_map(external, alias / secret.name)
+                completed = self._run(material_map, "-Environment", "production-ga-release-signing")
+                self.assertNotEqual(completed.returncode, 0, completed.stdout)
+                self.assertIn("must not contain links or reparse points", completed.stdout)
+            finally:
+                if alias_kind == "symlink" and (alias.exists() or alias.is_symlink()):
+                    alias.unlink()
+                elif alias_kind == "junction" and alias.exists():
+                    alias.rmdir()
+                shutil.rmtree(target_dir, ignore_errors=True)
+
+    def test_external_hardlink_alias_is_rejected_when_supported(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="psmatrix-env-material-hardlink-") as temporary:
+            external = Path(temporary)
+            target = ROOT / ".tmp-provisioning-hardlink-target.pem"
+            alias = external / "release-private-key.pem"
+            try:
+                target.write_text("not-a-real-secret", encoding="utf-8")
+                try:
+                    os.link(target, alias)
+                except (NotImplementedError, OSError) as exc:
+                    self.skipTest(f"hardlink creation is unavailable across these paths: {exc}")
+                material_map = self._single_release_material_map(external, alias)
+                completed = self._run(material_map, "-Environment", "production-ga-release-signing")
+                self.assertNotEqual(completed.returncode, 0, completed.stdout)
+                self.assertIn("must not contain links or reparse points", completed.stdout)
+            finally:
+                alias.unlink(missing_ok=True)
+                target.unlink(missing_ok=True)
+
     def test_source_uses_stdin_redirection_and_never_body_argument(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("-RedirectStandardInput $InputFile", source)
@@ -110,6 +190,9 @@ class ProductionGAEnvironmentProvisioningInstallerTests(unittest.TestCase):
         self.assertIn("'variable'", source)
         self.assertIn("'--env'", source)
         self.assertIn("'--repo'", source)
+        self.assertIn("[IO.FileAttributes]::ReparsePoint", source)
+        self.assertIn("Properties['LinkType']", source)
+        self.assertIn("Assert-NoLinkOrReparsePath $resolved $Label", source)
         self.assertNotIn("'--body'", source)
         self.assertNotIn('Write-Host $item.path', source)
 
