@@ -14,14 +14,27 @@
   },
   "release_inventory": {
     "signed_release_manifest_required": true,
+    "signed_release_artifact_count": 6,
+    "signed_release_distribution_only": true,
     "source_zip_required": true,
     "source_tar_gz_required": true,
     "wheel_required": true,
+    "windows_workers_required": true,
+    "windows_certification_kit_required": true,
+    "windows_provisioning_kit_required": true,
+    "release_authority_manifest_must_not_be_expanded_by_closure_metadata": true
+  },
+  "closure_supply_chain_metadata": {
+    "metadata_count": 2,
     "cyclonedx_1_5_sbom_required": true,
     "sbom_suffix": "-sbom.cdx.json",
     "sha256sums_required": true,
     "sha256sums_suffix": "-SHA256SUMS",
-    "sha256sums_must_bind_every_other_release_artifact": true
+    "sha256sums_must_bind_every_signed_distribution_artifact": true,
+    "deterministically_derived_from_verified_signed_release": true,
+    "release_authority_signed": false,
+    "final_signer_subject_binding_required": true,
+    "independent_verification_must_rederive_exact_bytes": true
   },
   "validation": {
     "clean_install_exit_code": 0,
@@ -40,12 +53,15 @@
     "private_key_in_artifacts": false,
     "private_key_removed_before_verification": true,
     "ga_attestation_required": true,
-    "final_closure_attestation_required": true
+    "final_closure_attestation_required": true,
+    "supply_chain_metadata_bound_by_final_signer": true
   },
   "outputs": {
     "evaluation": "production-ga-evaluation.json",
     "ga_attestation": "psmatrix-2.0.0-production-ga.dsse.json",
     "closure_attestation": "psmatrix-2.0.0-final-closure.dsse.json",
+    "sbom": "psmatrix-2.0.0-sbom.cdx.json",
+    "checksums": "psmatrix-2.0.0-SHA256SUMS",
     "status": "final-closure-status.json",
     "verification": "final-closure-verification.json"
   },
