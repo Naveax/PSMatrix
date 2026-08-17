@@ -108,7 +108,7 @@ class ExternalOTLPWorkflowContractTests(unittest.TestCase):
         readme = README.read_text(encoding="utf-8")
         self.assertIn("production-ga-external-otlp", readme)
         self.assertIn("PSMATRIX_EXTERNAL_OTLP_AUTH_VALUE", readme)
-        self.assertIn("SOURCE_AND_FINAL_EVALUATOR_PREFLIGHT_PASS_EXTERNAL_DEPLOYMENT_PENDING", readme)
+        self.assertIn("FINAL_EVALUATOR_PREFLIGHT_PENDING_EXTERNAL_WORKFLOW_READY", readme)
 
 
 if __name__ == "__main__":
