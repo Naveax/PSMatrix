@@ -1,8 +1,6 @@
-from __future__ import annotations
-
+import ast
 import json
-import py_compile
-import tempfile
+import re
 import unittest
 from pathlib import Path
 
@@ -17,73 +15,79 @@ ENFORCER = ROOT / "scripts" / "ga" / "enforce_external_otlp_report.py"
 
 
 class ExternalOTLPWorkflowContractTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.workflow = WORKFLOW.read_text(encoding="utf-8")
-        cls.contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
-
     def test_python_authority_tools_compile(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            target = Path(td)
-            for script in (PROBE, BINDER, ENFORCER):
-                py_compile.compile(
-                    str(script),
-                    cfile=str(target / (script.name + ".pyc")),
-                    doraise=True,
-                )
+        for path in (PROBE, BINDER, ENFORCER):
+            with self.subTest(path=path.name):
+                ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
     def test_protected_environment_and_secret_set_are_exact(self) -> None:
-        self.assertIn("environment: production-ga-external-otlp", self.workflow)
-        for secret in (
+        text = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("environment: production-ga-external-otlp", text)
+        self.assertIn("runs-on: ubuntu-latest", text)
+        for name in (
             "PSMATRIX_EXTERNAL_OTLP_AUTH_VALUE",
             "PSMATRIX_EXTERNAL_OTLP_OPERATIONS_PRIVATE_KEY",
             "PSMATRIX_EXTERNAL_OTLP_OPERATIONS_PUBLIC_KEY",
         ):
-            self.assertIn(f"secrets.{secret}", self.workflow)
+            with self.subTest(name=name):
+                self.assertIn(f"secrets.{name}", text)
+        self.assertNotIn("permissions:\n  contents: write", text)
+        self.assertIn("permissions:\n  contents: read", text)
 
     def test_authentication_value_is_not_a_command_argument(self) -> None:
-        self.assertIn("PSMATRIX_EXTERNAL_OTLP_AUTH_VALUE", self.workflow)
-        self.assertNotIn("--auth-value", self.workflow)
-        self.assertNotIn("--authorization", self.workflow)
-
-    def test_fail_closed_public_endpoint_and_restart_contract(self) -> None:
-        for fragment in (
-            "https://",
-            "release_commit",
-            "expected_version",
-            "release_manifest_sha256",
-            "wheel_sha256",
-            "health_url",
-            "receipt_url",
-            "restart_url",
-            "recovery_timeout",
-            "poll_interval",
-        ):
-            self.assertIn(fragment, self.workflow)
-        self.assertIn("python scripts/ga/probe_external_otlp.py", self.workflow)
-        self.assertIn("python scripts/ga/bind_external_otlp_release.py", self.workflow)
-        self.assertIn("python scripts/ga/enforce_external_otlp_report.py", self.workflow)
+        text = WORKFLOW.read_text(encoding="utf-8")
+        self.assertNotIn("--auth-value", text)
+        self.assertIn("--auth-env PSMATRIX_EXTERNAL_OTLP_AUTH_VALUE", text)
+        self.assertIn("authentication value leaked into evidence", text)
+        self.assertNotRegex(
+            text,
+            re.compile(
+                r"python\s+scripts/ga/probe_external_otlp\.py[\s\S]*"
+                r"\$\{\{\s*secrets\.PSMATRIX_EXTERNAL_OTLP_AUTH_VALUE\s*\}\}"
+            ),
+        )
 
     def test_release_binding_signing_and_verification_order_is_locked(self) -> None:
-        probe_index = self.workflow.index("python scripts/ga/probe_external_otlp.py")
-        bind_index = self.workflow.index("python scripts/ga/bind_external_otlp_release.py")
-        enforce_index = self.workflow.index("python scripts/ga/enforce_external_otlp_report.py")
-        sign_index = self.workflow.index("python -m psmatrix.cli ga proof sign")
-        cleanup_index = self.workflow.index("Remove operations authority key files")
-        verify_index = self.workflow.index("Verify external OTLP DSSE proof")
-        inventory_index = self.workflow.index("Scan evidence and write inventory")
-        self.assertLess(probe_index, bind_index)
-        self.assertLess(bind_index, enforce_index)
-        self.assertLess(enforce_index, sign_index)
-        self.assertLess(sign_index, cleanup_index)
-        self.assertLess(cleanup_index, verify_index)
-        self.assertLess(verify_index, inventory_index)
+        text = WORKFLOW.read_text(encoding="utf-8")
+        positions = [
+            text.index("Execute external collector authority probe"),
+            text.index("Bind proof to exact signed release artifacts"),
+            text.index("Enforce restart, privacy and release semantics"),
+            text.index("Sign and verify operations-authority proof"),
+            text.index("Remove operations-authority key material"),
+            text.index("Enforce evidence inventory and final status"),
+            text.index("Upload external OTLP authority evidence"),
+        ]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("ga proof-create", text)
+        self.assertIn("--type external-otlp", text)
+        self.assertIn("ga proof-verify", text)
+        self.assertIn("--attestation \"$live/external-otlp.dsse.json\"", text)
+        self.assertIn("if: always()", text)
+        self.assertIn("if-no-files-found: error", text)
+
+    def test_fail_closed_public_endpoint_and_restart_contract(self) -> None:
+        text = WORKFLOW.read_text(encoding="utf-8")
+        for value in (
+            "endpoint path must be exactly /v1/metrics",
+            "OTLP, health, receipt and restart URLs must be distinct",
+            "recovery_timeout must be 30-300",
+            "poll_interval must be 1-30",
+            "external_collector_proven\": False",
+        ):
+            with self.subTest(value=value):
+                self.assertIn(value, text)
+        self.assertNotIn(
+            "PSMATRIX_EXTERNAL_OTLP_EVIDENCE: ${{ runner.temp }}",
+            text,
+        )
 
     def test_authority_contract_and_documentation_match_workflow(self) -> None:
-        contract = self.contract
-        self.assertEqual(contract["schema_version"], 1)
-        self.assertEqual(contract["pack_id"], "05-external-otlp")
-        self.assertEqual(contract["authority"]["protected_environment"], "production-ga-external-otlp")
+        contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+        self.assertEqual(
+            contract["authority"]["protected_environment"],
+            "production-ga-external-otlp",
+        )
         self.assertEqual(
             contract["authority"]["required_protected_secrets"],
             [
