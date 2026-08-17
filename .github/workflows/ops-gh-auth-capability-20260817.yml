@@ -1,0 +1,30 @@
+name: ops-gh-auth-capability-20260817
+
+on:
+  push:
+    branches:
+      - ops/local19-secure-bootstrap-20260817
+    paths:
+      - .github/workflows/ops-gh-auth-capability-20260817.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect GitHub CLI temporary-auth capabilities
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gh = (Get-Command gh -ErrorAction Stop).Source
+          $version = (& $gh --version | Select-Object -First 1).Trim()
+          $help = (& $gh auth login --help) -join "`n"
+          Write-Host "gh_version=$version"
+          Write-Host "supports_insecure_storage=$($help.Contains('--insecure-storage').ToString().ToLowerInvariant())"
+          Write-Host "supports_web=$($help.Contains('--web').ToString().ToLowerInvariant())"
+          Write-Host "supports_with_token=$($help.Contains('--with-token').ToString().ToLowerInvariant())"
+          Write-Host 'credential_value_logged=false'
+          Write-Host 'authentication_mutation=false'
