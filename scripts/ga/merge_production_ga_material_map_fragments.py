@@ -2,26 +2,104 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import stat
 import sys
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from psmatrix.util import atomic_write_json
 
 
 class MaterialMapMergeError(RuntimeError):
     pass
 
 
-def _external_file(path: str, *, environment: str, source: str, name: str) -> str:
-    resolved = Path(path).expanduser().resolve()
-    if not resolved.is_file() or resolved.is_symlink() or resolved.stat().st_size <= 0:
-        raise MaterialMapMergeError(f"{environment}/{source}/{name}: external material file is missing, empty, or unsafe")
+def _absolute_without_resolving(path: Path) -> Path:
+    return Path(os.path.abspath(os.path.expanduser(str(path))))
+
+
+def _is_reparse(metadata: os.stat_result) -> bool:
+    reparse_flag = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+    return bool(int(getattr(metadata, "st_file_attributes", 0)) & reparse_flag)
+
+
+def _assert_no_link_components(path: Path, label: str) -> Path:
+    full = _absolute_without_resolving(path)
+    cursor = full
+    while True:
+        try:
+            metadata = cursor.lstat()
+        except FileNotFoundError:
+            metadata = None
+        except OSError as exc:
+            raise MaterialMapMergeError(f"unable to inspect {label}") from exc
+        if metadata is not None and (stat.S_ISLNK(metadata.st_mode) or _is_reparse(metadata)):
+            raise MaterialMapMergeError(f"{label} must not contain links or reparse points")
+        parent = cursor.parent
+        if parent == cursor:
+            break
+        cursor = parent
+    return full
+
+
+def _safe_regular_file(path: Path, label: str, *, require_nonempty: bool = True) -> Path:
+    candidate = _assert_no_link_components(path, label)
+    try:
+        metadata = candidate.lstat()
+    except OSError as exc:
+        raise MaterialMapMergeError(f"{label} is missing or unsafe") from exc
+    if not stat.S_ISREG(metadata.st_mode) or _is_reparse(metadata):
+        raise MaterialMapMergeError(f"{label} is missing or unsafe")
+    if int(getattr(metadata, "st_nlink", 1)) != 1:
+        raise MaterialMapMergeError(f"{label} must not be hardlinked")
+    if require_nonempty and metadata.st_size <= 0:
+        raise MaterialMapMergeError(f"{label} must not be empty")
+    return candidate
+
+
+def _assert_outside_repository(path: Path, label: str) -> Path:
+    resolved = path.resolve(strict=True)
     try:
         resolved.relative_to(ROOT.resolve())
     except ValueError:
-        return str(resolved)
-    raise MaterialMapMergeError(f"{environment}/{source}/{name}: material file must stay outside repository")
+        return path
+    raise MaterialMapMergeError(f"{label} must stay outside repository")
+
+
+def _external_file(path: str, *, environment: str, source: str, name: str) -> str:
+    label = f"{environment}/{source}/{name}: material file"
+    candidate = _safe_regular_file(Path(path), label)
+    return str(_assert_outside_repository(candidate, label))
+
+
+def _safe_external_output(path: Path) -> Path:
+    candidate = _assert_no_link_components(path, "merged material map output")
+    try:
+        candidate.relative_to(ROOT.resolve())
+    except ValueError:
+        pass
+    else:
+        raise MaterialMapMergeError("merged material map must stay outside repository")
+    parent = _assert_no_link_components(candidate.parent, "merged material map output directory")
+    try:
+        parent.relative_to(ROOT.resolve())
+    except ValueError:
+        pass
+    else:
+        raise MaterialMapMergeError("merged material map output directory must stay outside repository")
+    parent.mkdir(parents=True, exist_ok=True)
+    _assert_no_link_components(parent, "merged material map output directory")
+    _assert_outside_repository(parent, "merged material map output directory")
+    if candidate.exists():
+        _safe_regular_file(candidate, "merged material map output", require_nonempty=False)
+    _assert_no_link_components(candidate, "merged material map output")
+    return candidate
 
 
 def _contract_requirements(contract: dict[str, Any]) -> dict[str, dict[str, set[str]]]:
@@ -132,18 +210,16 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
-        contract = json.loads(args.contract.read_text(encoding="utf-8"))
-        fragments = [json.loads(path.read_text(encoding="utf-8")) for path in args.fragment]
+        contract_path = _safe_regular_file(args.contract, "production readiness contract")
+        fragment_paths = [
+            _safe_regular_file(path, f"material-map fragment input {index}")
+            for index, path in enumerate(args.fragment, 1)
+        ]
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
+        fragments = [json.loads(path.read_text(encoding="utf-8")) for path in fragment_paths]
         value = merge_fragments(contract, fragments)
-        output = args.output.expanduser().resolve()
-        try:
-            output.relative_to(ROOT.resolve())
-        except ValueError:
-            pass
-        else:
-            raise MaterialMapMergeError("merged material map must stay outside repository")
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        output = _safe_external_output(args.output)
+        atomic_write_json(output, value)
         print(f"production_ga_material_map_merge=PASS fragments={value['fragment_count']} environments=12 checks=41")
         print("inline_values_present=false")
         return 0
