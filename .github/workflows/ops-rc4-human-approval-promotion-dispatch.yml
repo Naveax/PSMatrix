@@ -1,0 +1,108 @@
+name: ops-rc4-human-approval-promotion-dispatch
+
+on:
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: ops-rc4-human-approval-promotion-dispatch
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  dispatch:
+    if: >-
+      github.event.issue.number == 260 &&
+      github.event.comment.user.login == 'Naveax' &&
+      github.event.comment.author_association == 'OWNER' &&
+      github.event.comment.body == 'RC4 HUMAN REVIEW APPROVED: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CANDIDATE_COMMIT: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
+      REVIEW_RUN_ID: '32137455148'
+      REVIEWED_DRAFT_SHA256: a2a97763f679b18562e19ec99f066374b097a50c44a3bea4d1208328e9b339d9
+      REVIEWED_PUBLIC_KEY_SHA256: ece4d7087449cb42cde9183b0b1e2b82db610d4ffffd726e6737d2ba09578a08
+    steps:
+      - name: Validate exact human approval event
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${{ github.event.issue.number }}" = '260'
+          test "${{ github.event.comment.user.login }}" = 'Naveax'
+          test "${{ github.event.comment.author_association }}" = 'OWNER'
+          test "${{ github.event.comment.body }}" = "RC4 HUMAN REVIEW APPROVED: $CANDIDATE_COMMIT"
+          echo 'rc4_human_approval_event=PASS'
+
+      - name: Check out current promotion controls
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Fail closed if RC4 lock is already active
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -f ga-packs/03-authoritative-windows/rc4-release-lock.json || {
+            echo 'An active RC4 release lock already exists; refusing duplicate promotion dispatch.' >&2
+            exit 1
+          }
+          test -f .github/workflows/ga-windows-authority-rc4-release-lock-promotion.yml
+          echo 'rc4_pre_dispatch_boundary=PASS'
+
+      - name: Revalidate exact successful review run
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, urllib.request
+          repo = os.environ['GITHUB_REPOSITORY']
+          run_id = os.environ['REVIEW_RUN_ID']
+          candidate = os.environ['CANDIDATE_COMMIT']
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f"Bearer {os.environ['GH_TOKEN']}",
+              'X-GitHub-Api-Version': '2022-11-28',
+              'User-Agent': 'psmatrix-rc4-human-approval-dispatch',
+          }
+          def fetch(path):
+              req = urllib.request.Request(f'https://api.github.com/repos/{repo}/{path}', headers=headers)
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  return json.load(r)
+          run = fetch(f'actions/runs/{run_id}')
+          if run.get('name') != 'production-ga-windows-authority-rc4-release-lock-review':
+              raise SystemExit('review workflow name mismatch')
+          if run.get('event') != 'workflow_dispatch':
+              raise SystemExit('review run event mismatch')
+          if run.get('status') != 'completed' or run.get('conclusion') != 'success':
+              raise SystemExit('review run is not completed successfully')
+          if (run.get('head_sha') or '').lower() != candidate:
+              raise SystemExit('review run candidate SHA mismatch')
+          artifacts = fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts', [])
+          matches = [a for a in artifacts if a.get('name') == 'psmatrix-2.0.0rc4-release-lock-review' and not a.get('expired')]
+          if len(matches) != 1:
+              raise SystemExit(f'expected exactly one live review artifact; found {len(matches)}')
+          print(f'rc4_review_provenance=PASS run_id={run_id} artifact_id={matches[0].get("id")}')
+          PY
+
+      - name: Dispatch canonical RC4 lock promotion
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run ga-windows-authority-rc4-release-lock-promotion.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f candidate_commit="$CANDIDATE_COMMIT" \
+            -f review_run_id="$REVIEW_RUN_ID" \
+            -f reviewed_draft_sha256="$REVIEWED_DRAFT_SHA256" \
+            -f reviewed_public_key_sha256="$REVIEWED_PUBLIC_KEY_SHA256"
+          echo 'rc4_lock_promotion_dispatched=true'
+          echo 'human_review_bound=true'
+          echo 'repository_lock_committed=false'
+          echo 'release_artifacts_signed=false'
+          echo 'ga_eligible=false'
