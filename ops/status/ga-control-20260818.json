@@ -1,0 +1,16 @@
+{
+  "dispatch_result": "success",
+  "external22_inventory_result": "success",
+  "external_otlp_candidate_files": 0,
+  "fresh_readiness_run_id": 32136221719,
+  "fresh_readiness_target_sha": "3ffc6b6d7cd58d64224f780aa819b50f50f72491",
+  "ga_eligible": false,
+  "kind": "psmatrix.ga-control-safe-status",
+  "private_material_uploaded": false,
+  "production_readiness_claimed": false,
+  "public_auth_validated_candidates": 0,
+  "schema": 1,
+  "secret_values_logged": false,
+  "security_review_packet_candidates": 0,
+  "security_review_report_candidates": 0
+}
