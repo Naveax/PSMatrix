@@ -1,0 +1,131 @@
+name: ops-final-reviewed-lock-merge-to-signing
+
+on:
+  pull_request:
+    types: [closed]
+
+concurrency:
+  group: ops-final-reviewed-lock-merge-to-signing
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+  pull-requests: read
+  issues: write
+
+jobs:
+  dispatch-signing:
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'release/2.0.0-final-lock-control' &&
+      github.event.pull_request.title == 'Promote human-reviewed final 2.0.0 release lock' &&
+      startsWith(github.event.pull_request.head.ref, 'ops/final-lock-promotion-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      LOCK_CONTROL_HEAD: ${{ github.event.pull_request.merge_commit_sha }}
+      FINAL_CANDIDATE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
+      RC4_ENROLLMENT_RUN_ID: '32136341027'
+      FINAL_ACTIVE_BRANCH: release/2.0.0-final-active-lock
+      STATE_ISSUE: '262'
+    steps:
+      - name: Validate reviewed final-lock PR identity and exact file boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$HEAD_REF" =~ ^ops/final-lock-promotion-([1-9][0-9]*)$ ]] || { echo 'unexpected final promotion PR head ref' >&2; exit 1; }
+          branch_promotion_run_id="${BASH_REMATCH[1]}"
+          [[ "$LOCK_CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]] || { echo 'final lock merge commit SHA is invalid' >&2; exit 1; }
+          mapfile -t files < <(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files" --jq '.[].filename' | sort)
+          expected=('ga-packs/03-authoritative-windows/final-release-lock.json' 'release-assets/2.0.0/psmatrix-2.0.0-release-public.pem')
+          if [[ ${#files[@]} -ne 2 || "${files[0]}" != "${expected[0]}" || "${files[1]}" != "${expected[1]}" ]]; then
+            printf 'Final reviewed PR changed unexpected files:\n%s\n' "${files[*]}" >&2; exit 1
+          fi
+          echo "BRANCH_PROMOTION_RUN_ID=$branch_promotion_run_id" >> "$GITHUB_ENV"
+          echo 'final_reviewed_pr_boundary=PASS files=2'
+
+      - name: Check out exact merged final active-lock commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate committed final lock and recover frozen provenance
+        id: lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,os,re,subprocess
+          from pathlib import Path
+          head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip().lower()
+          if head!=os.environ['LOCK_CONTROL_HEAD'].lower(): raise SystemExit('merged final-lock checkout mismatch')
+          lock_path=Path('ga-packs/03-authoritative-windows/final-release-lock.json')
+          public_path=Path('release-assets/2.0.0/psmatrix-2.0.0-release-public.pem')
+          if not lock_path.is_file() or not public_path.is_file(): raise SystemExit('committed final lock/public key missing')
+          lock=json.loads(lock_path.read_text(encoding='utf-8'))
+          if lock.get('kind')!='psmatrix.windows-authority-final-release-staging-lock' or lock.get('version')!='2.0.0' or lock.get('release_commit')!=os.environ['FINAL_CANDIDATE_COMMIT']:
+              raise SystemExit('committed final lock identity mismatch')
+          if lock.get('promotion_state')!='READY_FOR_EXACT_REPOSITORY_COMMIT': raise SystemExit('committed final lock promotion state mismatch')
+          for field in ('release_artifacts_signed','final_windows_evidence_rebound','final_ga_evaluator_invoked','authoritative','ga_eligible'):
+              if lock.get(field) is not False: raise SystemExit(f'unsafe committed final lock field: {field}')
+          source=lock.get('source_runs') or {}
+          rc4=source.get('rc4_authority_enrollment') or {}
+          staging=source.get('unsigned_final_staging') or {}
+          promotion=lock.get('promotion_evidence') or {}
+          rc4_id=str(rc4.get('run_id') or '')
+          staging_id=str(staging.get('run_id') or '')
+          review_id=str(promotion.get('review_run_id') or '')
+          promotion_id=str(promotion.get('promotion_run_id') or '')
+          for name,value in [('rc4',rc4_id),('staging',staging_id),('review',review_id),('promotion',promotion_id)]:
+              if not re.fullmatch(r'[1-9][0-9]*',value): raise SystemExit(f'invalid final lock {name} run ID')
+          if len({rc4_id,staging_id,review_id,promotion_id})!=4: raise SystemExit('final lock upstream run IDs are not distinct')
+          if rc4_id!=os.environ['RC4_ENROLLMENT_RUN_ID']: raise SystemExit('final lock RC4 enrollment differs from reviewed authority')
+          if promotion_id!=os.environ['BRANCH_PROMOTION_RUN_ID']: raise SystemExit('final lock promotion ID differs from reviewed PR branch')
+          evidence=promotion
+          if evidence.get('human_review_bound') is not True or evidence.get('repository_commit_required') is not True: raise SystemExit('final lock human-review boundary missing')
+          public_sha=hashlib.sha256(public_path.read_bytes()).hexdigest()
+          if public_sha!=(lock.get('release_public_key') or {}).get('sha256') or public_sha!=evidence.get('reviewed_public_key_sha256'):
+              raise SystemExit('committed final public-key digest closure mismatch')
+          with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as out:
+              out.write(f'staging_run_id={staging_id}\n')
+              out.write(f'review_run_id={review_id}\n')
+              out.write(f'promotion_run_id={promotion_id}\n')
+          print('committed_final_active_lock=PASS')
+          PY
+
+      - name: Freeze exact final active-lock branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if existing=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_ACTIVE_BRANCH" --jq '.object.sha' 2>/dev/null); then
+            [[ "$existing" == "$LOCK_CONTROL_HEAD" ]] || { echo "Final active-lock branch already points elsewhere: $existing" >&2; exit 1; }
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/heads/$FINAL_ACTIVE_BRANCH" -f sha="$LOCK_CONTROL_HEAD" >/dev/null
+          fi
+          gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "RC4_CHAIN_STATE stage=final_active_lock run_id=$GITHUB_RUN_ID attempt=$GITHUB_RUN_ATTEMPT control_head=$LOCK_CONTROL_HEAD"
+          echo "final_active_lock_ref=PASS sha=$LOCK_CONTROL_HEAD"
+
+      - name: Dispatch canonical protected final signing
+        env:
+          STAGING_RUN_ID: ${{ steps.lock.outputs.staging_run_id }}
+          REVIEW_RUN_ID: ${{ steps.lock.outputs.review_run_id }}
+          PROMOTION_RUN_ID: ${{ steps.lock.outputs.promotion_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run ga-windows-authority-final-release-sign-from-lock.yml \
+            --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
+            -f lock_control_head="$LOCK_CONTROL_HEAD" \
+            -f final_candidate_commit="$FINAL_CANDIDATE_COMMIT" \
+            -f rc4_enrollment_run_id="$RC4_ENROLLMENT_RUN_ID" \
+            -f staging_run_id="$STAGING_RUN_ID" \
+            -f review_run_id="$REVIEW_RUN_ID" \
+            -f promotion_run_id="$PROMOTION_RUN_ID"
+          echo 'protected_final_signing_dispatched=true'
+          echo 'ga_eligible=false'
