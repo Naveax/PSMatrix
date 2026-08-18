@@ -1,0 +1,116 @@
+name: ops-rc4-closure-to-final-lock-review
+
+on:
+  workflow_run:
+    workflows:
+      - production-ga-windows-authority-rc4-candidate-closure-selfhosted
+      - production-ga-windows-authority-final-staging-candidate-selfhosted
+    types: [completed]
+
+concurrency:
+  group: ops-rc4-closure-to-final-lock-review
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+  issues: write
+
+jobs:
+  advance:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      COMPLETED_WORKFLOW: ${{ github.event.workflow_run.name }}
+      COMPLETED_RUN_ID: ${{ github.event.workflow_run.id }}
+      COMPLETED_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+      COMPLETED_HEAD: ${{ github.event.workflow_run.head_sha }}
+      COMPLETED_BRANCH: ${{ github.event.workflow_run.head_branch }}
+      RC4_CONTROL_BRANCH: release/2.0.0rc4-active-lock
+      FINAL_SOURCE_BRANCH: final/2.0.0-release-candidate-anchor
+      FINAL_SOURCE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
+      FINAL_LOCK_CONTROL_BRANCH: release/2.0.0-final-lock-control
+      RC4_ENROLLMENT_RUN_ID: '32136341027'
+      STATE_ISSUE: '262'
+    steps:
+      - name: Validate exact successful upstream artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$COMPLETED_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$COMPLETED_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          [[ "$COMPLETED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          python - <<'PY'
+          import json, os, urllib.request
+          repo=os.environ['GITHUB_REPOSITORY']
+          run_id=os.environ['COMPLETED_RUN_ID']
+          name=os.environ['COMPLETED_WORKFLOW']
+          headers={
+              'Accept':'application/vnd.github+json',
+              'Authorization':f"Bearer {os.environ['GH_TOKEN']}",
+              'X-GitHub-Api-Version':'2022-11-28',
+              'User-Agent':'psmatrix-rc4-to-final-chain',
+          }
+          def fetch(path):
+              req=urllib.request.Request(f'https://api.github.com/repos/{repo}/{path}',headers=headers)
+              with urllib.request.urlopen(req,timeout=30) as r: return json.load(r)
+          run=fetch(f'actions/runs/{run_id}')
+          if run.get('name')!=name or run.get('event')!='workflow_dispatch' or run.get('status')!='completed' or run.get('conclusion')!='success':
+              raise SystemExit('upstream workflow run identity/status mismatch')
+          expected={
+              'production-ga-windows-authority-rc4-candidate-closure-selfhosted':'windows-authority-rc4-candidate-closure',
+              'production-ga-windows-authority-final-staging-candidate-selfhosted':'windows-authority-final-unlocked-staging-candidate',
+          }.get(name)
+          if not expected:
+              raise SystemExit(f'unexpected chain workflow: {name}')
+          artifacts=fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts',[])
+          matches=[a for a in artifacts if a.get('name')==expected and not a.get('expired')]
+          if len(matches)!=1:
+              raise SystemExit(f'expected exactly one live {expected} artifact; found {len(matches)}')
+          print(f'upstream_artifact=PASS name={expected} artifact_id={matches[0].get("id")}')
+          PY
+
+      - name: Advance RC4 closure to final lock review
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$COMPLETED_WORKFLOW" in
+            production-ga-windows-authority-rc4-candidate-closure-selfhosted)
+              [[ "$COMPLETED_BRANCH" == "$RC4_CONTROL_BRANCH" ]] || { echo 'RC4 closure did not run on frozen active-lock branch.' >&2; exit 1; }
+              rc4_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$RC4_CONTROL_BRANCH" --jq '.object.sha')
+              [[ "$rc4_sha" == "$COMPLETED_HEAD" ]] || { echo 'RC4 active-lock branch moved after closure.' >&2; exit 1; }
+              final_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_SOURCE_BRANCH" --jq '.object.sha')
+              [[ "$final_sha" == "$FINAL_SOURCE_COMMIT" ]] || { echo "Final source anchor moved: $final_sha" >&2; exit 1; }
+              gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "RC4_CHAIN_STATE stage=closure run_id=$COMPLETED_RUN_ID attempt=$COMPLETED_RUN_ATTEMPT control_head=$COMPLETED_HEAD"
+              gh workflow run ga-windows-authority-final-staging-candidate-selfhosted.yml \
+                --repo "$GITHUB_REPOSITORY" --ref "$FINAL_SOURCE_BRANCH" \
+                -f release_commit="$FINAL_SOURCE_COMMIT"
+              echo 'next_stage=final_unsigned_staging'
+              ;;
+
+            production-ga-windows-authority-final-staging-candidate-selfhosted)
+              [[ "$COMPLETED_BRANCH" == "$FINAL_SOURCE_BRANCH" ]] || { echo 'Final staging did not run on canonical final source anchor.' >&2; exit 1; }
+              [[ "$COMPLETED_HEAD" == "$FINAL_SOURCE_COMMIT" ]] || { echo 'Final staging exact source head mismatch.' >&2; exit 1; }
+              final_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_SOURCE_BRANCH" --jq '.object.sha')
+              [[ "$final_sha" == "$FINAL_SOURCE_COMMIT" ]] || { echo 'Final source anchor moved after staging.' >&2; exit 1; }
+              control_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_LOCK_CONTROL_BRANCH" --jq '.object.sha')
+              [[ "$control_sha" =~ ^[0-9a-f]{40}$ ]] || { echo 'Frozen final lock-control branch cannot be resolved.' >&2; exit 1; }
+              gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "RC4_CHAIN_STATE stage=final_staging run_id=$COMPLETED_RUN_ID attempt=$COMPLETED_RUN_ATTEMPT control_head=$COMPLETED_HEAD"
+              gh workflow run ga-windows-authority-final-release-lock-review.yml \
+                --repo "$GITHUB_REPOSITORY" --ref "$FINAL_LOCK_CONTROL_BRANCH" \
+                -f final_candidate_commit="$FINAL_SOURCE_COMMIT" \
+                -f rc4_enrollment_run_id="$RC4_ENROLLMENT_RUN_ID" \
+                -f staging_run_id="$COMPLETED_RUN_ID"
+              echo "next_stage=final_lock_review control_head=$control_sha"
+              ;;
+
+            *)
+              echo "Unexpected workflow: $COMPLETED_WORKFLOW" >&2
+              exit 1
+              ;;
+          esac
+          echo 'ga_eligible=false'
