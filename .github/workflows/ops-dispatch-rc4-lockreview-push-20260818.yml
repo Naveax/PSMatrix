@@ -1,0 +1,90 @@
+name: ops-dispatch-rc4-lockreview-push-20260818
+
+on:
+  push:
+    branches:
+      - ops/ga-control-20260818
+    paths:
+      - .github/workflows/ops-dispatch-rc4-lockreview-push-20260818.yml
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  dispatch-and-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TARGET_REF: release/2.0.0rc4-authority-rotation
+      TARGET_SHA: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
+      ENROLLMENT_RUN_ID: '32136341027'
+      STAGING_RUN_ID: '32136540372'
+    steps:
+      - name: Verify source runs and dispatch lock review
+        id: dispatch
+        shell: bash
+        run: |
+          set -euo pipefail
+          for spec in \
+            "$ENROLLMENT_RUN_ID|production-ga-windows-authority-rc4-release-authority-enrollment" \
+            "$STAGING_RUN_ID|production-ga-windows-authority-rc4-staging-candidate-selfhosted"; do
+            IFS='|' read -r run_id expected_name <<<"$spec"
+            payload="$(gh api "repos/Naveax/PSMatrix/actions/runs/$run_id")"
+            [[ "$(jq -r '.name' <<<"$payload")" == "$expected_name" ]] || { echo "workflow mismatch for $run_id" >&2; exit 1; }
+            [[ "$(jq -r '.head_sha' <<<"$payload")" == "$TARGET_SHA" ]] || { echo "head SHA mismatch for $run_id" >&2; exit 1; }
+            [[ "$(jq -r '.event' <<<"$payload")" == 'workflow_dispatch' ]] || { echo "event mismatch for $run_id" >&2; exit 1; }
+            [[ "$(jq -r '.status' <<<"$payload")" == 'completed' && "$(jq -r '.conclusion' <<<"$payload")" == 'success' ]] || { echo "run $run_id is not completed success" >&2; exit 1; }
+          done
+
+          before="$(date -u +%s)"
+          gh workflow run ga-windows-authority-rc4-release-lock-review.yml \
+            --repo Naveax/PSMatrix \
+            --ref "$TARGET_REF" \
+            -f candidate_commit="$TARGET_SHA" \
+            -f enrollment_run_id="$ENROLLMENT_RUN_ID" \
+            -f staging_run_id="$STAGING_RUN_ID"
+
+          run_id=""
+          for _ in $(seq 1 30); do
+            run_id="$(gh run list --repo Naveax/PSMatrix --workflow ga-windows-authority-rc4-release-lock-review.yml --branch "$TARGET_REF" --event workflow_dispatch --limit 30 --json databaseId,headSha,createdAt --jq ".[] | select(.headSha == \"$TARGET_SHA\" and (.createdAt | fromdateiso8601) >= $before) | .databaseId" | head -n 1)"
+            [[ -n "$run_id" ]] && break
+            sleep 2
+          done
+          [[ -n "$run_id" ]] || { echo 'fresh RC4 lock-review run was not discovered' >&2; exit 1; }
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "rc4_lock_review_dispatched=true"
+          echo "rc4_lock_review_run_id=$run_id"
+
+      - name: Publish safe dispatch receipt
+        shell: bash
+        env:
+          RUN_ID: ${{ steps.dispatch.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch ops/ga-control-20260818 "https://x-access-token:${GH_TOKEN}@github.com/Naveax/PSMatrix.git" control
+          cd control
+          mkdir -p ops/status
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          payload={
+            'schema':1,
+            'kind':'psmatrix.rc4-lockreview-dispatch',
+            'status':'DISPATCHED',
+            'run_id':int(os.environ['RUN_ID']),
+            'candidate_commit':os.environ['TARGET_SHA'],
+            'enrollment_run_id':int(os.environ['ENROLLMENT_RUN_ID']),
+            'staging_run_id':int(os.environ['STAGING_RUN_ID']),
+            'target_ref':os.environ['TARGET_REF'],
+            'secret_values_logged':False,
+            'ga_eligible':False,
+          }
+          Path('ops/status/rc4-lockreview-dispatch.json').write_text(json.dumps(payload,sort_keys=True,indent=2)+'\n',encoding='utf-8')
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add ops/status/rc4-lockreview-dispatch.json
+          git commit -m 'ops: publish RC4 lock-review dispatch receipt'
+          git push origin HEAD:ops/ga-control-20260818
