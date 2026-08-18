@@ -1,0 +1,118 @@
+name: ops-external22-ready-to-fresh-readiness
+
+on:
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: ops-external22-ready-to-fresh-readiness
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+  issues: write
+
+jobs:
+  audit-and-dispatch:
+    if: >-
+      github.event.issue.number == 261 &&
+      github.event.comment.user.login == 'Naveax' &&
+      github.event.comment.author_association == 'OWNER' &&
+      github.event.comment.body == 'EXTERNAL22 MATERIAL READY'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ADMIN_TOKEN: ${{ secrets.PSMATRIX_TEMP_ADMIN_TOKEN }}
+      READINESS_BRANCH: final/2.0.0-production-control-plane-publication-anchor
+      READINESS_HEAD: 3ffc6b6d7cd58d64224f780aa819b50f50f72491
+      FINAL_ACTIVE_BRANCH: release/2.0.0-final-active-lock
+      STATE_ISSUE: '262'
+      EXTERNAL_ISSUE: '261'
+    steps:
+      - name: Require isolated temporary environment-audit credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$ADMIN_TOKEN" ]] || { echo 'PSMATRIX_TEMP_ADMIN_TOKEN is missing; cannot audit environment secret names.' >&2; exit 1; }
+          echo 'temporary_environment_audit_credential_present=true'
+
+      - name: Audit exact external22 names without reading secret values
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os,urllib.parse,urllib.request
+          repo=os.environ['GITHUB_REPOSITORY']
+          headers={
+              'Accept':'application/vnd.github+json',
+              'Authorization':f"Bearer {os.environ['ADMIN_TOKEN']}",
+              'X-GitHub-Api-Version':'2022-11-28',
+              'User-Agent':'psmatrix-external22-name-audit',
+          }
+          def fetch(path):
+              req=urllib.request.Request(f'https://api.github.com/repos/{repo}/{path}',headers=headers)
+              with urllib.request.urlopen(req,timeout=30) as r:return json.load(r)
+          def names(env,kind):
+              e=urllib.parse.quote(env,safe='')
+              if kind=='secrets':
+                  data=fetch(f'environments/{e}/secrets?per_page=100')
+                  return {str(x.get('name')) for x in data.get('secrets',[]) if x.get('name')}
+              data=fetch(f'environments/{e}/variables?per_page=100')
+              return {str(x.get('name')) for x in data.get('variables',[]) if x.get('name')}
+          requirements={
+              ('production-ga-public-auth-probe','secrets'):{
+                  'PSMATRIX_OAUTH_VALID_TOKEN','PSMATRIX_OAUTH_EXPIRED_TOKEN','PSMATRIX_OAUTH_WRONG_AUDIENCE_TOKEN','PSMATRIX_OAUTH_MISSING_SCOPE_TOKEN','PSMATRIX_OAUTH_REPLAY_TOKEN','PSMATRIX_OAUTH_RATE_LIMIT_TOKEN',
+                  'PSMATRIX_MTLS_CURRENT_CERT','PSMATRIX_MTLS_CURRENT_KEY','PSMATRIX_MTLS_ROTATION_CERT','PSMATRIX_MTLS_ROTATION_KEY','PSMATRIX_MTLS_UNTRUSTED_CERT','PSMATRIX_MTLS_UNTRUSTED_KEY','PSMATRIX_MTLS_REVOKED_CERT','PSMATRIX_MTLS_REVOKED_KEY',
+              },
+              ('production-ga-public-auth-probe','variables'):{
+                  'PSMATRIX_OAUTH_ENDPOINT','PSMATRIX_OAUTH_DISCOVERY_URL','PSMATRIX_OAUTH_EXPECTED_ISSUER','PSMATRIX_MTLS_ENDPOINT','PSMATRIX_MTLS_FINGERPRINT_HEADER',
+              },
+              ('production-ga-external-otlp-probe','secrets'):{'PSMATRIX_GA_EXTERNAL_OTLP_HEADERS_JSON'},
+              ('production-ga-external-otlp-probe','variables'):{'PSMATRIX_GA_EXTERNAL_OTLP_ENDPOINT'},
+              ('production-ga-security-review-signing','variables'):{'PSMATRIX_GA_SECURITY_REVIEW_REPORT_JSON'},
+          }
+          missing=[]
+          for (env,kind),expected in requirements.items():
+              observed=names(env,kind)
+              for name in sorted(expected-observed): missing.append(f'{env}:{kind}:{name}')
+          expected_count=sum(len(v) for v in requirements.values())
+          if expected_count!=22: raise SystemExit(f'internal external22 cardinality mismatch: {expected_count}')
+          if missing:
+              print('external22_environment_name_audit=FAIL missing=' + ','.join(missing))
+              raise SystemExit(2)
+          print('external22_environment_name_audit=PASS checks=22 secret_values_read=false')
+          PY
+
+      - name: Require final signed-release and reviewer-packet prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          final_head=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_ACTIVE_BRANCH" --jq '.object.sha')
+          [[ "$final_head" =~ ^[0-9a-f]{40}$ ]] || { echo 'Final active-lock branch is not ready.' >&2; exit 1; }
+          gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body' > "$RUNNER_TEMP/state.txt"
+          FINAL_HEAD="$final_head" python - <<'PY'
+          import os,re
+          from pathlib import Path
+          lines=Path(os.environ['RUNNER_TEMP'],'state.txt').read_text(encoding='utf-8').splitlines(); head=os.environ['FINAL_HEAD']
+          signed=re.compile(r'^FINAL_GATE_STATE gate=signed_release run_id=([1-9][0-9]*) attempt=([1-9][0-9]*) control_head=([0-9a-f]{40})$')
+          packet=re.compile(r'^RC4_CHAIN_STATE stage=security_review_packet run_id=([1-9][0-9]*) attempt=([1-9][0-9]*) control_head=([0-9a-f]{40})$')
+          s=[m.groups() for line in lines if (m:=signed.fullmatch(line.strip())) and m.group(3)==head]
+          p=[m.groups() for line in lines if (m:=packet.fullmatch(line.strip())) and m.group(3)==head]
+          if not s: raise SystemExit('successful protected final signing state is missing')
+          if not p: raise SystemExit('successful final security-review packet state is missing')
+          print(f'external22_final_prerequisites=PASS signing_run={s[-1][0]} packet_run={p[-1][0]} control_head={head}')
+          PY
+
+      - name: Revalidate frozen readiness anchor and dispatch fresh readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          readiness_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$READINESS_BRANCH" --jq '.object.sha')
+          [[ "$readiness_sha" == "$READINESS_HEAD" ]] || { echo "Readiness anchor moved: $readiness_sha != $READINESS_HEAD" >&2; exit 1; }
+          gh workflow run ga-final-production-readiness.yml --repo "$GITHUB_REPOSITORY" --ref "$READINESS_BRANCH"
+          gh issue comment "$EXTERNAL_ISSUE" --repo "$GITHUB_REPOSITORY" --body "External22 name audit PASS (22/22). Fresh canonical Production GA readiness dispatched from \`$READINESS_HEAD\`. External proof producers remain blocked until that fresh readiness run is fully \`12/12 PASS\`."
+          echo 'fresh_production_readiness_dispatched=true'
+          echo 'external_producers_dispatched=false'
+          echo 'ga_eligible=false'
