@@ -1,0 +1,162 @@
+name: ops-final-gate-ledger-and-evaluator
+
+on:
+  workflow_run:
+    workflows:
+      - production-ga-windows-authority-final-release-sign-from-lock
+      - production-ga-final-validation-summary
+      - production-ga-windows-authority-final-windows-evidence-rebind
+      - production-ga-final-full-runtime-matrix
+      - production-ga-final-public-oauth
+      - production-ga-final-public-mtls
+      - production-ga-final-external-otlp
+      - production-ga-final-key-rotation
+      - production-ga-final-disaster-recovery
+      - production-ga-final-security-review
+      - production-ga-final-vulnerability-scan
+    types: [completed]
+
+concurrency:
+  group: ops-final-gate-ledger-and-evaluator
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+  issues: write
+
+jobs:
+  record-and-evaluate:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.head_branch == 'release/2.0.0-final-active-lock'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+      CONTROL_HEAD: ${{ github.event.workflow_run.head_sha }}
+      FINAL_ACTIVE_BRANCH: release/2.0.0-final-active-lock
+      STATE_ISSUE: '262'
+    steps:
+      - name: Validate exact gate event and map canonical gate
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          [[ "$CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_ACTIVE_BRANCH" --jq '.object.sha')
+          [[ "$current" == "$CONTROL_HEAD" ]] || { echo "Final active execution head moved: $current != $CONTROL_HEAD" >&2; exit 1; }
+          case "$WORKFLOW_NAME" in
+            production-ga-windows-authority-final-release-sign-from-lock) gate=signed_release ;;
+            production-ga-final-validation-summary) gate=validation ;;
+            production-ga-windows-authority-final-windows-evidence-rebind) gate=authoritative_windows ;;
+            production-ga-final-full-runtime-matrix) gate=runtime_matrix ;;
+            production-ga-final-public-oauth) gate=public_oauth ;;
+            production-ga-final-public-mtls) gate=public_mtls ;;
+            production-ga-final-external-otlp) gate=external_otlp ;;
+            production-ga-final-key-rotation) gate=key_rotation ;;
+            production-ga-final-disaster-recovery) gate=disaster_recovery ;;
+            production-ga-final-security-review) gate=security_review ;;
+            production-ga-final-vulnerability-scan) gate=vulnerability_scan ;;
+            *) echo "Unexpected evaluator gate workflow: $WORKFLOW_NAME" >&2; exit 1 ;;
+          esac
+          echo "gate=$gate" >> "$GITHUB_OUTPUT"
+          echo "final_gate_event=PASS gate=$gate run=$RUN_ID attempt=$RUN_ATTEMPT"
+
+      - name: Record successful gate in non-secret ledger
+        env:
+          GATE: ${{ steps.gate.outputs.gate }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "FINAL_GATE_STATE gate=$GATE run_id=$RUN_ID attempt=$RUN_ATTEMPT control_head=$CONTROL_HEAD"
+          echo 'final_gate_recorded=true'
+
+      - name: Dispatch evaluator only when exact 11-gate closure exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body' > "$RUNNER_TEMP/final-gate-state.txt"
+          python - <<'PY'
+          import json,os,re
+          from pathlib import Path
+          lines=Path(os.environ['RUNNER_TEMP'],'final-gate-state.txt').read_text(encoding='utf-8').splitlines()
+          head=os.environ['CONTROL_HEAD']
+          required=['validation','signed_release','authoritative_windows','runtime_matrix','public_oauth','public_mtls','external_otlp','key_rotation','disaster_recovery','security_review','vulnerability_scan']
+          states={}
+          pat=re.compile(r'^FINAL_GATE_STATE gate=([a-z_]+) run_id=([1-9][0-9]*) attempt=([1-9][0-9]*) control_head=([0-9a-f]{40})$')
+          for line in lines:
+              m=pat.fullmatch(line.strip())
+              if not m: continue
+              gate,run_id,attempt,control=m.groups()
+              if control==head and gate in required:
+                  states[gate]=(run_id,attempt)
+          missing=[g for g in required if g not in states]
+          if missing:
+              print('evaluator_ready=false missing=' + ','.join(missing))
+              Path(os.environ['RUNNER_TEMP'],'evaluator-ready.json').write_text(json.dumps({'ready':False,'missing':missing})+'\n',encoding='utf-8')
+              raise SystemExit(0)
+          ids=[states[g][0] for g in required]
+          if len(set(ids))!=11:
+              raise SystemExit('final evaluator gate run IDs are not all distinct')
+          result={'ready':True,'control_head':head,'runs':{g:states[g][0] for g in required}}
+          Path(os.environ['RUNNER_TEMP'],'evaluator-ready.json').write_text(json.dumps(result,sort_keys=True)+'\n',encoding='utf-8')
+          print('evaluator_ready=true gates=11')
+          PY
+
+          ready=$(python -c 'import json,os; print(str(json.load(open(os.path.join(os.environ["RUNNER_TEMP"],"evaluator-ready.json")))["ready"]).lower())')
+          if [[ "$ready" != true ]]; then
+            echo 'final_evaluator_dispatched=false'
+            exit 0
+          fi
+
+          marker="FINAL_EVALUATOR_DISPATCH control_head=$CONTROL_HEAD"
+          if gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body' | grep -Fxq "$marker"; then
+            echo 'final_evaluator_already_dispatched=true'
+            exit 0
+          fi
+
+          eval "$(python - <<'PY'
+          import json,os,shlex
+          p=os.path.join(os.environ['RUNNER_TEMP'],'evaluator-ready.json')
+          r=json.load(open(p,encoding='utf-8'))['runs']
+          mapping={
+            'VALIDATION':r['validation'],
+            'SIGNED':r['signed_release'],
+            'WINDOWS':r['authoritative_windows'],
+            'MATRIX':r['runtime_matrix'],
+            'OAUTH':r['public_oauth'],
+            'MTLS':r['public_mtls'],
+            'OTLP':r['external_otlp'],
+            'ROTATION':r['key_rotation'],
+            'RECOVERY':r['disaster_recovery'],
+            'SECURITY':r['security_review'],
+            'VULN':r['vulnerability_scan'],
+          }
+          for k,v in mapping.items(): print(f'{k}={shlex.quote(v)}')
+          PY
+          )"
+
+          gh workflow run ga-final-evaluator.yml \
+            --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
+            -f validation_run_id="$VALIDATION" \
+            -f release_signing_run_id="$SIGNED" \
+            -f windows_rebind_run_id="$WINDOWS" \
+            -f full_matrix_run_id="$MATRIX" \
+            -f oauth_run_id="$OAUTH" \
+            -f mtls_run_id="$MTLS" \
+            -f otlp_run_id="$OTLP" \
+            -f key_rotation_run_id="$ROTATION" \
+            -f recovery_run_id="$RECOVERY" \
+            -f security_review_run_id="$SECURITY" \
+            -f vulnerability_scan_run_id="$VULN"
+
+          gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$marker"
+          echo 'final_evaluator_dispatched=true'
+          echo 'ga_eligible_not_claimed_until_evaluator_pass=true'
