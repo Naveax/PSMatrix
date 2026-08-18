@@ -1,0 +1,106 @@
+name: ops-final-human-approval-promotion-dispatch
+
+on:
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: ops-final-human-approval-promotion-dispatch
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+  issues: read
+
+jobs:
+  dispatch:
+    if: >-
+      github.event.issue.number == 263 &&
+      github.event.comment.user.login == 'Naveax' &&
+      github.event.comment.author_association == 'OWNER' &&
+      startsWith(github.event.comment.body, 'FINAL HUMAN REVIEW APPROVED: ')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      HUMAN_GATE_ISSUE: '263'
+      FINAL_LOCK_CONTROL_BRANCH: release/2.0.0-final-lock-control
+      FINAL_CANDIDATE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
+      APPROVAL_COMMENT: ${{ github.event.comment.body }}
+    steps:
+      - name: Resolve exact machine binding and require exact owner approval
+        id: binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/issues/$HUMAN_GATE_ISSUE" --jq '.body' > "$RUNNER_TEMP/final-human-gate-body.txt"
+          python - <<'PY'
+          import os,re
+          from pathlib import Path
+          body=Path(os.environ['RUNNER_TEMP'],'final-human-gate-body.txt').read_text(encoding='utf-8')
+          pat=re.compile(r'FINAL_REVIEW_BINDING run_id=([1-9][0-9]*) attempt=([1-9][0-9]*) control_head=([0-9a-f]{40}) candidate=([0-9a-f]{40}) draft_sha256=([0-9a-f]{64}) public_sha256=([0-9a-f]{64})')
+          matches=pat.findall(body)
+          if len(matches)!=1:
+              raise SystemExit(f'expected exactly one FINAL_REVIEW_BINDING; found {len(matches)}')
+          run_id,attempt,control,candidate,draft_sha,public_sha=matches[0]
+          if candidate!=os.environ['FINAL_CANDIDATE_COMMIT']:
+              raise SystemExit('final human-gate candidate mismatch')
+          expected=f'FINAL HUMAN REVIEW APPROVED: {candidate} review_run={run_id} draft={draft_sha} public={public_sha}'
+          if os.environ['APPROVAL_COMMENT']!=expected:
+              raise SystemExit('approval comment does not exactly match the published human-review binding')
+          with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as out:
+              out.write(f'review_run_id={run_id}\n')
+              out.write(f'review_attempt={attempt}\n')
+              out.write(f'control_head={control}\n')
+              out.write(f'draft_sha256={draft_sha}\n')
+              out.write(f'public_sha256={public_sha}\n')
+          print('final_human_approval_binding=PASS')
+          PY
+
+      - name: Revalidate frozen branch and exact successful review provenance
+        env:
+          REVIEW_RUN_ID: ${{ steps.binding.outputs.review_run_id }}
+          CONTROL_HEAD: ${{ steps.binding.outputs.control_head }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_LOCK_CONTROL_BRANCH" --jq '.object.sha')
+          [[ "$current" == "$CONTROL_HEAD" ]] || { echo "Final lock-control branch moved after human review: $current != $CONTROL_HEAD" >&2; exit 1; }
+          python - <<'PY'
+          import json,os,urllib.request
+          repo=os.environ['GITHUB_REPOSITORY']; run_id=os.environ['REVIEW_RUN_ID']; control=os.environ['CONTROL_HEAD']
+          headers={'Accept':'application/vnd.github+json','Authorization':f"Bearer {os.environ['GH_TOKEN']}",'X-GitHub-Api-Version':'2022-11-28','User-Agent':'psmatrix-final-human-approval'}
+          def fetch(path):
+              req=urllib.request.Request(f'https://api.github.com/repos/{repo}/{path}',headers=headers)
+              with urllib.request.urlopen(req,timeout=30) as r:return json.load(r)
+          run=fetch(f'actions/runs/{run_id}')
+          if run.get('name')!='production-ga-windows-authority-final-release-lock-review' or run.get('event')!='workflow_dispatch' or run.get('status')!='completed' or run.get('conclusion')!='success':
+              raise SystemExit('final review run provenance/status mismatch')
+          if (run.get('head_sha') or '').lower()!=control:
+              raise SystemExit('final review control head mismatch')
+          artifacts=fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts',[])
+          matches=[a for a in artifacts if a.get('name')=='psmatrix-2.0.0-final-release-lock-review' and not a.get('expired')]
+          if len(matches)!=1: raise SystemExit(f'expected exactly one live final review artifact; found {len(matches)}')
+          print(f'final_review_provenance=PASS artifact_id={matches[0].get("id")}')
+          PY
+
+      - name: Dispatch canonical final lock promotion
+        env:
+          REVIEW_RUN_ID: ${{ steps.binding.outputs.review_run_id }}
+          DRAFT_SHA256: ${{ steps.binding.outputs.draft_sha256 }}
+          PUBLIC_SHA256: ${{ steps.binding.outputs.public_sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run ga-windows-authority-final-release-lock-promotion.yml \
+            --repo "$GITHUB_REPOSITORY" --ref "$FINAL_LOCK_CONTROL_BRANCH" \
+            -f final_candidate_commit="$FINAL_CANDIDATE_COMMIT" \
+            -f review_run_id="$REVIEW_RUN_ID" \
+            -f reviewed_draft_sha256="$DRAFT_SHA256" \
+            -f reviewed_public_key_sha256="$PUBLIC_SHA256"
+          echo 'final_lock_promotion_dispatched=true'
+          echo 'human_review_bound=true'
+          echo 'repository_mutated=false'
+          echo 'release_artifacts_signed=false'
+          echo 'ga_eligible=false'
