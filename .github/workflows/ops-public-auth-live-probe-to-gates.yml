@@ -1,0 +1,56 @@
+name: ops-public-auth-live-probe-to-gates
+
+on:
+  workflow_run:
+    workflows: [production-ga-final-public-auth-live-probe]
+    types: [completed]
+
+concurrency:
+  group: ops-public-auth-live-probe-to-gates
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+  issues: write
+
+jobs:
+  dispatch-proofs:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.head_branch == 'release/2.0.0-final-active-lock'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LIVE_PROBE_RUN_ID: ${{ github.event.workflow_run.id }}
+      LIVE_PROBE_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+      CONTROL_HEAD: ${{ github.event.workflow_run.head_sha }}
+      FINAL_ACTIVE_BRANCH: release/2.0.0-final-active-lock
+      STATE_ISSUE: '262'
+    steps:
+      - name: Validate exact shared live-probe artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_ACTIVE_BRANCH" --jq '.object.sha')
+          [[ "$current" == "$CONTROL_HEAD" ]] || { echo 'Final active control moved after public-auth live probe.' >&2; exit 1; }
+          artifact_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$LIVE_PROBE_RUN_ID/artifacts?per_page=100" \
+            --jq '[.artifacts[] | select(.name == "psmatrix-2.0.0-final-public-auth-live-report" and (.expired|not))] | if length == 1 then .[0].id else error("expected exactly one live public-auth report artifact") end')
+          [[ "$artifact_id" =~ ^[1-9][0-9]*$ ]] || { echo 'Public-auth live artifact ID invalid.' >&2; exit 1; }
+          gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "RC4_CHAIN_STATE stage=public_auth_live_probe run_id=$LIVE_PROBE_RUN_ID attempt=$LIVE_PROBE_ATTEMPT control_head=$CONTROL_HEAD"
+          echo "public_auth_live_probe=PASS artifact_id=$artifact_id"
+
+      - name: Dispatch signed OAuth and mTLS evaluator gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run ga-final-public-oauth.yml \
+            --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
+            -f live_probe_run_id="$LIVE_PROBE_RUN_ID"
+          gh workflow run ga-final-public-mtls.yml \
+            --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
+            -f live_probe_run_id="$LIVE_PROBE_RUN_ID"
+          echo 'public_oauth_and_mtls_gate_dispatch=PASS count=2'
+          echo 'ga_eligible=false'
