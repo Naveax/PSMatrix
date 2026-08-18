@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -59,8 +60,7 @@ class ProductionEnvironmentProvisioningManifestTests(unittest.TestCase):
             "-----BEGIN OPENSSH PRIVATE KEY-----",
         ):
             self.assertNotIn(marker, serialized)
-        sources = {row["source"] for row in value["checks"]}
-        self.assertEqual(sources, {"secret", "var"})
+        self.assertEqual({row["source"] for row in value["checks"]}, {"secret", "var"})
 
     def test_all_path_requirements_are_declared_variables(self) -> None:
         value = self.module.build_manifest(self.contract)
@@ -82,14 +82,60 @@ class ProductionEnvironmentProvisioningManifestTests(unittest.TestCase):
         with self.assertRaises(self.module.ProvisioningManifestError):
             self.module.build_manifest(value)
 
-    def test_cli_writes_only_value_free_manifest(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            output = Path(temporary) / "manifest.json"
-            result = self.module.build_manifest(self.contract)
-            output.write_text(json.dumps(result), encoding="utf-8")
-            reloaded = json.loads(output.read_text(encoding="utf-8"))
-            self.assertEqual(reloaded["required_check_count"], 41)
-            self.assertFalse(reloaded["safety"]["secret_values_present"])
+    def test_cli_payload_remains_value_free(self) -> None:
+        result = self.module.build_manifest(self.contract)
+        serialized = json.dumps(result, sort_keys=True)
+        self.assertEqual(result["required_check_count"], 41)
+        self.assertFalse(result["safety"]["secret_values_present"])
+        self.assertNotIn("BEGIN PRIVATE KEY", serialized)
+
+    def test_hardlinked_contract_input_is_rejected_when_supported(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="psmatrix-provisioning-manifest-contract-hardlink-") as temporary:
+            root = Path(temporary)
+            source = root / "contract.json"
+            alias = root / "contract-alias.json"
+            source.write_bytes(CONTRACT.read_bytes())
+            try:
+                os.link(source, alias)
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"hardlink creation is unavailable: {exc}")
+            with self.assertRaisesRegex(self.module.ProvisioningManifestError, "must not be hardlinked"):
+                self.module._safe_regular_file(source, "production readiness contract")
+
+    def test_hardlinked_output_is_rejected_without_target_mutation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="psmatrix-provisioning-manifest-output-hardlink-") as temporary:
+            root = Path(temporary)
+            target = root / "target.json"
+            output = root / "manifest.json"
+            target.write_text("sentinel\n", encoding="utf-8")
+            try:
+                os.link(target, output)
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"hardlink creation is unavailable: {exc}")
+            with self.assertRaisesRegex(self.module.ProvisioningManifestError, "must not be hardlinked"):
+                self.module._safe_output_file(output)
+            self.assertEqual(target.read_text(encoding="utf-8"), "sentinel\n")
+
+    def test_output_parent_symlink_or_reparse_is_rejected_when_supported(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="psmatrix-provisioning-manifest-output-link-") as temporary:
+            root = Path(temporary)
+            target = root / "target-dir"
+            alias = root / "alias-dir"
+            target.mkdir()
+            try:
+                alias.symlink_to(target, target_is_directory=True)
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"directory symlink creation is unavailable: {exc}")
+            with self.assertRaisesRegex(self.module.ProvisioningManifestError, "links or reparse points"):
+                self.module._safe_output_file(alias / "manifest.json")
+            self.assertEqual(list(target.iterdir()), [])
+
+    def test_source_uses_lstat_hardlink_checks_and_atomic_output(self) -> None:
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn(".lstat()", source)
+        self.assertIn("st_nlink", source)
+        self.assertIn("FILE_ATTRIBUTE_REPARSE_POINT", source)
+        self.assertIn("atomic_write_json(output, result)", source)
 
 
 if __name__ == "__main__":
