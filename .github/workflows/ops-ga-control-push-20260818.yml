@@ -1,0 +1,208 @@
+name: ops-ga-control-push-20260818
+
+on:
+  push:
+    branches:
+      - ops/ga-control-20260818
+    paths:
+      - .github/workflows/ops-ga-control-push-20260818.yml
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  dispatch-readiness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run_id: ${{ steps.dispatch.outputs.run_id }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TARGET_REF: final/2.0.0-production-control-plane-publication-anchor
+      TARGET_SHA: 3ffc6b6d7cd58d64224f780aa819b50f50f72491
+    steps:
+      - name: Dispatch and identify one fresh readiness run
+        id: dispatch
+        shell: bash
+        run: |
+          set -euo pipefail
+          before="$(date -u +%s)"
+          gh workflow run ga-final-production-readiness.yml --repo Naveax/PSMatrix --ref "$TARGET_REF"
+          run_id=""
+          for _ in $(seq 1 30); do
+            run_id="$(gh run list --repo Naveax/PSMatrix --workflow ga-final-production-readiness.yml --branch "$TARGET_REF" --event workflow_dispatch --limit 30 --json databaseId,headSha,createdAt --jq ".[] | select(.headSha == \"$TARGET_SHA\" and (.createdAt | fromdateiso8601) >= $before) | .databaseId" | head -n 1)"
+            if [ -n "$run_id" ]; then break; fi
+            sleep 2
+          done
+          if [ -z "$run_id" ]; then
+            echo 'fresh readiness run was not discovered after dispatch' >&2
+            exit 1
+          fi
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "fresh_production_readiness_dispatched=true"
+          echo "fresh_production_readiness_run_id=$run_id"
+          echo "fresh_production_readiness_target_sha=$TARGET_SHA"
+          echo "stale_rerun=false"
+
+  external22-inventory:
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 10
+    outputs:
+      public_auth_validated: ${{ steps.inventory.outputs.public_auth_validated }}
+      otlp_candidates: ${{ steps.inventory.outputs.otlp_candidates }}
+      review_packet_candidates: ${{ steps.inventory.outputs.review_packet_candidates }}
+      review_report_candidates: ${{ steps.inventory.outputs.review_report_candidates }}
+    env:
+      SOURCE_SHA: 8498fef23788c5e3ee37ace736215a03f11118e8
+      PROVISIONING_ROOT: C:\ProgramData\PSMatrix\ProductionGA\provisioning
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Inventory external/review material without logging values
+        id: inventory
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $python = (Get-Command python -ErrorAction Stop).Source
+          $workspace = [IO.Path]::GetFullPath($env:PROVISIONING_ROOT)
+          $reportRoot = Join-Path $workspace 'external22-inventory-control-push'
+          New-Item -ItemType Directory -Path $reportRoot -Force | Out-Null
+
+          $searchRoots = @(
+            'C:\ProgramData\PSMatrix\ProductionGA',
+            'C:\PSMatrix-Production-GA',
+            'C:\Users\navea\Documents\PSMatrix-Production-GA',
+            'C:\Users\navea\Desktop\PSMatrix-Production-GA'
+          ) | Where-Object { Test-Path -LiteralPath $_ -PathType Container }
+
+          $tokenNames = @(
+            'PSMATRIX_OAUTH_VALID_TOKEN.txt',
+            'PSMATRIX_OAUTH_EXPIRED_TOKEN.txt',
+            'PSMATRIX_OAUTH_WRONG_AUDIENCE_TOKEN.txt',
+            'PSMATRIX_OAUTH_MISSING_SCOPE_TOKEN.txt',
+            'PSMATRIX_OAUTH_REPLAY_TOKEN.txt',
+            'PSMATRIX_OAUTH_RATE_LIMIT_TOKEN.txt'
+          )
+          $pairPrefixes = @('PSMATRIX_MTLS_CURRENT','PSMATRIX_MTLS_ROTATION','PSMATRIX_MTLS_UNTRUSTED','PSMATRIX_MTLS_REVOKED')
+          $secretLeafNames = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+          foreach ($name in $tokenNames) { [void]$secretLeafNames.Add($name) }
+          foreach ($prefix in $pairPrefixes) {
+            [void]$secretLeafNames.Add("${prefix}_CERT.pem")
+            [void]$secretLeafNames.Add("${prefix}_KEY.pem")
+          }
+
+          $candidateSecretDirs = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+          $otlpCandidates = [System.Collections.Generic.List[string]]::new()
+          $reviewPackets = [System.Collections.Generic.List[string]]::new()
+          $reviewReports = [System.Collections.Generic.List[string]]::new()
+
+          foreach ($root in $searchRoots) {
+            Get-ChildItem -LiteralPath $root -File -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object {
+              $leaf = $_.Name
+              if ($secretLeafNames.Contains($leaf)) { [void]$candidateSecretDirs.Add($_.Directory.FullName) }
+              if ($leaf -match '(?i)otlp' -and $leaf -match '(?i)(endpoint|header)') { $otlpCandidates.Add($_.FullName) }
+              if ($_.Extension -eq '.zip' -and $leaf -match '(?i)(security|review)') { $reviewPackets.Add($_.FullName) }
+              if ($_.Extension -eq '.json' -and $leaf -match '(?i)(security|review)' -and $leaf -match '(?i)(report|completed)') { $reviewReports.Add($_.FullName) }
+            }
+          }
+
+          $publicAuthRoots = [System.Collections.Generic.List[string]]::new()
+          foreach ($secretDir in $candidateSecretDirs) {
+            $dir = Get-Item -LiteralPath $secretDir -Force -ErrorAction SilentlyContinue
+            if ($null -eq $dir -or -not $dir.PSIsContainer) { continue }
+            $materialRoot = $dir.Parent.FullName
+            $vars = Join-Path $materialRoot 'vars.json'
+            $all = Test-Path -LiteralPath $vars -PathType Leaf
+            foreach ($name in $secretLeafNames) {
+              if (-not (Test-Path -LiteralPath (Join-Path $secretDir $name) -PathType Leaf)) { $all = $false; break }
+            }
+            if ($all -and $materialRoot -notin $publicAuthRoots) { $publicAuthRoots.Add($materialRoot) }
+          }
+
+          $validatedPublicAuth = [System.Collections.Generic.List[string]]::new()
+          $i = 0
+          foreach ($root in $publicAuthRoots) {
+            $i++
+            $out = Join-Path $reportRoot "public-auth-validation-$i.json"
+            & $python scripts/ga/validate_public_auth_provisioning.py --material-root $root --output $out *> $null
+            if ($LASTEXITCODE -eq 0) { $validatedPublicAuth.Add($root) }
+          }
+
+          "public_auth_validated=$($validatedPublicAuth.Count)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "otlp_candidates=$($otlpCandidates.Count)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "review_packet_candidates=$($reviewPackets.Count)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "review_report_candidates=$($reviewReports.Count)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+          Write-Host 'production_ga_external22_material_inventory=PASS'
+          Write-Host "public_auth_validated_candidates=$($validatedPublicAuth.Count)"
+          Write-Host "external_otlp_candidate_files=$($otlpCandidates.Count)"
+          Write-Host "security_review_packet_candidates=$($reviewPackets.Count)"
+          Write-Host "security_review_report_candidates=$($reviewReports.Count)"
+          Write-Host 'secret_values_logged=false'
+          Write-Host 'github_environment_mutation_executed=false'
+
+  publish-safe-status:
+    if: always()
+    needs: [dispatch-readiness, external22-inventory]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out control branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ops/ga-control-20260818
+          fetch-depth: 1
+
+      - name: Write and push safe status JSON
+        shell: bash
+        env:
+          DISPATCH_RESULT: ${{ needs.dispatch-readiness.result }}
+          INVENTORY_RESULT: ${{ needs.external22-inventory.result }}
+          READINESS_RUN_ID: ${{ needs.dispatch-readiness.outputs.run_id }}
+          PUBLIC_AUTH_VALIDATED: ${{ needs.external22-inventory.outputs.public_auth_validated }}
+          OTLP_CANDIDATES: ${{ needs.external22-inventory.outputs.otlp_candidates }}
+          REVIEW_PACKET_CANDIDATES: ${{ needs.external22-inventory.outputs.review_packet_candidates }}
+          REVIEW_REPORT_CANDIDATES: ${{ needs.external22-inventory.outputs.review_report_candidates }}
+        run: |
+          set -euo pipefail
+          mkdir -p ops/status
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          def n(name):
+              value=os.environ.get(name,'').strip()
+              return int(value) if value.isdigit() else None
+          payload={
+              'schema':1,
+              'kind':'psmatrix.ga-control-safe-status',
+              'dispatch_result':os.environ.get('DISPATCH_RESULT'),
+              'external22_inventory_result':os.environ.get('INVENTORY_RESULT'),
+              'fresh_readiness_run_id':n('READINESS_RUN_ID'),
+              'fresh_readiness_target_sha':'3ffc6b6d7cd58d64224f780aa819b50f50f72491',
+              'public_auth_validated_candidates':n('PUBLIC_AUTH_VALIDATED'),
+              'external_otlp_candidate_files':n('OTLP_CANDIDATES'),
+              'security_review_packet_candidates':n('REVIEW_PACKET_CANDIDATES'),
+              'security_review_report_candidates':n('REVIEW_REPORT_CANDIDATES'),
+              'secret_values_logged':False,
+              'private_material_uploaded':False,
+              'production_readiness_claimed':False,
+              'ga_eligible':False,
+          }
+          Path('ops/status/ga-control-20260818.json').write_text(json.dumps(payload,sort_keys=True,indent=2)+'\n',encoding='utf-8')
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add ops/status/ga-control-20260818.json
+          if git diff --cached --quiet; then
+            echo 'safe status unchanged'
+            exit 0
+          fi
+          git commit -m 'ops: publish safe GA control status'
+          git push origin HEAD:ops/ga-control-20260818
