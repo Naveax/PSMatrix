@@ -11,12 +11,81 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-function Read-JsonObject([string]$Path, [string]$Label) {
-    $resolved = [IO.Path]::GetFullPath($Path)
+function Assert-NoExistingLinkOrReparseComponents([string]$Path, [string]$Label) {
+    $full = [IO.Path]::GetFullPath($Path)
+    $cursor = $full
+    while (-not [string]::IsNullOrWhiteSpace($cursor)) {
+        $item = Get-Item -LiteralPath $cursor -Force -ErrorAction SilentlyContinue
+        if ($null -ne $item) {
+            $linkProperty = $item.PSObject.Properties['LinkType']
+            $linkType = if ($null -ne $linkProperty) { [string]$linkProperty.Value } else { '' }
+            $isReparsePoint = (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+            if ($isReparsePoint -or -not [string]::IsNullOrWhiteSpace($linkType)) {
+                throw "$Label must not contain links or reparse points: $($item.FullName)"
+            }
+        }
+        $parent = Split-Path -Parent $cursor
+        if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $cursor) { break }
+        $cursor = $parent
+    }
+    return $full
+}
+function Assert-OutsideRepositoryPath([string]$Path, [string]$RepoRoot, [string]$Label) {
+    $full = [IO.Path]::GetFullPath($Path)
+    $repo = [IO.Path]::GetFullPath($RepoRoot).TrimEnd('\','/')
+    $prefix = $repo + [IO.Path]::DirectorySeparatorChar
+    if ($full.TrimEnd('\','/') -eq $repo -or $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Label must stay outside the repository: $full"
+    }
+    return $full
+}
+function Assert-SafeExistingLeaf([string]$Path, [string]$Label) {
+    $resolved = Assert-NoExistingLinkOrReparseComponents $Path $Label
     if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) { throw "$Label not found: $resolved" }
+    $item = Get-Item -LiteralPath $resolved -Force
+    if ($item.Length -le 0) { throw "$Label is empty: $resolved" }
+    return $resolved
+}
+function Assert-SafeDirectoryPath([string]$Path, [string]$Label, [string]$RepoRoot = '', [switch]$RequireOutsideRepository) {
+    $resolved = Assert-NoExistingLinkOrReparseComponents $Path $Label
+    if (Test-Path -LiteralPath $resolved) {
+        if (-not (Test-Path -LiteralPath $resolved -PathType Container)) { throw "$Label must be a directory: $resolved" }
+    }
+    if ($RequireOutsideRepository) { [void](Assert-OutsideRepositoryPath $resolved $RepoRoot $Label) }
+    return $resolved
+}
+function Assert-SafeOutputPath([string]$Path, [string]$Label, [string]$RepoRoot = '', [switch]$RequireOutsideRepository) {
+    $resolved = Assert-NoExistingLinkOrReparseComponents $Path $Label
+    if (Test-Path -LiteralPath $resolved) {
+        if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) { throw "$Label must be a file path: $resolved" }
+    }
+    $parent = Split-Path -Parent $resolved
+    if (-not [string]::IsNullOrWhiteSpace($parent)) { [void](Assert-NoExistingLinkOrReparseComponents $parent "$Label directory") }
+    if ($RequireOutsideRepository) { [void](Assert-OutsideRepositoryPath $resolved $RepoRoot $Label) }
+    return $resolved
+}
+function Read-JsonObject([string]$Path, [string]$Label) {
+    $resolved = Assert-SafeExistingLeaf $Path $Label
     $value = Get-Content -Raw -LiteralPath $resolved | ConvertFrom-Json -AsHashtable -Depth 50
     if ($null -eq $value -or $value -isnot [Collections.IDictionary]) { throw "$Label root must be an object." }
     return $value
+}
+function Write-JsonAtomic([string]$Path, $Value, [string]$Label) {
+    $resolved = Assert-SafeOutputPath $Path $Label
+    $directory = Split-Path -Parent $resolved
+    if (-not [string]::IsNullOrWhiteSpace($directory)) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+        [void](Assert-NoExistingLinkOrReparseComponents $directory "$Label directory")
+    }
+    [void](Assert-SafeOutputPath $resolved $Label)
+    $temporary = Join-Path $directory ('.' + [IO.Path]::GetFileName($resolved) + '.' + [Guid]::NewGuid().ToString('N') + '.tmp')
+    try {
+        [IO.File]::WriteAllText($temporary,(($Value | ConvertTo-Json -Depth 20)+[Environment]::NewLine),[Text.UTF8Encoding]::new($false))
+        [IO.File]::Move($temporary,$resolved,$true)
+    }
+    finally {
+        Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+    }
 }
 function Invoke-PythonChecked([string]$Python, [string[]]$Arguments, [int[]]$AcceptedExitCodes = @(0)) {
     & $Python @Arguments
@@ -26,12 +95,15 @@ function Invoke-PythonChecked([string]$Python, [string[]]$Arguments, [int[]]$Acc
 }
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
-$workspace = [IO.Path]::GetFullPath($Root)
-$repoPrefix = $repoRoot.TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
-if ($workspace.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Local 19-check provisioning workspace must stay outside the repository.' }
-New-Item -ItemType Directory -Path $workspace -Force | Out-Null
-$python = (Get-Command python -ErrorAction Stop).Source
-$gh = if ([string]::IsNullOrWhiteSpace($GhPath)) { $null } else { [IO.Path]::GetFullPath($GhPath) }
+$workspace = Assert-SafeDirectoryPath $Root 'Local 19-check provisioning workspace' $repoRoot -RequireOutsideRepository
+$summaryPath = if ([string]::IsNullOrWhiteSpace($SummaryOutput)) {
+    Join-Path $workspace 'local-19-provisioning-operation.json'
+} else {
+    Assert-SafeOutputPath $SummaryOutput 'Local 19-check provisioning operation summary' $repoRoot -RequireOutsideRepository
+}
+[void](Assert-SafeOutputPath $summaryPath 'Local 19-check provisioning operation summary' $repoRoot -RequireOutsideRepository)
+$offlineInventory = if ([string]::IsNullOrWhiteSpace($OfflineInventoryBefore)) { $null } else { Assert-SafeExistingLeaf $OfflineInventoryBefore 'Offline pre-provision inventory' }
+$gh = if ([string]::IsNullOrWhiteSpace($GhPath)) { $null } else { Assert-SafeExistingLeaf $GhPath 'gh executable' }
 
 $workspaceSummary = Join-Path $workspace 'local-provisioning-summary.json'
 $localMap = Join-Path $workspace 'local-19.material-map.json'
@@ -39,8 +111,13 @@ $preAudit = Join-Path $workspace 'pre-provision-inventory-audit.json'
 $selectedMap = Join-Path $workspace 'selected-missing-local.material-map.json'
 $postAudit = Join-Path $workspace 'post-provision-inventory-audit.json'
 $receipt = Join-Path $workspace 'local-19-provisioning-receipt.json'
-$summaryPath = if ([string]::IsNullOrWhiteSpace($SummaryOutput)) { Join-Path $workspace 'local-19-provisioning-operation.json' } else { [IO.Path]::GetFullPath($SummaryOutput) }
-if ($summaryPath.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Local 19-check provisioning operation summary must stay outside the repository.' }
+foreach ($path in @($workspaceSummary,$localMap,$preAudit,$selectedMap,$postAudit,$receipt)) {
+    [void](Assert-SafeOutputPath $path 'Local 19-check workspace output' $repoRoot -RequireOutsideRepository)
+}
+
+New-Item -ItemType Directory -Path $workspace -Force | Out-Null
+[void](Assert-SafeDirectoryPath $workspace 'Local 19-check provisioning workspace' $repoRoot -RequireOutsideRepository)
+$python = (Get-Command python -ErrorAction Stop).Source
 
 Push-Location $repoRoot
 try {
@@ -65,8 +142,8 @@ try {
     if ([int]$map.check_count -ne 19 -or $map.partial -ne $true) { throw 'Composed local material map must be exact partial 19/41.' }
 
     $auditArgs = @('scripts/ga/audit_production_ga_environment_inventory.py', '--repository', $Repository, '--output', $preAudit)
-    if (-not [string]::IsNullOrWhiteSpace($OfflineInventoryBefore)) {
-        $auditArgs += @('--inventory', [IO.Path]::GetFullPath($OfflineInventoryBefore))
+    if ($offlineInventory) {
+        $auditArgs += @('--inventory', $offlineInventory)
     } elseif ($gh) {
         $auditArgs += @('--gh', $gh)
     }
@@ -168,9 +245,7 @@ try {
             provisioning_receipt = if ($receiptVerified) { $receipt } else { $null }
         }
     }
-    $summaryDirectory = Split-Path -Parent $summaryPath
-    if ($summaryDirectory) { New-Item -ItemType Directory -Path $summaryDirectory -Force | Out-Null }
-    [IO.File]::WriteAllText($summaryPath,(($operation | ConvertTo-Json -Depth 20)+[Environment]::NewLine),[Text.UTF8Encoding]::new($false))
+    Write-JsonAtomic $summaryPath $operation 'Local 19-check provisioning operation summary'
 
     Write-Host "production_ga_local_19check_operation=$operationStatus"
     Write-Host "local_missing_before=$localMissingCount"
