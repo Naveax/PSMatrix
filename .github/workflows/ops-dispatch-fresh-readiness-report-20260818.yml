@@ -48,6 +48,6 @@ fresh_production_readiness_target_sha=$TARGET_SHA
 stale_rerun=false
 EOF
 )
-          gh api --repo Naveax/PSMatrix --method POST repos/Naveax/PSMatrix/issues/258/comments -f body="$body" >/dev/null
+          gh api --method POST repos/Naveax/PSMatrix/issues/258/comments -f body="$body" >/dev/null
           echo "fresh_production_readiness_dispatched=true"
           echo "fresh_production_readiness_run_id=$run_id"
