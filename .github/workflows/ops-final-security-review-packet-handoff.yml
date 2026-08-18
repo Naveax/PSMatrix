@@ -1,0 +1,55 @@
+name: ops-final-security-review-packet-handoff
+
+on:
+  workflow_run:
+    workflows: [production-ga-final-security-review-packet]
+    types: [completed]
+
+concurrency:
+  group: ops-final-security-review-packet-handoff
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+jobs:
+  publish-handoff:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.head_branch == 'release/2.0.0-final-active-lock'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PACKET_RUN_ID: ${{ github.event.workflow_run.id }}
+      PACKET_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+      CONTROL_HEAD: ${{ github.event.workflow_run.head_sha }}
+      FINAL_ACTIVE_BRANCH: release/2.0.0-final-active-lock
+      STATE_ISSUE: '262'
+      EXTERNAL_ISSUE: '261'
+    steps:
+      - name: Validate exact packet artifact
+        id: artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_ACTIVE_BRANCH" --jq '.object.sha')
+          [[ "$current" == "$CONTROL_HEAD" ]] || { echo 'Final active control moved before review-packet handoff.' >&2; exit 1; }
+          artifact_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PACKET_RUN_ID/artifacts?per_page=100" \
+            --jq '[.artifacts[] | select(.name == "psmatrix-2.0.0-final-security-review-packet" and (.expired|not))] | if length == 1 then .[0].id else error("expected exactly one live final security-review packet artifact") end')
+          [[ "$artifact_id" =~ ^[1-9][0-9]*$ ]] || { echo 'Review packet artifact ID is invalid.' >&2; exit 1; }
+          echo "artifact_id=$artifact_id" >> "$GITHUB_OUTPUT"
+          echo "final_security_review_packet=PASS artifact_id=$artifact_id"
+
+      - name: Record packet and publish independent-review handoff
+        env:
+          ARTIFACT_ID: ${{ steps.artifact.outputs.artifact_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "RC4_CHAIN_STATE stage=security_review_packet run_id=$PACKET_RUN_ID attempt=$PACKET_RUN_ATTEMPT control_head=$CONTROL_HEAD"
+          gh issue comment "$EXTERNAL_ISSUE" --repo "$GITHUB_REPOSITORY" --body "Final independent security-review packet is ready. Canonical packet run: \`$PACKET_RUN_ID\`, artifact ID: \`$ARTIFACT_ID\`, exact control head: \`$CONTROL_HEAD\`. Reviewer must use this exact packet and must remain independent. Do not post the completed report or reviewer private key in this issue; provision the validated report through \`PSMATRIX_GA_SECURITY_REVIEW_REPORT_JSON\` in \`production-ga-security-review-signing\`. \`ga_eligible=false\` until the final evaluator passes."
+          echo 'independent_review_handoff_published=true'
