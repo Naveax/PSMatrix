@@ -1,0 +1,183 @@
+name: ops-rc4-promotion-to-reviewed-pr
+
+on:
+  workflow_run:
+    workflows: [production-ga-windows-authority-rc4-release-lock-promotion]
+    types: [completed]
+
+concurrency:
+  group: ops-rc4-promotion-to-reviewed-pr
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: read
+  pull-requests: write
+
+jobs:
+  materialize-reviewed-change:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PROMOTION_RUN_ID: ${{ github.event.workflow_run.id }}
+      PROMOTION_CONTROL_HEAD: ${{ github.event.workflow_run.head_sha }}
+      CANDIDATE_COMMIT: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
+      REVIEW_RUN_ID: '32137455148'
+      REVIEWED_DRAFT_SHA256: a2a97763f679b18562e19ec99f066374b097a50c44a3bea4d1208328e9b339d9
+      REVIEWED_PUBLIC_KEY_SHA256: ece4d7087449cb42cde9183b0b1e2b82db610d4ffffd726e6737d2ba09578a08
+    steps:
+      - name: Download exact promotion candidate artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0rc4-release-lock-promotion-candidate
+          path: promotion
+          repository: Naveax/PSMatrix
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Validate promotion artifact and exact human-review binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+
+          root = Path('promotion').resolve()
+          expected = {
+              'rc4-release-lock-promotion.json',
+              'ga-packs/03-authoritative-windows/rc4-release-lock.json',
+              'release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem',
+          }
+          observed = set()
+          for p in root.rglob('*'):
+              if p.is_symlink():
+                  raise SystemExit(f'symlink forbidden in promotion artifact: {p}')
+              if p.is_file():
+                  observed.add(p.relative_to(root).as_posix())
+          if observed != expected:
+              raise SystemExit(f'promotion artifact file set mismatch: {sorted(observed)}')
+
+          report_path = root / 'rc4-release-lock-promotion.json'
+          lock_path = root / 'ga-packs/03-authoritative-windows/rc4-release-lock.json'
+          public_path = root / 'release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem'
+          report = json.loads(report_path.read_text(encoding='utf-8'))
+          lock = json.loads(lock_path.read_text(encoding='utf-8'))
+          sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+
+          if report.get('status') != 'READY_FOR_EXACT_REPOSITORY_COMMIT':
+              raise SystemExit('promotion report status mismatch')
+          if report.get('candidate_commit') != os.environ['CANDIDATE_COMMIT']:
+              raise SystemExit('promotion candidate commit mismatch')
+          if str(report.get('promotion_run_id')) != os.environ['PROMOTION_RUN_ID']:
+              raise SystemExit('promotion run provenance mismatch')
+          if str(report.get('review_run_id')) != os.environ['REVIEW_RUN_ID']:
+              raise SystemExit('review run provenance mismatch')
+          if report.get('promotion_control_head') != os.environ['PROMOTION_CONTROL_HEAD'].lower():
+              raise SystemExit('promotion control head mismatch')
+          if report.get('reviewed_draft_sha256') != os.environ['REVIEWED_DRAFT_SHA256']:
+              raise SystemExit('reviewed draft digest mismatch')
+          if report.get('reviewed_public_key_sha256') != os.environ['REVIEWED_PUBLIC_KEY_SHA256']:
+              raise SystemExit('reviewed public-key digest mismatch')
+          if report.get('repository_mutated') is not False or report.get('release_artifacts_signed') is not False or report.get('authoritative') is not False or report.get('ga_eligible') is not False:
+              raise SystemExit('promotion report crossed forbidden boundary')
+          if report.get('promoted_lock', {}).get('sha256') != sha(lock_path):
+              raise SystemExit('promoted lock digest mismatch')
+          if report.get('promoted_public_key', {}).get('sha256') != sha(public_path):
+              raise SystemExit('promoted public-key digest mismatch')
+          if sha(public_path) != os.environ['REVIEWED_PUBLIC_KEY_SHA256']:
+              raise SystemExit('public key no longer matches human-reviewed digest')
+
+          evidence = lock.get('promotion_evidence') or {}
+          if lock.get('promotion_state') != 'READY_FOR_EXACT_REPOSITORY_COMMIT':
+              raise SystemExit('active-lock candidate state mismatch')
+          if lock.get('release_commit') != os.environ['CANDIDATE_COMMIT'] or lock.get('version') != '2.0.0rc4':
+              raise SystemExit('active-lock candidate identity mismatch')
+          if evidence.get('human_review_bound') is not True or evidence.get('repository_commit_required') is not True:
+              raise SystemExit('human-review/repository-commit boundary missing')
+          if str(evidence.get('promotion_run_id')) != os.environ['PROMOTION_RUN_ID'] or str(evidence.get('review_run_id')) != os.environ['REVIEW_RUN_ID']:
+              raise SystemExit('lock provenance mismatch')
+          if lock.get('release_artifacts_signed') is not False or lock.get('authoritative') is not False or lock.get('ga_eligible') is not False:
+              raise SystemExit('lock candidate crossed signing/authority boundary')
+
+          forbidden = (b'BEGIN PRIVATE KEY', b'BEGIN RSA PRIVATE KEY', b'BEGIN EC PRIVATE KEY', b'BEGIN OPENSSH PRIVATE KEY')
+          for p in root.rglob('*'):
+              if p.is_file() and any(marker in p.read_bytes() for marker in forbidden):
+                  raise SystemExit(f'private-key material found in promotion artifact: {p.name}')
+          print('rc4_promotion_artifact_validation=PASS')
+          print('human_review_bound=true')
+          print('release_artifacts_signed=false')
+          print('ga_eligible=false')
+          PY
+
+      - name: Check out current main for separate reviewed change
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
+        with:
+          ref: main
+          path: repo
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Materialize exact two-file repository change
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e repo/ga-packs/03-authoritative-windows/rc4-release-lock.json || {
+            echo 'main already contains an active RC4 lock; refusing duplicate repository change.' >&2
+            exit 1
+          }
+          mkdir -p repo/ga-packs/03-authoritative-windows repo/release-assets/2.0.0rc4
+          cp promotion/ga-packs/03-authoritative-windows/rc4-release-lock.json repo/ga-packs/03-authoritative-windows/rc4-release-lock.json
+          cp promotion/release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem repo/release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem
+          cd repo
+          mapfile -t changed < <(git status --porcelain | sed -E 's/^...//' | sort)
+          expected=(
+            'ga-packs/03-authoritative-windows/rc4-release-lock.json'
+            'release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem'
+          )
+          if [[ ${#changed[@]} -ne 2 || "${changed[0]}" != "${expected[0]}" || "${changed[1]}" != "${expected[1]}" ]]; then
+            printf 'Unexpected repository change set:\n%s\n' "${changed[*]}" >&2
+            exit 1
+          fi
+          cmp -s ga-packs/03-authoritative-windows/rc4-release-lock.json ../promotion/ga-packs/03-authoritative-windows/rc4-release-lock.json
+          cmp -s release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem ../promotion/release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem
+          echo 'exact_repository_change_set=PASS files=2'
+
+      - name: Commit branch and open draft PR
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd repo
+          branch="ops/rc4-lock-promotion-${PROMOTION_RUN_ID}"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "$branch"
+          git add -- ga-packs/03-authoritative-windows/rc4-release-lock.json release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem
+          git commit -m 'Promote human-reviewed RC4 release lock'
+          git push origin "$branch"
+          body=$(cat <<EOF
+          Exact repository-commit candidate produced from canonical RC4 promotion run \`$PROMOTION_RUN_ID\` after human-review binding.
+
+          Provenance:
+          - RC4 release candidate: \`$CANDIDATE_COMMIT\`
+          - lock-review run: \`$REVIEW_RUN_ID\`
+          - promotion run: \`$PROMOTION_RUN_ID\`
+          - reviewed draft SHA-256: \`$REVIEWED_DRAFT_SHA256\`
+          - reviewed public key SHA-256: \`$REVIEWED_PUBLIC_KEY_SHA256\`
+
+          Boundary:
+          - exactly two files changed
+          - private key material absent
+          - release artifacts not signed by this PR
+          - this PR must be reviewed before merge
+          - GA eligibility is not claimed
+          EOF
+          )
+          gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$branch" --draft --title 'Promote human-reviewed RC4 release lock' --body "$body"
+          echo 'rc4_exact_repository_change_pr_created=true'
+          echo 'merge_performed=false'
