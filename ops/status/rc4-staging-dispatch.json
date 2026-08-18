@@ -1,0 +1,11 @@
+{
+  "candidate_commit": "0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63",
+  "ga_eligible": false,
+  "kind": "psmatrix.rc4-staging-dispatch",
+  "run_id": 32136540372,
+  "schema": 1,
+  "secret_values_logged": false,
+  "stale_rerun": false,
+  "status": "DISPATCHED",
+  "target_ref": "release/2.0.0rc4-authority-rotation"
+}
