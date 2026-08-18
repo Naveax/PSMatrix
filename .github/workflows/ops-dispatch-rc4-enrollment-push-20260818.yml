@@ -1,0 +1,78 @@
+name: ops-dispatch-rc4-enrollment-push-20260818
+
+on:
+  push:
+    branches:
+      - ops/ga-control-20260818
+    paths:
+      - .github/workflows/ops-dispatch-rc4-enrollment-push-20260818.yml
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  dispatch-and-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TARGET_REF: release/2.0.0rc4-authority-rotation
+      TARGET_SHA: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
+    steps:
+      - name: Dispatch one fresh RC4 authority enrollment
+        id: dispatch
+        shell: bash
+        run: |
+          set -euo pipefail
+          before="$(date -u +%s)"
+          gh workflow run ga-windows-authority-rc4-release-authority-enrollment.yml \
+            --repo Naveax/PSMatrix \
+            --ref "$TARGET_REF" \
+            -f candidate_commit="$TARGET_SHA"
+
+          run_id=""
+          for _ in $(seq 1 30); do
+            run_id="$(gh run list --repo Naveax/PSMatrix --workflow ga-windows-authority-rc4-release-authority-enrollment.yml --branch "$TARGET_REF" --event workflow_dispatch --limit 30 --json databaseId,headSha,createdAt --jq ".[] | select(.headSha == \"$TARGET_SHA\" and (.createdAt | fromdateiso8601) >= $before) | .databaseId" | head -n 1)"
+            if [ -n "$run_id" ]; then break; fi
+            sleep 2
+          done
+          if [ -z "$run_id" ]; then
+            echo 'fresh RC4 enrollment run was not discovered after dispatch' >&2
+            exit 1
+          fi
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "rc4_authority_enrollment_dispatched=true"
+          echo "rc4_authority_enrollment_run_id=$run_id"
+          echo "candidate_commit=$TARGET_SHA"
+
+      - name: Publish safe dispatch receipt
+        shell: bash
+        env:
+          RUN_ID: ${{ steps.dispatch.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch ops/ga-control-20260818 "https://x-access-token:${GH_TOKEN}@github.com/Naveax/PSMatrix.git" control
+          cd control
+          mkdir -p ops/status
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          payload={
+            'schema':1,
+            'kind':'psmatrix.rc4-authority-enrollment-dispatch',
+            'status':'DISPATCHED',
+            'run_id':int(os.environ['RUN_ID']),
+            'candidate_commit':'0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63',
+            'target_ref':'release/2.0.0rc4-authority-rotation',
+            'stale_rerun':False,
+            'secret_values_logged':False,
+            'ga_eligible':False,
+          }
+          Path('ops/status/rc4-enrollment-dispatch.json').write_text(json.dumps(payload,sort_keys=True,indent=2)+'\n',encoding='utf-8')
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add ops/status/rc4-enrollment-dispatch.json
+          git commit -m 'ops: publish RC4 enrollment dispatch receipt'
+          git push origin HEAD:ops/ga-control-20260818
