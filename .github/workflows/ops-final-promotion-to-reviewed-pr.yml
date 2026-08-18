@@ -1,0 +1,173 @@
+name: ops-final-promotion-to-reviewed-pr
+
+on:
+  workflow_run:
+    workflows: [production-ga-windows-authority-final-release-lock-promotion]
+    types: [completed]
+
+concurrency:
+  group: ops-final-promotion-to-reviewed-pr
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: read
+  pull-requests: write
+  issues: read
+
+jobs:
+  materialize-reviewed-change:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.head_branch == 'release/2.0.0-final-lock-control'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PROMOTION_RUN_ID: ${{ github.event.workflow_run.id }}
+      PROMOTION_CONTROL_HEAD: ${{ github.event.workflow_run.head_sha }}
+      FINAL_CANDIDATE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
+      FINAL_LOCK_CONTROL_BRANCH: release/2.0.0-final-lock-control
+      HUMAN_GATE_ISSUE: '263'
+    steps:
+      - name: Verify frozen final control has not moved
+        shell: bash
+        run: |
+          set -euo pipefail
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_LOCK_CONTROL_BRANCH" --jq '.object.sha')
+          [[ "$current" == "$PROMOTION_CONTROL_HEAD" ]] || { echo "Final lock-control branch moved during promotion: $current != $PROMOTION_CONTROL_HEAD" >&2; exit 1; }
+          echo 'final_promotion_control_frozen=PASS'
+
+      - name: Download exact final promotion candidate artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-final-release-lock-promotion-candidate
+          path: promotion
+          repository: Naveax/PSMatrix
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Validate exact promoted final lock and human binding
+        id: validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/issues/$HUMAN_GATE_ISSUE" --jq '.body' > "$RUNNER_TEMP/final-human-gate-body.txt"
+          python - <<'PY'
+          import hashlib,json,os,re
+          from pathlib import Path
+          root=Path('promotion').resolve()
+          expected={
+              'final-release-lock-promotion.json',
+              'ga-packs/03-authoritative-windows/final-release-lock.json',
+              'release-assets/2.0.0/psmatrix-2.0.0-release-public.pem',
+          }
+          observed=set()
+          forbidden=(b'BEGIN PRIVATE KEY',b'BEGIN RSA PRIVATE KEY',b'BEGIN EC PRIVATE KEY',b'BEGIN OPENSSH PRIVATE KEY')
+          for p in root.rglob('*'):
+              if p.is_symlink(): raise SystemExit(f'symlink forbidden in promotion artifact: {p}')
+              if p.is_file():
+                  observed.add(p.relative_to(root).as_posix())
+                  if any(marker in p.read_bytes() for marker in forbidden):
+                      raise SystemExit(f'private key found in final promotion artifact: {p.name}')
+          if observed!=expected: raise SystemExit(f'final promotion artifact file set mismatch: {sorted(observed)}')
+          report_path=root/'final-release-lock-promotion.json'
+          lock_path=root/'ga-packs/03-authoritative-windows/final-release-lock.json'
+          public_path=root/'release-assets/2.0.0/psmatrix-2.0.0-release-public.pem'
+          report=json.loads(report_path.read_text(encoding='utf-8'))
+          lock=json.loads(lock_path.read_text(encoding='utf-8'))
+          body=Path(os.environ['RUNNER_TEMP'],'final-human-gate-body.txt').read_text(encoding='utf-8')
+          pat=re.compile(r'FINAL_REVIEW_BINDING run_id=([1-9][0-9]*) attempt=([1-9][0-9]*) control_head=([0-9a-f]{40}) candidate=([0-9a-f]{40}) draft_sha256=([0-9a-f]{64}) public_sha256=([0-9a-f]{64})')
+          matches=pat.findall(body)
+          if len(matches)!=1: raise SystemExit('final human-review binding missing or ambiguous')
+          review_run,_,control,candidate,draft_sha,public_sha=matches[0]
+          digest=lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+          if report.get('status')!='READY_FOR_EXACT_REPOSITORY_COMMIT': raise SystemExit('final promotion status mismatch')
+          if report.get('final_candidate_commit')!=candidate or candidate!=os.environ['FINAL_CANDIDATE_COMMIT']: raise SystemExit('final promotion candidate mismatch')
+          if str(report.get('promotion_run_id'))!=os.environ['PROMOTION_RUN_ID'] or str(report.get('review_run_id'))!=review_run: raise SystemExit('final promotion run provenance mismatch')
+          if report.get('promotion_control_head')!=control or control!=os.environ['PROMOTION_CONTROL_HEAD'].lower(): raise SystemExit('final promotion control head mismatch')
+          if report.get('reviewed_draft_sha256')!=draft_sha or report.get('reviewed_public_key_sha256')!=public_sha: raise SystemExit('final promotion human-reviewed digest mismatch')
+          if digest(public_path)!=public_sha: raise SystemExit('final promoted public key differs from human-reviewed digest')
+          if report.get('repository_mutated') is not False: raise SystemExit('canonical promotion unexpectedly claims repository mutation')
+          for obj in (report,lock):
+              for field in ('release_artifacts_signed','final_windows_evidence_rebound','final_ga_evaluator_invoked','authoritative','ga_eligible'):
+                  if obj.get(field) is not False: raise SystemExit(f'unsafe final promotion field: {field}')
+          evidence=lock.get('promotion_evidence') or {}
+          if evidence.get('human_review_bound') is not True or evidence.get('repository_commit_required') is not True: raise SystemExit('final promoted lock lacks review/commit boundary')
+          if str(evidence.get('promotion_run_id'))!=os.environ['PROMOTION_RUN_ID'] or str(evidence.get('review_run_id'))!=review_run: raise SystemExit('final promoted lock provenance mismatch')
+          with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as out:
+              out.write(f'review_run_id={review_run}\n')
+              out.write(f'draft_sha256={draft_sha}\n')
+              out.write(f'public_sha256={public_sha}\n')
+          print('final_promotion_artifact_validation=PASS')
+          PY
+
+      - name: Check out frozen final lock-control branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
+        with:
+          ref: release/2.0.0-final-lock-control
+          path: repo
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Materialize exact two-file reviewed final-lock change
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e repo/ga-packs/03-authoritative-windows/final-release-lock.json || { echo 'Final lock already exists on frozen control branch.' >&2; exit 1; }
+          test ! -e repo/release-assets/2.0.0/psmatrix-2.0.0-release-public.pem || { echo 'Final public key already exists on frozen control branch.' >&2; exit 1; }
+          mkdir -p repo/ga-packs/03-authoritative-windows repo/release-assets/2.0.0
+          cp promotion/ga-packs/03-authoritative-windows/final-release-lock.json repo/ga-packs/03-authoritative-windows/final-release-lock.json
+          cp promotion/release-assets/2.0.0/psmatrix-2.0.0-release-public.pem repo/release-assets/2.0.0/psmatrix-2.0.0-release-public.pem
+          cd repo
+          mapfile -t changed < <(git status --porcelain | sed -E 's/^...//' | sort)
+          expected=('ga-packs/03-authoritative-windows/final-release-lock.json' 'release-assets/2.0.0/psmatrix-2.0.0-release-public.pem')
+          if [[ ${#changed[@]} -ne 2 || "${changed[0]}" != "${expected[0]}" || "${changed[1]}" != "${expected[1]}" ]]; then
+            printf 'Unexpected final-lock repository change set:\n%s\n' "${changed[*]}" >&2; exit 1
+          fi
+          cmp -s ga-packs/03-authoritative-windows/final-release-lock.json ../promotion/ga-packs/03-authoritative-windows/final-release-lock.json
+          cmp -s release-assets/2.0.0/psmatrix-2.0.0-release-public.pem ../promotion/release-assets/2.0.0/psmatrix-2.0.0-release-public.pem
+          echo 'exact_final_repository_change_set=PASS files=2'
+
+      - name: Commit exact branch and open draft reviewed PR
+        env:
+          REVIEW_RUN_ID: ${{ steps.validate.outputs.review_run_id }}
+          DRAFT_SHA256: ${{ steps.validate.outputs.draft_sha256 }}
+          PUBLIC_SHA256: ${{ steps.validate.outputs.public_sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd repo
+          branch="ops/final-lock-promotion-${PROMOTION_RUN_ID}"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "$branch"
+          git add -- ga-packs/03-authoritative-windows/final-release-lock.json release-assets/2.0.0/psmatrix-2.0.0-release-public.pem
+          git commit -m 'Promote human-reviewed final 2.0.0 release lock'
+          git push origin "$branch"
+          body=$(cat <<EOF
+          Exact two-file repository commit candidate from canonical final lock promotion.
+
+          Provenance:
+          - final release source: \`$FINAL_CANDIDATE_COMMIT\`
+          - final lock review run: \`$REVIEW_RUN_ID\`
+          - final lock promotion run: \`$PROMOTION_RUN_ID\`
+          - promotion control head: \`$PROMOTION_CONTROL_HEAD\`
+          - reviewed draft SHA-256: \`$DRAFT_SHA256\`
+          - reviewed public-key SHA-256: \`$PUBLIC_SHA256\`
+
+          Boundary:
+          - exactly two files changed
+          - bytes are copied from the canonical promotion artifact
+          - private key material is absent
+          - final release is not signed by this PR
+          - final Windows evidence is not rebound by this PR
+          - this PR must be reviewed before merge
+          - \`ga_eligible=false\`
+          EOF
+          )
+          gh pr create --repo "$GITHUB_REPOSITORY" --base "$FINAL_LOCK_CONTROL_BRANCH" --head "$branch" --draft --title 'Promote human-reviewed final 2.0.0 release lock' --body "$body"
+          echo 'final_exact_repository_change_pr_created=true'
+          echo 'merge_performed=false'
+          echo 'ga_eligible=false'
