@@ -1,0 +1,53 @@
+name: ops-dispatch-fresh-readiness-report-20260818
+
+on:
+  push:
+    branches:
+      - ops/local19-secure-bootstrap-20260817
+    paths:
+      - .github/workflows/ops-dispatch-fresh-readiness-report-20260818.yml
+
+permissions:
+  contents: read
+  actions: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TARGET_REF: final/2.0.0-production-control-plane-publication-anchor
+      TARGET_SHA: 3ffc6b6d7cd58d64224f780aa819b50f50f72491
+    steps:
+      - name: Dispatch a fresh frozen-target readiness run
+        shell: bash
+        run: |
+          set -euo pipefail
+          before="$(date -u +%s)"
+          gh workflow run ga-final-production-readiness.yml --repo Naveax/PSMatrix --ref "$TARGET_REF"
+
+          run_id=""
+          for _ in $(seq 1 30); do
+            run_id="$(gh run list --repo Naveax/PSMatrix --workflow ga-final-production-readiness.yml --branch "$TARGET_REF" --event workflow_dispatch --limit 30 --json databaseId,headSha,createdAt --jq ".[] | select(.headSha == \"$TARGET_SHA\" and (.createdAt | fromdateiso8601) >= $before) | .databaseId" | head -n 1)"
+            if [ -n "$run_id" ]; then break; fi
+            sleep 2
+          done
+          if [ -z "$run_id" ]; then
+            echo 'fresh readiness run was not discovered after dispatch' >&2
+            exit 1
+          fi
+
+          body=$(cat <<EOF
+fresh_production_readiness_dispatched=true
+fresh_production_readiness_run_id=$run_id
+fresh_production_readiness_target_ref=$TARGET_REF
+fresh_production_readiness_target_sha=$TARGET_SHA
+stale_rerun=false
+EOF
+)
+          gh api --repo Naveax/PSMatrix --method POST repos/Naveax/PSMatrix/issues/258/comments -f body="$body" >/dev/null
+          echo "fresh_production_readiness_dispatched=true"
+          echo "fresh_production_readiness_run_id=$run_id"
