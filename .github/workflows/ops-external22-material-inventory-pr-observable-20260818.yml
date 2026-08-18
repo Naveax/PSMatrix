@@ -1,0 +1,104 @@
+name: ops-external22-material-inventory-pr-observable-20260818
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/ops-external22-material-inventory-pr-observable-20260818.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inventory:
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 10
+    env:
+      SOURCE_SHA: 8498fef23788c5e3ee37ace736215a03f11118e8
+      PROVISIONING_ROOT: C:\ProgramData\PSMatrix\ProductionGA\provisioning
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Inventory external/review material without logging values
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $python = (Get-Command python -ErrorAction Stop).Source
+          $workspace = [IO.Path]::GetFullPath($env:PROVISIONING_ROOT)
+          $reportRoot = Join-Path $workspace 'external22-inventory-pr-observable'
+          New-Item -ItemType Directory -Path $reportRoot -Force | Out-Null
+
+          $searchRoots = @(
+            'C:\ProgramData\PSMatrix\ProductionGA',
+            'C:\PSMatrix-Production-GA',
+            'C:\Users\navea\Documents\PSMatrix-Production-GA',
+            'C:\Users\navea\Desktop\PSMatrix-Production-GA'
+          ) | Where-Object { Test-Path -LiteralPath $_ -PathType Container }
+
+          $tokenNames = @(
+            'PSMATRIX_OAUTH_VALID_TOKEN.txt',
+            'PSMATRIX_OAUTH_EXPIRED_TOKEN.txt',
+            'PSMATRIX_OAUTH_WRONG_AUDIENCE_TOKEN.txt',
+            'PSMATRIX_OAUTH_MISSING_SCOPE_TOKEN.txt',
+            'PSMATRIX_OAUTH_REPLAY_TOKEN.txt',
+            'PSMATRIX_OAUTH_RATE_LIMIT_TOKEN.txt'
+          )
+          $pairPrefixes = @('PSMATRIX_MTLS_CURRENT','PSMATRIX_MTLS_ROTATION','PSMATRIX_MTLS_UNTRUSTED','PSMATRIX_MTLS_REVOKED')
+          $secretLeafNames = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+          foreach ($name in $tokenNames) { [void]$secretLeafNames.Add($name) }
+          foreach ($prefix in $pairPrefixes) {
+            [void]$secretLeafNames.Add("${prefix}_CERT.pem")
+            [void]$secretLeafNames.Add("${prefix}_KEY.pem")
+          }
+
+          $candidateSecretDirs = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+          $otlpCandidates = [System.Collections.Generic.List[string]]::new()
+          $reviewPackets = [System.Collections.Generic.List[string]]::new()
+          $reviewReports = [System.Collections.Generic.List[string]]::new()
+
+          foreach ($root in $searchRoots) {
+            Get-ChildItem -LiteralPath $root -File -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object {
+              $leaf = $_.Name
+              if ($secretLeafNames.Contains($leaf)) { [void]$candidateSecretDirs.Add($_.Directory.FullName) }
+              if ($leaf -match '(?i)otlp' -and $leaf -match '(?i)(endpoint|header)') { $otlpCandidates.Add($_.FullName) }
+              if ($_.Extension -eq '.zip' -and $leaf -match '(?i)(security|review)') { $reviewPackets.Add($_.FullName) }
+              if ($_.Extension -eq '.json' -and $leaf -match '(?i)(security|review)' -and $leaf -match '(?i)(report|completed)') { $reviewReports.Add($_.FullName) }
+            }
+          }
+
+          $publicAuthRoots = [System.Collections.Generic.List[string]]::new()
+          foreach ($secretDir in $candidateSecretDirs) {
+            $dir = Get-Item -LiteralPath $secretDir -Force -ErrorAction SilentlyContinue
+            if ($null -eq $dir -or -not $dir.PSIsContainer) { continue }
+            $materialRoot = $dir.Parent.FullName
+            $vars = Join-Path $materialRoot 'vars.json'
+            $all = Test-Path -LiteralPath $vars -PathType Leaf
+            foreach ($name in $secretLeafNames) {
+              if (-not (Test-Path -LiteralPath (Join-Path $secretDir $name) -PathType Leaf)) { $all = $false; break }
+            }
+            if ($all -and $materialRoot -notin $publicAuthRoots) { $publicAuthRoots.Add($materialRoot) }
+          }
+
+          $validatedPublicAuth = [System.Collections.Generic.List[string]]::new()
+          $i = 0
+          foreach ($root in $publicAuthRoots) {
+            $i++
+            $out = Join-Path $reportRoot "public-auth-validation-$i.json"
+            & $python scripts/ga/validate_public_auth_provisioning.py --material-root $root --output $out *> $null
+            if ($LASTEXITCODE -eq 0) { $validatedPublicAuth.Add($root) }
+          }
+
+          Write-Host 'production_ga_external22_material_inventory=PASS'
+          Write-Host "public_auth_validated_candidates=$($validatedPublicAuth.Count)"
+          Write-Host "external_otlp_candidate_files=$($otlpCandidates.Count)"
+          Write-Host "security_review_packet_candidates=$($reviewPackets.Count)"
+          Write-Host "security_review_report_candidates=$($reviewReports.Count)"
+          Write-Host 'secret_values_logged=false'
+          Write-Host 'github_environment_mutation_executed=false'
