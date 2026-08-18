@@ -2,8 +2,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import stat
+import sys
 from pathlib import Path
 from typing import Any
+
+ROOT = Path(__file__).resolve().parents[2]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from psmatrix.util import atomic_write_json
 
 
 class ProvisioningManifestError(RuntimeError):
@@ -15,6 +25,65 @@ _EXPECTED_CHECKS = 41
 _EXPECTED_SECRETS = 32
 _EXPECTED_VARS = 9
 _EXPECTED_PATH_VARS = 2
+
+
+def _absolute_without_resolving(path: Path) -> Path:
+    return Path(os.path.abspath(os.path.expanduser(str(path))))
+
+
+def _is_reparse(metadata: os.stat_result) -> bool:
+    reparse_flag = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+    return bool(int(getattr(metadata, "st_file_attributes", 0)) & reparse_flag)
+
+
+def _assert_no_link_components(path: Path, label: str) -> Path:
+    full = _absolute_without_resolving(path)
+    cursor = full
+    while True:
+        try:
+            metadata = cursor.lstat()
+        except FileNotFoundError:
+            metadata = None
+        except OSError as exc:
+            raise ProvisioningManifestError(f"unable to inspect {label}") from exc
+        if metadata is not None and (stat.S_ISLNK(metadata.st_mode) or _is_reparse(metadata)):
+            raise ProvisioningManifestError(f"{label} must not contain links or reparse points")
+        parent = cursor.parent
+        if parent == cursor:
+            break
+        cursor = parent
+    return full
+
+
+def _safe_regular_file(path: Path, label: str) -> Path:
+    candidate = _assert_no_link_components(path, label)
+    try:
+        metadata = candidate.lstat()
+    except OSError as exc:
+        raise ProvisioningManifestError(f"{label} is missing or unsafe") from exc
+    if not stat.S_ISREG(metadata.st_mode) or _is_reparse(metadata) or metadata.st_size <= 0:
+        raise ProvisioningManifestError(f"{label} is missing, empty, or unsafe")
+    if int(getattr(metadata, "st_nlink", 1)) != 1:
+        raise ProvisioningManifestError(f"{label} must not be hardlinked")
+    return candidate
+
+
+def _safe_output_file(path: Path) -> Path:
+    candidate = _assert_no_link_components(path, "provisioning manifest output")
+    parent = _assert_no_link_components(candidate.parent, "provisioning manifest output directory")
+    parent.mkdir(parents=True, exist_ok=True)
+    _assert_no_link_components(parent, "provisioning manifest output directory")
+    if candidate.exists():
+        try:
+            metadata = candidate.lstat()
+        except OSError as exc:
+            raise ProvisioningManifestError("unable to inspect provisioning manifest output") from exc
+        if not stat.S_ISREG(metadata.st_mode) or _is_reparse(metadata):
+            raise ProvisioningManifestError("provisioning manifest output must be a regular file")
+        if int(getattr(metadata, "st_nlink", 1)) != 1:
+            raise ProvisioningManifestError("provisioning manifest output must not be hardlinked")
+    _assert_no_link_components(candidate, "provisioning manifest output")
+    return candidate
 
 
 def _names(value: Any, field: str, environment: str) -> list[str]:
@@ -124,13 +193,13 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
-        contract = json.loads(args.contract.read_text(encoding="utf-8"))
+        contract_path = _safe_regular_file(args.contract, "production readiness contract")
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
         if not isinstance(contract, dict):
             raise ProvisioningManifestError("production readiness contract root must be an object")
         result = build_manifest(contract)
-        output = args.output.resolve()
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        output = _safe_output_file(args.output)
+        atomic_write_json(output, result)
         print(
             "production_environment_provisioning_manifest=PASS "
             f"environments={result['environment_count']} checks={result['required_check_count']} "
