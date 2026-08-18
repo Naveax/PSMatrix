@@ -1,0 +1,144 @@
+name: ops-final-lock-review-human-gate
+
+on:
+  workflow_run:
+    workflows: [production-ga-windows-authority-final-release-lock-review]
+    types: [completed]
+
+concurrency:
+  group: ops-final-lock-review-human-gate
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+jobs:
+  prepare-human-gate:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.head_branch == 'release/2.0.0-final-lock-control'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REVIEW_RUN_ID: ${{ github.event.workflow_run.id }}
+      REVIEW_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+      REVIEW_CONTROL_HEAD: ${{ github.event.workflow_run.head_sha }}
+      FINAL_CANDIDATE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
+      FINAL_LOCK_CONTROL_BRANCH: release/2.0.0-final-lock-control
+      RC4_ENROLLMENT_RUN_ID: '32136341027'
+      HUMAN_GATE_ISSUE: '263'
+      STATE_ISSUE: '262'
+    steps:
+      - name: Validate exact review control branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$REVIEW_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$REVIEW_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          [[ "$REVIEW_CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_LOCK_CONTROL_BRANCH" --jq '.object.sha')
+          [[ "$current" == "$REVIEW_CONTROL_HEAD" ]] || { echo "Frozen final lock-control branch moved: $current != $REVIEW_CONTROL_HEAD" >&2; exit 1; }
+          echo 'final_lock_review_control=PASS'
+
+      - name: Download exact final lock review artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-final-release-lock-review
+          path: review
+          repository: Naveax/PSMatrix
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Mechanically validate review bundle and compute human-review digests
+        id: binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+
+          root=Path('review').resolve()
+          draft=root/'final-release-lock.review-draft.json'
+          report=root/'final-release-lock-review.json'
+          public=root/'release-assets/2.0.0/psmatrix-2.0.0-release-public.pem'
+          for p in (draft,report,public):
+              if not p.is_file() or p.is_symlink():
+                  raise SystemExit(f'final review bundle required file missing/unsafe: {p}')
+          value=json.loads(draft.read_text(encoding='utf-8'))
+          review=json.loads(report.read_text(encoding='utf-8'))
+          if value.get('kind')!='psmatrix.windows-authority-final-release-staging-lock' or value.get('version')!='2.0.0' or value.get('release_commit')!=os.environ['FINAL_CANDIDATE_COMMIT']:
+              raise SystemExit('final review draft identity mismatch')
+          if value.get('review_state')!='DRAFT_REQUIRES_HUMAN_REVIEW':
+              raise SystemExit('final review draft is not review-only')
+          if review.get('status')!='READY_FOR_HUMAN_REVIEW':
+              raise SystemExit('final review report is not READY_FOR_HUMAN_REVIEW')
+          source=value.get('source_runs') or {}
+          if str((source.get('rc4_authority_enrollment') or {}).get('run_id'))!=os.environ['RC4_ENROLLMENT_RUN_ID']:
+              raise SystemExit('final review RC4 authority enrollment provenance mismatch')
+          continuity=value.get('authority_continuity') or {}
+          if continuity.get('authority_reused_for_final_release') is not True or continuity.get('authority_rotated_during_final_release') is not False:
+              raise SystemExit('final authority continuity boundary mismatch')
+          for obj in (value,review):
+              for field in ('active_lock_written','release_artifacts_signed','final_windows_evidence_rebound','final_ga_evaluator_invoked','authoritative','ga_eligible'):
+                  if obj.get(field) is not False:
+                      raise SystemExit(f'unsafe final review field: {field}')
+          forbidden=(b'BEGIN PRIVATE KEY',b'BEGIN RSA PRIVATE KEY',b'BEGIN EC PRIVATE KEY',b'BEGIN OPENSSH PRIVATE KEY')
+          for p in root.rglob('*'):
+              if p.is_symlink():
+                  raise SystemExit(f'symlink forbidden in final review bundle: {p}')
+              if p.is_file() and any(marker in p.read_bytes() for marker in forbidden):
+                  raise SystemExit(f'private-key material found in final review bundle: {p.name}')
+          digest=lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+          draft_sha=digest(draft)
+          public_sha=digest(public)
+          locked_public=(value.get('release_public_key') or {}).get('sha256')
+          if locked_public!=public_sha:
+              raise SystemExit('final draft public-key digest differs from bundled public key')
+          with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as out:
+              out.write(f'draft_sha256={draft_sha}\n')
+              out.write(f'public_sha256={public_sha}\n')
+          print(f'final_review_bundle=PASS draft_sha256={draft_sha} public_sha256={public_sha}')
+          PY
+
+      - name: Publish exact human-review gate without approving it
+        env:
+          DRAFT_SHA256: ${{ steps.binding.outputs.draft_sha256 }}
+          PUBLIC_SHA256: ${{ steps.binding.outputs.public_sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          approval="FINAL HUMAN REVIEW APPROVED: $FINAL_CANDIDATE_COMMIT review_run=$REVIEW_RUN_ID draft=$DRAFT_SHA256 public=$PUBLIC_SHA256"
+          body=$(cat <<EOF
+          ## Final 2.0.0 release-lock human review
+
+          Canonical review bundle is ready for a real human decision.
+
+          - final candidate: \`$FINAL_CANDIDATE_COMMIT\`
+          - review run: \`$REVIEW_RUN_ID\` (attempt \`$REVIEW_RUN_ATTEMPT\`)
+          - frozen review/control head: \`$REVIEW_CONTROL_HEAD\`
+          - \`final-release-lock.review-draft.json\` SHA-256: \`$DRAFT_SHA256\`
+          - final release public-key SHA-256: \`$PUBLIC_SHA256\`
+          - RC4 authority enrollment: \`$RC4_ENROLLMENT_RUN_ID\`
+
+          Mechanical checks already PASS: exact final identity, RC4 authority continuity, review-only state, private-key absence, and bundled public-key digest closure.
+
+          Human reviewer must inspect the review artifact before approval. If approved, post **exactly** this single-line comment:
+
+          \`$approval\`
+
+          Machine binding:
+          \`FINAL_REVIEW_BINDING run_id=$REVIEW_RUN_ID attempt=$REVIEW_RUN_ATTEMPT control_head=$REVIEW_CONTROL_HEAD candidate=$FINAL_CANDIDATE_COMMIT draft_sha256=$DRAFT_SHA256 public_sha256=$PUBLIC_SHA256\`
+
+          Security boundary: this issue contains digests and run IDs only. It must never contain private keys, PATs, OAuth tokens, passwords, or other secret values. Automation will not create the approval comment. \`ga_eligible=false\`.
+          EOF
+          )
+          gh issue edit "$HUMAN_GATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$body"
+          gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "RC4_CHAIN_STATE stage=final_lock_review run_id=$REVIEW_RUN_ID attempt=$REVIEW_RUN_ATTEMPT control_head=$REVIEW_CONTROL_HEAD"
+          echo 'final_human_review_gate_prepared=true'
+          echo 'human_approval_created=false'
+          echo 'ga_eligible=false'
