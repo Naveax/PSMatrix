@@ -1,0 +1,86 @@
+name: ops-final-signing-to-internal-evidence
+
+on:
+  workflow_run:
+    workflows: [production-ga-windows-authority-final-release-sign-from-lock]
+    types: [completed]
+
+concurrency:
+  group: ops-final-signing-to-internal-evidence
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+  issues: write
+
+jobs:
+  dispatch-internal-evidence:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.head_branch == 'release/2.0.0-final-active-lock'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FINAL_SIGNING_RUN_ID: ${{ github.event.workflow_run.id }}
+      FINAL_SIGNING_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+      FINAL_CONTROL_HEAD: ${{ github.event.workflow_run.head_sha }}
+      FINAL_ACTIVE_BRANCH: release/2.0.0-final-active-lock
+      STATE_ISSUE: '262'
+    steps:
+      - name: Verify exact final active control and signed artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_ACTIVE_BRANCH" --jq '.object.sha')
+          [[ "$current" == "$FINAL_CONTROL_HEAD" ]] || { echo "Final active control moved: $current != $FINAL_CONTROL_HEAD" >&2; exit 1; }
+          python - <<'PY'
+          import json,os,urllib.request
+          repo=os.environ['GITHUB_REPOSITORY']; run_id=os.environ['FINAL_SIGNING_RUN_ID']; head=os.environ['FINAL_CONTROL_HEAD']
+          headers={'Accept':'application/vnd.github+json','Authorization':f"Bearer {os.environ['GH_TOKEN']}",'X-GitHub-Api-Version':'2022-11-28','User-Agent':'psmatrix-internal-evidence-dispatch'}
+          def fetch(path):
+              req=urllib.request.Request(f'https://api.github.com/repos/{repo}/{path}',headers=headers)
+              with urllib.request.urlopen(req,timeout=30) as r:return json.load(r)
+          run=fetch(f'actions/runs/{run_id}')
+          if run.get('name')!='production-ga-windows-authority-final-release-sign-from-lock' or run.get('event')!='workflow_dispatch' or run.get('status')!='completed' or run.get('conclusion')!='success':
+              raise SystemExit('protected final signing provenance mismatch')
+          if (run.get('head_sha') or '').lower()!=head: raise SystemExit('protected final signing head mismatch')
+          arts=fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts',[])
+          matches=[a for a in arts if a.get('name')=='psmatrix-2.0.0-protected-release' and not a.get('expired')]
+          if len(matches)!=1: raise SystemExit(f'expected exactly one protected final release artifact; found {len(matches)}')
+          print(f'internal_evidence_signed_release=PASS artifact_id={matches[0].get("id")}')
+          PY
+
+      - name: Dispatch internal evaluator gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "RC4_CHAIN_STATE stage=final_signing_internal_dispatch run_id=$FINAL_SIGNING_RUN_ID attempt=$FINAL_SIGNING_RUN_ATTEMPT control_head=$FINAL_CONTROL_HEAD"
+
+          gh workflow run ga-final-validation-summary.yml \
+            --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
+            -f release_signing_run_id="$FINAL_SIGNING_RUN_ID"
+
+          gh workflow run ga-final-full-runtime-matrix.yml \
+            --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
+            -f release_signing_run_id="$FINAL_SIGNING_RUN_ID"
+
+          gh workflow run ga-final-key-rotation.yml \
+            --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
+            -f release_signing_run_id="$FINAL_SIGNING_RUN_ID"
+
+          gh workflow run ga-final-disaster-recovery.yml \
+            --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH"
+
+          gh workflow run ga-final-vulnerability-scan.yml \
+            --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
+            -f release_signing_run_id="$FINAL_SIGNING_RUN_ID"
+
+          echo 'internal_final_evidence_dispatch=PASS count=5'
+          echo 'public_oauth_dispatched=false'
+          echo 'public_mtls_dispatched=false'
+          echo 'external_otlp_dispatched=false'
+          echo 'independent_security_review_dispatched=false'
+          echo 'ga_eligible=false'
