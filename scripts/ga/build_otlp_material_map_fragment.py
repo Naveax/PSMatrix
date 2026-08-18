@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
-import json
+import os
+import stat
 import sys
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 VALIDATOR = ROOT / "scripts" / "ga" / "validate_external_otlp_provisioning.py"
+
+from psmatrix.util import atomic_write_json, atomic_write_text
 
 
 class OTLPFragmentError(RuntimeError):
@@ -24,22 +30,108 @@ def _load_validator():
     return module
 
 
-def _external(path: Path, label: str) -> Path:
-    resolved = path.expanduser().resolve()
+def _absolute_without_resolving(path: Path) -> Path:
+    return Path(os.path.abspath(os.path.expanduser(str(path))))
+
+
+def _is_reparse(metadata: os.stat_result) -> bool:
+    reparse_flag = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+    return bool(int(getattr(metadata, "st_file_attributes", 0)) & reparse_flag)
+
+
+def _assert_no_link_components(path: Path, label: str) -> Path:
+    full = _absolute_without_resolving(path)
+    cursor = full
+    while True:
+        try:
+            metadata = cursor.lstat()
+        except FileNotFoundError:
+            metadata = None
+        except OSError as exc:
+            raise OTLPFragmentError(f"unable to inspect {label}") from exc
+        if metadata is not None and (stat.S_ISLNK(metadata.st_mode) or _is_reparse(metadata)):
+            raise OTLPFragmentError(f"{label} must not contain links or reparse points")
+        parent = cursor.parent
+        if parent == cursor:
+            break
+        cursor = parent
+    return full
+
+
+def _assert_lexically_outside_repository(path: Path, label: str) -> Path:
     try:
-        resolved.relative_to(ROOT.resolve())
+        path.relative_to(ROOT.resolve())
     except ValueError:
-        return resolved
+        return path
     raise OTLPFragmentError(f"{label} must stay outside repository")
 
 
+def _assert_physically_outside_repository(path: Path, label: str) -> Path:
+    resolved = path.resolve(strict=True)
+    try:
+        resolved.relative_to(ROOT.resolve())
+    except ValueError:
+        return path
+    raise OTLPFragmentError(f"{label} must stay outside repository")
+
+
+def _safe_external_regular_file(path: Path, label: str) -> Path:
+    candidate = _assert_lexically_outside_repository(_assert_no_link_components(path, label), label)
+    try:
+        metadata = candidate.lstat()
+    except OSError as exc:
+        raise OTLPFragmentError(f"{label} is missing or unsafe") from exc
+    if not stat.S_ISREG(metadata.st_mode) or _is_reparse(metadata):
+        raise OTLPFragmentError(f"{label} is missing or unsafe")
+    if int(getattr(metadata, "st_nlink", 1)) != 1:
+        raise OTLPFragmentError(f"{label} must not be hardlinked")
+    return _assert_physically_outside_repository(candidate, label)
+
+
+def _safe_external_directory(path: Path, label: str, *, create: bool) -> Path:
+    candidate = _assert_lexically_outside_repository(_assert_no_link_components(path, label), label)
+    if candidate.exists():
+        try:
+            metadata = candidate.lstat()
+        except OSError as exc:
+            raise OTLPFragmentError(f"unable to inspect {label}") from exc
+        if not stat.S_ISDIR(metadata.st_mode) or _is_reparse(metadata):
+            raise OTLPFragmentError(f"{label} is not a safe directory")
+        return _assert_physically_outside_repository(candidate, label)
+    if not create:
+        raise OTLPFragmentError(f"{label} is missing")
+    parent = _assert_lexically_outside_repository(
+        _assert_no_link_components(candidate.parent, f"{label} parent"),
+        f"{label} parent",
+    )
+    parent.mkdir(parents=True, exist_ok=True)
+    _assert_no_link_components(parent, f"{label} parent")
+    _assert_physically_outside_repository(parent, f"{label} parent")
+    candidate.mkdir(parents=True, exist_ok=True)
+    _assert_no_link_components(candidate, label)
+    return _assert_physically_outside_repository(candidate, label)
+
+
+def _safe_external_output_file(path: Path, label: str) -> Path:
+    candidate = _assert_lexically_outside_repository(_assert_no_link_components(path, label), label)
+    parent = _safe_external_directory(candidate.parent, f"{label} directory", create=True)
+    candidate = parent / candidate.name
+    if candidate.exists():
+        try:
+            metadata = candidate.lstat()
+        except OSError as exc:
+            raise OTLPFragmentError(f"unable to inspect {label}") from exc
+        if not stat.S_ISREG(metadata.st_mode) or _is_reparse(metadata):
+            raise OTLPFragmentError(f"{label} must be a regular file")
+        if int(getattr(metadata, "st_nlink", 1)) != 1:
+            raise OTLPFragmentError(f"{label} must not be hardlinked")
+    _assert_no_link_components(candidate, label)
+    return candidate
+
+
 def build_fragment(endpoint_file: Path, headers_file: Path, value_root: Path) -> dict[str, Any]:
-    endpoint_path = _external(endpoint_file, "OTLP endpoint source")
-    headers_path = _external(headers_file, "OTLP headers source")
-    if not endpoint_path.is_file() or endpoint_path.is_symlink():
-        raise OTLPFragmentError("OTLP endpoint source is missing or unsafe")
-    if not headers_path.is_file() or headers_path.is_symlink():
-        raise OTLPFragmentError("OTLP headers source is missing or unsafe")
+    endpoint_path = _safe_external_regular_file(endpoint_file, "OTLP endpoint source")
+    headers_path = _safe_external_regular_file(headers_file, "OTLP headers source")
     endpoint = endpoint_path.read_text(encoding="utf-8").strip()
     validator = _load_validator()
     try:
@@ -48,10 +140,13 @@ def build_fragment(endpoint_file: Path, headers_file: Path, value_root: Path) ->
         raise OTLPFragmentError(f"external OTLP material validation failed: {exc}") from exc
     if validation.get("status") != "PASS" or validation.get("required_check_count") != 2:
         raise OTLPFragmentError("OTLP validation did not prove exact two-check closure")
-    output = _external(value_root, "OTLP value root")
-    output.mkdir(parents=True, exist_ok=True)
-    normalized_endpoint = output / "PSMATRIX_GA_EXTERNAL_OTLP_ENDPOINT.txt"
-    normalized_endpoint.write_text(endpoint + "\n", encoding="utf-8")
+
+    output = _safe_external_directory(value_root, "OTLP value root", create=True)
+    normalized_endpoint = _safe_external_output_file(
+        output / "PSMATRIX_GA_EXTERNAL_OTLP_ENDPOINT.txt",
+        "OTLP normalized endpoint output",
+    )
+    atomic_write_text(normalized_endpoint, endpoint + "\n")
     return {
         "schema": 1,
         "kind": "psmatrix.production-ga-environment-material-map",
@@ -70,8 +165,18 @@ def build_fragment(endpoint_file: Path, headers_file: Path, value_root: Path) ->
             "header_names": validation.get("header_names"),
             "network_probe_executed": False,
         },
-        "safety": {"header_values_in_map": False, "endpoint_value_in_map": False, "hashes_in_map": False, "lengths_in_map": False},
+        "safety": {
+            "header_values_in_map": False,
+            "endpoint_value_in_map": False,
+            "hashes_in_map": False,
+            "lengths_in_map": False,
+        },
     }
+
+
+def write_fragment(output_map: Path, value: dict[str, Any]) -> None:
+    output = _safe_external_output_file(output_map, "OTLP output map")
+    atomic_write_json(output, value)
 
 
 def main() -> int:
@@ -83,9 +188,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         value = build_fragment(args.endpoint_file, args.headers_file, args.value_root)
-        output = _external(args.output_map, "output map")
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        write_fragment(args.output_map, value)
         print("production_ga_otlp_material_map=PASS environments=1 checks=2 network_probe=false")
         return 0
     except (OSError, UnicodeDecodeError, TypeError, ValueError, OTLPFragmentError) as exc:

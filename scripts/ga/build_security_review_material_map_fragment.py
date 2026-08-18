@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
-import json
+import os
+import stat
 import sys
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 KIT = ROOT / "scripts" / "ga" / "security_review_completion_kit.py"
+
+from psmatrix.util import atomic_write_json
 
 
 class SecurityReviewFragmentError(RuntimeError):
@@ -24,22 +30,108 @@ def _load_kit():
     return module
 
 
-def _external(path: Path, label: str) -> Path:
-    resolved = path.expanduser().resolve()
+def _absolute_without_resolving(path: Path) -> Path:
+    return Path(os.path.abspath(os.path.expanduser(str(path))))
+
+
+def _is_reparse(metadata: os.stat_result) -> bool:
+    reparse_flag = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+    return bool(int(getattr(metadata, "st_file_attributes", 0)) & reparse_flag)
+
+
+def _assert_no_link_components(path: Path, label: str) -> Path:
+    full = _absolute_without_resolving(path)
+    cursor = full
+    while True:
+        try:
+            metadata = cursor.lstat()
+        except FileNotFoundError:
+            metadata = None
+        except OSError as exc:
+            raise SecurityReviewFragmentError(f"unable to inspect {label}") from exc
+        if metadata is not None and (stat.S_ISLNK(metadata.st_mode) or _is_reparse(metadata)):
+            raise SecurityReviewFragmentError(f"{label} must not contain links or reparse points")
+        parent = cursor.parent
+        if parent == cursor:
+            break
+        cursor = parent
+    return full
+
+
+def _assert_lexically_outside_repository(path: Path, label: str) -> Path:
     try:
-        resolved.relative_to(ROOT.resolve())
+        path.relative_to(ROOT.resolve())
     except ValueError:
-        return resolved
+        return path
     raise SecurityReviewFragmentError(f"{label} must stay outside repository")
 
 
+def _assert_physically_outside_repository(path: Path, label: str) -> Path:
+    resolved = path.resolve(strict=True)
+    try:
+        resolved.relative_to(ROOT.resolve())
+    except ValueError:
+        return path
+    raise SecurityReviewFragmentError(f"{label} must stay outside repository")
+
+
+def _safe_external_regular_file(path: Path, label: str) -> Path:
+    candidate = _assert_lexically_outside_repository(_assert_no_link_components(path, label), label)
+    try:
+        metadata = candidate.lstat()
+    except OSError as exc:
+        raise SecurityReviewFragmentError(f"{label} is missing or unsafe") from exc
+    if not stat.S_ISREG(metadata.st_mode) or _is_reparse(metadata):
+        raise SecurityReviewFragmentError(f"{label} is missing or unsafe")
+    if int(getattr(metadata, "st_nlink", 1)) != 1:
+        raise SecurityReviewFragmentError(f"{label} must not be hardlinked")
+    return _assert_physically_outside_repository(candidate, label)
+
+
+def _safe_external_directory(path: Path, label: str, *, create: bool) -> Path:
+    candidate = _assert_lexically_outside_repository(_assert_no_link_components(path, label), label)
+    if candidate.exists():
+        try:
+            metadata = candidate.lstat()
+        except OSError as exc:
+            raise SecurityReviewFragmentError(f"unable to inspect {label}") from exc
+        if not stat.S_ISDIR(metadata.st_mode) or _is_reparse(metadata):
+            raise SecurityReviewFragmentError(f"{label} is not a safe directory")
+        return _assert_physically_outside_repository(candidate, label)
+    if not create:
+        raise SecurityReviewFragmentError(f"{label} is missing")
+    parent = _assert_lexically_outside_repository(
+        _assert_no_link_components(candidate.parent, f"{label} parent"),
+        f"{label} parent",
+    )
+    parent.mkdir(parents=True, exist_ok=True)
+    _assert_no_link_components(parent, f"{label} parent")
+    _assert_physically_outside_repository(parent, f"{label} parent")
+    candidate.mkdir(parents=True, exist_ok=True)
+    _assert_no_link_components(candidate, label)
+    return _assert_physically_outside_repository(candidate, label)
+
+
+def _safe_external_output_file(path: Path, label: str) -> Path:
+    candidate = _assert_lexically_outside_repository(_assert_no_link_components(path, label), label)
+    parent = _safe_external_directory(candidate.parent, f"{label} directory", create=True)
+    candidate = parent / candidate.name
+    if candidate.exists():
+        try:
+            metadata = candidate.lstat()
+        except OSError as exc:
+            raise SecurityReviewFragmentError(f"unable to inspect {label}") from exc
+        if not stat.S_ISREG(metadata.st_mode) or _is_reparse(metadata):
+            raise SecurityReviewFragmentError(f"{label} must be a regular file")
+        if int(getattr(metadata, "st_nlink", 1)) != 1:
+            raise SecurityReviewFragmentError(f"{label} must not be hardlinked")
+    _assert_no_link_components(candidate, label)
+    return candidate
+
+
 def build_fragment(packet: Path, report: Path) -> dict[str, Any]:
-    packet_path = _external(packet, "security-review packet")
-    report_path = _external(report, "completed security-review report")
-    if not packet_path.is_file() or packet_path.is_symlink():
-        raise SecurityReviewFragmentError("security-review packet is missing or unsafe")
-    if not report_path.is_file() or report_path.is_symlink():
-        raise SecurityReviewFragmentError("completed security-review report is missing or unsafe")
+    packet_path = _safe_external_regular_file(packet, "security-review packet")
+    report_path = _safe_external_regular_file(report, "completed security-review report")
     kit = _load_kit()
     try:
         validation = kit.validate_completed_report(packet_path, report_path)
@@ -81,6 +173,11 @@ def build_fragment(packet: Path, report: Path) -> dict[str, Any]:
     }
 
 
+def write_fragment(output_map: Path, value: dict[str, Any]) -> None:
+    output = _safe_external_output_file(output_map, "security-review output map")
+    atomic_write_json(output, value)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--packet", type=Path, required=True)
@@ -89,9 +186,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         value = build_fragment(args.packet, args.report)
-        output = _external(args.output_map, "output map")
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        write_fragment(args.output_map, value)
         print("production_ga_security_review_material_map=PASS environments=1 checks=1 critical=0 high=0")
         return 0
     except (OSError, TypeError, ValueError, SecurityReviewFragmentError) as exc:
