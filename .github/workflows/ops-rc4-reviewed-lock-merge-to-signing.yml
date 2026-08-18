@@ -1,0 +1,142 @@
+name: ops-rc4-reviewed-lock-merge-to-signing
+
+on:
+  pull_request:
+    types: [closed]
+
+concurrency:
+  group: ops-rc4-reviewed-lock-merge-to-signing
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+  pull-requests: read
+
+jobs:
+  dispatch-signing:
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.title == 'Promote human-reviewed RC4 release lock' &&
+      startsWith(github.event.pull_request.head.ref, 'ops/rc4-lock-promotion-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      LOCK_CONTROL_HEAD: ${{ github.event.pull_request.merge_commit_sha }}
+      CANDIDATE_COMMIT: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
+      ENROLLMENT_RUN_ID: '32136341027'
+      STAGING_RUN_ID: '32136540372'
+      REVIEW_RUN_ID: '32137455148'
+      REVIEWED_DRAFT_SHA256: a2a97763f679b18562e19ec99f066374b097a50c44a3bea4d1208328e9b339d9
+      REVIEWED_PUBLIC_KEY_SHA256: ece4d7087449cb42cde9183b0b1e2b82db610d4ffffd726e6737d2ba09578a08
+      FROZEN_CONTROL_BRANCH: release/2.0.0rc4-active-lock
+    steps:
+      - name: Validate exact reviewed PR identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$HEAD_REF" =~ ^ops/rc4-lock-promotion-([1-9][0-9]*)$ ]] || { echo 'unexpected RC4 promotion PR head ref' >&2; exit 1; }
+          promotion_run_id="${BASH_REMATCH[1]}"
+          [[ "$LOCK_CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]] || { echo 'merge commit SHA is invalid' >&2; exit 1; }
+          echo "PROMOTION_RUN_ID=$promotion_run_id" >> "$GITHUB_ENV"
+          echo 'rc4_reviewed_pr_identity=PASS'
+
+      - name: Enforce exact two-file PR boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files" --jq '.[].filename' | sort)
+          expected=(
+            'ga-packs/03-authoritative-windows/rc4-release-lock.json'
+            'release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem'
+          )
+          if [[ ${#files[@]} -ne 2 || "${files[0]}" != "${expected[0]}" || "${files[1]}" != "${expected[1]}" ]]; then
+            printf 'RC4 reviewed PR changed an unexpected file set:\n%s\n' "${files[*]}" >&2
+            exit 1
+          fi
+          echo 'rc4_reviewed_pr_file_boundary=PASS files=2'
+
+      - name: Check out exact merged active-lock commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate committed active lock and provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json, os, re, subprocess
+          from pathlib import Path
+
+          head = subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip().lower()
+          if head != os.environ['LOCK_CONTROL_HEAD'].lower():
+              raise SystemExit('checked-out active-lock commit mismatch')
+          lock_path = Path('ga-packs/03-authoritative-windows/rc4-release-lock.json')
+          public_path = Path('release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem')
+          if not lock_path.is_file() or not public_path.is_file():
+              raise SystemExit('committed RC4 lock/public key missing')
+          lock = json.loads(lock_path.read_text(encoding='utf-8'))
+          if lock.get('version') != '2.0.0rc4' or lock.get('release_commit') != os.environ['CANDIDATE_COMMIT']:
+              raise SystemExit('committed RC4 lock identity mismatch')
+          if lock.get('promotion_state') != 'READY_FOR_EXACT_REPOSITORY_COMMIT':
+              raise SystemExit('committed RC4 promotion state mismatch')
+          source = lock.get('source_runs') or {}
+          enroll = source.get('authority_enrollment') or {}
+          staging = source.get('unsigned_staging') or {}
+          if str(enroll.get('run_id')) != os.environ['ENROLLMENT_RUN_ID'] or str(staging.get('run_id')) != os.environ['STAGING_RUN_ID']:
+              raise SystemExit('enrollment/staging provenance mismatch')
+          promotion = lock.get('promotion_evidence') or {}
+          if str(promotion.get('review_run_id')) != os.environ['REVIEW_RUN_ID'] or str(promotion.get('promotion_run_id')) != os.environ['PROMOTION_RUN_ID']:
+              raise SystemExit('review/promotion provenance mismatch')
+          if promotion.get('reviewed_draft_sha256') != os.environ['REVIEWED_DRAFT_SHA256']:
+              raise SystemExit('reviewed draft digest mismatch')
+          if promotion.get('reviewed_public_key_sha256') != os.environ['REVIEWED_PUBLIC_KEY_SHA256']:
+              raise SystemExit('reviewed public-key digest mismatch')
+          if promotion.get('human_review_bound') is not True or promotion.get('repository_commit_required') is not True:
+              raise SystemExit('human-review boundary missing')
+          public_sha = hashlib.sha256(public_path.read_bytes()).hexdigest()
+          if public_sha != os.environ['REVIEWED_PUBLIC_KEY_SHA256'] or public_sha != (lock.get('release_public_key') or {}).get('sha256'):
+              raise SystemExit('committed public-key digest mismatch')
+          for field in ('release_artifacts_signed','authoritative','ga_eligible'):
+              if lock.get(field) is not False:
+                  raise SystemExit(f'unsafe committed RC4 lock field: {field}')
+          if not re.fullmatch(r'[0-9a-f]{40}', str(promotion.get('promotion_control_head') or '')):
+              raise SystemExit('promotion control head invalid')
+          print('committed_rc4_active_lock=PASS')
+          print('release_artifacts_signed=false')
+          print('ga_eligible=false')
+          PY
+
+      - name: Freeze exact active-lock control ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          if existing=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FROZEN_CONTROL_BRANCH" --jq '.object.sha' 2>/dev/null); then
+            [[ "$existing" == "$LOCK_CONTROL_HEAD" ]] || { echo "Frozen RC4 control branch already points elsewhere: $existing" >&2; exit 1; }
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/heads/$FROZEN_CONTROL_BRANCH" -f sha="$LOCK_CONTROL_HEAD" >/dev/null
+          fi
+          echo "rc4_active_lock_control_ref=PASS sha=$LOCK_CONTROL_HEAD"
+
+      - name: Dispatch canonical protected RC4 signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run ga-windows-authority-rc4-release-sign-from-lock.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$FROZEN_CONTROL_BRANCH" \
+            -f lock_control_head="$LOCK_CONTROL_HEAD" \
+            -f candidate_commit="$CANDIDATE_COMMIT" \
+            -f enrollment_run_id="$ENROLLMENT_RUN_ID" \
+            -f staging_run_id="$STAGING_RUN_ID" \
+            -f review_run_id="$REVIEW_RUN_ID" \
+            -f promotion_run_id="$PROMOTION_RUN_ID"
+          echo 'protected_rc4_signing_dispatched=true'
+          echo 'ga_eligible=false'
