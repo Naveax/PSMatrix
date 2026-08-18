@@ -1,0 +1,98 @@
+name: ops-final-evaluator-verified-closure
+
+on:
+  workflow_run:
+    workflows: [production-ga-final-evaluator]
+    types: [completed]
+
+concurrency:
+  group: ops-final-evaluator-verified-closure
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+jobs:
+  close-only-after-verified-ga:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.head_branch == 'release/2.0.0-final-active-lock'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EVALUATOR_RUN_ID: ${{ github.event.workflow_run.id }}
+      EVALUATOR_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+      CONTROL_HEAD: ${{ github.event.workflow_run.head_sha }}
+      FINAL_ACTIVE_BRANCH: release/2.0.0-final-active-lock
+      STATE_ISSUE: '262'
+    steps:
+      - name: Download exact final GA attestation
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-final-ga-attestation
+          path: attestation
+          repository: Naveax/PSMatrix
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Independently verify final GA attestation closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_ACTIVE_BRANCH" --jq '.object.sha')
+          [[ "$current" == "$CONTROL_HEAD" ]] || { echo 'Final active control moved after evaluator.' >&2; exit 1; }
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          root=Path('attestation').resolve()
+          status_path=root/'final-ga-attestation-status.json'
+          verify_path=root/'psmatrix-2.0.0-final-ga-verification.json'
+          dsse_path=root/'psmatrix-2.0.0-final-ga.dsse.json'
+          sums_path=root/'SHA256SUMS.txt'
+          for p in (status_path,verify_path,dsse_path,sums_path):
+              if not p.is_file() or p.is_symlink(): raise SystemExit(f'final GA artifact required file missing/unsafe: {p.name}')
+          status=json.loads(status_path.read_text(encoding='utf-8'))
+          verification=json.loads(verify_path.read_text(encoding='utf-8'))
+          required={
+              'status':'PASS','version':'2.0.0','execution_control_head':os.environ['CONTROL_HEAD'].lower(),
+              'required_gate_count':11,'all_required_gates_pass':True,
+              'root_release_authorities_independent':True,'root_private_key_copied_to_output':False,
+              'final_ga_attestation_written':True,'final_ga_attestation_verified':True,'ga_eligible':True,
+          }
+          for key,value in required.items():
+              if status.get(key)!=value: raise SystemExit(f'final GA status mismatch: {key}={status.get(key)!r}')
+          if verification.get('valid') is not True: raise SystemExit('final GA verification object is not valid')
+          forbidden=(b'BEGIN PRIVATE KEY',b'BEGIN RSA PRIVATE KEY',b'BEGIN EC PRIVATE KEY',b'BEGIN OPENSSH PRIVATE KEY',b'BEGIN ED25519 PRIVATE KEY')
+          for p in root.rglob('*'):
+              if p.is_symlink(): raise SystemExit(f'symlink forbidden in final GA artifact: {p}')
+              if p.is_file() and any(marker in p.read_bytes() for marker in forbidden): raise SystemExit(f'private key found in final GA artifact: {p.name}')
+          declared={}
+          for line in sums_path.read_text(encoding='utf-8').splitlines():
+              if not line.strip(): continue
+              sha,name=line.split('  ',1); declared[name]=sha
+          for name,sha in declared.items():
+              p=root/name
+              if not p.is_file() or hashlib.sha256(p.read_bytes()).hexdigest()!=sha:
+                  raise SystemExit(f'final GA SHA256SUMS mismatch: {name}')
+          print('verified_final_ga_closure=PASS')
+          print('required_gates_pass=11/11')
+          print('final_ga_attestation_verified=true')
+          print('ga_eligible=true')
+          PY
+
+      - name: Publish verified completion and close tracking issues
+        shell: bash
+        run: |
+          set -euo pipefail
+          summary="Canonical final evaluator verified: run $EVALUATOR_RUN_ID attempt $EVALUATOR_RUN_ATTEMPT, control head $CONTROL_HEAD, 11/11 gates PASS, final GA attestation verified, ga_eligible=true."
+          gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$summary"
+          for issue in 260 261 263; do
+            gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body "$summary"
+            gh issue close "$issue" --repo "$GITHUB_REPOSITORY" --reason completed
+          done
+          gh issue close "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --reason completed
+          echo 'psmatrix_final_ga_verified_closure=PASS'
