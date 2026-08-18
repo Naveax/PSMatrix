@@ -1,0 +1,114 @@
+name: ops-fresh-readiness-to-external-evidence
+
+on:
+  workflow_run:
+    workflows: [production-ga-final-production-readiness]
+    types: [completed]
+
+concurrency:
+  group: ops-fresh-readiness-to-external-evidence
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+  issues: write
+
+jobs:
+  dispatch-external-evidence:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.head_branch == 'final/2.0.0-production-control-plane-publication-anchor' &&
+      github.event.workflow_run.head_sha == '3ffc6b6d7cd58d64224f780aa819b50f50f72491'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      READINESS_RUN_ID: ${{ github.event.workflow_run.id }}
+      READINESS_HEAD: 3ffc6b6d7cd58d64224f780aa819b50f50f72491
+      FINAL_ACTIVE_BRANCH: release/2.0.0-final-active-lock
+      STATE_ISSUE: '262'
+      EXTERNAL_ISSUE: '261'
+    steps:
+      - name: Download exact fresh readiness summary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-production-readiness
+          path: readiness
+          repository: Naveax/PSMatrix
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Require exact 12/12 readiness PASS
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('readiness/production-readiness-summary.json')
+          if not p.is_file(): raise SystemExit('fresh production readiness summary missing')
+          v=json.loads(p.read_text(encoding='utf-8'))
+          if v.get('status')!='PASS' or v.get('environment_count')!=12 or v.get('environment_passed')!=12 or v.get('environment_failed')!=0 or v.get('failed_environments') not in ([],None):
+              raise SystemExit('fresh production readiness is not exact 12/12 PASS')
+          if v.get('environment_readiness') is not True:
+              raise SystemExit('fresh production readiness environment_readiness is not true')
+          for key in ('production_evidence_runs_complete','production_evaluator_ready','final_ga_evaluator_invoked','ga_eligible'):
+              if v.get(key) is not False:
+                  raise SystemExit(f'readiness summary crossed forbidden boundary: {key}')
+          print('fresh_production_readiness=PASS environments=12/12')
+          PY
+
+      - name: Recover exact final signing and independent-review packet runs
+        id: state
+        shell: bash
+        run: |
+          set -euo pipefail
+          final_head=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_ACTIVE_BRANCH" --jq '.object.sha')
+          [[ "$final_head" =~ ^[0-9a-f]{40}$ ]] || { echo 'Final active execution head missing.' >&2; exit 1; }
+          gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body' > "$RUNNER_TEMP/state.txt"
+          FINAL_HEAD="$final_head" python - <<'PY'
+          import os,re
+          from pathlib import Path
+          lines=Path(os.environ['RUNNER_TEMP'],'state.txt').read_text(encoding='utf-8').splitlines(); head=os.environ['FINAL_HEAD']
+          pats={
+            'signing':re.compile(r'^FINAL_GATE_STATE gate=signed_release run_id=([1-9][0-9]*) attempt=([1-9][0-9]*) control_head=([0-9a-f]{40})$'),
+            'packet':re.compile(r'^RC4_CHAIN_STATE stage=security_review_packet run_id=([1-9][0-9]*) attempt=([1-9][0-9]*) control_head=([0-9a-f]{40})$'),
+          }
+          found={}
+          for name,pat in pats.items():
+              rows=[m.groups() for line in lines if (m:=pat.fullmatch(line.strip())) and m.group(3)==head]
+              if not rows: raise SystemExit(f'missing final prerequisite state: {name}')
+              found[name]=rows[-1]
+          if found['signing'][0]==found['packet'][0]: raise SystemExit('signing and review-packet runs must be distinct')
+          with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as out:
+              out.write(f'final_head={head}\n')
+              out.write(f'signing_run_id={found["signing"][0]}\n')
+              out.write(f'packet_run_id={found["packet"][0]}\n')
+          print(f'external_evidence_prerequisites=PASS signing={found["signing"][0]} packet={found["packet"][0]} control={head}')
+          PY
+
+      - name: Dispatch real external proof producers
+        env:
+          SIGNING_RUN_ID: ${{ steps.state.outputs.signing_run_id }}
+          PACKET_RUN_ID: ${{ steps.state.outputs.packet_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run ga-final-public-auth-live-probe.yml \
+            --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
+            -f release_signing_run_id="$SIGNING_RUN_ID"
+
+          gh workflow run ga-final-external-otlp.yml \
+            --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
+            -f release_signing_run_id="$SIGNING_RUN_ID"
+
+          gh workflow run ga-final-security-review.yml \
+            --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
+            -f release_signing_run_id="$SIGNING_RUN_ID" \
+            -f review_packet_run_id="$PACKET_RUN_ID"
+
+          gh issue comment "$EXTERNAL_ISSUE" --repo "$GITHUB_REPOSITORY" --body "Fresh Production GA readiness run \`$READINESS_RUN_ID\` is exact \`12/12 PASS\`. Real external evidence producers dispatched on the final active control: public OAuth/mTLS shared live probe, external OTLP live probe, and independent security-review finalization. No GA claim is made until all 11 evaluator gates pass."
+          echo 'external_evidence_producers_dispatched=3'
+          echo 'ga_eligible=false'
