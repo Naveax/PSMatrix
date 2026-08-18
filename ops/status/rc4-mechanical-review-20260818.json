@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.rc4-mechanical-review",
+  "status": "MECHANICAL_CHECKS_PASS_AWAITING_HUMAN_REVIEW",
+  "authoritative": false,
+  "human_review_completed": false,
+  "ga_eligible": false,
+  "candidate_commit": "0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63",
+  "source_runs": {
+    "authority_enrollment": 32136341027,
+    "unsigned_staging": 32136540372,
+    "release_lock_review": 32137455148
+  },
+  "source_artifacts": {
+    "authority_enrollment": {
+      "id": 9324124650,
+      "digest": "sha256:8a74fd09d7e5b7488d21faf7c952dd9427c15c74e0c6740ec376ffaac3424f48"
+    },
+    "unsigned_staging": {
+      "id": 9324464084,
+      "digest": "sha256:03fffb4a4e24c585ea7b6ccd2bf97c43529f90694430926484fee72fc57a3e3d"
+    },
+    "release_lock_review": {
+      "id": 9324675173,
+      "digest": "sha256:8002df656f40ab830c54eafe86915e57faea5654881468307c7180d3f86819aa"
+    }
+  },
+  "checks": {
+    "source_run_provenance": "PASS",
+    "candidate_commit_binding": "PASS",
+    "staging_artifact_hashes_match_draft": "PASS_6_OF_6",
+    "staging_artifact_sizes_match_draft": "PASS_6_OF_6",
+    "staging_all_reproducible": true,
+    "staging_package_verification": true,
+    "new_public_key_matches_enrollment_and_review_bundle": true,
+    "new_public_key_file_sha256": "ece4d7087449cb42cde9183b0b1e2b82db610d4ffffd726e6737d2ba09578a08",
+    "new_public_key_der_key_id": "sha256:1cbc9ea0cb81d118c13f33c99e11c7de69da4ab9fdafcd29d0f43b638983d55d",
+    "previous_public_key_file_sha256": "ebe3041f5e24b3d9fc21d50a3a33585e399ae505271fdf8900a0b49750188b83",
+    "previous_public_key_der_key_id": "sha256:d908350cbb62dbeaf0155bc72e2928a27d710887762a5f73667adca2f978e2aa",
+    "previous_rc3_lock_sha256": "cf7fc6cae7f1b65c8b949825c2256c8caf183c1b8ea102e658b1fde1c1ce3408",
+    "rotation_reason_recorded": "lost_previous_private_authority",
+    "private_key_material_absent_from_review_bundle": true,
+    "active_lock_written": false,
+    "release_artifacts_signed": false
+  },
+  "required_human_decision": {
+    "review_artifact_hashes_and_reproducibility": true,
+    "review_public_authority_fingerprint_and_rotation_reason": true,
+    "confirm_source_run_provenance": true,
+    "approve_or_reject_lock_promotion": true
+  },
+  "notes": "This report records deterministic mechanical verification only. It is not an independent human approval and must not be used to claim that the RC4 release lock has been reviewed, promoted, authoritative, signed, or GA-eligible."
+}
