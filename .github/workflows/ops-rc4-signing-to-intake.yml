@@ -1,0 +1,78 @@
+name: ops-rc4-signing-to-intake
+
+on:
+  workflow_run:
+    workflows: [production-ga-windows-authority-rc4-release-sign-from-lock]
+    types: [completed]
+
+concurrency:
+  group: ops-rc4-signing-to-intake
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  dispatch-intake:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.head_branch == 'release/2.0.0rc4-active-lock'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SIGNING_RUN_ID: ${{ github.event.workflow_run.id }}
+      SIGNING_CONTROL_HEAD: ${{ github.event.workflow_run.head_sha }}
+      RELEASE_COMMIT: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
+      FROZEN_CONTROL_BRANCH: release/2.0.0rc4-active-lock
+    steps:
+      - name: Validate successful protected signing artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SIGNING_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$SIGNING_CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          python - <<'PY'
+          import json, os, urllib.request
+          repo = os.environ['GITHUB_REPOSITORY']
+          run_id = os.environ['SIGNING_RUN_ID']
+          control = os.environ['SIGNING_CONTROL_HEAD'].lower()
+          headers = {
+              'Accept':'application/vnd.github+json',
+              'Authorization':f"Bearer {os.environ['GH_TOKEN']}",
+              'X-GitHub-Api-Version':'2022-11-28',
+              'User-Agent':'psmatrix-rc4-signing-to-intake',
+          }
+          def fetch(path):
+              req=urllib.request.Request(f'https://api.github.com/repos/{repo}/{path}',headers=headers)
+              with urllib.request.urlopen(req,timeout=30) as r:
+                  return json.load(r)
+          run=fetch(f'actions/runs/{run_id}')
+          if run.get('name')!='production-ga-windows-authority-rc4-release-sign-from-lock':
+              raise SystemExit('unexpected signing workflow')
+          if run.get('event')!='workflow_dispatch' or run.get('status')!='completed' or run.get('conclusion')!='success':
+              raise SystemExit('protected signing run is not a successful workflow_dispatch')
+          if (run.get('head_sha') or '').lower()!=control:
+              raise SystemExit('protected signing head mismatch')
+          artifacts=fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts',[])
+          matches=[a for a in artifacts if a.get('name')=='psmatrix-2.0.0rc4-protected-release' and not a.get('expired')]
+          if len(matches)!=1:
+              raise SystemExit(f'expected exactly one live protected RC4 release artifact; found {len(matches)}')
+          print(f'protected_rc4_signing_artifact=PASS artifact_id={matches[0].get("id")}')
+          PY
+
+      - name: Dispatch canonical NAVEAX protected-release intake
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run ga-windows-authority-rc4-release-intake-selfhosted.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$FROZEN_CONTROL_BRANCH" \
+            -f release_commit="$RELEASE_COMMIT" \
+            -f signing_run_id="$SIGNING_RUN_ID" \
+            -f signing_control_head="$SIGNING_CONTROL_HEAD"
+          echo 'protected_rc4_intake_dispatched=true'
+          echo 'authoritative=false'
+          echo 'ga_eligible=false'
