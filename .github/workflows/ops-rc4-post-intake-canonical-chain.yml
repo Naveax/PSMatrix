@@ -1,0 +1,182 @@
+name: ops-rc4-post-intake-canonical-chain
+
+on:
+  workflow_run:
+    workflows:
+      - production-ga-windows-authority-rc4-release-intake-selfhosted
+      - production-ga-windows-authority-rc4-media-readiness-selfhosted
+      - production-ga-windows-authority-rc4-provisioning-manifest-selfhosted
+      - production-ga-windows-authority-rc4-operation-package-selfhosted
+      - production-ga-windows-authority-rc4-provision-selfhosted
+      - production-ga-windows-authority-rc4-image-identity-measurement-selfhosted
+      - production-ga-windows-authority-rc4-certification-campaign-selfhosted
+    types: [completed]
+
+concurrency:
+  group: ops-rc4-post-intake-canonical-chain
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+  issues: write
+
+jobs:
+  advance:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.head_branch == 'release/2.0.0rc4-active-lock'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      COMPLETED_WORKFLOW: ${{ github.event.workflow_run.name }}
+      COMPLETED_RUN_ID: ${{ github.event.workflow_run.id }}
+      COMPLETED_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+      CONTROL_HEAD: ${{ github.event.workflow_run.head_sha }}
+      RELEASE_COMMIT: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
+      CONTROL_BRANCH: release/2.0.0rc4-active-lock
+      STATE_ISSUE: '262'
+    steps:
+      - name: Validate chain event identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$COMPLETED_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$COMPLETED_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          [[ "$CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          branch_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$CONTROL_BRANCH" --jq '.object.sha')
+          [[ "$branch_sha" == "$CONTROL_HEAD" ]] || { echo "Frozen RC4 control branch moved: $branch_sha != $CONTROL_HEAD" >&2; exit 1; }
+          echo "rc4_chain_event=PASS workflow=$COMPLETED_WORKFLOW run=$COMPLETED_RUN_ID attempt=$COMPLETED_RUN_ATTEMPT"
+
+      - name: Advance exact canonical RC4 stage
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          record_state() {
+            local stage="$1"
+            gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "RC4_CHAIN_STATE stage=$stage run_id=$COMPLETED_RUN_ID attempt=$COMPLETED_RUN_ATTEMPT control_head=$CONTROL_HEAD"
+          }
+
+          get_state() {
+            local stage="$1"
+            gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
+              --jq ".[] | select(.user.login == \"github-actions[bot]\") | .body" \
+              | grep -E "^RC4_CHAIN_STATE stage=${stage} run_id=[1-9][0-9]* attempt=[1-9][0-9]* control_head=${CONTROL_HEAD}$" \
+              | tail -n 1
+          }
+
+          parse_id() {
+            sed -E 's/.* run_id=([1-9][0-9]*).*/\1/'
+          }
+
+          parse_attempt() {
+            sed -E 's/.* attempt=([1-9][0-9]*).*/\1/'
+          }
+
+          case "$COMPLETED_WORKFLOW" in
+            production-ga-windows-authority-rc4-release-intake-selfhosted)
+              record_state intake
+              gh workflow run ga-windows-authority-rc4-media-readiness-selfhosted.yml \
+                --repo "$GITHUB_REPOSITORY" --ref "$CONTROL_BRANCH" \
+                -f release_commit="$RELEASE_COMMIT" \
+                -f control_head="$CONTROL_HEAD" \
+                -f inspect_iso_images=true
+              echo 'next_stage=rc4_media_readiness'
+              ;;
+
+            production-ga-windows-authority-rc4-media-readiness-selfhosted)
+              record_state media_readiness
+              gh workflow run ga-windows-authority-rc4-provisioning-manifest-selfhosted.yml \
+                --repo "$GITHUB_REPOSITORY" --ref "$CONTROL_BRANCH" \
+                -f release_commit="$RELEASE_COMMIT" \
+                -f control_head="$CONTROL_HEAD"
+              echo 'next_stage=rc4_provisioning_manifest'
+              ;;
+
+            production-ga-windows-authority-rc4-provisioning-manifest-selfhosted)
+              record_state provisioning_manifest
+              gh workflow run ga-windows-authority-rc4-operation-package-selfhosted.yml \
+                --repo "$GITHUB_REPOSITORY" --ref "$CONTROL_BRANCH" \
+                -f release_commit="$RELEASE_COMMIT" \
+                -f control_head="$CONTROL_HEAD"
+              echo 'next_stage=rc4_operation_package'
+              ;;
+
+            production-ga-windows-authority-rc4-operation-package-selfhosted)
+              record_state operation
+              gh workflow run ga-windows-authority-rc4-provision-selfhosted.yml \
+                --repo "$GITHUB_REPOSITORY" --ref "$CONTROL_BRANCH" \
+                -f release_commit="$RELEASE_COMMIT" \
+                -f control_head="$CONTROL_HEAD" \
+                -f operation_run_id="$COMPLETED_RUN_ID" \
+                -f operation_run_attempt="$COMPLETED_RUN_ATTEMPT" \
+                -f provision_timeout_seconds=7200
+              echo 'next_stage=rc4_hyperv_provision'
+              ;;
+
+            production-ga-windows-authority-rc4-provision-selfhosted)
+              record_state provisioning
+              gh workflow run ga-windows-authority-rc4-image-identity-measurement-selfhosted.yml \
+                --repo "$GITHUB_REPOSITORY" --ref "$CONTROL_BRANCH" \
+                -f release_commit="$RELEASE_COMMIT" \
+                -f control_head="$CONTROL_HEAD" \
+                -f provisioning_run_id="$COMPLETED_RUN_ID" \
+                -f provisioning_run_attempt="$COMPLETED_RUN_ATTEMPT" \
+                -f measurement_timeout_seconds=1800
+              echo 'next_stage=rc4_image_identity_measurement'
+              ;;
+
+            production-ga-windows-authority-rc4-image-identity-measurement-selfhosted)
+              record_state measurement
+              gh workflow run ga-windows-authority-rc4-certification-campaign-selfhosted.yml \
+                --repo "$GITHUB_REPOSITORY" --ref "$CONTROL_BRANCH" \
+                -f release_commit="$RELEASE_COMMIT" \
+                -f control_head="$CONTROL_HEAD" \
+                -f measurement_run_id="$COMPLETED_RUN_ID" \
+                -f measurement_run_attempt="$COMPLETED_RUN_ATTEMPT" \
+                -f iterations=10 \
+                -f campaign_timeout_seconds=1800
+              echo 'next_stage=rc4_certification_campaign'
+              ;;
+
+            production-ga-windows-authority-rc4-certification-campaign-selfhosted)
+              record_state campaign
+              operation=$(get_state operation)
+              provisioning=$(get_state provisioning)
+              measurement=$(get_state measurement)
+              [[ -n "$operation" && -n "$provisioning" && -n "$measurement" ]] || { echo 'RC4 chain provenance ledger is incomplete.' >&2; exit 1; }
+              operation_id=$(printf '%s\n' "$operation" | parse_id)
+              operation_attempt=$(printf '%s\n' "$operation" | parse_attempt)
+              provisioning_id=$(printf '%s\n' "$provisioning" | parse_id)
+              provisioning_attempt=$(printf '%s\n' "$provisioning" | parse_attempt)
+              measurement_id=$(printf '%s\n' "$measurement" | parse_id)
+              measurement_attempt=$(printf '%s\n' "$measurement" | parse_attempt)
+              for value in "$operation_id" "$operation_attempt" "$provisioning_id" "$provisioning_attempt" "$measurement_id" "$measurement_attempt"; do
+                [[ "$value" =~ ^[1-9][0-9]*$ ]] || { echo 'Recovered RC4 provenance value is invalid.' >&2; exit 1; }
+              done
+              gh workflow run ga-windows-authority-rc4-candidate-closure-hardened-selfhosted.yml \
+                --repo "$GITHUB_REPOSITORY" --ref "$CONTROL_BRANCH" \
+                -f release_commit="$RELEASE_COMMIT" \
+                -f control_head="$CONTROL_HEAD" \
+                -f operation_run_id="$operation_id" \
+                -f operation_run_attempt="$operation_attempt" \
+                -f provisioning_run_id="$provisioning_id" \
+                -f provisioning_run_attempt="$provisioning_attempt" \
+                -f measurement_run_id="$measurement_id" \
+                -f measurement_run_attempt="$measurement_attempt" \
+                -f campaign_run_id="$COMPLETED_RUN_ID" \
+                -f campaign_run_attempt="$COMPLETED_RUN_ATTEMPT"
+              echo 'next_stage=rc4_hardened_candidate_closure'
+              ;;
+
+            *)
+              echo "Unexpected successful workflow in RC4 chain: $COMPLETED_WORKFLOW" >&2
+              exit 1
+              ;;
+          esac
+
+          echo 'rc4_chain_advanced=true'
+          echo 'ga_eligible=false'
