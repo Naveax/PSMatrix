@@ -1,0 +1,78 @@
+name: ops-chain-local19-to-fresh-readiness-20260818
+
+on:
+  push:
+    branches:
+      - ops/local19-secure-bootstrap-20260817
+    paths:
+      - .github/workflows/ops-chain-local19-to-fresh-readiness-20260818.yml
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  chain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      LOCAL19_RUN_ID: '32046658867'
+      TARGET_WORKFLOW: ga-final-production-readiness.yml
+      TARGET_REF: final/2.0.0-production-control-plane-publication-anchor
+      TARGET_SHA: 3ffc6b6d7cd58d64224f780aa819b50f50f72491
+    steps:
+      - name: Wait for exact local19 run and dispatch one fresh readiness run on success
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          for i in $(seq 1 180); do
+            payload="$(gh api "repos/$repo/actions/runs/$LOCAL19_RUN_ID")"
+            status="$(jq -r '.status' <<<"$payload")"
+            conclusion="$(jq -r '.conclusion // ""' <<<"$payload")"
+            head_branch="$(jq -r '.head_branch' <<<"$payload")"
+            name="$(jq -r '.name' <<<"$payload")"
+            attempt="$(jq -r '.run_attempt' <<<"$payload")"
+            [[ "$name" == 'ops-local19-ephemeral-auth-provision-20260817' ]] || { echo "unexpected local19 run name: $name" >&2; exit 1; }
+            [[ "$head_branch" == 'ops/local19-secure-bootstrap-20260817' ]] || { echo "unexpected local19 branch: $head_branch" >&2; exit 1; }
+            if [[ "$status" == 'completed' ]]; then
+              [[ "$conclusion" == 'success' ]] || { echo "local19 run completed non-success conclusion=$conclusion attempt=$attempt" >&2; exit 1; }
+              echo "local19_provisioning_gate=PASS run_id=$LOCAL19_RUN_ID attempt=$attempt"
+              break
+            fi
+            if [[ "$i" -eq 180 ]]; then
+              echo 'local19 run did not complete within bounded operator window' >&2
+              exit 1
+            fi
+            sleep 5
+          done
+
+          ref_payload="$(gh api "repos/$repo/git/ref/heads/$TARGET_REF")"
+          actual_sha="$(jq -r '.object.sha' <<<"$ref_payload" | tr '[:upper:]' '[:lower:]')"
+          [[ "$actual_sha" == "$TARGET_SHA" ]] || { echo "frozen readiness ref mismatch: $actual_sha" >&2; exit 1; }
+
+          started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          gh api --method POST \
+            -H 'Accept: application/vnd.github+json' \
+            "repos/$repo/actions/workflows/$TARGET_WORKFLOW/dispatches" \
+            -f ref="$TARGET_REF" >/dev/null
+          echo 'fresh_readiness_dispatch=ACCEPTED'
+
+          run_id=''
+          for i in $(seq 1 30); do
+            runs="$(gh api "repos/$repo/actions/workflows/$TARGET_WORKFLOW/runs?event=workflow_dispatch&per_page=20")"
+            run_id="$(jq -r --arg sha "$TARGET_SHA" --arg ref "$TARGET_REF" --arg started "$started" '
+              [.workflow_runs[]
+               | select((.head_sha|ascii_downcase)==$sha)
+               | select(.head_branch==$ref)
+               | select(.created_at >= $started)]
+              | sort_by(.id) | reverse | .[0].id // empty' <<<"$runs")"
+            [[ -n "$run_id" ]] && break
+            sleep 2
+          done
+          [[ -n "$run_id" ]] || { echo 'fresh readiness run not observable after dispatch' >&2; exit 1; }
+          echo "fresh_production_readiness_run_id=$run_id"
+          echo 'secret_mutation=false'
+          echo 'ga_eligible=false'
