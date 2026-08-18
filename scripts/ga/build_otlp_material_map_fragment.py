@@ -58,8 +58,16 @@ def _assert_no_link_components(path: Path, label: str) -> Path:
     return full
 
 
-def _assert_outside_repository(path: Path, label: str, *, strict: bool) -> Path:
-    resolved = path.resolve(strict=strict)
+def _assert_lexically_outside_repository(path: Path, label: str) -> Path:
+    try:
+        path.relative_to(ROOT.resolve())
+    except ValueError:
+        return path
+    raise OTLPFragmentError(f"{label} must stay outside repository")
+
+
+def _assert_physically_outside_repository(path: Path, label: str) -> Path:
+    resolved = path.resolve(strict=True)
     try:
         resolved.relative_to(ROOT.resolve())
     except ValueError:
@@ -68,7 +76,7 @@ def _assert_outside_repository(path: Path, label: str, *, strict: bool) -> Path:
 
 
 def _safe_external_regular_file(path: Path, label: str) -> Path:
-    candidate = _assert_no_link_components(path, label)
+    candidate = _assert_lexically_outside_repository(_assert_no_link_components(path, label), label)
     try:
         metadata = candidate.lstat()
     except OSError as exc:
@@ -77,11 +85,11 @@ def _safe_external_regular_file(path: Path, label: str) -> Path:
         raise OTLPFragmentError(f"{label} is missing or unsafe")
     if int(getattr(metadata, "st_nlink", 1)) != 1:
         raise OTLPFragmentError(f"{label} must not be hardlinked")
-    return _assert_outside_repository(candidate, label, strict=True)
+    return _assert_physically_outside_repository(candidate, label)
 
 
 def _safe_external_directory(path: Path, label: str, *, create: bool) -> Path:
-    candidate = _assert_no_link_components(path, label)
+    candidate = _assert_lexically_outside_repository(_assert_no_link_components(path, label), label)
     if candidate.exists():
         try:
             metadata = candidate.lstat()
@@ -89,23 +97,23 @@ def _safe_external_directory(path: Path, label: str, *, create: bool) -> Path:
             raise OTLPFragmentError(f"unable to inspect {label}") from exc
         if not stat.S_ISDIR(metadata.st_mode) or _is_reparse(metadata):
             raise OTLPFragmentError(f"{label} is not a safe directory")
-        return _assert_outside_repository(candidate, label, strict=True)
-    parent = _assert_no_link_components(candidate.parent, f"{label} parent")
-    if not parent.is_dir():
-        if not create:
-            raise OTLPFragmentError(f"{label} is missing")
-        parent.mkdir(parents=True, exist_ok=True)
-        _assert_no_link_components(parent, f"{label} parent")
-    _assert_outside_repository(parent, f"{label} parent", strict=True)
+        return _assert_physically_outside_repository(candidate, label)
     if not create:
         raise OTLPFragmentError(f"{label} is missing")
+    parent = _assert_lexically_outside_repository(
+        _assert_no_link_components(candidate.parent, f"{label} parent"),
+        f"{label} parent",
+    )
+    parent.mkdir(parents=True, exist_ok=True)
+    _assert_no_link_components(parent, f"{label} parent")
+    _assert_physically_outside_repository(parent, f"{label} parent")
     candidate.mkdir(parents=True, exist_ok=True)
     _assert_no_link_components(candidate, label)
-    return _assert_outside_repository(candidate, label, strict=True)
+    return _assert_physically_outside_repository(candidate, label)
 
 
 def _safe_external_output_file(path: Path, label: str) -> Path:
-    candidate = _assert_no_link_components(path, label)
+    candidate = _assert_lexically_outside_repository(_assert_no_link_components(path, label), label)
     parent = _safe_external_directory(candidate.parent, f"{label} directory", create=True)
     candidate = parent / candidate.name
     if candidate.exists():
