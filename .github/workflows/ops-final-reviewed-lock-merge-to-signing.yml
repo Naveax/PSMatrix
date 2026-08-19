@@ -127,7 +127,7 @@ jobs:
           print('committed_final_active_lock=PASS')
           PY
 
-      - name: Revalidate exact canonical final promotion run
+      - name: Revalidate exact canonical final promotion run and byte closure
         env:
           PROMOTION_RUN_ID: ${{ steps.lock.outputs.promotion_run_id }}
           PROMOTION_CONTROL_HEAD: ${{ steps.lock.outputs.promotion_control_head }}
@@ -144,7 +144,14 @@ jobs:
           [[ "$(jq -r '.actor.login' <<<"$promotion")" == 'github-actions[bot]' && "$(jq -r '.triggering_actor.login' <<<"$promotion")" == 'github-actions[bot]' ]] || { echo 'Final promotion run was not created by the approved dispatcher bot.' >&2; exit 1; }
           artifact_count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROMOTION_RUN_ID/artifacts?per_page=100" --jq '[.artifacts[] | select(.name == "psmatrix-2.0.0-final-release-lock-promotion-candidate" and (.expired|not))] | length')
           [[ "$artifact_count" == '1' ]] || { echo "Final promotion artifact cardinality mismatch: $artifact_count" >&2; exit 1; }
-          echo "final_promotion_merge_provenance=PASS run_id=$PROMOTION_RUN_ID control_head=$PROMOTION_CONTROL_HEAD artifact_count=1"
+
+          promotion_dir="$RUNNER_TEMP/final-promotion-merge-byte-closure"
+          rm -rf "$promotion_dir"
+          mkdir -p "$promotion_dir"
+          gh run download "$PROMOTION_RUN_ID" --repo "$GITHUB_REPOSITORY" --name 'psmatrix-2.0.0-final-release-lock-promotion-candidate' --dir "$promotion_dir"
+          cmp -s ga-packs/03-authoritative-windows/final-release-lock.json "$promotion_dir/ga-packs/03-authoritative-windows/final-release-lock.json" || { echo 'Merged final release-lock bytes differ from canonical promotion artifact.' >&2; exit 1; }
+          cmp -s release-assets/2.0.0/psmatrix-2.0.0-release-public.pem "$promotion_dir/release-assets/2.0.0/psmatrix-2.0.0-release-public.pem" || { echo 'Merged final public-key bytes differ from canonical promotion artifact.' >&2; exit 1; }
+          echo "final_promotion_merge_provenance=PASS run_id=$PROMOTION_RUN_ID control_head=$PROMOTION_CONTROL_HEAD artifact_count=1 exact_bytes=true"
 
       - name: Freeze exact final active-lock branch
         shell: bash
