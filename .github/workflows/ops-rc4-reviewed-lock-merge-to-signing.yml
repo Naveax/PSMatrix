@@ -174,18 +174,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          existing=$(gh api --method GET \
+          runs=$(gh api --method GET \
             "repos/$GITHUB_REPOSITORY/actions/workflows/ga-windows-authority-rc4-release-sign-from-lock.yml/runs" \
             -f branch="$FROZEN_CONTROL_BRANCH" \
             -f event='workflow_dispatch' \
-            -f per_page=100 \
-            --jq ".workflow_runs[] | select(.head_sha == \"$LOCK_CONTROL_HEAD\") | .id" \
-            | head -n 1)
-          if [[ -n "$existing" ]]; then
+            -f per_page=100)
+          canonical=$(jq -r --arg head "$LOCK_CONTROL_HEAD" '[.workflow_runs[] | select(.head_sha == $head and .actor.login == "github-actions[bot]" and .triggering_actor.login == "github-actions[bot]")] | length' <<<"$runs")
+          noncanonical_active=$(jq -r --arg head "$LOCK_CONTROL_HEAD" '[.workflow_runs[] | select(.head_sha == $head and (.actor.login != "github-actions[bot]" or .triggering_actor.login != "github-actions[bot]") and .status != "completed")] | length' <<<"$runs")
+          if [[ "$canonical" -gt 0 ]]; then
             echo "already_dispatched=true" >> "$GITHUB_OUTPUT"
-            echo "duplicate_protected_rc4_signing_suppressed=true existing_run_id=$existing"
+            echo "duplicate_protected_rc4_signing_suppressed=true canonical_bot_runs=$canonical"
+          elif [[ "$noncanonical_active" -gt 0 ]]; then
+            echo "Noncanonical protected RC4 signing run is active on the exact RC4 head; refusing concurrent canonical dispatch. active_runs=$noncanonical_active" >&2
+            exit 1
           else
             echo "already_dispatched=false" >> "$GITHUB_OUTPUT"
+            echo 'protected_rc4_signing_dispatch_budget=AVAILABLE canonical_bot_runs=0 active_noncanonical_runs=0'
           fi
 
       - name: Dispatch canonical protected RC4 signing
