@@ -74,10 +74,23 @@ jobs:
           print(f'upstream_artifact=PASS name={expected} artifact_id={matches[0].get("id")}')
           PY
 
-      - name: Advance RC4 closure to final lock review
+      - name: Advance RC4 closure to final lock review once
         shell: bash
         run: |
           set -euo pipefail
+
+          marker_exists() {
+            local marker="$1"
+            gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
+              --jq '.[] | select(.user.login == "github-actions[bot]") | .body' \
+              | grep -Fq "$marker"
+          }
+
+          publish_marker() {
+            local marker="$1"
+            gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$marker"
+          }
+
           case "$COMPLETED_WORKFLOW" in
             production-ga-windows-authority-rc4-candidate-closure-selfhosted)
               [[ "$COMPLETED_BRANCH" == "$RC4_CONTROL_BRANCH" ]] || { echo 'RC4 closure did not run on frozen active-lock branch.' >&2; exit 1; }
@@ -85,10 +98,18 @@ jobs:
               [[ "$rc4_sha" == "$COMPLETED_HEAD" ]] || { echo 'RC4 active-lock branch moved after closure.' >&2; exit 1; }
               final_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_SOURCE_BRANCH" --jq '.object.sha')
               [[ "$final_sha" == "$FINAL_SOURCE_COMMIT" ]] || { echo "Final source anchor moved: $final_sha" >&2; exit 1; }
+
+              marker="RC4_CHAIN_DISPATCH target=final_staging release_commit=$FINAL_SOURCE_COMMIT active_lock=$COMPLETED_HEAD"
+              if marker_exists "$marker"; then
+                echo 'duplicate_final_staging_dispatch_suppressed=true'
+                exit 0
+              fi
+
               gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "RC4_CHAIN_STATE stage=closure run_id=$COMPLETED_RUN_ID attempt=$COMPLETED_RUN_ATTEMPT control_head=$COMPLETED_HEAD"
               gh workflow run ga-windows-authority-final-staging-candidate-selfhosted.yml \
                 --repo "$GITHUB_REPOSITORY" --ref "$FINAL_SOURCE_BRANCH" \
                 -f release_commit="$FINAL_SOURCE_COMMIT"
+              publish_marker "$marker source_run_id=$COMPLETED_RUN_ID source_attempt=$COMPLETED_RUN_ATTEMPT"
               echo 'next_stage=final_unsigned_staging'
               ;;
 
@@ -99,12 +120,20 @@ jobs:
               [[ "$final_sha" == "$FINAL_SOURCE_COMMIT" ]] || { echo 'Final source anchor moved after staging.' >&2; exit 1; }
               control_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_LOCK_CONTROL_BRANCH" --jq '.object.sha')
               [[ "$control_sha" =~ ^[0-9a-f]{40}$ ]] || { echo 'Frozen final lock-control branch cannot be resolved.' >&2; exit 1; }
+
+              marker="RC4_CHAIN_DISPATCH target=final_lock_review final_candidate=$FINAL_SOURCE_COMMIT control_head=$control_sha"
+              if marker_exists "$marker"; then
+                echo 'duplicate_final_lock_review_dispatch_suppressed=true'
+                exit 0
+              fi
+
               gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "RC4_CHAIN_STATE stage=final_staging run_id=$COMPLETED_RUN_ID attempt=$COMPLETED_RUN_ATTEMPT control_head=$COMPLETED_HEAD"
               gh workflow run ga-windows-authority-final-release-lock-review.yml \
                 --repo "$GITHUB_REPOSITORY" --ref "$FINAL_LOCK_CONTROL_BRANCH" \
                 -f final_candidate_commit="$FINAL_SOURCE_COMMIT" \
                 -f rc4_enrollment_run_id="$RC4_ENROLLMENT_RUN_ID" \
                 -f staging_run_id="$COMPLETED_RUN_ID"
+              publish_marker "$marker staging_run_id=$COMPLETED_RUN_ID staging_attempt=$COMPLETED_RUN_ATTEMPT"
               echo "next_stage=final_lock_review control_head=$control_sha"
               ;;
 
