@@ -53,32 +53,44 @@ jobs:
           print(f'internal_evidence_signed_release=PASS artifact_id={matches[0].get("id")}')
           PY
 
-      - name: Dispatch internal evaluator gates
+      - name: Dispatch internal evaluator gates once
         shell: bash
         run: |
           set -euo pipefail
-          gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "RC4_CHAIN_STATE stage=final_signing_internal_dispatch run_id=$FINAL_SIGNING_RUN_ID attempt=$FINAL_SIGNING_RUN_ATTEMPT control_head=$FINAL_CONTROL_HEAD"
 
-          gh workflow run ga-final-validation-summary.yml \
-            --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
-            -f release_signing_run_id="$FINAL_SIGNING_RUN_ID"
+          existing_count() {
+            local workflow="$1"
+            gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?branch=$FINAL_ACTIVE_BRANCH&event=workflow_dispatch&per_page=100" \
+              --jq ".workflow_runs | map(select(.head_sha == \"$FINAL_CONTROL_HEAD\")) | length"
+          }
 
-          gh workflow run ga-final-full-runtime-matrix.yml \
-            --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
-            -f release_signing_run_id="$FINAL_SIGNING_RUN_ID"
+          dispatch_once() {
+            local workflow="$1"
+            shift
+            if [[ "$(existing_count "$workflow")" -eq 0 ]]; then
+              gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" "$@"
+              dispatched=$((dispatched+1))
+              echo "internal_evidence_dispatched workflow=$workflow"
+            else
+              suppressed=$((suppressed+1))
+              echo "internal_evidence_duplicate_suppressed workflow=$workflow"
+            fi
+          }
 
-          gh workflow run ga-final-key-rotation.yml \
-            --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
-            -f release_signing_run_id="$FINAL_SIGNING_RUN_ID"
+          dispatched=0
+          suppressed=0
+          dispatch_once ga-final-validation-summary.yml -f release_signing_run_id="$FINAL_SIGNING_RUN_ID"
+          dispatch_once ga-final-full-runtime-matrix.yml -f release_signing_run_id="$FINAL_SIGNING_RUN_ID"
+          dispatch_once ga-final-key-rotation.yml -f release_signing_run_id="$FINAL_SIGNING_RUN_ID"
+          dispatch_once ga-final-disaster-recovery.yml
+          dispatch_once ga-final-vulnerability-scan.yml -f release_signing_run_id="$FINAL_SIGNING_RUN_ID"
 
-          gh workflow run ga-final-disaster-recovery.yml \
-            --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH"
+          marker="RC4_CHAIN_STATE stage=final_signing_internal_dispatch run_id=$FINAL_SIGNING_RUN_ID attempt=$FINAL_SIGNING_RUN_ATTEMPT control_head=$FINAL_CONTROL_HEAD"
+          if ! gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body' | grep -Fxq "$marker"; then
+            gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$marker"
+          fi
 
-          gh workflow run ga-final-vulnerability-scan.yml \
-            --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
-            -f release_signing_run_id="$FINAL_SIGNING_RUN_ID"
-
-          echo 'internal_final_evidence_dispatch=PASS count=5'
+          echo "internal_final_evidence_dispatch=PASS dispatched=$dispatched suppressed=$suppressed expected=5"
           echo 'public_oauth_dispatched=false'
           echo 'public_mtls_dispatched=false'
           echo 'external_otlp_dispatched=false'
