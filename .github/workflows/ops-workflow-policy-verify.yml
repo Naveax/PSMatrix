@@ -45,6 +45,14 @@ jobs:
           retired_credential = ['PSMATRIX','TEMP','ADMIN','TOKEN'].join('_')
           retired_credential_refs = 0
           owner_gate_contracts_checked = 0
+          issue_comment_triggers_checked = 0
+          pull_request_target_refs = 0
+
+          allowed_issue_comment_workflows = [
+            '.github/workflows/ops-rc4-human-approval-promotion-dispatch.yml',
+            '.github/workflows/ops-final-human-approval-promotion-dispatch.yml',
+            '.github/workflows/ops-external22-ready-to-fresh-readiness.yml',
+          ].sort
 
           all_workflows.each do |path|
             raw = File.read(path, encoding: 'utf-8')
@@ -52,6 +60,39 @@ jobs:
               retired_credential_refs += 1
               errors << "#{path}: retired temporary admin credential reference is forbidden"
             end
+
+            begin
+              gate_doc = YAML.safe_load(raw, aliases: true)
+            rescue => e
+              errors << "#{path}: YAML parse failed during trigger-policy scan: #{e.class}: #{e.message}"
+              next
+            end
+            next unless gate_doc.is_a?(Hash)
+            trigger = gate_doc['on'] || gate_doc[true]
+            next unless trigger.is_a?(Hash)
+            if trigger.key?('pull_request_target')
+              pull_request_target_refs += 1
+              errors << "#{path}: pull_request_target is forbidden in repository workflows"
+            end
+            if trigger.key?('issue_comment')
+              issue_comment_triggers_checked += 1
+              unless allowed_issue_comment_workflows.include?(path)
+                errors << "#{path}: issue_comment trigger is not an approved owner-only release gate"
+              end
+            end
+          end
+
+          observed_issue_comment = all_workflows.select do |path|
+            begin
+              doc = YAML.safe_load(File.read(path, encoding: 'utf-8'), aliases: true)
+              trigger = doc.is_a?(Hash) ? (doc['on'] || doc[true]) : nil
+              trigger.is_a?(Hash) && trigger.key?('issue_comment')
+            rescue
+              false
+            end
+          end.sort
+          if observed_issue_comment != allowed_issue_comment_workflows
+            errors << "issue_comment trigger set mismatch: observed=#{observed_issue_comment.inspect} expected=#{allowed_issue_comment_workflows.inspect}"
           end
 
           owner_gate_requirements = {
@@ -143,7 +184,7 @@ jobs:
             end
           end
 
-          puts "release_workflow_policy_scan workflow_files=#{all_workflows.length} critical_workflows=#{files.length} action_refs=#{action_refs} top_permissions=#{permissions_checked} job_permissions=#{job_permissions_checked} retired_credential_refs=#{retired_credential_refs} owner_gate_contracts_checked=#{owner_gate_contracts_checked}"
+          puts "release_workflow_policy_scan workflow_files=#{all_workflows.length} critical_workflows=#{files.length} action_refs=#{action_refs} top_permissions=#{permissions_checked} job_permissions=#{job_permissions_checked} retired_credential_refs=#{retired_credential_refs} owner_gate_contracts_checked=#{owner_gate_contracts_checked} issue_comment_triggers=#{issue_comment_triggers_checked} pull_request_target_refs=#{pull_request_target_refs}"
           unless errors.empty?
             warn errors.join("\n")
             exit 1
@@ -157,7 +198,7 @@ jobs:
           set -euo pipefail
           if [[ "${{ job.status }}" == success ]]; then status=PASS; else status=FAIL; fi
           marker="OPS_WORKFLOW_POLICY_VERIFY head=$GITHUB_SHA "
-          body="${marker}status=$status scope=all-retired-credential+ops+ga-policy retired_temp_admin_refs=0 owner_gate_contracts=3"
+          body="${marker}status=$status scope=all-retired-credential+ops+ga-policy retired_temp_admin_refs=0 owner_gate_contracts=3 issue_comment_gate_set=3 pull_request_target_refs=0"
           comment_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
             --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" \
             | tail -n 1)

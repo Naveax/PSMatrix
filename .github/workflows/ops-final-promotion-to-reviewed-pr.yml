@@ -183,6 +183,9 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_LOCK_CONTROL_BRANCH" --jq '.object.sha')
+          [[ "$current" == "$PROMOTION_CONTROL_HEAD" ]] || { echo "Final lock-control branch moved before PR recovery/create: $current != $PROMOTION_CONTROL_HEAD" >&2; exit 1; }
+
           if [[ "$BRANCH_EXISTS" == true ]]; then
             branch_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$branch" --jq '.object.sha')
             [[ "$branch_sha" =~ ^[0-9a-f]{40}$ ]]
@@ -243,6 +246,8 @@ jobs:
             [[ "$base" == "$FINAL_LOCK_CONTROL_BRANCH" && "$title" == 'Promote human-reviewed final 2.0.0 release lock' ]] || { echo 'Recovered final promotion PR metadata mismatch.' >&2; exit 1; }
             echo 'final_promotion_pr_create_race_suppressed=true'
           else
+            current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_LOCK_CONTROL_BRANCH" --jq '.object.sha')
+            [[ "$current" == "$PROMOTION_CONTROL_HEAD" ]] || { echo "Final lock-control branch moved immediately before PR create: $current != $PROMOTION_CONTROL_HEAD" >&2; exit 1; }
             gh pr create --repo "$GITHUB_REPOSITORY" --base "$FINAL_LOCK_CONTROL_BRANCH" --head "$branch" --draft --title 'Promote human-reviewed final 2.0.0 release lock' --body "$body"
             echo 'final_exact_repository_change_pr_created=true'
           fi
