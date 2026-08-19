@@ -19,13 +19,17 @@ jobs:
       github.event.pull_request.merged == true &&
       github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.title == 'Promote human-reviewed RC4 release lock' &&
-      startsWith(github.event.pull_request.head.ref, 'ops/rc4-lock-promotion-')
+      startsWith(github.event.pull_request.head.ref, 'ops/rc4-lock-promotion-') &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login == 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+      PR_AUTHOR: ${{ github.event.pull_request.user.login }}
       LOCK_CONTROL_HEAD: ${{ github.event.pull_request.merge_commit_sha }}
       CANDIDATE_COMMIT: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
       ENROLLMENT_RUN_ID: '32136341027'
@@ -39,11 +43,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          [[ "$HEAD_REPOSITORY" == "$GITHUB_REPOSITORY" ]] || { echo "RC4 reviewed PR head repository mismatch: $HEAD_REPOSITORY" >&2; exit 1; }
+          [[ "$PR_AUTHOR" == 'github-actions[bot]' ]] || { echo "RC4 reviewed PR was not created by the promotion materializer bot: $PR_AUTHOR" >&2; exit 1; }
           [[ "$HEAD_REF" =~ ^ops/rc4-lock-promotion-([1-9][0-9]*)$ ]] || { echo 'unexpected RC4 promotion PR head ref' >&2; exit 1; }
           promotion_run_id="${BASH_REMATCH[1]}"
           [[ "$LOCK_CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]] || { echo 'merge commit SHA is invalid' >&2; exit 1; }
           echo "PROMOTION_RUN_ID=$promotion_run_id" >> "$GITHUB_ENV"
-          echo 'rc4_reviewed_pr_identity=PASS'
+          echo 'rc4_reviewed_pr_identity=PASS same_repo=true bot_created=true'
 
       - name: Enforce exact two-file PR boundary
         shell: bash
@@ -107,12 +113,31 @@ jobs:
           for field in ('release_artifacts_signed','authoritative','ga_eligible'):
               if lock.get(field) is not False:
                   raise SystemExit(f'unsafe committed RC4 lock field: {field}')
-          if not re.fullmatch(r'[0-9a-f]{40}', str(promotion.get('promotion_control_head') or '')):
+          promotion_control_head = str(promotion.get('promotion_control_head') or '')
+          if not re.fullmatch(r'[0-9a-f]{40}', promotion_control_head):
               raise SystemExit('promotion control head invalid')
+          with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as out:
+              out.write(f'PROMOTION_CONTROL_HEAD={promotion_control_head}\n')
           print('committed_rc4_active_lock=PASS')
           print('release_artifacts_signed=false')
           print('ga_eligible=false')
           PY
+
+      - name: Revalidate exact canonical RC4 promotion run
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$PROMOTION_RUN_ID" =~ ^[1-9][0-9]*$ && "$PROMOTION_CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          promotion=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROMOTION_RUN_ID")
+          [[ "$(jq -r '.name' <<<"$promotion")" == 'production-ga-windows-authority-rc4-release-lock-promotion' ]] || { echo 'RC4 promotion run workflow mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.path' <<<"$promotion")" == '.github/workflows/ga-windows-authority-rc4-release-lock-promotion.yml' ]] || { echo 'RC4 promotion run path mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.event' <<<"$promotion")" == 'workflow_dispatch' ]] || { echo 'RC4 promotion run event mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.status' <<<"$promotion")" == 'completed' && "$(jq -r '.conclusion' <<<"$promotion")" == 'success' ]] || { echo 'RC4 promotion run is not successful.' >&2; exit 1; }
+          [[ "$(jq -r '.head_branch' <<<"$promotion")" == 'main' && "$(jq -r '.head_sha' <<<"$promotion")" == "$PROMOTION_CONTROL_HEAD" ]] || { echo 'RC4 promotion run control provenance mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.actor.login' <<<"$promotion")" == 'github-actions[bot]' && "$(jq -r '.triggering_actor.login' <<<"$promotion")" == 'github-actions[bot]' ]] || { echo 'RC4 promotion run was not created by the approved dispatcher bot.' >&2; exit 1; }
+          artifact_count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROMOTION_RUN_ID/artifacts?per_page=100" --jq '[.artifacts[] | select(.name == "psmatrix-2.0.0rc4-release-lock-promotion-candidate" and (.expired|not))] | length')
+          [[ "$artifact_count" == '1' ]] || { echo "RC4 promotion artifact cardinality mismatch: $artifact_count" >&2; exit 1; }
+          echo "rc4_promotion_merge_provenance=PASS run_id=$PROMOTION_RUN_ID control_head=$PROMOTION_CONTROL_HEAD artifact_count=1"
 
       - name: Freeze exact active-lock control ref
         shell: bash
