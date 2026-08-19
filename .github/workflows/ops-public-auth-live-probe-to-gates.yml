@@ -30,7 +30,7 @@ jobs:
       FINAL_ACTIVE_BRANCH: release/2.0.0-final-active-lock
       STATE_ISSUE: '262'
     steps:
-      - name: Validate exact shared live-probe artifact
+      - name: Validate exact shared live-probe artifact identity
         shell: bash
         run: |
           set -euo pipefail
@@ -39,11 +39,50 @@ jobs:
           artifact_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$LIVE_PROBE_RUN_ID/artifacts?per_page=100" \
             --jq '[.artifacts[] | select(.name == "psmatrix-2.0.0-final-public-auth-live-report" and (.expired|not))] | if length == 1 then .[0].id else error("expected exactly one live public-auth report artifact") end')
           [[ "$artifact_id" =~ ^[1-9][0-9]*$ ]] || { echo 'Public-auth live artifact ID invalid.' >&2; exit 1; }
+          echo "public_auth_live_artifact_identity=PASS artifact_id=$artifact_id"
+
+      - name: Download exact shared live-probe artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: psmatrix-2.0.0-final-public-auth-live-report
+          path: live-probe
+          repository: Naveax/PSMatrix
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Recover and validate protected signing provenance from live report
+        shell: bash
+        run: |
+          set -euo pipefail
+          report='live-probe/public-auth-live-report.json'
+          [[ -f "$report" && ! -L "$report" ]] || { echo 'Exact public-auth live report file is missing or unsafe.' >&2; exit 1; }
+          release_signing_run_id=$(jq -er '
+            if .kind == "psmatrix.public-auth-live-report" and .status == "PASS" and
+               .secrets_in_report == false and .private_keys_in_report == false and
+               (.release_signing_run_id | type == "string") and
+               (.release_signing_run_id | test("^[1-9][0-9]*$"))
+            then .release_signing_run_id
+            else error("public-auth live report provenance/boundary mismatch") end
+          ' "$report")
+          [[ "$release_signing_run_id" =~ ^[1-9][0-9]*$ ]] || { echo 'Recovered release signing run ID is invalid.' >&2; exit 1; }
+          [[ "$release_signing_run_id" != "$LIVE_PROBE_RUN_ID" ]] || { echo 'Live probe and release-signing run IDs must be distinct.' >&2; exit 1; }
+
+          signing=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$release_signing_run_id")
+          [[ "$(jq -r '.name' <<<"$signing")" == 'production-ga-windows-authority-final-release-sign-from-lock' ]] || { echo 'Recovered run is not the canonical protected final signing workflow.' >&2; exit 1; }
+          [[ "$(jq -r '.event' <<<"$signing")" == 'workflow_dispatch' ]] || { echo 'Recovered protected signing run event mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.status' <<<"$signing")" == 'completed' && "$(jq -r '.conclusion' <<<"$signing")" == 'success' ]] || { echo 'Recovered protected signing run is not successful.' >&2; exit 1; }
+          [[ "$(jq -r '.head_sha' <<<"$signing")" == "$CONTROL_HEAD" ]] || { echo 'Recovered protected signing run does not share the exact final active control head.' >&2; exit 1; }
+
+          release_artifact_count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$release_signing_run_id/artifacts?per_page=100" \
+            --jq '[.artifacts[] | select(.name == "psmatrix-2.0.0-protected-release" and (.expired|not))] | length')
+          [[ "$release_artifact_count" == '1' ]] || { echo "Expected exactly one live protected release artifact; found $release_artifact_count." >&2; exit 1; }
+
+          echo "RELEASE_SIGNING_RUN_ID=$release_signing_run_id" >> "$GITHUB_ENV"
           marker="RC4_CHAIN_STATE stage=public_auth_live_probe run_id=$LIVE_PROBE_RUN_ID attempt=$LIVE_PROBE_ATTEMPT control_head=$CONTROL_HEAD"
           if ! gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body' | grep -Fxq "$marker"; then
             gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$marker"
           fi
-          echo "public_auth_live_probe=PASS artifact_id=$artifact_id"
+          echo "public_auth_live_probe=PASS release_signing_run_id=$release_signing_run_id"
 
       - name: Dispatch signed OAuth and mTLS evaluator gates once
         shell: bash
@@ -62,7 +101,8 @@ jobs:
           if [[ "$(existing_count ga-final-public-oauth.yml)" -eq 0 ]]; then
             gh workflow run ga-final-public-oauth.yml \
               --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
-              -f live_probe_run_id="$LIVE_PROBE_RUN_ID"
+              -f live_probe_run_id="$LIVE_PROBE_RUN_ID" \
+              -f release_signing_run_id="$RELEASE_SIGNING_RUN_ID"
             dispatched=$((dispatched+1))
           else
             echo 'public_oauth_duplicate_suppressed=true'
@@ -72,7 +112,8 @@ jobs:
           if [[ "$(existing_count ga-final-public-mtls.yml)" -eq 0 ]]; then
             gh workflow run ga-final-public-mtls.yml \
               --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
-              -f live_probe_run_id="$LIVE_PROBE_RUN_ID"
+              -f live_probe_run_id="$LIVE_PROBE_RUN_ID" \
+              -f release_signing_run_id="$RELEASE_SIGNING_RUN_ID"
             dispatched=$((dispatched+1))
           else
             echo 'public_mtls_duplicate_suppressed=true'
