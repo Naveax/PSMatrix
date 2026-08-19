@@ -85,7 +85,24 @@ jobs:
           print(f'final_review_provenance=PASS artifact_id={matches[0].get("id")}')
           PY
 
-      - name: Dispatch canonical final lock promotion
+      - name: Suppress duplicate final promotion on the same frozen head
+        id: dedupe
+        env:
+          CONTROL_HEAD: ${{ steps.binding.outputs.control_head }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          count=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ga-windows-authority-final-release-lock-promotion.yml/runs?branch=$FINAL_LOCK_CONTROL_BRANCH&event=workflow_dispatch&per_page=100" \
+            --jq ".workflow_runs | map(select(.head_sha == \"$CONTROL_HEAD\")) | length")
+          if [[ "$count" -gt 0 ]]; then
+            echo 'duplicate=true' >> "$GITHUB_OUTPUT"
+            echo "final_lock_promotion_duplicate_suppressed=true existing_runs=$count"
+          else
+            echo 'duplicate=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Dispatch canonical final lock promotion once
+        if: steps.dedupe.outputs.duplicate != 'true'
         env:
           REVIEW_RUN_ID: ${{ steps.binding.outputs.review_run_id }}
           DRAFT_SHA256: ${{ steps.binding.outputs.draft_sha256 }}
