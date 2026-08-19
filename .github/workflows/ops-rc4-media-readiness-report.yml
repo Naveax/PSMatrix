@@ -6,7 +6,7 @@ on:
     types: [completed]
 
 concurrency:
-  group: ops-rc4-media-readiness-report
+  group: ops-rc4-media-readiness-report-${{ github.event.workflow_run.id }}
   cancel-in-progress: false
 
 permissions:
@@ -22,7 +22,9 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       RUN_ID: ${{ github.event.workflow_run.id }}
+      RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
       RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+      STATE_ISSUE: '261'
     steps:
       - name: Download non-secret media readiness evidence
         if: env.RUN_CONCLUSION == 'success' || env.RUN_CONCLUSION == 'failure'
@@ -34,10 +36,12 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ github.token }}
 
-      - name: Publish boundary-aware result
+      - name: Publish boundary-aware result idempotently
         shell: bash
         run: |
           set -euo pipefail
+          [[ "$RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
           status='UNKNOWN'
           selection='unknown'
           missing='unknown'
@@ -49,5 +53,17 @@ jobs:
               missing="$(jq -c '.missing_media_roles // []' "$file" 2>/dev/null || echo '[]')"
             fi
           fi
-          body=$(printf '### RC4 media-readiness result\n\nRun: `%s`\nConclusion: `%s`\nWorkflow status: `%s`\nSelection/manifest readiness: `%s`\nMissing media roles: `%s`\n\nNo automatic provisioning was dispatched from this reporter. Operator-selection boundary remains enforced.' "$RUN_ID" "$RUN_CONCLUSION" "$status" "$selection" "$missing")
-          gh api "repos/$GITHUB_REPOSITORY/issues/261/comments" --method POST -f body="$body" >/dev/null
+
+          marker="RC4_MEDIA_READINESS_RESULT run_id=$RUN_ID"
+          body=$(printf '%s\n\n### RC4 media-readiness result\n\nRun: `%s`\nAttempt: `%s`\nConclusion: `%s`\nWorkflow status: `%s`\nSelection/manifest readiness: `%s`\nMissing media roles: `%s`\n\nNo automatic provisioning was dispatched from this reporter. Operator-selection boundary remains enforced.' "$marker" "$RUN_ID" "$RUN_ATTEMPT" "$RUN_CONCLUSION" "$status" "$selection" "$missing")
+
+          comment_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" \
+            | tail -n 1)
+          if [[ -n "$comment_id" ]]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" -f body="$body" >/dev/null
+            echo "rc4_media_readiness_report=updated run_id=$RUN_ID comment_id=$comment_id"
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" -f body="$body" >/dev/null
+            echo "rc4_media_readiness_report=created run_id=$RUN_ID"
+          fi

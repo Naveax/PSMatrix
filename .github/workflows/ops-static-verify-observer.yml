@@ -23,7 +23,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       STATE_ISSUE: '262'
     steps:
-      - name: Report completed static verifier run
+      - name: Report completed static verifier run idempotently
         shell: bash
         run: |
           set -euo pipefail
@@ -37,8 +37,15 @@ jobs:
             json=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ops-workflow-static-verify.yml/runs?per_page=10")
             count=$(jq '.workflow_runs | length' <<<"$json")
             if [[ "$count" -lt 1 ]]; then
-              body="OPS_WORKFLOW_STATIC_VERIFY_OBSERVER status=NO_RUN_VISIBLE head=$GITHUB_SHA"
-              gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$body"
+              marker="OPS_WORKFLOW_STATIC_VERIFY_OBSERVER status=NO_RUN_VISIBLE head=$GITHUB_SHA"
+              body="$marker"
+              comment_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
+                --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" | tail -n 1)
+              if [[ -n "$comment_id" ]]; then
+                gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" -f body="$body" >/dev/null
+              else
+                gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$body"
+              fi
               echo "$body"
               exit 0
             fi
@@ -48,6 +55,18 @@ jobs:
             event=$(jq -r '.workflow_runs[0].event' <<<"$json")
             head=$(jq -r '.workflow_runs[0].head_sha' <<<"$json")
           fi
+
+          [[ "$id" =~ ^[1-9][0-9]*$ ]]
+          marker="OPS_WORKFLOW_STATIC_VERIFY_OBSERVER run_id=$id "
           body="OPS_WORKFLOW_STATIC_VERIFY_OBSERVER run_id=$id status=$status conclusion=$conclusion event=$event head=$head"
-          gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$body"
+          comment_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" \
+            | tail -n 1)
+          if [[ -n "$comment_id" ]]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" -f body="$body" >/dev/null
+            echo "static_verifier_observer_comment=updated run_id=$id comment_id=$comment_id"
+          else
+            gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$body"
+            echo "static_verifier_observer_comment=created run_id=$id"
+          fi
           echo "$body"
