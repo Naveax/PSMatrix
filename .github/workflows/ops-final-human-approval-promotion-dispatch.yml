@@ -58,11 +58,13 @@ jobs:
           print('final_human_approval_binding=PASS')
           PY
 
-      - name: Revalidate frozen branch and exact successful review provenance
+      - name: Revalidate frozen branch, automated review provenance, and bound artifact digests
         env:
           REVIEW_RUN_ID: ${{ steps.binding.outputs.review_run_id }}
           REVIEW_ATTEMPT: ${{ steps.binding.outputs.review_attempt }}
           CONTROL_HEAD: ${{ steps.binding.outputs.control_head }}
+          DRAFT_SHA256: ${{ steps.binding.outputs.draft_sha256 }}
+          PUBLIC_SHA256: ${{ steps.binding.outputs.public_sha256 }}
         shell: bash
         run: |
           set -euo pipefail
@@ -77,16 +79,45 @@ jobs:
               req=urllib.request.Request(f'https://api.github.com/repos/{repo}/{path}',headers=headers)
               with urllib.request.urlopen(req,timeout=30) as r:return json.load(r)
           run=fetch(f'actions/runs/{run_id}')
-          if run.get('name')!='production-ga-windows-authority-final-release-lock-review' or run.get('event')!='workflow_dispatch' or run.get('status')!='completed' or run.get('conclusion')!='success':
+          if run.get('name')!='production-ga-windows-authority-final-release-lock-review':
+              raise SystemExit('final review workflow name mismatch')
+          if run.get('path')!='.github/workflows/ga-windows-authority-final-release-lock-review.yml':
+              raise SystemExit(f'final review workflow path mismatch: {run.get("path")!r}')
+          if run.get('event')!='workflow_dispatch' or run.get('status')!='completed' or run.get('conclusion')!='success':
               raise SystemExit('final review run provenance/status mismatch')
-          if (run.get('head_sha') or '').lower()!=control:
-              raise SystemExit('final review control head mismatch')
+          if run.get('head_branch')!=os.environ['FINAL_LOCK_CONTROL_BRANCH'] or (run.get('head_sha') or '').lower()!=control:
+              raise SystemExit('final review control branch/head mismatch')
           if str(run.get('run_attempt'))!=attempt:
               raise SystemExit(f'final review run attempt mismatch: actual={run.get("run_attempt")} bound={attempt}')
+          if (run.get('actor') or {}).get('login')!='github-actions[bot]' or (run.get('triggering_actor') or {}).get('login')!='github-actions[bot]':
+              raise SystemExit('final review run was not created by the canonical automation chain')
           artifacts=fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts',[])
           matches=[a for a in artifacts if a.get('name')=='psmatrix-2.0.0-final-release-lock-review' and not a.get('expired')]
           if len(matches)!=1: raise SystemExit(f'expected exactly one live final review artifact; found {len(matches)}')
-          print(f'final_review_provenance=PASS run_id={run_id} attempt={attempt} artifact_id={matches[0].get("id")}')
+          print(f'final_review_provenance=PASS run_id={run_id} attempt={attempt} artifact_id={matches[0].get("id")} automated_dispatch=true')
+          PY
+
+          review_dir="$RUNNER_TEMP/final-review-binding-revalidate"
+          rm -rf "$review_dir"
+          mkdir -p "$review_dir"
+          gh run download "$REVIEW_RUN_ID" --repo "$GITHUB_REPOSITORY" --name 'psmatrix-2.0.0-final-release-lock-review' --dir "$review_dir"
+          REVIEW_DIR="$review_dir" python - <<'PY'
+          import hashlib, os
+          from pathlib import Path
+          root=Path(os.environ['REVIEW_DIR']).resolve()
+          draft=root/'final-release-lock.review-draft.json'
+          public=root/'release-assets/2.0.0/psmatrix-2.0.0-release-public.pem'
+          for p in (draft,public):
+              if not p.is_file() or p.is_symlink():
+                  raise SystemExit(f'bound review artifact file missing/unsafe: {p}')
+          digest=lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+          actual_draft=digest(draft)
+          actual_public=digest(public)
+          if actual_draft!=os.environ['DRAFT_SHA256']:
+              raise SystemExit(f'bound final review draft digest mismatch: actual={actual_draft}')
+          if actual_public!=os.environ['PUBLIC_SHA256']:
+              raise SystemExit(f'bound final public-key digest mismatch: actual={actual_public}')
+          print('final_human_review_artifact_binding=PASS draft=true public=true')
           PY
 
       - name: Suppress duplicate final promotion on the same frozen head
