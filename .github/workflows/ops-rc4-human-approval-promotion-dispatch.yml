@@ -25,6 +25,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       CANDIDATE_COMMIT: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
+      REVIEW_BRANCH: release/2.0.0rc4-authority-rotation
       REVIEW_RUN_ID: '32137455148'
       REVIEW_RUN_ATTEMPT: '1'
       REVIEWED_DRAFT_SHA256: a2a97763f679b18562e19ec99f066374b097a50c44a3bea4d1208328e9b339d9
@@ -93,7 +94,7 @@ jobs:
           echo 'already_dispatched=false' >> "$GITHUB_OUTPUT"
           echo 'rc4_promotion_dispatch_budget=AVAILABLE'
 
-      - name: Revalidate exact successful review run and attempt
+      - name: Revalidate exact automated review run, artifact, and human-bound digests
         if: steps.dedup.outputs.already_dispatched != 'true'
         shell: bash
         run: |
@@ -118,19 +119,46 @@ jobs:
           run = fetch(f'actions/runs/{run_id}')
           if run.get('name') != 'production-ga-windows-authority-rc4-release-lock-review':
               raise SystemExit('review workflow name mismatch')
+          if run.get('path') != '.github/workflows/ga-windows-authority-rc4-release-lock-review.yml':
+              raise SystemExit(f'review workflow path mismatch: {run.get("path")!r}')
           if run.get('event') != 'workflow_dispatch':
               raise SystemExit('review run event mismatch')
           if run.get('status') != 'completed' or run.get('conclusion') != 'success':
               raise SystemExit('review run is not completed successfully')
-          if (run.get('head_sha') or '').lower() != candidate:
-              raise SystemExit('review run candidate SHA mismatch')
+          if run.get('head_branch') != os.environ['REVIEW_BRANCH'] or (run.get('head_sha') or '').lower() != candidate:
+              raise SystemExit('review run branch/candidate SHA mismatch')
           if str(run.get('run_attempt')) != attempt:
               raise SystemExit(f'review run attempt mismatch: actual={run.get("run_attempt")} bound={attempt}')
+          if (run.get('actor') or {}).get('login') != 'github-actions[bot]' or (run.get('triggering_actor') or {}).get('login') != 'github-actions[bot]':
+              raise SystemExit('review run was not created by the canonical automation chain')
           artifacts = fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts', [])
           matches = [a for a in artifacts if a.get('name') == 'psmatrix-2.0.0rc4-release-lock-review' and not a.get('expired')]
           if len(matches) != 1:
               raise SystemExit(f'expected exactly one live review artifact; found {len(matches)}')
-          print(f'rc4_review_provenance=PASS run_id={run_id} attempt={attempt} artifact_id={matches[0].get("id")}')
+          print(f'rc4_review_provenance=PASS run_id={run_id} attempt={attempt} artifact_id={matches[0].get("id")} automated_dispatch=true')
+          PY
+
+          review_dir="$RUNNER_TEMP/rc4-review-binding-revalidate"
+          rm -rf "$review_dir"
+          mkdir -p "$review_dir"
+          gh run download "$REVIEW_RUN_ID" --repo "$GITHUB_REPOSITORY" --name 'psmatrix-2.0.0rc4-release-lock-review' --dir "$review_dir"
+          REVIEW_DIR="$review_dir" python - <<'PY'
+          import hashlib, os
+          from pathlib import Path
+          root=Path(os.environ['REVIEW_DIR']).resolve()
+          draft=root/'rc4-release-lock.review-draft.json'
+          public=root/'release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem'
+          for p in (draft, public):
+              if not p.is_file() or p.is_symlink():
+                  raise SystemExit(f'bound RC4 review artifact file missing/unsafe: {p}')
+          digest=lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+          actual_draft=digest(draft)
+          actual_public=digest(public)
+          if actual_draft != os.environ['REVIEWED_DRAFT_SHA256']:
+              raise SystemExit(f'bound RC4 review draft digest mismatch: actual={actual_draft}')
+          if actual_public != os.environ['REVIEWED_PUBLIC_KEY_SHA256']:
+              raise SystemExit(f'bound RC4 public-key digest mismatch: actual={actual_public}')
+          print('rc4_human_review_artifact_binding=PASS draft=true public=true')
           PY
 
       - name: Dispatch canonical RC4 lock promotion
