@@ -41,7 +41,27 @@ jobs:
           [[ "$(jq -r '.head_sha' <<<"$run")" == "$CONTROL_HEAD" ]]
           echo 'protected_rc4_intake_provenance=PASS'
 
+      - name: Check media-readiness dispatch budget
+        id: dedup
+        shell: bash
+        run: |
+          set -euo pipefail
+          existing=$(gh api --method GET \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ga-windows-authority-rc4-media-readiness-selfhosted.yml/runs" \
+            -f branch="$FROZEN_CONTROL_BRANCH" \
+            -f event='workflow_dispatch' \
+            -f per_page=100 \
+            --jq ".workflow_runs[] | select(.head_sha == \"$CONTROL_HEAD\") | .id" \
+            | head -n 1)
+          if [[ -n "$existing" ]]; then
+            echo 'already_dispatched=true' >> "$GITHUB_OUTPUT"
+            echo "duplicate_rc4_media_readiness_suppressed=true existing_run_id=$existing"
+          else
+            echo 'already_dispatched=false' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Dispatch canonical RC4 media readiness
+        if: steps.dedup.outputs.already_dispatched != 'true'
         shell: bash
         run: |
           set -euo pipefail
