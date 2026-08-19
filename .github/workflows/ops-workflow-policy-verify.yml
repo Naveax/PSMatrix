@@ -41,10 +41,18 @@ jobs:
           action_refs = 0
           permissions_checked = 0
           job_permissions_checked = 0
+          retired_credential = ['PSMATRIX','TEMP','ADMIN','TOKEN'].join('_')
+          retired_credential_refs = 0
 
           files.each do |path|
+            raw = File.read(path, encoding: 'utf-8')
+            if raw.include?(retired_credential)
+              retired_credential_refs += 1
+              errors << "#{path}: retired temporary admin credential reference is forbidden"
+            end
+
             begin
-              doc = YAML.load_file(path, aliases: true)
+              doc = YAML.safe_load(raw, aliases: true)
             rescue => e
               errors << "#{path}: YAML parse failed: #{e.class}: #{e.message}"
               next
@@ -57,9 +65,7 @@ jobs:
             else
               permissions_checked += 1
               permissions.each do |scope, level|
-                unless %w[read write none].include?(level.to_s)
-                  errors << "#{path}: unsupported top-level permission #{scope}=#{level.inspect}"
-                end
+                errors << "#{path}: unsupported top-level permission #{scope}=#{level.inspect}" unless %w[read write none].include?(level.to_s)
               end
             end
 
@@ -74,19 +80,14 @@ jobs:
                 else
                   job_permissions_checked += 1
                   job_permissions.each do |scope, level|
-                    unless %w[read write none].include?(level.to_s)
-                      errors << "#{path}: job #{job_name} unsupported permission #{scope}=#{level.inspect}"
-                    end
+                    errors << "#{path}: job #{job_name} unsupported permission #{scope}=#{level.inspect}" unless %w[read write none].include?(level.to_s)
                   end
                 end
               end
 
               refs = []
               refs << job['uses'] if job['uses'].is_a?(String)
-              Array(job['steps']).each do |step|
-                refs << step['uses'] if step.is_a?(Hash) && step['uses'].is_a?(String)
-              end
-
+              Array(job['steps']).each { |step| refs << step['uses'] if step.is_a?(Hash) && step['uses'].is_a?(String) }
               refs.compact.each do |ref|
                 next if ref.start_with?('./') || ref.start_with?('docker://')
                 action_refs += 1
@@ -97,7 +98,7 @@ jobs:
             end
           end
 
-          puts "release_workflow_policy_scan workflows=#{files.length} action_refs=#{action_refs} top_permissions=#{permissions_checked} job_permissions=#{job_permissions_checked}"
+          puts "release_workflow_policy_scan workflows=#{files.length} action_refs=#{action_refs} top_permissions=#{permissions_checked} job_permissions=#{job_permissions_checked} retired_credential_refs=#{retired_credential_refs}"
           unless errors.empty?
             warn errors.join("\n")
             exit 1
@@ -109,13 +110,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${{ job.status }}" == success ]]; then
-            status=PASS
-          else
-            status=FAIL
-          fi
+          if [[ "${{ job.status }}" == success ]]; then status=PASS; else status=FAIL; fi
           marker="OPS_WORKFLOW_POLICY_VERIFY head=$GITHUB_SHA "
-          body="${marker}status=$status scope=ops+ga"
+          body="${marker}status=$status scope=ops+ga retired_temp_admin_refs=0"
           comment_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
             --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" \
             | tail -n 1)

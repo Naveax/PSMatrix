@@ -74,9 +74,7 @@ jobs:
           end
 
           names.each do |workflow_name, paths|
-            if paths.length > 1
-              errors << "duplicate workflow name #{workflow_name.inspect}: #{paths.join(', ')}"
-            end
+            errors << "duplicate workflow name #{workflow_name.inspect}: #{paths.join(', ')}" if paths.length > 1
           end
 
           ops_files.each do |path|
@@ -181,9 +179,7 @@ jobs:
                         dispatch_input_refs += passed_inputs.length
 
                         passed_inputs.each do |input_name|
-                          unless target_inputs.include?(input_name)
-                            errors << "#{path}: gh workflow run #{target_name} passes unknown input: #{input_name}"
-                          end
+                          errors << "#{path}: gh workflow run #{target_name} passes unknown input: #{input_name}" unless target_inputs.include?(input_name)
                         end
 
                         target_input_specs.each do |input_name, spec|
@@ -219,6 +215,88 @@ jobs:
           exit(errors.empty? ? 0 : 1)
           RUBY
 
+      - name: Validate literal artifact producer-consumer contracts
+        id: artifact
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/ops-workflow-verify"
+          VERIFY_ROOT="$root" ruby <<'RUBY'
+          require 'yaml'
+          root = ENV.fetch('VERIFY_ROOT')
+          errors = []
+          files = Dir['.github/workflows/*.yml'].sort
+          docs = {}
+          producers = Hash.new { |h, k| h[k] = [] }
+          upload_refs = 0
+          download_refs = 0
+          literal_downloads = 0
+          cross_run_downloads = 0
+
+          files.each do |path|
+            begin
+              doc = YAML.load_file(path, aliases: true)
+              docs[path] = doc if doc.is_a?(Hash)
+            rescue => e
+              errors << "#{path}: YAML parse failed during artifact scan: #{e.class}: #{e.message}"
+            end
+          end
+
+          docs.each do |path, doc|
+            jobs = doc['jobs']
+            next unless jobs.is_a?(Hash)
+            jobs.each_value do |job|
+              next unless job.is_a?(Hash)
+              Array(job['steps']).each do |step|
+                next unless step.is_a?(Hash)
+                next unless step['uses'].to_s.start_with?('actions/upload-artifact@')
+                upload_refs += 1
+                with = step['with']
+                next unless with.is_a?(Hash)
+                name = with['name'].to_s.strip
+                producers[name] << path unless name.empty? || name.include?('${{')
+              end
+            end
+          end
+
+          docs.each do |path, doc|
+            trigger = doc['on'] || doc[true]
+            workflow_run_trigger = trigger.is_a?(Hash) && trigger['workflow_run'].is_a?(Hash)
+            jobs = doc['jobs']
+            next unless jobs.is_a?(Hash)
+            jobs.each do |job_name, job|
+              next unless job.is_a?(Hash)
+              Array(job['steps']).each_with_index do |step, index|
+                next unless step.is_a?(Hash)
+                next unless step['uses'].to_s.start_with?('actions/download-artifact@')
+                download_refs += 1
+                with = step['with']
+                unless with.is_a?(Hash)
+                  errors << "#{path}: job #{job_name} step #{index} download-artifact missing with mapping"
+                  next
+                end
+                name = with['name'].to_s.strip
+                if !name.empty? && !name.include?('${{')
+                  literal_downloads += 1
+                  errors << "#{path}: literal artifact download has no literal upload producer: #{name}" unless producers.key?(name)
+                end
+                if workflow_run_trigger
+                  cross_run_downloads += 1
+                  errors << "#{path}: workflow_run download-artifact must bind source run-id" if with['run-id'].to_s.strip.empty?
+                  errors << "#{path}: workflow_run download-artifact must provide github-token" if with['github-token'].to_s.strip.empty?
+                end
+              end
+            end
+          end
+
+          counts = "artifact_upload_refs=#{upload_refs}\nartifact_download_refs=#{download_refs}\nliteral_artifact_downloads=#{literal_downloads}\ncross_run_artifact_downloads=#{cross_run_downloads}\nliteral_artifact_names=#{producers.length}\n"
+          File.write(File.join(root, 'artifact-counts.txt'), counts)
+          File.write(File.join(root, 'artifact-errors.txt'), errors.join("\n") + (errors.empty? ? '' : "\n"))
+          warn errors.join("\n") unless errors.empty?
+          exit(errors.empty? ? 0 : 1)
+          RUBY
+
       - name: Validate extracted Bash syntax
         id: bash
         continue-on-error: true
@@ -236,24 +314,37 @@ jobs:
           done < <(find "$root/bash" -type f -name '*.sh' -print0 | sort -z)
           exit "$failed"
 
-      - name: Publish static verification result
+      - name: Publish static verification result idempotently
         shell: bash
         run: |
           set -euo pipefail
           root="$RUNNER_TEMP/ops-workflow-verify"
           parse='${{ steps.parse.outcome }}'
+          artifact='${{ steps.artifact.outcome }}'
           bash_result='${{ steps.bash.outcome }}'
-          counts=$(tr '\n' ' ' < "$root/counts.txt" | sed -E 's/[[:space:]]+$//')
-          if [[ "$parse" == success && "$bash_result" == success ]]; then
+          counts=$(cat "$root/counts.txt" "$root/artifact-counts.txt" | tr '\n' ' ' | sed -E 's/[[:space:]]+$//')
+          if [[ "$parse" == success && "$artifact" == success && "$bash_result" == success ]]; then
             status=PASS
           else
             status=FAIL
           fi
-          body="OPS_WORKFLOW_STATIC_VERIFY status=$status head=$GITHUB_SHA parse=$parse bash=$bash_result $counts"
-          gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$body"
+          marker="OPS_WORKFLOW_STATIC_VERIFY head=$GITHUB_SHA "
+          body="${marker}status=$status parse=$parse artifact=$artifact bash=$bash_result $counts"
+          comment_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" \
+            | tail -n 1)
+          if [[ -n "$comment_id" ]]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" -f body="$body" >/dev/null
+            echo "static_verify_comment=updated head=$GITHUB_SHA comment_id=$comment_id"
+          else
+            gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$body"
+            echo "static_verify_comment=created head=$GITHUB_SHA"
+          fi
           if [[ "$status" != PASS ]]; then
-            echo '--- YAML / contract errors ---'
+            echo '--- YAML / workflow contract errors ---'
             cat "$root/yaml-errors.txt" || true
+            echo '--- Artifact contract errors ---'
+            cat "$root/artifact-errors.txt" || true
             echo '--- Bash errors ---'
             cat "$root/bash-errors.txt" || true
             exit 1
