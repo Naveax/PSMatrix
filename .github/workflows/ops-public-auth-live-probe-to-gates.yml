@@ -19,7 +19,9 @@ jobs:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'workflow_dispatch' &&
-      github.event.workflow_run.head_branch == 'release/2.0.0-final-active-lock'
+      github.event.workflow_run.head_branch == 'release/2.0.0-final-active-lock' &&
+      github.event.workflow_run.actor.login == 'github-actions[bot]' &&
+      github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -30,16 +32,25 @@ jobs:
       FINAL_ACTIVE_BRANCH: release/2.0.0-final-active-lock
       STATE_ISSUE: '262'
     steps:
-      - name: Validate exact shared live-probe artifact identity
+      - name: Validate exact automated shared live-probe artifact identity
         shell: bash
         run: |
           set -euo pipefail
+          [[ "$LIVE_PROBE_RUN_ID" =~ ^[1-9][0-9]*$ && "$LIVE_PROBE_ATTEMPT" =~ ^[1-9][0-9]*$ && "$CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]]
           current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_ACTIVE_BRANCH" --jq '.object.sha')
           [[ "$current" == "$CONTROL_HEAD" ]] || { echo 'Final active control moved after public-auth live probe.' >&2; exit 1; }
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$LIVE_PROBE_RUN_ID")
+          [[ "$(jq -r '.name' <<<"$run")" == 'production-ga-final-public-auth-live-probe' ]] || { echo 'Public-auth live probe workflow name mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.path' <<<"$run")" == '.github/workflows/ga-final-public-auth-live-probe.yml' ]] || { echo 'Public-auth live probe workflow path mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.event' <<<"$run")" == 'workflow_dispatch' ]] || { echo 'Public-auth live probe event mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.status' <<<"$run")" == 'completed' && "$(jq -r '.conclusion' <<<"$run")" == 'success' ]] || { echo 'Public-auth live probe is not completed/success.' >&2; exit 1; }
+          [[ "$(jq -r '.head_branch' <<<"$run")" == "$FINAL_ACTIVE_BRANCH" && "$(jq -r '.head_sha' <<<"$run")" == "$CONTROL_HEAD" ]] || { echo 'Public-auth live probe control provenance mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.run_attempt' <<<"$run")" == "$LIVE_PROBE_ATTEMPT" ]] || { echo 'Public-auth live probe attempt mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.actor.login' <<<"$run")" == 'github-actions[bot]' && "$(jq -r '.triggering_actor.login' <<<"$run")" == 'github-actions[bot]' ]] || { echo 'Public-auth live probe was not dispatched by the gated external-evidence automation.' >&2; exit 1; }
           artifact_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$LIVE_PROBE_RUN_ID/artifacts?per_page=100" \
             --jq '[.artifacts[] | select(.name == "psmatrix-2.0.0-final-public-auth-live-report" and (.expired|not))] | if length == 1 then .[0].id else error("expected exactly one live public-auth report artifact") end')
           [[ "$artifact_id" =~ ^[1-9][0-9]*$ ]] || { echo 'Public-auth live artifact ID invalid.' >&2; exit 1; }
-          echo "public_auth_live_artifact_identity=PASS artifact_id=$artifact_id"
+          echo "public_auth_live_artifact_identity=PASS artifact_id=$artifact_id automated_dispatch=true"
 
       - name: Download exact shared live-probe artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -69,9 +80,11 @@ jobs:
 
           signing=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$release_signing_run_id")
           [[ "$(jq -r '.name' <<<"$signing")" == 'production-ga-windows-authority-final-release-sign-from-lock' ]] || { echo 'Recovered run is not the canonical protected final signing workflow.' >&2; exit 1; }
+          [[ "$(jq -r '.path' <<<"$signing")" == '.github/workflows/ga-windows-authority-final-release-sign-from-lock.yml' ]] || { echo 'Recovered protected signing workflow path mismatch.' >&2; exit 1; }
           [[ "$(jq -r '.event' <<<"$signing")" == 'workflow_dispatch' ]] || { echo 'Recovered protected signing run event mismatch.' >&2; exit 1; }
           [[ "$(jq -r '.status' <<<"$signing")" == 'completed' && "$(jq -r '.conclusion' <<<"$signing")" == 'success' ]] || { echo 'Recovered protected signing run is not successful.' >&2; exit 1; }
-          [[ "$(jq -r '.head_sha' <<<"$signing")" == "$CONTROL_HEAD" ]] || { echo 'Recovered protected signing run does not share the exact final active control head.' >&2; exit 1; }
+          [[ "$(jq -r '.head_branch' <<<"$signing")" == "$FINAL_ACTIVE_BRANCH" && "$(jq -r '.head_sha' <<<"$signing")" == "$CONTROL_HEAD" ]] || { echo 'Recovered protected signing run does not share the exact final active control.' >&2; exit 1; }
+          [[ "$(jq -r '.actor.login' <<<"$signing")" == 'github-actions[bot]' && "$(jq -r '.triggering_actor.login' <<<"$signing")" == 'github-actions[bot]' ]] || { echo 'Recovered protected signing run was not dispatched by reviewed-lock merge automation.' >&2; exit 1; }
 
           release_artifact_count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$release_signing_run_id/artifacts?per_page=100" \
             --jq '[.artifacts[] | select(.name == "psmatrix-2.0.0-protected-release" and (.expired|not))] | length')
