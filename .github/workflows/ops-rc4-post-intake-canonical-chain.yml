@@ -25,7 +25,9 @@ jobs:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'workflow_dispatch' &&
-      github.event.workflow_run.head_branch == 'release/2.0.0rc4-active-lock'
+      github.event.workflow_run.head_branch == 'release/2.0.0rc4-active-lock' &&
+      github.event.workflow_run.actor.login == 'github-actions[bot]' &&
+      github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -38,7 +40,7 @@ jobs:
       CONTROL_BRANCH: release/2.0.0rc4-active-lock
       STATE_ISSUE: '262'
     steps:
-      - name: Validate chain event identity
+      - name: Validate automated canonical chain event identity
         shell: bash
         run: |
           set -euo pipefail
@@ -47,7 +49,24 @@ jobs:
           [[ "$CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]]
           branch_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$CONTROL_BRANCH" --jq '.object.sha')
           [[ "$branch_sha" == "$CONTROL_HEAD" ]] || { echo "Frozen RC4 control branch moved: $branch_sha != $CONTROL_HEAD" >&2; exit 1; }
-          echo "rc4_chain_event=PASS workflow=$COMPLETED_WORKFLOW run=$COMPLETED_RUN_ID attempt=$COMPLETED_RUN_ATTEMPT"
+          case "$COMPLETED_WORKFLOW" in
+            production-ga-windows-authority-rc4-media-readiness-selfhosted) expected_path='.github/workflows/ga-windows-authority-rc4-media-readiness-selfhosted.yml' ;;
+            production-ga-windows-authority-rc4-provisioning-manifest-selfhosted) expected_path='.github/workflows/ga-windows-authority-rc4-provisioning-manifest-selfhosted.yml' ;;
+            production-ga-windows-authority-rc4-operation-package-selfhosted) expected_path='.github/workflows/ga-windows-authority-rc4-operation-package-selfhosted.yml' ;;
+            production-ga-windows-authority-rc4-provision-selfhosted) expected_path='.github/workflows/ga-windows-authority-rc4-provision-selfhosted.yml' ;;
+            production-ga-windows-authority-rc4-image-identity-measurement-selfhosted) expected_path='.github/workflows/ga-windows-authority-rc4-image-identity-measurement-selfhosted.yml' ;;
+            production-ga-windows-authority-rc4-certification-campaign-selfhosted) expected_path='.github/workflows/ga-windows-authority-rc4-certification-campaign-selfhosted.yml' ;;
+            *) echo "Unexpected RC4 canonical stage: $COMPLETED_WORKFLOW" >&2; exit 1 ;;
+          esac
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$COMPLETED_RUN_ID")
+          [[ "$(jq -r '.name' <<<"$run")" == "$COMPLETED_WORKFLOW" ]] || { echo 'RC4 canonical stage workflow name mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.path' <<<"$run")" == "$expected_path" ]] || { echo "RC4 canonical stage workflow path mismatch: $(jq -r '.path' <<<"$run") != $expected_path" >&2; exit 1; }
+          [[ "$(jq -r '.event' <<<"$run")" == 'workflow_dispatch' ]] || { echo 'RC4 canonical stage event mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.status' <<<"$run")" == 'completed' && "$(jq -r '.conclusion' <<<"$run")" == 'success' ]] || { echo 'RC4 canonical stage is not completed/success.' >&2; exit 1; }
+          [[ "$(jq -r '.run_attempt' <<<"$run")" == "$COMPLETED_RUN_ATTEMPT" ]] || { echo 'RC4 canonical stage attempt mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.head_branch' <<<"$run")" == "$CONTROL_BRANCH" && "$(jq -r '.head_sha' <<<"$run")" == "$CONTROL_HEAD" ]] || { echo 'RC4 canonical stage control provenance mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.actor.login' <<<"$run")" == 'github-actions[bot]' && "$(jq -r '.triggering_actor.login' <<<"$run")" == 'github-actions[bot]' ]] || { echo 'RC4 canonical stage was not dispatched by the canonical automation chain.' >&2; exit 1; }
+          echo "rc4_chain_event=PASS workflow=$COMPLETED_WORKFLOW run=$COMPLETED_RUN_ID attempt=$COMPLETED_RUN_ATTEMPT automated_dispatch=true path=$expected_path"
 
       - name: Advance exact canonical RC4 stage once
         shell: bash
