@@ -11,6 +11,7 @@ concurrency:
 permissions:
   contents: read
   actions: write
+  issues: write
 
 jobs:
   dispatch:
@@ -27,6 +28,7 @@ jobs:
       REVIEW_RUN_ID: '32137455148'
       REVIEWED_DRAFT_SHA256: a2a97763f679b18562e19ec99f066374b097a50c44a3bea4d1208328e9b339d9
       REVIEWED_PUBLIC_KEY_SHA256: ece4d7087449cb42cde9183b0b1e2b82db610d4ffffd726e6737d2ba09578a08
+      REVIEW_ISSUE: '260'
     steps:
       - name: Validate exact human approval event
         shell: bash
@@ -55,7 +57,23 @@ jobs:
           test -f .github/workflows/ga-windows-authority-rc4-release-lock-promotion.yml
           echo 'rc4_pre_dispatch_boundary=PASS'
 
+      - name: Suppress an already-dispatched approval target
+        id: dedup
+        shell: bash
+        run: |
+          set -euo pipefail
+          marker="RC4_PROMOTION_DISPATCHED candidate=$CANDIDATE_COMMIT review_run=$REVIEW_RUN_ID draft_sha256=$REVIEWED_DRAFT_SHA256 public_key_sha256=$REVIEWED_PUBLIC_KEY_SHA256"
+          if gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$REVIEW_ISSUE/comments" \
+              --jq '.[] | select(.user.login == "github-actions[bot]") | .body' \
+              | grep -Fxq "$marker"; then
+            echo 'already_dispatched=true' >> "$GITHUB_OUTPUT"
+            echo 'duplicate_rc4_promotion_dispatch_suppressed=true'
+          else
+            echo 'already_dispatched=false' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Revalidate exact successful review run
+        if: steps.dedup.outputs.already_dispatched != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -91,6 +109,7 @@ jobs:
           PY
 
       - name: Dispatch canonical RC4 lock promotion
+        if: steps.dedup.outputs.already_dispatched != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -101,6 +120,8 @@ jobs:
             -f review_run_id="$REVIEW_RUN_ID" \
             -f reviewed_draft_sha256="$REVIEWED_DRAFT_SHA256" \
             -f reviewed_public_key_sha256="$REVIEWED_PUBLIC_KEY_SHA256"
+          marker="RC4_PROMOTION_DISPATCHED candidate=$CANDIDATE_COMMIT review_run=$REVIEW_RUN_ID draft_sha256=$REVIEWED_DRAFT_SHA256 public_key_sha256=$REVIEWED_PUBLIC_KEY_SHA256"
+          gh issue comment "$REVIEW_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$marker"
           echo 'rc4_lock_promotion_dispatched=true'
           echo 'human_review_bound=true'
           echo 'repository_lock_committed=false'
