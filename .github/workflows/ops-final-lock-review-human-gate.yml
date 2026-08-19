@@ -138,7 +138,12 @@ jobs:
           EOF
           )
           gh issue edit "$HUMAN_GATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$body"
-          gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "RC4_CHAIN_STATE stage=final_lock_review run_id=$REVIEW_RUN_ID attempt=$REVIEW_RUN_ATTEMPT control_head=$REVIEW_CONTROL_HEAD"
+          marker="RC4_CHAIN_STATE stage=final_lock_review run_id=$REVIEW_RUN_ID attempt=$REVIEW_RUN_ATTEMPT control_head=$REVIEW_CONTROL_HEAD"
+          if ! gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body' | grep -Fxq "$marker"; then
+            gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$marker"
+          else
+            echo 'final_lock_review_state_duplicate_suppressed=true'
+          fi
           echo 'final_human_review_gate_prepared=true'
           echo 'human_approval_created=false'
           echo 'ga_eligible=false'

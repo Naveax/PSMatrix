@@ -44,12 +44,28 @@ jobs:
           echo "artifact_id=$artifact_id" >> "$GITHUB_OUTPUT"
           echo "final_security_review_packet=PASS artifact_id=$artifact_id"
 
-      - name: Record packet and publish independent-review handoff
+      - name: Record packet and publish independent-review handoff idempotently
         env:
           ARTIFACT_ID: ${{ steps.artifact.outputs.artifact_id }}
         shell: bash
         run: |
           set -euo pipefail
-          gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "RC4_CHAIN_STATE stage=security_review_packet run_id=$PACKET_RUN_ID attempt=$PACKET_RUN_ATTEMPT control_head=$CONTROL_HEAD"
-          gh issue comment "$EXTERNAL_ISSUE" --repo "$GITHUB_REPOSITORY" --body "Final independent security-review packet is ready. Canonical packet run: \`$PACKET_RUN_ID\`, artifact ID: \`$ARTIFACT_ID\`, exact control head: \`$CONTROL_HEAD\`. Reviewer must use this exact packet and must remain independent. Do not post the completed report or reviewer private key in this issue; provision the validated report through \`PSMATRIX_GA_SECURITY_REVIEW_REPORT_JSON\` in \`production-ga-security-review-signing\`. \`ga_eligible=false\` until the final evaluator passes."
+          state_marker="RC4_CHAIN_STATE stage=security_review_packet run_id=$PACKET_RUN_ID attempt=$PACKET_RUN_ATTEMPT control_head=$CONTROL_HEAD"
+          handoff_marker="SECURITY_REVIEW_HANDOFF packet_run=$PACKET_RUN_ID artifact_id=$ARTIFACT_ID control_head=$CONTROL_HEAD"
+
+          external_seen=false
+          if gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$EXTERNAL_ISSUE/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body' | grep -Fq "$handoff_marker"; then
+            external_seen=true
+          fi
+          if [[ "$external_seen" != true ]]; then
+            gh issue comment "$EXTERNAL_ISSUE" --repo "$GITHUB_REPOSITORY" --body "Final independent security-review packet is ready. Canonical packet run: \`$PACKET_RUN_ID\`, artifact ID: \`$ARTIFACT_ID\`, exact control head: \`$CONTROL_HEAD\`. Reviewer must use this exact packet and must remain independent. Do not post the completed report or reviewer private key in this issue; provision the validated report through \`PSMATRIX_GA_SECURITY_REVIEW_REPORT_JSON\` in \`production-ga-security-review-signing\`. \`ga_eligible=false\` until the final evaluator passes.\n\n$handoff_marker"
+          else
+            echo 'security_review_handoff_duplicate_suppressed=true'
+          fi
+
+          if ! gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body' | grep -Fxq "$state_marker"; then
+            gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$state_marker"
+          else
+            echo 'security_review_packet_state_duplicate_suppressed=true'
+          fi
           echo 'independent_review_handoff_published=true'

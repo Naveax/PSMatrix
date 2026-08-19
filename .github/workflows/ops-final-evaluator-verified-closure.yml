@@ -84,15 +84,25 @@ jobs:
           print('ga_eligible=true')
           PY
 
-      - name: Publish verified completion and close tracking issues
+      - name: Publish verified completion and close tracking issues idempotently
         shell: bash
         run: |
           set -euo pipefail
+          marker="FINAL_GA_VERIFIED_CLOSURE evaluator_run=$EVALUATOR_RUN_ID attempt=$EVALUATOR_RUN_ATTEMPT control_head=$CONTROL_HEAD"
+          if gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body' | grep -Fxq "$marker"; then
+            echo 'final_ga_verified_closure_duplicate_suppressed=true'
+            exit 0
+          fi
+
           summary="Canonical final evaluator verified: run $EVALUATOR_RUN_ID attempt $EVALUATOR_RUN_ATTEMPT, control head $CONTROL_HEAD, 11/11 gates PASS, final GA attestation verified, ga_eligible=true."
-          gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$summary"
-          for issue in 260 261 263; do
-            gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body "$summary"
-            gh issue close "$issue" --repo "$GITHUB_REPOSITORY" --reason completed
+          for issue in 260 261 263 "$STATE_ISSUE"; do
+            state=$(gh issue view "$issue" --repo "$GITHUB_REPOSITORY" --json state --jq '.state')
+            if [[ "$state" == OPEN ]]; then
+              gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body "$summary"
+              gh issue close "$issue" --repo "$GITHUB_REPOSITORY" --reason completed
+            else
+              echo "verified_closure_issue_already_closed=$issue"
+            fi
           done
-          gh issue close "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --reason completed
+          gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$marker"
           echo 'psmatrix_final_ga_verified_closure=PASS'
