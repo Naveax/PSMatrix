@@ -20,13 +20,17 @@ jobs:
       github.event.pull_request.merged == true &&
       github.event.pull_request.base.ref == 'release/2.0.0-final-lock-control' &&
       github.event.pull_request.title == 'Promote human-reviewed final 2.0.0 release lock' &&
-      startsWith(github.event.pull_request.head.ref, 'ops/final-lock-promotion-')
+      startsWith(github.event.pull_request.head.ref, 'ops/final-lock-promotion-') &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login == 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+      PR_AUTHOR: ${{ github.event.pull_request.user.login }}
       LOCK_CONTROL_HEAD: ${{ github.event.pull_request.merge_commit_sha }}
       FINAL_CANDIDATE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
       RC4_ENROLLMENT_RUN_ID: '32136341027'
@@ -37,6 +41,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          [[ "$HEAD_REPOSITORY" == "$GITHUB_REPOSITORY" ]] || { echo "Final reviewed PR head repository mismatch: $HEAD_REPOSITORY" >&2; exit 1; }
+          [[ "$PR_AUTHOR" == 'github-actions[bot]' ]] || { echo "Final reviewed PR was not created by the promotion materializer bot: $PR_AUTHOR" >&2; exit 1; }
           [[ "$HEAD_REF" =~ ^ops/final-lock-promotion-([1-9][0-9]*)$ ]] || { echo 'unexpected final promotion PR head ref' >&2; exit 1; }
           branch_promotion_run_id="${BASH_REMATCH[1]}"
           [[ "$LOCK_CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]] || { echo 'final lock merge commit SHA is invalid' >&2; exit 1; }
@@ -46,7 +52,7 @@ jobs:
             printf 'Final reviewed PR changed unexpected files:\n%s\n' "${files[*]}" >&2; exit 1
           fi
           echo "BRANCH_PROMOTION_RUN_ID=$branch_promotion_run_id" >> "$GITHUB_ENV"
-          echo 'final_reviewed_pr_boundary=PASS files=2'
+          echo 'final_reviewed_pr_boundary=PASS files=2 same_repo=true bot_created=true'
 
       - name: Check out exact merged final active-lock commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
@@ -92,12 +98,34 @@ jobs:
           public_sha=hashlib.sha256(public_path.read_bytes()).hexdigest()
           if public_sha!=(lock.get('release_public_key') or {}).get('sha256') or public_sha!=evidence.get('reviewed_public_key_sha256'):
               raise SystemExit('committed final public-key digest closure mismatch')
+          promotion_control_head=str(evidence.get('promotion_control_head') or '')
+          if not re.fullmatch(r'[0-9a-f]{40}',promotion_control_head): raise SystemExit('final promotion control head invalid')
           with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as out:
               out.write(f'staging_run_id={staging_id}\n')
               out.write(f'review_run_id={review_id}\n')
               out.write(f'promotion_run_id={promotion_id}\n')
+              out.write(f'promotion_control_head={promotion_control_head}\n')
           print('committed_final_active_lock=PASS')
           PY
+
+      - name: Revalidate exact canonical final promotion run
+        env:
+          PROMOTION_RUN_ID: ${{ steps.lock.outputs.promotion_run_id }}
+          PROMOTION_CONTROL_HEAD: ${{ steps.lock.outputs.promotion_control_head }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$PROMOTION_RUN_ID" =~ ^[1-9][0-9]*$ && "$PROMOTION_CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          promotion=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROMOTION_RUN_ID")
+          [[ "$(jq -r '.name' <<<"$promotion")" == 'production-ga-windows-authority-final-release-lock-promotion' ]] || { echo 'Final promotion run workflow mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.path' <<<"$promotion")" == '.github/workflows/ga-windows-authority-final-release-lock-promotion.yml' ]] || { echo 'Final promotion run path mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.event' <<<"$promotion")" == 'workflow_dispatch' ]] || { echo 'Final promotion run event mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.status' <<<"$promotion")" == 'completed' && "$(jq -r '.conclusion' <<<"$promotion")" == 'success' ]] || { echo 'Final promotion run is not successful.' >&2; exit 1; }
+          [[ "$(jq -r '.head_branch' <<<"$promotion")" == 'release/2.0.0-final-lock-control' && "$(jq -r '.head_sha' <<<"$promotion")" == "$PROMOTION_CONTROL_HEAD" ]] || { echo 'Final promotion run control provenance mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.actor.login' <<<"$promotion")" == 'github-actions[bot]' && "$(jq -r '.triggering_actor.login' <<<"$promotion")" == 'github-actions[bot]' ]] || { echo 'Final promotion run was not created by the approved dispatcher bot.' >&2; exit 1; }
+          artifact_count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROMOTION_RUN_ID/artifacts?per_page=100" --jq '[.artifacts[] | select(.name == "psmatrix-2.0.0-final-release-lock-promotion-candidate" and (.expired|not))] | length')
+          [[ "$artifact_count" == '1' ]] || { echo "Final promotion artifact cardinality mismatch: $artifact_count" >&2; exit 1; }
+          echo "final_promotion_merge_provenance=PASS run_id=$PROMOTION_RUN_ID control_head=$PROMOTION_CONTROL_HEAD artifact_count=1"
 
       - name: Freeze exact final active-lock branch
         shell: bash
