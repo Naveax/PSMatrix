@@ -29,7 +29,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Parse YAML and extract Bash blocks
+      - name: Parse YAML, cross-workflow contracts, and extract Bash blocks
         id: parse
         continue-on-error: true
         shell: bash
@@ -43,11 +43,16 @@ jobs:
 
           root = ENV.fetch('VERIFY_ROOT')
           errors = []
-          files = Dir['.github/workflows/ops-*.yml'].sort
-          errors << 'no ops workflows found' if files.empty?
+          all_files = Dir['.github/workflows/*.yml'].sort
+          ops_files = Dir['.github/workflows/ops-*.yml'].sort
+          errors << 'no workflows found' if all_files.empty?
+          errors << 'no ops workflows found' if ops_files.empty?
           script_index = 0
+          contract_refs = 0
+          docs = {}
+          names = Hash.new { |h, k| h[k] = [] }
 
-          files.each do |path|
+          all_files.each do |path|
             begin
               doc = YAML.load_file(path, aliases: true)
             rescue => e
@@ -58,6 +63,16 @@ jobs:
               errors << "#{path}: top-level YAML is not a mapping"
               next
             end
+            docs[path] = doc
+            workflow_name = doc['name'].to_s.strip
+            errors << "#{path}: workflow name missing" if workflow_name.empty?
+            names[workflow_name] << path unless workflow_name.empty?
+          end
+
+          ops_files.each do |path|
+            doc = docs[path]
+            next unless doc.is_a?(Hash)
+
             concurrency = doc['concurrency']
             unless concurrency.is_a?(Hash)
               errors << "#{path}: top-level concurrency mapping is missing"
@@ -65,19 +80,64 @@ jobs:
               errors << "#{path}: concurrency.group missing" if concurrency['group'].to_s.empty?
               errors << "#{path}: concurrency.cancel-in-progress missing" unless concurrency.key?('cancel-in-progress')
             end
+
+            trigger = doc['on'] || doc[true]
+            if trigger.is_a?(Hash)
+              workflow_run = trigger['workflow_run']
+              if workflow_run.is_a?(Hash)
+                Array(workflow_run['workflows']).each do |target|
+                  target = target.to_s.strip
+                  next if target.empty?
+                  contract_refs += 1
+                  matches = names[target]
+                  if matches.empty?
+                    errors << "#{path}: workflow_run target name does not exist: #{target}"
+                  elsif matches.length > 1
+                    errors << "#{path}: workflow_run target name is ambiguous (#{matches.join(', ')}): #{target}"
+                  end
+                end
+              end
+            end
+
             jobs = doc['jobs']
             unless jobs.is_a?(Hash) && !jobs.empty?
               errors << "#{path}: jobs mapping missing/empty"
               next
             end
+
             jobs.each do |job_name, job|
               next unless job.is_a?(Hash)
+
+              reusable = job['uses'].to_s.strip
+              if reusable.start_with?('./.github/workflows/')
+                contract_refs += 1
+                target = reusable.split('@', 2).first
+                errors << "#{path}: reusable workflow target missing: #{target}" unless File.file?(target)
+              end
+
               steps = job['steps']
               next unless steps.is_a?(Array)
               steps.each_with_index do |step, idx|
                 next unless step.is_a?(Hash)
-                next unless step['shell'].to_s.strip == 'bash'
+
+                local_use = step['uses'].to_s.strip
+                if local_use.start_with?('./.github/workflows/')
+                  contract_refs += 1
+                  target = local_use.split('@', 2).first
+                  errors << "#{path}: local workflow target missing: #{target}" unless File.file?(target)
+                end
+
                 run = step['run']
+                if run.is_a?(String)
+                  run.scan(/\bgh\s+workflow\s+run\s+([A-Za-z0-9._-]+\.ya?ml)\b/) do |match|
+                    target_name = match[0]
+                    contract_refs += 1
+                    target = File.join('.github', 'workflows', target_name)
+                    errors << "#{path}: gh workflow run target missing: #{target_name}" unless File.file?(target)
+                  end
+                end
+
+                next unless step['shell'].to_s.strip == 'bash'
                 unless run.is_a?(String) && !run.empty?
                   errors << "#{path}: job #{job_name} step #{idx} declares bash without run text"
                   next
@@ -90,7 +150,7 @@ jobs:
           end
 
           File.write(File.join(root, 'yaml-errors.txt'), errors.join("\n") + (errors.empty? ? '' : "\n"))
-          File.write(File.join(root, 'counts.txt'), "workflows=#{files.length}\nbash_blocks=#{script_index}\n")
+          File.write(File.join(root, 'counts.txt'), "workflows=#{ops_files.length}\nbash_blocks=#{script_index}\ncontract_refs=#{contract_refs}\n")
           exit(errors.empty? ? 0 : 1)
           RUBY
 
@@ -127,7 +187,7 @@ jobs:
           body="OPS_WORKFLOW_STATIC_VERIFY status=$status head=$GITHUB_SHA parse=$parse bash=$bash_result $counts"
           gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$body"
           if [[ "$status" != PASS ]]; then
-            echo '--- YAML errors ---'
+            echo '--- YAML / contract errors ---'
             cat "$root/yaml-errors.txt" || true
             echo '--- Bash errors ---'
             cat "$root/bash-errors.txt" || true
