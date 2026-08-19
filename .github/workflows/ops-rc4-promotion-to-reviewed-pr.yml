@@ -72,8 +72,11 @@ jobs:
           if [[ "$count" -eq 1 ]]; then
             base=$(jq -r '.[0].base.ref' <<<"$prs")
             title=$(jq -r '.[0].title' <<<"$prs")
+            author=$(jq -r '.[0].user.login' <<<"$prs")
+            head_repo=$(jq -r '.[0].head.repo.full_name' <<<"$prs")
             [[ "$base" == 'main' ]] || { echo 'Existing RC4 promotion PR base mismatch.' >&2; exit 1; }
             [[ "$title" == 'Promote human-reviewed RC4 release lock' ]] || { echo 'Existing RC4 promotion PR title mismatch.' >&2; exit 1; }
+            [[ "$author" == 'github-actions[bot]' && "$head_repo" == "$GITHUB_REPOSITORY" ]] || { echo 'Existing RC4 promotion PR is not the same-repository materializer-bot PR.' >&2; exit 1; }
             echo 'duplicate=true' >> "$GITHUB_OUTPUT"
             echo 'branch_exists=true' >> "$GITHUB_OUTPUT"
             echo "rc4_promotion_pr_duplicate_suppressed=true branch=$branch"
@@ -227,12 +230,19 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          [[ "$current" == "$PROMOTION_CONTROL_HEAD" ]] || { echo "main moved before RC4 promotion PR recovery/create: $current != $PROMOTION_CONTROL_HEAD" >&2; exit 1; }
+          [[ "$(git rev-parse HEAD)" == "$PROMOTION_CONTROL_HEAD" ]] || { echo "RC4 promotion checkout is not the promotion control head: $(git rev-parse HEAD) != $PROMOTION_CONTROL_HEAD" >&2; exit 1; }
+
           if [[ "$BRANCH_EXISTS" == true ]]; then
             branch_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$branch" --jq '.object.sha')
             [[ "$branch_sha" =~ ^[0-9a-f]{40}$ ]]
             commit_json=$(gh api "repos/$GITHUB_REPOSITORY/commits/$branch_sha")
             message=$(jq -r '.commit.message' <<<"$commit_json")
             [[ "$message" == 'Promote human-reviewed RC4 release lock' ]] || { echo 'Orphan RC4 promotion branch commit message mismatch.' >&2; exit 1; }
+            parent_count=$(jq '.parents | length' <<<"$commit_json")
+            parent_sha=$(jq -r '.parents[0].sha // empty' <<<"$commit_json")
+            [[ "$parent_count" -eq 1 && "$parent_sha" == "$PROMOTION_CONTROL_HEAD" ]] || { echo "Orphan RC4 promotion branch is not a single commit directly on the promotion control head: parent=$parent_sha expected=$PROMOTION_CONTROL_HEAD count=$parent_count" >&2; exit 1; }
             mapfile -t branch_files < <(jq -r '.files[].filename' <<<"$commit_json" | sort)
             if [[ ${#branch_files[@]} -ne 2 || "${branch_files[0]}" != "${expected[0]}" || "${branch_files[1]}" != "${expected[1]}" ]]; then
               printf 'Orphan RC4 promotion branch changed unexpected files:\n%s\n' "${branch_files[*]}" >&2
@@ -245,7 +255,7 @@ jobs:
             [[ "$(git rev-parse HEAD)" == "$branch_sha" ]]
             cmp -s ga-packs/03-authoritative-windows/rc4-release-lock.json ../promotion/ga-packs/03-authoritative-windows/rc4-release-lock.json
             cmp -s release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem ../promotion/release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem
-            echo "rc4_promotion_orphan_branch_recovered=PASS sha=$branch_sha"
+            echo "rc4_promotion_orphan_branch_recovered=PASS sha=$branch_sha parent=$parent_sha exact_parent=true"
           else
             git switch -c "$branch"
             git add -- ga-packs/03-authoritative-windows/rc4-release-lock.json release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem
@@ -281,9 +291,13 @@ jobs:
           elif [[ "$count" -eq 1 ]]; then
             base=$(jq -r '.[0].base.ref' <<<"$prs")
             title=$(jq -r '.[0].title' <<<"$prs")
-            [[ "$base" == 'main' && "$title" == 'Promote human-reviewed RC4 release lock' ]] || { echo 'Recovered RC4 promotion PR metadata mismatch.' >&2; exit 1; }
+            author=$(jq -r '.[0].user.login' <<<"$prs")
+            head_repo=$(jq -r '.[0].head.repo.full_name' <<<"$prs")
+            [[ "$base" == 'main' && "$title" == 'Promote human-reviewed RC4 release lock' && "$author" == 'github-actions[bot]' && "$head_repo" == "$GITHUB_REPOSITORY" ]] || { echo 'Recovered RC4 promotion PR metadata/author mismatch.' >&2; exit 1; }
             echo 'rc4_promotion_pr_create_race_suppressed=true'
           else
+            current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+            [[ "$current" == "$PROMOTION_CONTROL_HEAD" ]] || { echo "main moved immediately before RC4 promotion PR create: $current != $PROMOTION_CONTROL_HEAD" >&2; exit 1; }
             gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$branch" --draft --title 'Promote human-reviewed RC4 release lock' --body "$body"
             echo 'rc4_exact_repository_change_pr_created=true'
           fi
