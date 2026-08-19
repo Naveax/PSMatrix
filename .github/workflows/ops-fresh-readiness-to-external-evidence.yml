@@ -89,26 +89,55 @@ jobs:
           print(f'external_evidence_prerequisites=PASS signing={found["signing"][0]} packet={found["packet"][0]} control={head}')
           PY
 
-      - name: Dispatch real external proof producers
+      - name: Dispatch real external proof producers once
         env:
+          FINAL_HEAD: ${{ steps.state.outputs.final_head }}
           SIGNING_RUN_ID: ${{ steps.state.outputs.signing_run_id }}
           PACKET_RUN_ID: ${{ steps.state.outputs.packet_run_id }}
         shell: bash
         run: |
           set -euo pipefail
-          gh workflow run ga-final-public-auth-live-probe.yml \
-            --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
-            -f release_signing_run_id="$SIGNING_RUN_ID"
 
-          gh workflow run ga-final-external-otlp.yml \
-            --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
-            -f release_signing_run_id="$SIGNING_RUN_ID"
+          existing_count() {
+            local workflow="$1"
+            gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?branch=$FINAL_ACTIVE_BRANCH&event=workflow_dispatch&per_page=100" \
+              --jq ".workflow_runs | map(select(.head_sha == \"$FINAL_HEAD\")) | length"
+          }
 
-          gh workflow run ga-final-security-review.yml \
-            --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
-            -f release_signing_run_id="$SIGNING_RUN_ID" \
-            -f review_packet_run_id="$PACKET_RUN_ID"
+          dispatched=0
+          suppressed=0
 
-          gh issue comment "$EXTERNAL_ISSUE" --repo "$GITHUB_REPOSITORY" --body "Fresh Production GA readiness run \`$READINESS_RUN_ID\` is exact \`12/12 PASS\`. Real external evidence producers dispatched on the final active control: public OAuth/mTLS shared live probe, external OTLP live probe, and independent security-review finalization. No GA claim is made until all 11 evaluator gates pass."
-          echo 'external_evidence_producers_dispatched=3'
+          if [[ "$(existing_count ga-final-public-auth-live-probe.yml)" -eq 0 ]]; then
+            gh workflow run ga-final-public-auth-live-probe.yml \
+              --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
+              -f release_signing_run_id="$SIGNING_RUN_ID"
+            dispatched=$((dispatched+1))
+          else
+            suppressed=$((suppressed+1))
+            echo 'public_auth_live_probe_duplicate_suppressed=true'
+          fi
+
+          if [[ "$(existing_count ga-final-external-otlp.yml)" -eq 0 ]]; then
+            gh workflow run ga-final-external-otlp.yml \
+              --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
+              -f release_signing_run_id="$SIGNING_RUN_ID"
+            dispatched=$((dispatched+1))
+          else
+            suppressed=$((suppressed+1))
+            echo 'external_otlp_duplicate_suppressed=true'
+          fi
+
+          if [[ "$(existing_count ga-final-security-review.yml)" -eq 0 ]]; then
+            gh workflow run ga-final-security-review.yml \
+              --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
+              -f release_signing_run_id="$SIGNING_RUN_ID" \
+              -f review_packet_run_id="$PACKET_RUN_ID"
+            dispatched=$((dispatched+1))
+          else
+            suppressed=$((suppressed+1))
+            echo 'security_review_duplicate_suppressed=true'
+          fi
+
+          gh issue comment "$EXTERNAL_ISSUE" --repo "$GITHUB_REPOSITORY" --body "Fresh Production GA readiness run \`$READINESS_RUN_ID\` is exact \`12/12 PASS\`. External evidence dispatch bounded on final control \`$FINAL_HEAD\`: dispatched=$dispatched, suppressed=$suppressed. No GA claim is made until all 11 evaluator gates pass."
+          echo "external_evidence_producers=PASS dispatched=$dispatched suppressed=$suppressed expected=3"
           echo 'ga_eligible=false'
