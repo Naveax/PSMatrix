@@ -47,6 +47,7 @@ jobs:
           owner_gate_contracts_checked = 0
           promotion_pr_human_gate_contracts_checked = 0
           promotion_merge_contracts_checked = 0
+          second_human_gate_contracts_checked = 0
           issue_comment_triggers_checked = 0
           pull_request_target_refs = 0
           source_run_bindings_checked = 0
@@ -304,6 +305,41 @@ jobs:
             promotion_merge_contracts_checked += 1
           end
 
+          second_human_gate_requirements = {
+            '.github/workflows/ops-rc4-reviewed-lock-merge-to-signing.yml' => [
+              "github.event.pull_request.merged_by.login == 'Naveax'",
+              'PR_HEAD_SHA:',
+              'MERGED_BY:',
+              '.author_association == "OWNER"',
+              '.commit_id == $sha',
+              '.state == "APPROVED"',
+              'Latest decisive Naveax review for exact RC4 head is not APPROVED:',
+              'rc4_second_human_gate=PASS',
+            ],
+            '.github/workflows/ops-final-reviewed-lock-merge-to-signing.yml' => [
+              "github.event.pull_request.merged_by.login == 'Naveax'",
+              'PR_HEAD_SHA:',
+              'MERGED_BY:',
+              '.author_association == "OWNER"',
+              '.commit_id == $sha',
+              '.state == "APPROVED"',
+              'Latest decisive Naveax review for exact final head is not APPROVED:',
+              'final_second_human_gate=PASS',
+            ],
+          }
+
+          second_human_gate_requirements.each do |path, fragments|
+            unless File.file?(path)
+              errors << "#{path}: required second-human-gate merge consumer is missing"
+              next
+            end
+            raw = File.read(path, encoding: 'utf-8')
+            fragments.each do |fragment|
+              errors << "#{path}: exact-head second human review invariant missing: #{fragment}" unless raw.include?(fragment)
+            end
+            second_human_gate_contracts_checked += 1
+          end
+
           files.each do |path|
             raw = File.read(path, encoding: 'utf-8')
             begin
@@ -353,7 +389,7 @@ jobs:
             end
           end
 
-          puts "release_workflow_policy_scan workflow_files=#{all_workflows.length} critical_workflows=#{files.length} action_refs=#{action_refs} top_permissions=#{permissions_checked} job_permissions=#{job_permissions_checked} retired_credential_refs=#{retired_credential_refs} owner_gate_contracts_checked=#{owner_gate_contracts_checked} promotion_pr_human_gate_contracts_checked=#{promotion_pr_human_gate_contracts_checked} promotion_merge_contracts_checked=#{promotion_merge_contracts_checked} issue_comment_triggers=#{issue_comment_triggers_checked} pull_request_target_refs=#{pull_request_target_refs} source_run_bindings_checked=#{source_run_bindings_checked} source_artifact_bindings_checked=#{source_artifact_bindings_checked} privileged_source_event_guards_checked=#{privileged_source_event_guards_checked} mutation_source_guards_checked=#{mutation_source_guards_checked}"
+          puts "release_workflow_policy_scan workflow_files=#{all_workflows.length} critical_workflows=#{files.length} action_refs=#{action_refs} top_permissions=#{permissions_checked} job_permissions=#{job_permissions_checked} retired_credential_refs=#{retired_credential_refs} owner_gate_contracts_checked=#{owner_gate_contracts_checked} promotion_pr_human_gate_contracts_checked=#{promotion_pr_human_gate_contracts_checked} promotion_merge_contracts_checked=#{promotion_merge_contracts_checked} second_human_gate_contracts_checked=#{second_human_gate_contracts_checked} issue_comment_triggers=#{issue_comment_triggers_checked} pull_request_target_refs=#{pull_request_target_refs} source_run_bindings_checked=#{source_run_bindings_checked} source_artifact_bindings_checked=#{source_artifact_bindings_checked} privileged_source_event_guards_checked=#{privileged_source_event_guards_checked} mutation_source_guards_checked=#{mutation_source_guards_checked}"
           unless errors.empty?
             warn errors.join("\n")
             exit 1
@@ -367,7 +403,7 @@ jobs:
           set -euo pipefail
           if [[ "${{ job.status }}" == success ]]; then status=PASS; else status=FAIL; fi
           marker="OPS_WORKFLOW_POLICY_VERIFY head=$GITHUB_SHA "
-          body="${marker}status=$status scope=all-retired-credential+ops+ga-policy retired_temp_admin_refs=0 owner_gate_contracts=3 promotion_pr_human_gate_contracts=2 promotion_merge_contracts=2 issue_comment_gate_set=3 pull_request_target_refs=0 source_artifact_binding=enabled privileged_source_event_guard=enabled mutation_source_guard=enabled human_gate_attempt_binding=enabled first_human_gate_runtime_provenance=enabled reviewed_merge_promotion_provenance=enabled same_repo_bot_promotion_pr=enabled external22_prerequisite_provenance=enabled"
+          body="${marker}status=$status scope=all-retired-credential+ops+ga-policy retired_temp_admin_refs=0 owner_gate_contracts=3 promotion_pr_human_gate_contracts=2 promotion_merge_contracts=2 second_human_gate_contracts=2 issue_comment_gate_set=3 pull_request_target_refs=0 source_artifact_binding=enabled privileged_source_event_guard=enabled mutation_source_guard=enabled human_gate_attempt_binding=enabled first_human_gate_runtime_provenance=enabled reviewed_merge_promotion_provenance=enabled same_repo_bot_promotion_pr=enabled second_human_gate_exact_head_review=enabled external22_prerequisite_provenance=enabled"
           comment_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
             --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" \
             | tail -n 1)
