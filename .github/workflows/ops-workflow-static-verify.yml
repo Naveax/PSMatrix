@@ -1,0 +1,136 @@
+name: ops-workflow-static-verify
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/ops-*.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ops-workflow-static-verify-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      STATE_ISSUE: '262'
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Parse YAML and extract Bash blocks
+        id: parse
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/ops-workflow-verify"
+          mkdir -p "$RUNNER_TEMP/ops-workflow-verify/bash"
+          VERIFY_ROOT="$RUNNER_TEMP/ops-workflow-verify" ruby <<'RUBY'
+          require 'yaml'
+          require 'fileutils'
+
+          root = ENV.fetch('VERIFY_ROOT')
+          errors = []
+          files = Dir['.github/workflows/ops-*.yml'].sort
+          errors << 'no ops workflows found' if files.empty?
+          script_index = 0
+
+          files.each do |path|
+            begin
+              doc = YAML.load_file(path, aliases: true)
+            rescue => e
+              errors << "#{path}: YAML parse failed: #{e.class}: #{e.message}"
+              next
+            end
+            unless doc.is_a?(Hash)
+              errors << "#{path}: top-level YAML is not a mapping"
+              next
+            end
+            concurrency = doc['concurrency']
+            unless concurrency.is_a?(Hash)
+              errors << "#{path}: top-level concurrency mapping is missing"
+            else
+              errors << "#{path}: concurrency.group missing" if concurrency['group'].to_s.empty?
+              errors << "#{path}: concurrency.cancel-in-progress missing" unless concurrency.key?('cancel-in-progress')
+            end
+            jobs = doc['jobs']
+            unless jobs.is_a?(Hash) && !jobs.empty?
+              errors << "#{path}: jobs mapping missing/empty"
+              next
+            end
+            jobs.each do |job_name, job|
+              next unless job.is_a?(Hash)
+              steps = job['steps']
+              next unless steps.is_a?(Array)
+              steps.each_with_index do |step, idx|
+                next unless step.is_a?(Hash)
+                next unless step['shell'].to_s.strip == 'bash'
+                run = step['run']
+                unless run.is_a?(String) && !run.empty?
+                  errors << "#{path}: job #{job_name} step #{idx} declares bash without run text"
+                  next
+                end
+                script_index += 1
+                target = File.join(root, 'bash', format('%04d.sh', script_index))
+                File.write(target, run)
+              end
+            end
+          end
+
+          File.write(File.join(root, 'yaml-errors.txt'), errors.join("\n") + (errors.empty? ? '' : "\n"))
+          File.write(File.join(root, 'counts.txt'), "workflows=#{files.length}\nbash_blocks=#{script_index}\n")
+          exit(errors.empty? ? 0 : 1)
+          RUBY
+
+      - name: Validate extracted Bash syntax
+        id: bash
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/ops-workflow-verify"
+          : > "$root/bash-errors.txt"
+          failed=0
+          while IFS= read -r -d '' script; do
+            if ! bash -n "$script" 2>>"$root/bash-errors.txt"; then
+              echo "bash syntax failure: $script" >> "$root/bash-errors.txt"
+              failed=1
+            fi
+          done < <(find "$root/bash" -type f -name '*.sh' -print0 | sort -z)
+          exit "$failed"
+
+      - name: Publish static verification result
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/ops-workflow-verify"
+          parse='${{ steps.parse.outcome }}'
+          bash_result='${{ steps.bash.outcome }}'
+          counts=$(tr '\n' ' ' < "$root/counts.txt" | sed -E 's/[[:space:]]+$//')
+          if [[ "$parse" == success && "$bash_result" == success ]]; then
+            status=PASS
+          else
+            status=FAIL
+          fi
+          body="OPS_WORKFLOW_STATIC_VERIFY status=$status head=$GITHUB_SHA parse=$parse bash=$bash_result $counts"
+          gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$body"
+          if [[ "$status" != PASS ]]; then
+            echo '--- YAML errors ---'
+            cat "$root/yaml-errors.txt" || true
+            echo '--- Bash errors ---'
+            cat "$root/bash-errors.txt" || true
+            exit 1
+          fi
+          echo "$body"
