@@ -18,21 +18,25 @@ jobs:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'workflow_dispatch' &&
-      github.event.workflow_run.head_branch == 'release/2.0.0rc4-active-lock'
+      github.event.workflow_run.head_branch == 'release/2.0.0rc4-active-lock' &&
+      github.event.workflow_run.actor.login == 'github-actions[bot]' &&
+      github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
       GH_TOKEN: ${{ github.token }}
       SIGNING_RUN_ID: ${{ github.event.workflow_run.id }}
+      SIGNING_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
       SIGNING_CONTROL_HEAD: ${{ github.event.workflow_run.head_sha }}
       RELEASE_COMMIT: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
       FROZEN_CONTROL_BRANCH: release/2.0.0rc4-active-lock
     steps:
-      - name: Validate successful protected signing artifact and frozen control
+      - name: Validate automated protected signing artifact and frozen control
         shell: bash
         run: |
           set -euo pipefail
           [[ "$SIGNING_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$SIGNING_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
           [[ "$SIGNING_CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]]
           current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FROZEN_CONTROL_BRANCH" --jq '.object.sha')
           [[ "$current" == "$SIGNING_CONTROL_HEAD" ]] || { echo "Frozen RC4 active-lock moved after signing: $current != $SIGNING_CONTROL_HEAD" >&2; exit 1; }
@@ -40,6 +44,7 @@ jobs:
           import json, os, urllib.request
           repo = os.environ['GITHUB_REPOSITORY']
           run_id = os.environ['SIGNING_RUN_ID']
+          attempt = os.environ['SIGNING_RUN_ATTEMPT']
           control = os.environ['SIGNING_CONTROL_HEAD'].lower()
           headers = {
               'Accept':'application/vnd.github+json',
@@ -54,15 +59,21 @@ jobs:
           run=fetch(f'actions/runs/{run_id}')
           if run.get('name')!='production-ga-windows-authority-rc4-release-sign-from-lock':
               raise SystemExit('unexpected signing workflow')
+          if run.get('path')!='.github/workflows/ga-windows-authority-rc4-release-sign-from-lock.yml':
+              raise SystemExit('protected RC4 signing workflow path mismatch')
           if run.get('event')!='workflow_dispatch' or run.get('status')!='completed' or run.get('conclusion')!='success':
               raise SystemExit('protected signing run is not a successful workflow_dispatch')
-          if (run.get('head_sha') or '').lower()!=control:
-              raise SystemExit('protected signing head mismatch')
+          if str(run.get('run_attempt'))!=attempt:
+              raise SystemExit('protected RC4 signing run attempt mismatch')
+          if run.get('head_branch')!='release/2.0.0rc4-active-lock' or (run.get('head_sha') or '').lower()!=control:
+              raise SystemExit('protected signing control provenance mismatch')
+          if (run.get('actor') or {}).get('login')!='github-actions[bot]' or (run.get('triggering_actor') or {}).get('login')!='github-actions[bot]':
+              raise SystemExit('protected RC4 signing was not dispatched by reviewed-lock merge automation')
           artifacts=fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts',[])
           matches=[a for a in artifacts if a.get('name')=='psmatrix-2.0.0rc4-protected-release' and not a.get('expired')]
           if len(matches)!=1:
               raise SystemExit(f'expected exactly one live protected RC4 release artifact; found {len(matches)}')
-          print(f'protected_rc4_signing_artifact=PASS artifact_id={matches[0].get("id")}')
+          print(f'protected_rc4_signing_artifact=PASS artifact_id={matches[0].get("id")} automated_dispatch=true')
           PY
 
       - name: Check protected intake dispatch budget
