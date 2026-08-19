@@ -18,30 +18,37 @@ jobs:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'workflow_dispatch' &&
-      github.event.workflow_run.head_branch == 'release/2.0.0rc4-active-lock'
+      github.event.workflow_run.head_branch == 'release/2.0.0rc4-active-lock' &&
+      github.event.workflow_run.actor.login == 'github-actions[bot]' &&
+      github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_COMMIT: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
+      INTAKE_RUN_ID: ${{ github.event.workflow_run.id }}
+      INTAKE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
       CONTROL_HEAD: ${{ github.event.workflow_run.head_sha }}
       FROZEN_CONTROL_BRANCH: release/2.0.0rc4-active-lock
     steps:
-      - name: Validate successful intake provenance and frozen control
+      - name: Validate automated intake provenance and frozen control
         shell: bash
         run: |
           set -euo pipefail
           [[ "$CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]]
-          [[ "${{ github.event.workflow_run.id }}" =~ ^[1-9][0-9]*$ ]]
+          [[ "$INTAKE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$INTAKE_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
           current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FROZEN_CONTROL_BRANCH" --jq '.object.sha')
           [[ "$current" == "$CONTROL_HEAD" ]] || { echo "Frozen RC4 active-lock moved after intake: $current != $CONTROL_HEAD" >&2; exit 1; }
-          run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/${{ github.event.workflow_run.id }}")"
-          [[ "$(jq -r '.name' <<<"$run")" == 'production-ga-windows-authority-rc4-release-intake-selfhosted' ]]
-          [[ "$(jq -r '.event' <<<"$run")" == 'workflow_dispatch' ]]
-          [[ "$(jq -r '.status' <<<"$run")" == 'completed' ]]
-          [[ "$(jq -r '.conclusion' <<<"$run")" == 'success' ]]
-          [[ "$(jq -r '.head_sha' <<<"$run")" == "$CONTROL_HEAD" ]]
-          echo 'protected_rc4_intake_provenance=PASS'
+          run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$INTAKE_RUN_ID")"
+          [[ "$(jq -r '.name' <<<"$run")" == 'production-ga-windows-authority-rc4-release-intake-selfhosted' ]] || { echo 'RC4 intake workflow name mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.path' <<<"$run")" == '.github/workflows/ga-windows-authority-rc4-release-intake-selfhosted.yml' ]] || { echo 'RC4 intake workflow path mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.event' <<<"$run")" == 'workflow_dispatch' ]] || { echo 'RC4 intake event mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.status' <<<"$run")" == 'completed' && "$(jq -r '.conclusion' <<<"$run")" == 'success' ]] || { echo 'RC4 intake run is not completed/success.' >&2; exit 1; }
+          [[ "$(jq -r '.run_attempt' <<<"$run")" == "$INTAKE_RUN_ATTEMPT" ]] || { echo 'RC4 intake attempt mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.head_branch' <<<"$run")" == "$FROZEN_CONTROL_BRANCH" && "$(jq -r '.head_sha' <<<"$run")" == "$CONTROL_HEAD" ]] || { echo 'RC4 intake control provenance mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.actor.login' <<<"$run")" == 'github-actions[bot]' && "$(jq -r '.triggering_actor.login' <<<"$run")" == 'github-actions[bot]' ]] || { echo 'RC4 intake was not dispatched by the protected-signing automation.' >&2; exit 1; }
+          echo 'protected_rc4_intake_provenance=PASS automated_dispatch=true'
 
       - name: Check media-readiness dispatch budget
         id: dedup
