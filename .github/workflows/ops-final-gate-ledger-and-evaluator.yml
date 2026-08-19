@@ -154,6 +154,9 @@ jobs:
           PY
           )"
 
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_ACTIVE_BRANCH" --jq '.object.sha')
+          [[ "$current" == "$CONTROL_HEAD" ]] || { echo "Final active execution head moved before evaluator dispatch: $current != $CONTROL_HEAD" >&2; exit 1; }
+
           gh workflow run ga-final-evaluator.yml \
             --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
             -f validation_run_id="$VALIDATION" \
