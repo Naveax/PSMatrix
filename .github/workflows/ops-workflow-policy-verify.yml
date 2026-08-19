@@ -104,7 +104,7 @@ jobs:
           end
           RUBY
 
-      - name: Publish policy verification result
+      - name: Publish policy verification result idempotently
         if: always()
         shell: bash
         run: |
@@ -114,6 +114,17 @@ jobs:
           else
             status=FAIL
           fi
-          body="OPS_WORKFLOW_POLICY_VERIFY status=$status head=$GITHUB_SHA scope=ops+ga"
-          gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$body"
+          marker="OPS_WORKFLOW_POLICY_VERIFY head=$GITHUB_SHA "
+          body="${marker}status=$status scope=ops+ga"
+          comment_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" \
+            | tail -n 1)
+          if [[ -n "$comment_id" ]]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" -f body="$body" >/dev/null
+            echo "workflow_policy_comment=updated head=$GITHUB_SHA comment_id=$comment_id"
+          else
+            gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$body"
+            echo "workflow_policy_comment=created head=$GITHUB_SHA"
+          fi
+          echo "$body"
           [[ "$status" == PASS ]]
