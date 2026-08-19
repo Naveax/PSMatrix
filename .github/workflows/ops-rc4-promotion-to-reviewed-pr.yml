@@ -19,7 +19,9 @@ jobs:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'workflow_dispatch' &&
-      github.event.workflow_run.head_branch == 'main'
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.actor.login == 'github-actions[bot]' &&
+      github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -30,7 +32,31 @@ jobs:
       REVIEW_RUN_ID: '32137455148'
       REVIEWED_DRAFT_SHA256: a2a97763f679b18562e19ec99f066374b097a50c44a3bea4d1208328e9b339d9
       REVIEWED_PUBLIC_KEY_SHA256: ece4d7087449cb42cde9183b0b1e2b82db610d4ffffd726e6737d2ba09578a08
+      HUMAN_GATE_ISSUE: '260'
     steps:
+      - name: Require pre-existing exact owner approval and automated promotion dispatch
+        shell: bash
+        run: |
+          set -euo pipefail
+          promotion=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROMOTION_RUN_ID")
+          [[ "$(jq -r '.name' <<<"$promotion")" == 'production-ga-windows-authority-rc4-release-lock-promotion' ]] || { echo 'RC4 promotion workflow name mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.path' <<<"$promotion")" == '.github/workflows/ga-windows-authority-rc4-release-lock-promotion.yml' ]] || { echo 'RC4 promotion workflow path mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.event' <<<"$promotion")" == 'workflow_dispatch' ]] || { echo 'RC4 promotion event mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.status' <<<"$promotion")" == 'completed' && "$(jq -r '.conclusion' <<<"$promotion")" == 'success' ]] || { echo 'RC4 promotion run is not successful.' >&2; exit 1; }
+          [[ "$(jq -r '.head_sha' <<<"$promotion")" == "$PROMOTION_CONTROL_HEAD" ]] || { echo 'RC4 promotion control head mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.head_branch' <<<"$promotion")" == 'main' ]] || { echo 'RC4 promotion branch mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.actor.login' <<<"$promotion")" == 'github-actions[bot]' ]] || { echo 'Manual/non-automation RC4 promotion run is forbidden.' >&2; exit 1; }
+          [[ "$(jq -r '.triggering_actor.login' <<<"$promotion")" == 'github-actions[bot]' ]] || { echo 'RC4 promotion triggering actor is not the approved dispatcher bot.' >&2; exit 1; }
+          promotion_created_at=$(jq -r '.created_at' <<<"$promotion")
+          [[ "$promotion_created_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] || { echo 'RC4 promotion creation timestamp is invalid.' >&2; exit 1; }
+
+          approval="RC4 HUMAN REVIEW APPROVED: $CANDIDATE_COMMIT"
+          comments=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/$HUMAN_GATE_ISSUE/comments?per_page=100" --jq 'add')
+          approval_at=$(jq -r --arg approval "$approval" '[.[] | select(.user.login == "Naveax" and .author_association == "OWNER" and .body == $approval) | .created_at] | sort | .[0] // empty' <<<"$comments")
+          [[ "$approval_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] || { echo 'Exact RC4 owner approval is missing.' >&2; exit 1; }
+          [[ "$promotion_created_at" == "$approval_at" || "$promotion_created_at" > "$approval_at" ]] || { echo "RC4 promotion predates owner approval: promotion=$promotion_created_at approval=$approval_at" >&2; exit 1; }
+          echo "rc4_first_human_gate_provenance=PASS approval_at=$approval_at promotion_run=$PROMOTION_RUN_ID created_at=$promotion_created_at automated_dispatch=true"
+
       - name: Suppress duplicate PR or detect recoverable orphan branch
         id: dedupe
         shell: bash
