@@ -1,0 +1,49 @@
+name: ops-rc4-media-readiness-report
+
+on:
+  workflow_run:
+    workflows: [production-ga-windows-authority-rc4-media-readiness-selfhosted]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+jobs:
+  report:
+    if: github.event.workflow_run.event == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+    steps:
+      - name: Download non-secret media readiness evidence
+        if: env.RUN_CONCLUSION == 'success' || env.RUN_CONCLUSION == 'failure'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-authority-rc4-media-readiness
+          path: evidence
+          repository: Naveax/PSMatrix
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Publish boundary-aware result
+        shell: bash
+        run: |
+          set -euo pipefail
+          status='UNKNOWN'
+          selection='unknown'
+          missing='unknown'
+          if [[ -d evidence ]]; then
+            file="$(find evidence -maxdepth 2 -type f -name '*.json' | head -n1 || true)"
+            if [[ -n "$file" ]]; then
+              status="$(jq -r '.status // "UNKNOWN"' "$file" 2>/dev/null || echo UNKNOWN)"
+              selection="$(jq -r '.selection_present // .ready_for_provisioning_manifest_materialization // "unknown"' "$file" 2>/dev/null || echo unknown)"
+              missing="$(jq -c '.missing_media_roles // []' "$file" 2>/dev/null || echo '[]')"
+            fi
+          fi
+          body=$(printf '### RC4 media-readiness result\n\nRun: `%s`\nConclusion: `%s`\nWorkflow status: `%s`\nSelection/manifest readiness: `%s`\nMissing media roles: `%s`\n\nNo automatic provisioning was dispatched from this reporter. Operator-selection boundary remains enforced.' "$RUN_ID" "$RUN_CONCLUSION" "$status" "$selection" "$missing")
+          gh api "repos/$GITHUB_REPOSITORY/issues/261/comments" --method POST -f body="$body" >/dev/null
