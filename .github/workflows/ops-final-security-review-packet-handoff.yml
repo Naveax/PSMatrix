@@ -19,7 +19,9 @@ jobs:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'workflow_dispatch' &&
-      github.event.workflow_run.head_branch == 'release/2.0.0-final-active-lock'
+      github.event.workflow_run.head_branch == 'release/2.0.0-final-active-lock' &&
+      github.event.workflow_run.actor.login == 'github-actions[bot]' &&
+      github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -31,18 +33,27 @@ jobs:
       STATE_ISSUE: '262'
       EXTERNAL_ISSUE: '261'
     steps:
-      - name: Validate exact packet artifact
+      - name: Validate exact automated packet run and artifact
         id: artifact
         shell: bash
         run: |
           set -euo pipefail
+          [[ "$PACKET_RUN_ID" =~ ^[1-9][0-9]*$ && "$PACKET_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ && "$CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]]
           current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_ACTIVE_BRANCH" --jq '.object.sha')
           [[ "$current" == "$CONTROL_HEAD" ]] || { echo 'Final active control moved before review-packet handoff.' >&2; exit 1; }
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PACKET_RUN_ID")
+          [[ "$(jq -r '.name' <<<"$run")" == 'production-ga-final-security-review-packet' ]] || { echo 'Security-review packet workflow name mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.path' <<<"$run")" == '.github/workflows/ga-final-security-review-packet.yml' ]] || { echo 'Security-review packet workflow path mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.event' <<<"$run")" == 'workflow_dispatch' ]] || { echo 'Security-review packet event mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.status' <<<"$run")" == 'completed' && "$(jq -r '.conclusion' <<<"$run")" == 'success' ]] || { echo 'Security-review packet run is not completed/success.' >&2; exit 1; }
+          [[ "$(jq -r '.head_branch' <<<"$run")" == "$FINAL_ACTIVE_BRANCH" && "$(jq -r '.head_sha' <<<"$run")" == "$CONTROL_HEAD" ]] || { echo 'Security-review packet control provenance mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.run_attempt' <<<"$run")" == "$PACKET_RUN_ATTEMPT" ]] || { echo 'Security-review packet attempt mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.actor.login' <<<"$run")" == 'github-actions[bot]' && "$(jq -r '.triggering_actor.login' <<<"$run")" == 'github-actions[bot]' ]] || { echo 'Security-review packet was not dispatched by final-signing automation.' >&2; exit 1; }
           artifact_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PACKET_RUN_ID/artifacts?per_page=100" \
             --jq '[.artifacts[] | select(.name == "psmatrix-2.0.0-final-security-review-packet" and (.expired|not))] | if length == 1 then .[0].id else error("expected exactly one live final security-review packet artifact") end')
           [[ "$artifact_id" =~ ^[1-9][0-9]*$ ]] || { echo 'Review packet artifact ID is invalid.' >&2; exit 1; }
           echo "artifact_id=$artifact_id" >> "$GITHUB_OUTPUT"
-          echo "final_security_review_packet=PASS artifact_id=$artifact_id"
+          echo "final_security_review_packet=PASS artifact_id=$artifact_id automated_dispatch=true"
 
       - name: Record packet and publish independent-review handoff idempotently
         env:
