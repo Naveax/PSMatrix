@@ -1,0 +1,45 @@
+name: ops-naveax-runner-state-observer
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/ops-naveax-runner-state-observer.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ops-naveax-runner-state-observer-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      ADMIN_TOKEN: ${{ secrets.PSMATRIX_TEMP_ADMIN_TOKEN }}
+      EXTERNAL_ISSUE: '261'
+    steps:
+      - name: Inspect runner metadata only
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PSMATRIX_TEMP_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ -n "$GH_TOKEN" ]] || { echo 'temporary admin token missing' >&2; exit 1; }
+          json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runners?per_page=100")
+          count=$(jq '[.runners[] | select(.name == "NAVEAX")] | length' <<<"$json")
+          if [[ "$count" -ne 1 ]]; then
+            body="NAVEAX_RUNNER_STATE status=UNRESOLVED matching_runners=$count secret_values_logged=false"
+          else
+            status=$(jq -r '.runners[] | select(.name == "NAVEAX") | .status' <<<"$json")
+            busy=$(jq -r '.runners[] | select(.name == "NAVEAX") | .busy' <<<"$json")
+            labels=$(jq -r '[.runners[] | select(.name == "NAVEAX") | .labels[].name] | sort | join(",")' <<<"$json")
+            required_ok=$(jq -r '[.runners[] | select(.name == "NAVEAX") | .labels[].name] as $l | (["self-hosted","Windows","X64","psmatrix-hyperv"] | all(. as $x | $l | index($x) != null))' <<<"$json")
+            body="NAVEAX_RUNNER_STATE status=$status busy=$busy required_labels_present=$required_ok labels=$labels secret_values_logged=false"
+          fi
+          GH_TOKEN='${{ github.token }}' gh issue comment "$EXTERNAL_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$body"
+          echo "$body"
