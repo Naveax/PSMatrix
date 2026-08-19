@@ -49,6 +49,7 @@ jobs:
           errors << 'no ops workflows found' if ops_files.empty?
           script_index = 0
           contract_refs = 0
+          dispatch_input_refs = 0
           docs = {}
           names = Hash.new { |h, k| h[k] = [] }
 
@@ -129,11 +130,43 @@ jobs:
 
                 run = step['run']
                 if run.is_a?(String)
-                  run.scan(/\bgh\s+workflow\s+run\s+([A-Za-z0-9._-]+\.ya?ml)\b/) do |match|
-                    target_name = match[0]
-                    contract_refs += 1
-                    target = File.join('.github', 'workflows', target_name)
-                    errors << "#{path}: gh workflow run target missing: #{target_name}" unless File.file?(target)
+                  lines = run.lines
+                  line_index = 0
+                  while line_index < lines.length
+                    line = lines[line_index].rstrip
+                    match = line.match(/\bgh\s+workflow\s+run\s+([A-Za-z0-9._-]+\.ya?ml)\b/)
+                    if match
+                      target_name = match[1]
+                      command = line.dup
+                      while command.rstrip.end_with?('\\') && line_index + 1 < lines.length
+                        command = command.rstrip.sub(/\\\z/, '')
+                        line_index += 1
+                        command << ' ' << lines[line_index].strip
+                      end
+
+                      contract_refs += 1
+                      target = File.join('.github', 'workflows', target_name)
+                      unless File.file?(target)
+                        errors << "#{path}: gh workflow run target missing: #{target_name}"
+                      else
+                        target_doc = docs[target]
+                        target_trigger = target_doc.is_a?(Hash) ? (target_doc['on'] || target_doc[true]) : nil
+                        target_dispatch = target_trigger.is_a?(Hash) ? target_trigger['workflow_dispatch'] : nil
+                        target_inputs = if target_dispatch.is_a?(Hash) && target_dispatch['inputs'].is_a?(Hash)
+                                          target_dispatch['inputs'].keys.map(&:to_s)
+                                        else
+                                          []
+                                        end
+                        passed_inputs = command.scan(/(?:^|\s)-f\s+([A-Za-z0-9_-]+)=/).flatten.uniq
+                        dispatch_input_refs += passed_inputs.length
+                        passed_inputs.each do |input_name|
+                          unless target_inputs.include?(input_name)
+                            errors << "#{path}: gh workflow run #{target_name} passes unknown input: #{input_name}"
+                          end
+                        end
+                      end
+                    end
+                    line_index += 1
                   end
                 end
 
@@ -150,7 +183,7 @@ jobs:
           end
 
           File.write(File.join(root, 'yaml-errors.txt'), errors.join("\n") + (errors.empty? ? '' : "\n"))
-          File.write(File.join(root, 'counts.txt'), "workflows=#{ops_files.length}\nbash_blocks=#{script_index}\ncontract_refs=#{contract_refs}\n")
+          File.write(File.join(root, 'counts.txt'), "workflows=#{ops_files.length}\nbash_blocks=#{script_index}\ncontract_refs=#{contract_refs}\ndispatch_input_refs=#{dispatch_input_refs}\n")
           exit(errors.empty? ? 0 : 1)
           RUBY
 
