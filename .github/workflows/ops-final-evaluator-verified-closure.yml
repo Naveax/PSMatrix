@@ -96,6 +96,7 @@ jobs:
 
           completion_marker="FINAL_GA_COMPLETION evaluator_run=$EVALUATOR_RUN_ID attempt=$EVALUATOR_RUN_ATTEMPT control_head=$CONTROL_HEAD"
           summary="Canonical final evaluator verified: run $EVALUATOR_RUN_ID attempt $EVALUATOR_RUN_ATTEMPT, control head $CONTROL_HEAD, 11/11 gates PASS, final GA attestation verified, ga_eligible=true."
+          completion_body=$(printf '%s\n\n%s' "$summary" "$completion_marker")
 
           for issue in 260 261 263 "$STATE_ISSUE"; do
             state=$(gh issue view "$issue" --repo "$GITHUB_REPOSITORY" --json state --jq '.state')
@@ -107,9 +108,7 @@ jobs:
                 seen=true
               fi
               if [[ "$seen" != true ]]; then
-                gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body "$summary
-
-$completion_marker"
+                gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body "$completion_body"
                 echo "verified_closure_comment_created=$issue"
               else
                 echo "verified_closure_comment_duplicate_suppressed=$issue"
