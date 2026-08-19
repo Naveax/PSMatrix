@@ -25,7 +25,9 @@ jobs:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'workflow_dispatch' &&
-      github.event.workflow_run.head_branch == 'release/2.0.0rc4-active-lock'
+      github.event.workflow_run.head_branch == 'release/2.0.0rc4-active-lock' &&
+      github.event.workflow_run.actor.login == 'github-actions[bot]' &&
+      github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -57,10 +59,8 @@ jobs:
           [[ "$(jq -r '.event' <<<"$run")" == 'workflow_dispatch' ]]
           [[ "$(jq -r '.status' <<<"$run")" == 'completed' && "$(jq -r '.conclusion' <<<"$run")" == 'success' ]]
           [[ "$(jq -r '.run_attempt' <<<"$run")" == "$UPSTREAM_RUN_ATTEMPT" ]]
-          [[ "$(jq -r '.actor.login' <<<"$run")" == 'github-actions[bot]' ]] || {
-            echo 'RC4 downstream automation only accepts canonical bot-dispatched upstream runs.' >&2
-            exit 1
-          }
+          [[ "$(jq -r '.actor.login' <<<"$run")" == 'github-actions[bot]' ]]
+          [[ "$(jq -r '.triggering_actor.login' <<<"$run")" == 'github-actions[bot]' ]]
 
           case "$UPSTREAM_NAME" in
             production-ga-windows-authority-rc4-release-intake-selfhosted)
@@ -90,17 +90,32 @@ jobs:
         run: |
           set -euo pipefail
 
+          workflow_runs() {
+            local workflow="$1"
+            gh api --method GET \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs" \
+              -f branch="$FROZEN_CONTROL_BRANCH" \
+              -f event='workflow_dispatch' \
+              -f per_page=100
+          }
+
           downstream_state() {
             local workflow="$1"
-            local payload count
-            payload=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?branch=$FROZEN_CONTROL_BRANCH&event=workflow_dispatch&per_page=100")
+            local payload count actor triggering
+            payload=$(workflow_runs "$workflow")
             count=$(jq --arg sha "$CONTROL_HEAD" '[.workflow_runs[] | select(.head_sha == $sha)] | length' <<<"$payload")
             if [[ "$count" -gt 1 ]]; then
               echo "More than one equivalent downstream run already exists for $workflow on $CONTROL_HEAD; refusing any new dispatch." >&2
               return 2
             fi
             if [[ "$count" -eq 1 ]]; then
-              jq -r --arg sha "$CONTROL_HEAD" '.workflow_runs[] | select(.head_sha == $sha) | "existing_downstream_run id=\(.id) status=\(.status) conclusion=\(.conclusion // \"\") attempt=\(.run_attempt)"' <<<"$payload"
+              actor=$(jq -r --arg sha "$CONTROL_HEAD" '.workflow_runs[] | select(.head_sha == $sha) | .actor.login' <<<"$payload")
+              triggering=$(jq -r --arg sha "$CONTROL_HEAD" '.workflow_runs[] | select(.head_sha == $sha) | .triggering_actor.login' <<<"$payload")
+              [[ "$actor" == 'github-actions[bot]' && "$triggering" == 'github-actions[bot]' ]] || {
+                echo "Noncanonical existing downstream run blocks $workflow: actor=$actor triggering_actor=$triggering" >&2
+                return 2
+              }
+              jq -r --arg sha "$CONTROL_HEAD" '.workflow_runs[] | select(.head_sha == $sha) | "existing_downstream_run id=\(.id) status=\(.status) conclusion=\(.conclusion // "") attempt=\(.run_attempt)"' <<<"$payload"
               return 1
             fi
             return 0
@@ -123,11 +138,17 @@ jobs:
 
           unique_success_run() {
             local workflow="$1"
-            local payload count
-            payload=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?branch=$FROZEN_CONTROL_BRANCH&event=workflow_dispatch&per_page=100")
+            local payload count actor triggering
+            payload=$(workflow_runs "$workflow")
             count=$(jq --arg sha "$CONTROL_HEAD" '[.workflow_runs[] | select(.head_sha == $sha)] | length' <<<"$payload")
             [[ "$count" -eq 1 ]] || {
               echo "Expected exactly one canonical run for $workflow on $CONTROL_HEAD; found $count." >&2
+              return 2
+            }
+            actor=$(jq -r --arg sha "$CONTROL_HEAD" '.workflow_runs[] | select(.head_sha == $sha) | .actor.login' <<<"$payload")
+            triggering=$(jq -r --arg sha "$CONTROL_HEAD" '.workflow_runs[] | select(.head_sha == $sha) | .triggering_actor.login' <<<"$payload")
+            [[ "$actor" == 'github-actions[bot]' && "$triggering" == 'github-actions[bot]' ]] || {
+              echo "Canonical-chain provenance mismatch for $workflow: actor=$actor triggering_actor=$triggering" >&2
               return 2
             }
             jq -e --arg sha "$CONTROL_HEAD" '.workflow_runs[] | select(.head_sha == $sha) | select(.status == "completed" and .conclusion == "success")' <<<"$payload" >/dev/null || {
