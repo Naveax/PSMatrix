@@ -50,6 +50,7 @@ jobs:
           script_index = 0
           contract_refs = 0
           dispatch_input_refs = 0
+          required_dispatch_inputs_checked = 0
           docs = {}
           names = Hash.new { |h, k| h[k] = [] }
 
@@ -152,16 +153,29 @@ jobs:
                         target_doc = docs[target]
                         target_trigger = target_doc.is_a?(Hash) ? (target_doc['on'] || target_doc[true]) : nil
                         target_dispatch = target_trigger.is_a?(Hash) ? target_trigger['workflow_dispatch'] : nil
-                        target_inputs = if target_dispatch.is_a?(Hash) && target_dispatch['inputs'].is_a?(Hash)
-                                          target_dispatch['inputs'].keys.map(&:to_s)
-                                        else
-                                          []
-                                        end
+                        target_input_specs = if target_dispatch.is_a?(Hash) && target_dispatch['inputs'].is_a?(Hash)
+                                               target_dispatch['inputs']
+                                             else
+                                               {}
+                                             end
+                        target_inputs = target_input_specs.keys.map(&:to_s)
                         passed_inputs = command.scan(/(?:^|\s)-f\s+([A-Za-z0-9_-]+)=/).flatten.uniq
                         dispatch_input_refs += passed_inputs.length
+
                         passed_inputs.each do |input_name|
                           unless target_inputs.include?(input_name)
                             errors << "#{path}: gh workflow run #{target_name} passes unknown input: #{input_name}"
+                          end
+                        end
+
+                        target_input_specs.each do |input_name, spec|
+                          next unless spec.is_a?(Hash)
+                          required = spec['required'] == true
+                          has_default = spec.key?('default')
+                          next unless required && !has_default
+                          required_dispatch_inputs_checked += 1
+                          unless passed_inputs.include?(input_name.to_s)
+                            errors << "#{path}: gh workflow run #{target_name} omits required input without default: #{input_name}"
                           end
                         end
                       end
@@ -183,7 +197,7 @@ jobs:
           end
 
           File.write(File.join(root, 'yaml-errors.txt'), errors.join("\n") + (errors.empty? ? '' : "\n"))
-          File.write(File.join(root, 'counts.txt'), "workflows=#{ops_files.length}\nbash_blocks=#{script_index}\ncontract_refs=#{contract_refs}\ndispatch_input_refs=#{dispatch_input_refs}\n")
+          File.write(File.join(root, 'counts.txt'), "workflows=#{ops_files.length}\nbash_blocks=#{script_index}\ncontract_refs=#{contract_refs}\ndispatch_input_refs=#{dispatch_input_refs}\nrequired_dispatch_inputs_checked=#{required_dispatch_inputs_checked}\n")
           exit(errors.empty? ? 0 : 1)
           RUBY
 
