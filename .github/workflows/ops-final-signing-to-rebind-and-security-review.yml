@@ -109,10 +109,24 @@ jobs:
               --jq ".workflow_runs | map(select(.head_sha == \"$FINAL_CONTROL_HEAD\")) | length"
           }
 
+          assert_final_head() {
+            local current
+            current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_ACTIVE_BRANCH" --jq '.object.sha')
+            [[ "$current" == "$FINAL_CONTROL_HEAD" ]] || { echo "Final active control moved before downstream dispatch: $current != $FINAL_CONTROL_HEAD" >&2; return 1; }
+          }
+
+          assert_rc4_head() {
+            local current
+            current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$RC4_ACTIVE_BRANCH" --jq '.object.sha')
+            [[ "$current" == "$RC4_CONTROL_HEAD" ]] || { echo "RC4 active control moved before final Windows rebind dispatch: $current != $RC4_CONTROL_HEAD" >&2; return 1; }
+          }
+
           dispatched=0
           suppressed=0
 
           if [[ "$(existing_count ga-windows-authority-final-windows-evidence-rebind.yml)" -eq 0 ]]; then
+            assert_final_head
+            assert_rc4_head
             gh workflow run ga-windows-authority-final-windows-evidence-rebind.yml \
               --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
               -f rc4_control_head="$RC4_CONTROL_HEAD" \
@@ -127,6 +141,7 @@ jobs:
           fi
 
           if [[ "$(existing_count ga-final-security-review-packet.yml)" -eq 0 ]]; then
+            assert_final_head
             gh workflow run ga-final-security-review-packet.yml \
               --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
               -f release_signing_run_id="$FINAL_SIGNING_RUN_ID"

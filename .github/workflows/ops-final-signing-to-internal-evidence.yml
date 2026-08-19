@@ -64,10 +64,17 @@ jobs:
               --jq ".workflow_runs | map(select(.head_sha == \"$FINAL_CONTROL_HEAD\")) | length"
           }
 
+          assert_final_head() {
+            local current
+            current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_ACTIVE_BRANCH" --jq '.object.sha')
+            [[ "$current" == "$FINAL_CONTROL_HEAD" ]] || { echo "Final active control moved before internal evidence dispatch: $current != $FINAL_CONTROL_HEAD" >&2; return 1; }
+          }
+
           dispatch_once() {
             local workflow="$1"
             shift
             if [[ "$(existing_count "$workflow")" -eq 0 ]]; then
+              assert_final_head
               gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" "$@"
               dispatched=$((dispatched+1))
               echo "internal_evidence_dispatched workflow=$workflow"
