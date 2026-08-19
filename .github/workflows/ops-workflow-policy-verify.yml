@@ -46,6 +46,7 @@ jobs:
           retired_credential_refs = 0
           owner_gate_contracts_checked = 0
           promotion_pr_human_gate_contracts_checked = 0
+          promotion_merge_contracts_checked = 0
           issue_comment_triggers_checked = 0
           pull_request_target_refs = 0
           source_run_bindings_checked = 0
@@ -266,6 +267,43 @@ jobs:
             promotion_pr_human_gate_contracts_checked += 1
           end
 
+          promotion_merge_requirements = {
+            '.github/workflows/ops-rc4-reviewed-lock-merge-to-signing.yml' => [
+              'github.event.pull_request.head.repo.full_name == github.repository',
+              "github.event.pull_request.user.login == 'github-actions[bot]'",
+              'HEAD_REPOSITORY:',
+              'PR_AUTHOR:',
+              'production-ga-windows-authority-rc4-release-lock-promotion',
+              '.github/workflows/ga-windows-authority-rc4-release-lock-promotion.yml',
+              'psmatrix-2.0.0rc4-release-lock-promotion-candidate',
+              'RC4 promotion artifact cardinality mismatch:',
+              'rc4_promotion_merge_provenance=PASS',
+            ],
+            '.github/workflows/ops-final-reviewed-lock-merge-to-signing.yml' => [
+              'github.event.pull_request.head.repo.full_name == github.repository',
+              "github.event.pull_request.user.login == 'github-actions[bot]'",
+              'HEAD_REPOSITORY:',
+              'PR_AUTHOR:',
+              'production-ga-windows-authority-final-release-lock-promotion',
+              '.github/workflows/ga-windows-authority-final-release-lock-promotion.yml',
+              'psmatrix-2.0.0-final-release-lock-promotion-candidate',
+              'Final promotion artifact cardinality mismatch:',
+              'final_promotion_merge_provenance=PASS',
+            ],
+          }
+
+          promotion_merge_requirements.each do |path, fragments|
+            unless File.file?(path)
+              errors << "#{path}: required reviewed-lock merge consumer is missing"
+              next
+            end
+            raw = File.read(path, encoding: 'utf-8')
+            fragments.each do |fragment|
+              errors << "#{path}: reviewed-lock merge provenance invariant missing: #{fragment}" unless raw.include?(fragment)
+            end
+            promotion_merge_contracts_checked += 1
+          end
+
           files.each do |path|
             raw = File.read(path, encoding: 'utf-8')
             begin
@@ -315,7 +353,7 @@ jobs:
             end
           end
 
-          puts "release_workflow_policy_scan workflow_files=#{all_workflows.length} critical_workflows=#{files.length} action_refs=#{action_refs} top_permissions=#{permissions_checked} job_permissions=#{job_permissions_checked} retired_credential_refs=#{retired_credential_refs} owner_gate_contracts_checked=#{owner_gate_contracts_checked} promotion_pr_human_gate_contracts_checked=#{promotion_pr_human_gate_contracts_checked} issue_comment_triggers=#{issue_comment_triggers_checked} pull_request_target_refs=#{pull_request_target_refs} source_run_bindings_checked=#{source_run_bindings_checked} source_artifact_bindings_checked=#{source_artifact_bindings_checked} privileged_source_event_guards_checked=#{privileged_source_event_guards_checked} mutation_source_guards_checked=#{mutation_source_guards_checked}"
+          puts "release_workflow_policy_scan workflow_files=#{all_workflows.length} critical_workflows=#{files.length} action_refs=#{action_refs} top_permissions=#{permissions_checked} job_permissions=#{job_permissions_checked} retired_credential_refs=#{retired_credential_refs} owner_gate_contracts_checked=#{owner_gate_contracts_checked} promotion_pr_human_gate_contracts_checked=#{promotion_pr_human_gate_contracts_checked} promotion_merge_contracts_checked=#{promotion_merge_contracts_checked} issue_comment_triggers=#{issue_comment_triggers_checked} pull_request_target_refs=#{pull_request_target_refs} source_run_bindings_checked=#{source_run_bindings_checked} source_artifact_bindings_checked=#{source_artifact_bindings_checked} privileged_source_event_guards_checked=#{privileged_source_event_guards_checked} mutation_source_guards_checked=#{mutation_source_guards_checked}"
           unless errors.empty?
             warn errors.join("\n")
             exit 1
@@ -329,7 +367,7 @@ jobs:
           set -euo pipefail
           if [[ "${{ job.status }}" == success ]]; then status=PASS; else status=FAIL; fi
           marker="OPS_WORKFLOW_POLICY_VERIFY head=$GITHUB_SHA "
-          body="${marker}status=$status scope=all-retired-credential+ops+ga-policy retired_temp_admin_refs=0 owner_gate_contracts=3 promotion_pr_human_gate_contracts=2 issue_comment_gate_set=3 pull_request_target_refs=0 source_artifact_binding=enabled privileged_source_event_guard=enabled mutation_source_guard=enabled human_gate_attempt_binding=enabled first_human_gate_runtime_provenance=enabled external22_prerequisite_provenance=enabled"
+          body="${marker}status=$status scope=all-retired-credential+ops+ga-policy retired_temp_admin_refs=0 owner_gate_contracts=3 promotion_pr_human_gate_contracts=2 promotion_merge_contracts=2 issue_comment_gate_set=3 pull_request_target_refs=0 source_artifact_binding=enabled privileged_source_event_guard=enabled mutation_source_guard=enabled human_gate_attempt_binding=enabled first_human_gate_runtime_provenance=enabled reviewed_merge_promotion_provenance=enabled same_repo_bot_promotion_pr=enabled external22_prerequisite_provenance=enabled"
           comment_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
             --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" \
             | tail -n 1)
