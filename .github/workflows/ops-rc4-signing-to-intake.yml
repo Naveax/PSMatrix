@@ -63,7 +63,27 @@ jobs:
           print(f'protected_rc4_signing_artifact=PASS artifact_id={matches[0].get("id")}')
           PY
 
+      - name: Check protected intake dispatch budget
+        id: dedup
+        shell: bash
+        run: |
+          set -euo pipefail
+          existing=$(gh api --method GET \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ga-windows-authority-rc4-release-intake-selfhosted.yml/runs" \
+            -f branch="$FROZEN_CONTROL_BRANCH" \
+            -f event='workflow_dispatch' \
+            -f per_page=100 \
+            --jq ".workflow_runs[] | select(.head_sha == \"$SIGNING_CONTROL_HEAD\") | .id" \
+            | head -n 1)
+          if [[ -n "$existing" ]]; then
+            echo 'already_dispatched=true' >> "$GITHUB_OUTPUT"
+            echo "duplicate_protected_rc4_intake_suppressed=true existing_run_id=$existing"
+          else
+            echo 'already_dispatched=false' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Dispatch canonical NAVEAX protected-release intake
+        if: steps.dedup.outputs.already_dispatched != 'true'
         shell: bash
         run: |
           set -euo pipefail
