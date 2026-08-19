@@ -105,19 +105,40 @@ jobs:
           print(f'external22_final_prerequisites=PASS signing_run={s[-1][0]} packet_run={p[-1][0]} control_head={head}')
           PY
 
-      - name: Revalidate frozen readiness anchor and dispatch fresh readiness once
+      - name: Revalidate frozen readiness anchor and dispatch one fresh post-external22 readiness run
         shell: bash
         run: |
           set -euo pipefail
           readiness_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$READINESS_BRANCH" --jq '.object.sha')
           [[ "$readiness_sha" == "$READINESS_HEAD" ]] || { echo "Readiness anchor moved: $readiness_sha != $READINESS_HEAD" >&2; exit 1; }
 
+          ready_comments=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/$EXTERNAL_ISSUE/comments?per_page=100" --jq 'add')
+          ready_at=$(jq -r '[.[] | select(.user.login == "Naveax" and .author_association == "OWNER" and .body == "EXTERNAL22 MATERIAL READY") | .created_at] | sort | .[0] // empty' <<<"$ready_comments")
+          [[ "$ready_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] || { echo 'Canonical EXTERNAL22 MATERIAL READY event timestamp cannot be resolved.' >&2; exit 1; }
+
+          existing=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ga-final-production-readiness.yml/runs?branch=$READINESS_BRANCH&event=workflow_dispatch&per_page=100" \
+            --jq ".workflow_runs[] | select(.head_sha == \"$READINESS_HEAD\" and .created_at >= \"$ready_at\") | .id" \
+            | head -n 1)
+
           marker="EXTERNAL22_FRESH_READINESS_DISPATCH head=$READINESS_HEAD"
-          if gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$EXTERNAL_ISSUE/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body' | grep -Fxq "$marker"; then
-            echo 'fresh_production_readiness_duplicate_suppressed=true'
+          marker_exists=false
+          if jq -r '.[] | select(.user.login == "github-actions[bot]") | .body' <<<"$ready_comments" | grep -Fxq "$marker"; then
+            marker_exists=true
+          fi
+
+          if [[ -n "$existing" ]]; then
+            if [[ "$marker_exists" != true ]]; then
+              gh issue comment "$EXTERNAL_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$marker"
+            fi
+            echo "fresh_production_readiness_duplicate_suppressed=true existing_run_id=$existing source=actions"
             echo 'external_producers_dispatched=false'
             echo 'ga_eligible=false'
             exit 0
+          fi
+
+          if [[ "$marker_exists" == true ]]; then
+            echo 'Fresh-readiness ledger marker exists but no matching post-external22 Actions run exists; failing closed.' >&2
+            exit 1
           fi
 
           gh workflow run ga-final-production-readiness.yml --repo "$GITHUB_REPOSITORY" --ref "$READINESS_BRANCH"

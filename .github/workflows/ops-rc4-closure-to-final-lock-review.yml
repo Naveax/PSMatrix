@@ -30,6 +30,7 @@ jobs:
       COMPLETED_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
       COMPLETED_HEAD: ${{ github.event.workflow_run.head_sha }}
       COMPLETED_BRANCH: ${{ github.event.workflow_run.head_branch }}
+      COMPLETED_AT: ${{ github.event.workflow_run.updated_at }}
       RC4_CONTROL_BRANCH: release/2.0.0rc4-active-lock
       FINAL_SOURCE_BRANCH: final/2.0.0-release-candidate-anchor
       FINAL_SOURCE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
@@ -44,11 +45,13 @@ jobs:
           [[ "$COMPLETED_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$COMPLETED_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
           [[ "$COMPLETED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$COMPLETED_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]]
           python - <<'PY'
           import json, os, urllib.request
           repo=os.environ['GITHUB_REPOSITORY']
           run_id=os.environ['COMPLETED_RUN_ID']
           name=os.environ['COMPLETED_WORKFLOW']
+          head=os.environ['COMPLETED_HEAD'].lower()
           headers={
               'Accept':'application/vnd.github+json',
               'Authorization':f"Bearer {os.environ['GH_TOKEN']}",
@@ -61,6 +64,8 @@ jobs:
           run=fetch(f'actions/runs/{run_id}')
           if run.get('name')!=name or run.get('event')!='workflow_dispatch' or run.get('status')!='completed' or run.get('conclusion')!='success':
               raise SystemExit('upstream workflow run identity/status mismatch')
+          if (run.get('head_sha') or '').lower()!=head:
+              raise SystemExit('upstream workflow run head mismatch')
           expected={
               'production-ga-windows-authority-rc4-candidate-closure-selfhosted':'windows-authority-rc4-candidate-closure',
               'production-ga-windows-authority-final-staging-candidate-selfhosted':'windows-authority-final-unlocked-staging-candidate',
@@ -79,16 +84,42 @@ jobs:
         run: |
           set -euo pipefail
 
-          marker_exists() {
-            local marker="$1"
+          comments() {
             gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
-              --jq '.[] | select(.user.login == "github-actions[bot]") | .body' \
-              | grep -Fq "$marker"
+              --jq '.[] | select(.user.login == "github-actions[bot]") | .body'
           }
 
-          publish_marker() {
+          state_exists() {
+            local stage="$1"
+            local head="$2"
+            comments | grep -Eq "^RC4_CHAIN_STATE stage=${stage} run_id=[1-9][0-9]* attempt=[1-9][0-9]* control_head=${head}$"
+          }
+
+          record_state_once() {
+            local stage="$1"
+            local head="$2"
+            if ! state_exists "$stage" "$head"; then
+              gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" \
+                --body "RC4_CHAIN_STATE stage=$stage run_id=$COMPLETED_RUN_ID attempt=$COMPLETED_RUN_ATTEMPT control_head=$head"
+            fi
+          }
+
+          downstream_after_source() {
+            local workflow="$1"
+            local branch="$2"
+            local head="$3"
+            gh api --method GET \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs" \
+              -f branch="$branch" -f event='workflow_dispatch' -f per_page=100 \
+              --jq ".workflow_runs[] | select(.head_sha == \"$head\" and .created_at >= \"$COMPLETED_AT\") | .id" \
+              | head -n 1
+          }
+
+          publish_dispatch_marker() {
             local marker="$1"
-            gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$marker"
+            if ! comments | grep -Fxq "$marker"; then
+              gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$marker"
+            fi
           }
 
           case "$COMPLETED_WORKFLOW" in
@@ -99,17 +130,19 @@ jobs:
               final_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_SOURCE_BRANCH" --jq '.object.sha')
               [[ "$final_sha" == "$FINAL_SOURCE_COMMIT" ]] || { echo "Final source anchor moved: $final_sha" >&2; exit 1; }
 
-              marker="RC4_CHAIN_DISPATCH target=final_staging release_commit=$FINAL_SOURCE_COMMIT active_lock=$COMPLETED_HEAD"
-              if marker_exists "$marker"; then
-                echo 'duplicate_final_staging_dispatch_suppressed=true'
+              existing=$(downstream_after_source ga-windows-authority-final-staging-candidate-selfhosted.yml "$FINAL_SOURCE_BRANCH" "$FINAL_SOURCE_COMMIT")
+              if [[ -n "$existing" ]]; then
+                record_state_once closure "$COMPLETED_HEAD"
+                publish_dispatch_marker "RC4_CHAIN_DISPATCH target=final_staging release_commit=$FINAL_SOURCE_COMMIT active_lock=$COMPLETED_HEAD source_run_id=$COMPLETED_RUN_ID source_attempt=$COMPLETED_RUN_ATTEMPT"
+                echo "duplicate_final_staging_dispatch_suppressed=true existing_run_id=$existing"
                 exit 0
               fi
 
-              gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "RC4_CHAIN_STATE stage=closure run_id=$COMPLETED_RUN_ID attempt=$COMPLETED_RUN_ATTEMPT control_head=$COMPLETED_HEAD"
               gh workflow run ga-windows-authority-final-staging-candidate-selfhosted.yml \
                 --repo "$GITHUB_REPOSITORY" --ref "$FINAL_SOURCE_BRANCH" \
                 -f release_commit="$FINAL_SOURCE_COMMIT"
-              publish_marker "$marker source_run_id=$COMPLETED_RUN_ID source_attempt=$COMPLETED_RUN_ATTEMPT"
+              record_state_once closure "$COMPLETED_HEAD"
+              publish_dispatch_marker "RC4_CHAIN_DISPATCH target=final_staging release_commit=$FINAL_SOURCE_COMMIT active_lock=$COMPLETED_HEAD source_run_id=$COMPLETED_RUN_ID source_attempt=$COMPLETED_RUN_ATTEMPT"
               echo 'next_stage=final_unsigned_staging'
               ;;
 
@@ -121,19 +154,21 @@ jobs:
               control_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_LOCK_CONTROL_BRANCH" --jq '.object.sha')
               [[ "$control_sha" =~ ^[0-9a-f]{40}$ ]] || { echo 'Frozen final lock-control branch cannot be resolved.' >&2; exit 1; }
 
-              marker="RC4_CHAIN_DISPATCH target=final_lock_review final_candidate=$FINAL_SOURCE_COMMIT control_head=$control_sha"
-              if marker_exists "$marker"; then
-                echo 'duplicate_final_lock_review_dispatch_suppressed=true'
+              existing=$(downstream_after_source ga-windows-authority-final-release-lock-review.yml "$FINAL_LOCK_CONTROL_BRANCH" "$control_sha")
+              if [[ -n "$existing" ]]; then
+                record_state_once final_staging "$COMPLETED_HEAD"
+                publish_dispatch_marker "RC4_CHAIN_DISPATCH target=final_lock_review final_candidate=$FINAL_SOURCE_COMMIT control_head=$control_sha staging_run_id=$COMPLETED_RUN_ID staging_attempt=$COMPLETED_RUN_ATTEMPT"
+                echo "duplicate_final_lock_review_dispatch_suppressed=true existing_run_id=$existing"
                 exit 0
               fi
 
-              gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "RC4_CHAIN_STATE stage=final_staging run_id=$COMPLETED_RUN_ID attempt=$COMPLETED_RUN_ATTEMPT control_head=$COMPLETED_HEAD"
               gh workflow run ga-windows-authority-final-release-lock-review.yml \
                 --repo "$GITHUB_REPOSITORY" --ref "$FINAL_LOCK_CONTROL_BRANCH" \
                 -f final_candidate_commit="$FINAL_SOURCE_COMMIT" \
                 -f rc4_enrollment_run_id="$RC4_ENROLLMENT_RUN_ID" \
                 -f staging_run_id="$COMPLETED_RUN_ID"
-              publish_marker "$marker staging_run_id=$COMPLETED_RUN_ID staging_attempt=$COMPLETED_RUN_ATTEMPT"
+              record_state_once final_staging "$COMPLETED_HEAD"
+              publish_dispatch_marker "RC4_CHAIN_DISPATCH target=final_lock_review final_candidate=$FINAL_SOURCE_COMMIT control_head=$control_sha staging_run_id=$COMPLETED_RUN_ID staging_attempt=$COMPLETED_RUN_ATTEMPT"
               echo "next_stage=final_lock_review control_head=$control_sha"
               ;;
 
