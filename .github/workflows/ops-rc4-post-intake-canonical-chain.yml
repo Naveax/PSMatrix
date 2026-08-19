@@ -82,13 +82,12 @@ jobs:
             sed -E 's/.* attempt=([1-9][0-9]*).*/\1/'
           }
 
-          mark_once() {
+          require_unseen() {
             local stage="$1"
             if state_exists "$stage"; then
               echo "rc4_chain_duplicate_suppressed=true stage=$stage run=$COMPLETED_RUN_ID attempt=$COMPLETED_RUN_ATTEMPT"
               exit 0
             fi
-            record_state "$stage"
           }
 
           case "$COMPLETED_WORKFLOW" in
@@ -128,25 +127,26 @@ jobs:
                 exit 0
               fi
 
-              record_state media_readiness
               gh workflow run ga-windows-authority-rc4-provisioning-manifest-selfhosted.yml \
                 --repo "$GITHUB_REPOSITORY" --ref "$CONTROL_BRANCH" \
                 -f release_commit="$RELEASE_COMMIT" \
                 -f control_head="$CONTROL_HEAD"
+              record_state media_readiness
               echo 'next_stage=rc4_provisioning_manifest'
               ;;
 
             production-ga-windows-authority-rc4-provisioning-manifest-selfhosted)
-              mark_once provisioning_manifest
+              require_unseen provisioning_manifest
               gh workflow run ga-windows-authority-rc4-operation-package-selfhosted.yml \
                 --repo "$GITHUB_REPOSITORY" --ref "$CONTROL_BRANCH" \
                 -f release_commit="$RELEASE_COMMIT" \
                 -f control_head="$CONTROL_HEAD"
+              record_state provisioning_manifest
               echo 'next_stage=rc4_operation_package'
               ;;
 
             production-ga-windows-authority-rc4-operation-package-selfhosted)
-              mark_once operation
+              require_unseen operation
               gh workflow run ga-windows-authority-rc4-provision-selfhosted.yml \
                 --repo "$GITHUB_REPOSITORY" --ref "$CONTROL_BRANCH" \
                 -f release_commit="$RELEASE_COMMIT" \
@@ -154,11 +154,12 @@ jobs:
                 -f operation_run_id="$COMPLETED_RUN_ID" \
                 -f operation_run_attempt="$COMPLETED_RUN_ATTEMPT" \
                 -f provision_timeout_seconds=7200
+              record_state operation
               echo 'next_stage=rc4_hyperv_provision'
               ;;
 
             production-ga-windows-authority-rc4-provision-selfhosted)
-              mark_once provisioning
+              require_unseen provisioning
               gh workflow run ga-windows-authority-rc4-image-identity-measurement-selfhosted.yml \
                 --repo "$GITHUB_REPOSITORY" --ref "$CONTROL_BRANCH" \
                 -f release_commit="$RELEASE_COMMIT" \
@@ -166,11 +167,12 @@ jobs:
                 -f provisioning_run_id="$COMPLETED_RUN_ID" \
                 -f provisioning_run_attempt="$COMPLETED_RUN_ATTEMPT" \
                 -f measurement_timeout_seconds=1800
+              record_state provisioning
               echo 'next_stage=rc4_image_identity_measurement'
               ;;
 
             production-ga-windows-authority-rc4-image-identity-measurement-selfhosted)
-              mark_once measurement
+              require_unseen measurement
               gh workflow run ga-windows-authority-rc4-certification-campaign-selfhosted.yml \
                 --repo "$GITHUB_REPOSITORY" --ref "$CONTROL_BRANCH" \
                 -f release_commit="$RELEASE_COMMIT" \
@@ -179,11 +181,12 @@ jobs:
                 -f measurement_run_attempt="$COMPLETED_RUN_ATTEMPT" \
                 -f iterations=10 \
                 -f campaign_timeout_seconds=1800
+              record_state measurement
               echo 'next_stage=rc4_certification_campaign'
               ;;
 
             production-ga-windows-authority-rc4-certification-campaign-selfhosted)
-              mark_once campaign
+              require_unseen campaign
               operation=$(get_state operation)
               provisioning=$(get_state provisioning)
               measurement=$(get_state measurement)
@@ -209,6 +212,7 @@ jobs:
                 -f measurement_run_attempt="$measurement_attempt" \
                 -f campaign_run_id="$COMPLETED_RUN_ID" \
                 -f campaign_run_attempt="$COMPLETED_RUN_ATTEMPT"
+              record_state campaign
               echo 'next_stage=rc4_hardened_candidate_closure'
               ;;
 
