@@ -75,7 +75,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "FINAL_GATE_STATE gate=$GATE run_id=$RUN_ID attempt=$RUN_ATTEMPT control_head=$CONTROL_HEAD"
+          marker="FINAL_GATE_STATE gate=$GATE run_id=$RUN_ID attempt=$RUN_ATTEMPT control_head=$CONTROL_HEAD"
+          if ! gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body' | grep -Fxq "$marker"; then
+            gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$marker"
+          fi
           echo 'final_gate_recorded=true'
 
       - name: Dispatch evaluator only when exact 11-gate closure exists
@@ -118,7 +121,15 @@ jobs:
 
           marker="FINAL_EVALUATOR_DISPATCH control_head=$CONTROL_HEAD"
           if gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body' | grep -Fxq "$marker"; then
-            echo 'final_evaluator_already_dispatched=true'
+            echo 'final_evaluator_already_dispatched=true source=ledger'
+            exit 0
+          fi
+
+          existing=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ga-final-evaluator.yml/runs?branch=$FINAL_ACTIVE_BRANCH&event=workflow_dispatch&per_page=100" \
+            --jq ".workflow_runs | map(select(.head_sha == \"$CONTROL_HEAD\")) | length")
+          if [[ "$existing" -gt 0 ]]; then
+            gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$marker"
+            echo "final_evaluator_already_dispatched=true source=actions existing_runs=$existing"
             exit 0
           fi
 
