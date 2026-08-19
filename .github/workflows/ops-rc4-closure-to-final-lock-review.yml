@@ -20,7 +20,9 @@ jobs:
   advance:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'workflow_dispatch'
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.actor.login == 'github-actions[bot]' &&
+      github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -38,7 +40,7 @@ jobs:
       RC4_ENROLLMENT_RUN_ID: '32136341027'
       STATE_ISSUE: '262'
     steps:
-      - name: Validate exact successful upstream artifact
+      - name: Validate exact automated successful upstream artifact
         shell: bash
         run: |
           set -euo pipefail
@@ -50,8 +52,10 @@ jobs:
           import json, os, urllib.request
           repo=os.environ['GITHUB_REPOSITORY']
           run_id=os.environ['COMPLETED_RUN_ID']
+          attempt=os.environ['COMPLETED_RUN_ATTEMPT']
           name=os.environ['COMPLETED_WORKFLOW']
           head=os.environ['COMPLETED_HEAD'].lower()
+          branch=os.environ['COMPLETED_BRANCH']
           headers={
               'Accept':'application/vnd.github+json',
               'Authorization':f"Bearer {os.environ['GH_TOKEN']}",
@@ -61,22 +65,37 @@ jobs:
           def fetch(path):
               req=urllib.request.Request(f'https://api.github.com/repos/{repo}/{path}',headers=headers)
               with urllib.request.urlopen(req,timeout=30) as r: return json.load(r)
-          run=fetch(f'actions/runs/{run_id}')
-          if run.get('name')!=name or run.get('event')!='workflow_dispatch' or run.get('status')!='completed' or run.get('conclusion')!='success':
-              raise SystemExit('upstream workflow run identity/status mismatch')
-          if (run.get('head_sha') or '').lower()!=head:
-              raise SystemExit('upstream workflow run head mismatch')
           expected={
-              'production-ga-windows-authority-rc4-candidate-closure-selfhosted':'windows-authority-rc4-candidate-closure',
-              'production-ga-windows-authority-final-staging-candidate-selfhosted':'windows-authority-final-unlocked-staging-candidate',
+              'production-ga-windows-authority-rc4-candidate-closure-selfhosted':(
+                  '.github/workflows/ga-windows-authority-rc4-candidate-closure-hardened-selfhosted.yml',
+                  'windows-authority-rc4-candidate-closure',
+                  os.environ['RC4_CONTROL_BRANCH'],
+              ),
+              'production-ga-windows-authority-final-staging-candidate-selfhosted':(
+                  '.github/workflows/ga-windows-authority-final-staging-candidate-selfhosted.yml',
+                  'windows-authority-final-unlocked-staging-candidate',
+                  os.environ['FINAL_SOURCE_BRANCH'],
+              ),
           }.get(name)
           if not expected:
               raise SystemExit(f'unexpected chain workflow: {name}')
+          expected_path, expected_artifact, expected_branch = expected
+          run=fetch(f'actions/runs/{run_id}')
+          if run.get('name')!=name or run.get('path')!=expected_path:
+              raise SystemExit('upstream workflow run name/path mismatch')
+          if run.get('event')!='workflow_dispatch' or run.get('status')!='completed' or run.get('conclusion')!='success':
+              raise SystemExit('upstream workflow run identity/status mismatch')
+          if str(run.get('run_attempt'))!=attempt:
+              raise SystemExit('upstream workflow run attempt mismatch')
+          if run.get('head_branch')!=expected_branch or branch!=expected_branch or (run.get('head_sha') or '').lower()!=head:
+              raise SystemExit('upstream workflow run branch/head mismatch')
+          if (run.get('actor') or {}).get('login')!='github-actions[bot]' or (run.get('triggering_actor') or {}).get('login')!='github-actions[bot]':
+              raise SystemExit('upstream workflow was not dispatched by the canonical automation chain')
           artifacts=fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts',[])
-          matches=[a for a in artifacts if a.get('name')==expected and not a.get('expired')]
+          matches=[a for a in artifacts if a.get('name')==expected_artifact and not a.get('expired')]
           if len(matches)!=1:
-              raise SystemExit(f'expected exactly one live {expected} artifact; found {len(matches)}')
-          print(f'upstream_artifact=PASS name={expected} artifact_id={matches[0].get("id")}')
+              raise SystemExit(f'expected exactly one live {expected_artifact} artifact; found {len(matches)}')
+          print(f'upstream_artifact=PASS name={expected_artifact} artifact_id={matches[0].get("id")} automated_dispatch=true path={expected_path}')
           PY
 
       - name: Advance RC4 closure to final lock review once
