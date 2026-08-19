@@ -29,6 +29,7 @@ jobs:
       REVIEWED_DRAFT_SHA256: a2a97763f679b18562e19ec99f066374b097a50c44a3bea4d1208328e9b339d9
       REVIEWED_PUBLIC_KEY_SHA256: ece4d7087449cb42cde9183b0b1e2b82db610d4ffffd726e6737d2ba09578a08
       REVIEW_ISSUE: '260'
+      PROMOTION_WORKFLOW: ga-windows-authority-rc4-release-lock-promotion.yml
     steps:
       - name: Validate exact human approval event
         shell: bash
@@ -54,23 +55,42 @@ jobs:
             echo 'An active RC4 release lock already exists; refusing duplicate promotion dispatch.' >&2
             exit 1
           }
-          test -f .github/workflows/ga-windows-authority-rc4-release-lock-promotion.yml
+          test -f ".github/workflows/$PROMOTION_WORKFLOW"
           echo 'rc4_pre_dispatch_boundary=PASS'
 
-      - name: Suppress an already-dispatched approval target
+      - name: Suppress or fail closed on an already-dispatched approval target
         id: dedup
         shell: bash
         run: |
           set -euo pipefail
           marker="RC4_PROMOTION_DISPATCHED candidate=$CANDIDATE_COMMIT review_run=$REVIEW_RUN_ID draft_sha256=$REVIEWED_DRAFT_SHA256 public_key_sha256=$REVIEWED_PUBLIC_KEY_SHA256"
-          if gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$REVIEW_ISSUE/comments" \
-              --jq '.[] | select(.user.login == "github-actions[bot]") | .body' \
-              | grep -Fxq "$marker"; then
+          comments=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$REVIEW_ISSUE/comments" --slurp | jq 'add')
+
+          if jq -r '.[] | select(.user.login == "github-actions[bot]") | .body' <<<"$comments" | grep -Fxq "$marker"; then
             echo 'already_dispatched=true' >> "$GITHUB_OUTPUT"
-            echo 'duplicate_rc4_promotion_dispatch_suppressed=true'
-          else
-            echo 'already_dispatched=false' >> "$GITHUB_OUTPUT"
+            echo 'duplicate_rc4_promotion_dispatch_suppressed=true source=ledger'
+            exit 0
           fi
+
+          approval="RC4 HUMAN REVIEW APPROVED: $CANDIDATE_COMMIT"
+          approval_at=$(jq -r --arg approval "$approval" '[.[] | select(.user.login == "Naveax" and .author_association == "OWNER" and .body == $approval) | .created_at] | sort | .[0] // empty' <<<"$comments")
+          [[ "$approval_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] || {
+            echo 'Canonical human approval timestamp cannot be resolved.' >&2
+            exit 1
+          }
+
+          existing=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$PROMOTION_WORKFLOW/runs?branch=main&event=workflow_dispatch&per_page=100" \
+            --jq ".workflow_runs[] | select(.created_at >= \"$approval_at\") | .id" \
+            | head -n 1)
+
+          if [[ -n "$existing" ]]; then
+            echo "A post-approval RC4 promotion run already exists without the canonical ledger marker: run_id=$existing" >&2
+            echo 'Refusing a second promotion dispatch; inspect and repair provenance instead.' >&2
+            exit 1
+          fi
+
+          echo 'already_dispatched=false' >> "$GITHUB_OUTPUT"
+          echo 'rc4_promotion_dispatch_budget=AVAILABLE'
 
       - name: Revalidate exact successful review run
         if: steps.dedup.outputs.already_dispatched != 'true'
@@ -113,7 +133,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh workflow run ga-windows-authority-rc4-release-lock-promotion.yml \
+          gh workflow run "$PROMOTION_WORKFLOW" \
             --repo "$GITHUB_REPOSITORY" \
             --ref main \
             -f candidate_commit="$CANDIDATE_COMMIT" \
