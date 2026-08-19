@@ -29,7 +29,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Validate workflow supply-chain, permissions, retired credentials, and owner gates
+      - name: Validate workflow supply-chain, permissions, retired credentials, owner gates, and source artifacts
         shell: bash
         run: |
           set -euo pipefail
@@ -47,6 +47,11 @@ jobs:
           owner_gate_contracts_checked = 0
           issue_comment_triggers_checked = 0
           pull_request_target_refs = 0
+          source_run_bindings_checked = 0
+          source_artifact_bindings_checked = 0
+          expression_prefix = '$' + '{{'
+          workflow_docs = {}
+          workflow_paths_by_name = Hash.new { |h, k| h[k] = [] }
 
           allowed_issue_comment_workflows = [
             '.github/workflows/ops-rc4-human-approval-promotion-dispatch.yml',
@@ -68,6 +73,10 @@ jobs:
               next
             end
             next unless gate_doc.is_a?(Hash)
+            workflow_docs[path] = gate_doc
+            workflow_name = gate_doc['name'].to_s.strip
+            workflow_paths_by_name[workflow_name] << path unless workflow_name.empty?
+
             trigger = gate_doc['on'] || gate_doc[true]
             next unless trigger.is_a?(Hash)
             if trigger.key?('pull_request_target')
@@ -82,17 +91,63 @@ jobs:
             end
           end
 
-          observed_issue_comment = all_workflows.select do |path|
-            begin
-              doc = YAML.safe_load(File.read(path, encoding: 'utf-8'), aliases: true)
-              trigger = doc.is_a?(Hash) ? (doc['on'] || doc[true]) : nil
-              trigger.is_a?(Hash) && trigger.key?('issue_comment')
-            rescue
-              false
-            end
-          end.sort
+          observed_issue_comment = workflow_docs.select do |_path, doc|
+            trigger = doc['on'] || doc[true]
+            trigger.is_a?(Hash) && trigger.key?('issue_comment')
+          end.keys.sort
           if observed_issue_comment != allowed_issue_comment_workflows
             errors << "issue_comment trigger set mismatch: observed=#{observed_issue_comment.inspect} expected=#{allowed_issue_comment_workflows.inspect}"
+          end
+
+          literal_uploads_by_path = Hash.new { |h, k| h[k] = [] }
+          workflow_docs.each do |path, doc|
+            jobs = doc['jobs']
+            next unless jobs.is_a?(Hash)
+            jobs.each_value do |job|
+              next unless job.is_a?(Hash)
+              Array(job['steps']).each do |step|
+                next unless step.is_a?(Hash)
+                next unless step['uses'].to_s.start_with?('actions/upload-artifact@')
+                with = step['with']
+                next unless with.is_a?(Hash)
+                name = with['name'].to_s.strip
+                next if name.empty? || name.include?(expression_prefix)
+                literal_uploads_by_path[path] << name unless literal_uploads_by_path[path].include?(name)
+              end
+            end
+          end
+
+          workflow_docs.each do |path, doc|
+            trigger = doc['on'] || doc[true]
+            workflow_run = trigger.is_a?(Hash) ? trigger['workflow_run'] : nil
+            next unless workflow_run.is_a?(Hash)
+            source_names = Array(workflow_run['workflows']).map { |v| v.to_s.strip }.reject(&:empty?)
+            source_paths = source_names.flat_map { |name| workflow_paths_by_name[name] }.uniq
+            jobs = doc['jobs']
+            next unless jobs.is_a?(Hash)
+            jobs.each do |job_name, job|
+              next unless job.is_a?(Hash)
+              Array(job['steps']).each_with_index do |step, index|
+                next unless step.is_a?(Hash)
+                next unless step['uses'].to_s.start_with?('actions/download-artifact@')
+                with = step['with']
+                next unless with.is_a?(Hash)
+                run_id = with['run-id'].to_s.strip
+                unless run_id.include?('github.event.workflow_run.id')
+                  errors << "#{path}: job #{job_name} step #{index} workflow_run artifact download is not bound to the triggering workflow_run.id"
+                  next
+                end
+                source_run_bindings_checked += 1
+                name = with['name'].to_s.strip
+                next if name.empty? || name.include?(expression_prefix)
+                matching_sources = source_paths.select { |source_path| literal_uploads_by_path[source_path].include?(name) }
+                if matching_sources.empty?
+                  errors << "#{path}: workflow_run artifact #{name.inspect} is not literally uploaded by any declared source workflow #{source_names.inspect}"
+                else
+                  source_artifact_bindings_checked += 1
+                end
+              end
+            end
           end
 
           owner_gate_requirements = {
@@ -184,7 +239,7 @@ jobs:
             end
           end
 
-          puts "release_workflow_policy_scan workflow_files=#{all_workflows.length} critical_workflows=#{files.length} action_refs=#{action_refs} top_permissions=#{permissions_checked} job_permissions=#{job_permissions_checked} retired_credential_refs=#{retired_credential_refs} owner_gate_contracts_checked=#{owner_gate_contracts_checked} issue_comment_triggers=#{issue_comment_triggers_checked} pull_request_target_refs=#{pull_request_target_refs}"
+          puts "release_workflow_policy_scan workflow_files=#{all_workflows.length} critical_workflows=#{files.length} action_refs=#{action_refs} top_permissions=#{permissions_checked} job_permissions=#{job_permissions_checked} retired_credential_refs=#{retired_credential_refs} owner_gate_contracts_checked=#{owner_gate_contracts_checked} issue_comment_triggers=#{issue_comment_triggers_checked} pull_request_target_refs=#{pull_request_target_refs} source_run_bindings_checked=#{source_run_bindings_checked} source_artifact_bindings_checked=#{source_artifact_bindings_checked}"
           unless errors.empty?
             warn errors.join("\n")
             exit 1
@@ -198,7 +253,7 @@ jobs:
           set -euo pipefail
           if [[ "${{ job.status }}" == success ]]; then status=PASS; else status=FAIL; fi
           marker="OPS_WORKFLOW_POLICY_VERIFY head=$GITHUB_SHA "
-          body="${marker}status=$status scope=all-retired-credential+ops+ga-policy retired_temp_admin_refs=0 owner_gate_contracts=3 issue_comment_gate_set=3 pull_request_target_refs=0"
+          body="${marker}status=$status scope=all-retired-credential+ops+ga-policy retired_temp_admin_refs=0 owner_gate_contracts=3 issue_comment_gate_set=3 pull_request_target_refs=0 source_artifact_binding=enabled"
           comment_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
             --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" \
             | tail -n 1)
