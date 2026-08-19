@@ -18,6 +18,7 @@ jobs:
   dispatch-signing:
     if: >-
       github.event.pull_request.merged == true &&
+      github.event.pull_request.merged_by.login == 'Naveax' &&
       github.event.pull_request.base.ref == 'release/2.0.0-final-lock-control' &&
       github.event.pull_request.title == 'Promote human-reviewed final 2.0.0 release lock' &&
       startsWith(github.event.pull_request.head.ref, 'ops/final-lock-promotion-') &&
@@ -28,9 +29,11 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       HEAD_REF: ${{ github.event.pull_request.head.ref }}
       HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
       PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+      MERGED_BY: ${{ github.event.pull_request.merged_by.login }}
       LOCK_CONTROL_HEAD: ${{ github.event.pull_request.merge_commit_sha }}
       FINAL_CANDIDATE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
       RC4_ENROLLMENT_RUN_ID: '32136341027'
@@ -43,6 +46,8 @@ jobs:
           set -euo pipefail
           [[ "$HEAD_REPOSITORY" == "$GITHUB_REPOSITORY" ]] || { echo "Final reviewed PR head repository mismatch: $HEAD_REPOSITORY" >&2; exit 1; }
           [[ "$PR_AUTHOR" == 'github-actions[bot]' ]] || { echo "Final reviewed PR was not created by the promotion materializer bot: $PR_AUTHOR" >&2; exit 1; }
+          [[ "$MERGED_BY" == 'Naveax' ]] || { echo "Final reviewed PR was not merged by the repository owner: $MERGED_BY" >&2; exit 1; }
+          [[ "$PR_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'Final reviewed PR head SHA is invalid' >&2; exit 1; }
           [[ "$HEAD_REF" =~ ^ops/final-lock-promotion-([1-9][0-9]*)$ ]] || { echo 'unexpected final promotion PR head ref' >&2; exit 1; }
           branch_promotion_run_id="${BASH_REMATCH[1]}"
           [[ "$LOCK_CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]] || { echo 'final lock merge commit SHA is invalid' >&2; exit 1; }
@@ -52,7 +57,21 @@ jobs:
             printf 'Final reviewed PR changed unexpected files:\n%s\n' "${files[*]}" >&2; exit 1
           fi
           echo "BRANCH_PROMOTION_RUN_ID=$branch_promotion_run_id" >> "$GITHUB_ENV"
-          echo 'final_reviewed_pr_boundary=PASS files=2 same_repo=true bot_created=true'
+          echo 'final_reviewed_pr_boundary=PASS files=2 same_repo=true bot_created=true owner_merged=true'
+
+      - name: Require exact owner approval review for merged PR head
+        shell: bash
+        run: |
+          set -euo pipefail
+          reviews=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews?per_page=100" --jq 'add')
+          decisive=$(jq -c --arg sha "$PR_HEAD_SHA" '[.[] | select(.user.login == "Naveax" and .author_association == "OWNER" and .commit_id == $sha and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED"))] | sort_by(.submitted_at // "") | last // empty' <<<"$reviews")
+          [[ -n "$decisive" ]] || { echo 'No decisive Naveax OWNER review exists for the exact final PR head.' >&2; exit 1; }
+          state=$(jq -r '.state' <<<"$decisive")
+          [[ "$state" == 'APPROVED' ]] || { echo "Latest decisive Naveax review for exact final head is not APPROVED: $state" >&2; exit 1; }
+          review_id=$(jq -r '.id' <<<"$decisive")
+          submitted_at=$(jq -r '.submitted_at' <<<"$decisive")
+          [[ "$review_id" =~ ^[1-9][0-9]*$ ]] || { echo 'Final owner review ID is invalid.' >&2; exit 1; }
+          echo "final_second_human_gate=PASS reviewer=Naveax association=OWNER state=APPROVED review_id=$review_id head=$PR_HEAD_SHA submitted_at=$submitted_at merged_by=$MERGED_BY"
 
       - name: Check out exact merged final active-lock commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
