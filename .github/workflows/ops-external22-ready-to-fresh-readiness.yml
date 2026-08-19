@@ -30,25 +30,62 @@ jobs:
       STATE_ISSUE: '262'
       EXTERNAL_ISSUE: '261'
     steps:
-      - name: Require final signed-release and reviewer-packet prerequisites
+      - name: Require and revalidate final signed-release and reviewer-packet prerequisites
         shell: bash
         run: |
           set -euo pipefail
           final_head=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_ACTIVE_BRANCH" --jq '.object.sha')
           [[ "$final_head" =~ ^[0-9a-f]{40}$ ]] || { echo 'Final active-lock branch is not ready.' >&2; exit 1; }
           gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body' > "$RUNNER_TEMP/state.txt"
-          FINAL_HEAD="$final_head" python - <<'PY'
-          import os,re
+
+          eval "$(FINAL_HEAD="$final_head" python - <<'PY'
+          import os,re,shlex
           from pathlib import Path
-          lines=Path(os.environ['RUNNER_TEMP'],'state.txt').read_text(encoding='utf-8').splitlines(); head=os.environ['FINAL_HEAD']
+          lines=Path(os.environ['RUNNER_TEMP'],'state.txt').read_text(encoding='utf-8').splitlines()
+          head=os.environ['FINAL_HEAD']
           signed=re.compile(r'^FINAL_GATE_STATE gate=signed_release run_id=([1-9][0-9]*) attempt=([1-9][0-9]*) control_head=([0-9a-f]{40})$')
           packet=re.compile(r'^RC4_CHAIN_STATE stage=security_review_packet run_id=([1-9][0-9]*) attempt=([1-9][0-9]*) control_head=([0-9a-f]{40})$')
           s=[m.groups() for line in lines if (m:=signed.fullmatch(line.strip())) and m.group(3)==head]
           p=[m.groups() for line in lines if (m:=packet.fullmatch(line.strip())) and m.group(3)==head]
           if not s: raise SystemExit('successful protected final signing state is missing')
           if not p: raise SystemExit('successful final security-review packet state is missing')
-          print(f'external22_final_prerequisites=PASS signing_run={s[-1][0]} packet_run={p[-1][0]} control_head={head}')
+          if len({x[0] for x in s}) != 1: raise SystemExit('protected final signing ledger is ambiguous for active control head')
+          if len({x[0] for x in p}) != 1: raise SystemExit('security-review packet ledger is ambiguous for active control head')
+          values={
+            'SIGNING_RUN_ID':s[-1][0],
+            'SIGNING_ATTEMPT':s[-1][1],
+            'PACKET_RUN_ID':p[-1][0],
+            'PACKET_ATTEMPT':p[-1][1],
+          }
+          for key,value in values.items(): print(f'{key}={shlex.quote(value)}')
           PY
+          )"
+
+          [[ "$SIGNING_RUN_ID" =~ ^[1-9][0-9]*$ && "$SIGNING_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          [[ "$PACKET_RUN_ID" =~ ^[1-9][0-9]*$ && "$PACKET_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          [[ "$SIGNING_RUN_ID" != "$PACKET_RUN_ID" ]] || { echo 'Signing and security-review packet run IDs must be distinct.' >&2; exit 1; }
+
+          signing=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SIGNING_RUN_ID")
+          [[ "$(jq -r '.name' <<<"$signing")" == 'production-ga-windows-authority-final-release-sign-from-lock' ]] || { echo 'Ledger signing run is not canonical protected final signing.' >&2; exit 1; }
+          [[ "$(jq -r '.event' <<<"$signing")" == 'workflow_dispatch' ]] || { echo 'Protected final signing event mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.status' <<<"$signing")" == 'completed' && "$(jq -r '.conclusion' <<<"$signing")" == 'success' ]] || { echo 'Protected final signing run is not successful.' >&2; exit 1; }
+          [[ "$(jq -r '.head_sha' <<<"$signing")" == "$final_head" ]] || { echo 'Protected final signing head mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.run_attempt' <<<"$signing")" == "$SIGNING_ATTEMPT" ]] || { echo 'Protected final signing attempt does not match ledger.' >&2; exit 1; }
+          signing_artifacts=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SIGNING_RUN_ID/artifacts?per_page=100" \
+            --jq '[.artifacts[] | select(.name == "psmatrix-2.0.0-protected-release" and (.expired|not))] | length')
+          [[ "$signing_artifacts" == '1' ]] || { echo "Protected final signing artifact cardinality mismatch: $signing_artifacts" >&2; exit 1; }
+
+          packet=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PACKET_RUN_ID")
+          [[ "$(jq -r '.name' <<<"$packet")" == 'production-ga-final-security-review-packet' ]] || { echo 'Ledger packet run is not canonical final security-review packet producer.' >&2; exit 1; }
+          [[ "$(jq -r '.event' <<<"$packet")" == 'workflow_dispatch' ]] || { echo 'Final security-review packet event mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.status' <<<"$packet")" == 'completed' && "$(jq -r '.conclusion' <<<"$packet")" == 'success' ]] || { echo 'Final security-review packet run is not successful.' >&2; exit 1; }
+          [[ "$(jq -r '.head_sha' <<<"$packet")" == "$final_head" ]] || { echo 'Final security-review packet head mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.run_attempt' <<<"$packet")" == "$PACKET_ATTEMPT" ]] || { echo 'Final security-review packet attempt does not match ledger.' >&2; exit 1; }
+          packet_artifacts=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PACKET_RUN_ID/artifacts?per_page=100" \
+            --jq '[.artifacts[] | select(.name == "psmatrix-2.0.0-final-security-review-packet" and (.expired|not))] | length')
+          [[ "$packet_artifacts" == '1' ]] || { echo "Final security-review packet artifact cardinality mismatch: $packet_artifacts" >&2; exit 1; }
+
+          echo "external22_final_prerequisites=PASS signing_run=$SIGNING_RUN_ID packet_run=$PACKET_RUN_ID control_head=$final_head provenance=revalidated"
 
       - name: Revalidate frozen readiness anchor and dispatch one fresh post-external22 readiness run
         shell: bash
