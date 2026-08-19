@@ -1,14 +1,13 @@
 name: ops-static-verify-observer
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/ops-static-verify-observer.yml'
+  workflow_run:
+    workflows: [ops-workflow-static-verify]
+    types: [completed]
   workflow_dispatch:
 
 concurrency:
-  group: ops-static-verify-observer-${{ github.ref }}
+  group: ops-static-verify-observer-${{ github.event.workflow_run.id || github.run_id }}
   cancel-in-progress: false
 
 permissions:
@@ -24,21 +23,31 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       STATE_ISSUE: '262'
     steps:
-      - name: Report latest static verifier run
+      - name: Report completed static verifier run
         shell: bash
         run: |
           set -euo pipefail
-          json=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ops-workflow-static-verify.yml/runs?per_page=10")
-          count=$(jq '.workflow_runs | length' <<<"$json")
-          if [[ "$count" -lt 1 ]]; then
-            body="OPS_WORKFLOW_STATIC_VERIFY_OBSERVER status=NO_RUN_VISIBLE head=$GITHUB_SHA"
+          if [[ "${{ github.event_name }}" == 'workflow_run' ]]; then
+            id='${{ github.event.workflow_run.id }}'
+            status='${{ github.event.workflow_run.status }}'
+            conclusion='${{ github.event.workflow_run.conclusion }}'
+            event='${{ github.event.workflow_run.event }}'
+            head='${{ github.event.workflow_run.head_sha }}'
           else
+            json=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ops-workflow-static-verify.yml/runs?per_page=10")
+            count=$(jq '.workflow_runs | length' <<<"$json")
+            if [[ "$count" -lt 1 ]]; then
+              body="OPS_WORKFLOW_STATIC_VERIFY_OBSERVER status=NO_RUN_VISIBLE head=$GITHUB_SHA"
+              gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$body"
+              echo "$body"
+              exit 0
+            fi
             id=$(jq -r '.workflow_runs[0].id' <<<"$json")
             status=$(jq -r '.workflow_runs[0].status' <<<"$json")
             conclusion=$(jq -r '.workflow_runs[0].conclusion // "pending"' <<<"$json")
             event=$(jq -r '.workflow_runs[0].event' <<<"$json")
             head=$(jq -r '.workflow_runs[0].head_sha' <<<"$json")
-            body="OPS_WORKFLOW_STATIC_VERIFY_OBSERVER run_id=$id status=$status conclusion=$conclusion event=$event head=$head"
           fi
+          body="OPS_WORKFLOW_STATIC_VERIFY_OBSERVER run_id=$id status=$status conclusion=$conclusion event=$event head=$head"
           gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$body"
           echo "$body"
