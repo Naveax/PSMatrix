@@ -29,7 +29,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Validate workflow supply-chain, permissions, and retired-credential policy
+      - name: Validate workflow supply-chain, permissions, retired credentials, and owner gates
         shell: bash
         run: |
           set -euo pipefail
@@ -44,6 +44,7 @@ jobs:
           job_permissions_checked = 0
           retired_credential = ['PSMATRIX','TEMP','ADMIN','TOKEN'].join('_')
           retired_credential_refs = 0
+          owner_gate_contracts_checked = 0
 
           all_workflows.each do |path|
             raw = File.read(path, encoding: 'utf-8')
@@ -51,6 +52,46 @@ jobs:
               retired_credential_refs += 1
               errors << "#{path}: retired temporary admin credential reference is forbidden"
             end
+          end
+
+          owner_gate_requirements = {
+            '.github/workflows/ops-rc4-human-approval-promotion-dispatch.yml' => [
+              'issue_comment:',
+              'types: [created]',
+              'github.event.issue.number == 260',
+              "github.event.comment.user.login == 'Naveax'",
+              "github.event.comment.author_association == 'OWNER'",
+              "github.event.comment.body == 'RC4 HUMAN REVIEW APPROVED: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63'",
+            ],
+            '.github/workflows/ops-final-human-approval-promotion-dispatch.yml' => [
+              'issue_comment:',
+              'types: [created]',
+              'github.event.issue.number == 263',
+              "github.event.comment.user.login == 'Naveax'",
+              "github.event.comment.author_association == 'OWNER'",
+              "startsWith(github.event.comment.body, 'FINAL HUMAN REVIEW APPROVED: ')",
+              'approval comment does not exactly match the published human-review binding',
+            ],
+            '.github/workflows/ops-external22-ready-to-fresh-readiness.yml' => [
+              'issue_comment:',
+              'types: [created]',
+              'github.event.issue.number == 261',
+              "github.event.comment.user.login == 'Naveax'",
+              "github.event.comment.author_association == 'OWNER'",
+              "github.event.comment.body == 'EXTERNAL22 MATERIAL READY'",
+            ],
+          }
+
+          owner_gate_requirements.each do |path, fragments|
+            unless File.file?(path)
+              errors << "#{path}: required owner-only release gate workflow is missing"
+              next
+            end
+            raw = File.read(path, encoding: 'utf-8')
+            fragments.each do |fragment|
+              errors << "#{path}: owner-only release gate invariant missing: #{fragment}" unless raw.include?(fragment)
+            end
+            owner_gate_contracts_checked += 1
           end
 
           files.each do |path|
@@ -102,7 +143,7 @@ jobs:
             end
           end
 
-          puts "release_workflow_policy_scan workflow_files=#{all_workflows.length} critical_workflows=#{files.length} action_refs=#{action_refs} top_permissions=#{permissions_checked} job_permissions=#{job_permissions_checked} retired_credential_refs=#{retired_credential_refs}"
+          puts "release_workflow_policy_scan workflow_files=#{all_workflows.length} critical_workflows=#{files.length} action_refs=#{action_refs} top_permissions=#{permissions_checked} job_permissions=#{job_permissions_checked} retired_credential_refs=#{retired_credential_refs} owner_gate_contracts_checked=#{owner_gate_contracts_checked}"
           unless errors.empty?
             warn errors.join("\n")
             exit 1
@@ -116,7 +157,7 @@ jobs:
           set -euo pipefail
           if [[ "${{ job.status }}" == success ]]; then status=PASS; else status=FAIL; fi
           marker="OPS_WORKFLOW_POLICY_VERIFY head=$GITHUB_SHA "
-          body="${marker}status=$status scope=all-retired-credential+ops+ga-policy retired_temp_admin_refs=0"
+          body="${marker}status=$status scope=all-retired-credential+ops+ga-policy retired_temp_admin_refs=0 owner_gate_contracts=3"
           comment_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
             --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" \
             | tail -n 1)
