@@ -1,0 +1,56 @@
+name: ops-rc4-intake-to-media-readiness
+
+on:
+  workflow_run:
+    workflows: [production-ga-windows-authority-rc4-release-intake-selfhosted]
+    types: [completed]
+
+concurrency:
+  group: ops-rc4-intake-to-media-readiness
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  dispatch-media-readiness:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.head_branch == 'release/2.0.0rc4-active-lock'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_COMMIT: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
+      CONTROL_HEAD: ${{ github.event.workflow_run.head_sha }}
+      FROZEN_CONTROL_BRANCH: release/2.0.0rc4-active-lock
+    steps:
+      - name: Validate successful intake provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${{ github.event.workflow_run.id }}" =~ ^[1-9][0-9]*$ ]]
+          run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/${{ github.event.workflow_run.id }}")"
+          [[ "$(jq -r '.name' <<<"$run")" == 'production-ga-windows-authority-rc4-release-intake-selfhosted' ]]
+          [[ "$(jq -r '.event' <<<"$run")" == 'workflow_dispatch' ]]
+          [[ "$(jq -r '.status' <<<"$run")" == 'completed' ]]
+          [[ "$(jq -r '.conclusion' <<<"$run")" == 'success' ]]
+          [[ "$(jq -r '.head_sha' <<<"$run")" == "$CONTROL_HEAD" ]]
+          echo 'protected_rc4_intake_provenance=PASS'
+
+      - name: Dispatch canonical RC4 media readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run ga-windows-authority-rc4-media-readiness-selfhosted.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$FROZEN_CONTROL_BRANCH" \
+            -f release_commit="$RELEASE_COMMIT" \
+            -f control_head="$CONTROL_HEAD" \
+            -f inspect_iso_images=true
+          echo 'rc4_media_readiness_dispatched=true'
+          echo 'operator_selection_may_still_be_required=true'
+          echo 'ga_eligible=false'
