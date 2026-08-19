@@ -39,7 +39,31 @@ jobs:
           [[ "$current" == "$PROMOTION_CONTROL_HEAD" ]] || { echo "Final lock-control branch moved during promotion: $current != $PROMOTION_CONTROL_HEAD" >&2; exit 1; }
           echo 'final_promotion_control_frozen=PASS'
 
+      - name: Suppress duplicate exact promotion PR
+        id: dedupe
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="ops/final-lock-promotion-${PROMOTION_RUN_ID}"
+          prs=$(gh api "repos/$GITHUB_REPOSITORY/pulls?state=all&head=Naveax:$branch&per_page=100")
+          count=$(jq 'length' <<<"$prs")
+          if [[ "$count" -gt 1 ]]; then
+            echo "Multiple PRs already exist for exact final promotion branch: $branch" >&2
+            exit 1
+          fi
+          if [[ "$count" -eq 1 ]]; then
+            base=$(jq -r '.[0].base.ref' <<<"$prs")
+            title=$(jq -r '.[0].title' <<<"$prs")
+            [[ "$base" == "$FINAL_LOCK_CONTROL_BRANCH" ]] || { echo 'Existing final promotion PR base mismatch.' >&2; exit 1; }
+            [[ "$title" == 'Promote human-reviewed final 2.0.0 release lock' ]] || { echo 'Existing final promotion PR title mismatch.' >&2; exit 1; }
+            echo 'duplicate=true' >> "$GITHUB_OUTPUT"
+            echo "final_promotion_pr_duplicate_suppressed=true branch=$branch"
+          else
+            echo 'duplicate=false' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Download exact final promotion candidate artifact
+        if: steps.dedupe.outputs.duplicate != 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: psmatrix-2.0.0-final-release-lock-promotion-candidate
@@ -49,6 +73,7 @@ jobs:
           github-token: ${{ github.token }}
 
       - name: Validate exact promoted final lock and human binding
+        if: steps.dedupe.outputs.duplicate != 'true'
         id: validate
         shell: bash
         run: |
@@ -104,6 +129,7 @@ jobs:
           PY
 
       - name: Check out frozen final lock-control branch
+        if: steps.dedupe.outputs.duplicate != 'true'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
         with:
           ref: release/2.0.0-final-lock-control
@@ -112,6 +138,7 @@ jobs:
           persist-credentials: true
 
       - name: Materialize exact two-file reviewed final-lock change
+        if: steps.dedupe.outputs.duplicate != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -131,6 +158,7 @@ jobs:
           echo 'exact_final_repository_change_set=PASS files=2'
 
       - name: Commit exact branch and open draft reviewed PR
+        if: steps.dedupe.outputs.duplicate != 'true'
         env:
           REVIEW_RUN_ID: ${{ steps.validate.outputs.review_run_id }}
           DRAFT_SHA256: ${{ steps.validate.outputs.draft_sha256 }}
