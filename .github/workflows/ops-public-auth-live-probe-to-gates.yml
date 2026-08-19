@@ -95,10 +95,17 @@ jobs:
               --jq ".workflow_runs | map(select(.head_sha == \"$CONTROL_HEAD\")) | length"
           }
 
+          assert_final_head() {
+            local current
+            current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_ACTIVE_BRANCH" --jq '.object.sha')
+            [[ "$current" == "$CONTROL_HEAD" ]] || { echo "Final active control moved before public-auth gate dispatch: $current != $CONTROL_HEAD" >&2; return 1; }
+          }
+
           dispatched=0
           suppressed=0
 
           if [[ "$(existing_count ga-final-public-oauth.yml)" -eq 0 ]]; then
+            assert_final_head
             gh workflow run ga-final-public-oauth.yml \
               --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
               -f live_probe_run_id="$LIVE_PROBE_RUN_ID" \
@@ -110,6 +117,7 @@ jobs:
           fi
 
           if [[ "$(existing_count ga-final-public-mtls.yml)" -eq 0 ]]; then
+            assert_final_head
             gh workflow run ga-final-public-mtls.yml \
               --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
               -f live_probe_run_id="$LIVE_PROBE_RUN_ID" \

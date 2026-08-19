@@ -125,10 +125,17 @@ jobs:
               --jq ".workflow_runs | map(select(.head_sha == \"$FINAL_HEAD\")) | length"
           }
 
+          assert_final_head() {
+            local current
+            current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_ACTIVE_BRANCH" --jq '.object.sha')
+            [[ "$current" == "$FINAL_HEAD" ]] || { echo "Final active control moved before external evidence dispatch: $current != $FINAL_HEAD" >&2; return 1; }
+          }
+
           dispatched=0
           suppressed=0
 
           if [[ "$(existing_count ga-final-public-auth-live-probe.yml)" -eq 0 ]]; then
+            assert_final_head
             gh workflow run ga-final-public-auth-live-probe.yml \
               --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
               -f release_signing_run_id="$SIGNING_RUN_ID"
@@ -139,6 +146,7 @@ jobs:
           fi
 
           if [[ "$(existing_count ga-final-external-otlp.yml)" -eq 0 ]]; then
+            assert_final_head
             gh workflow run ga-final-external-otlp.yml \
               --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
               -f release_signing_run_id="$SIGNING_RUN_ID"
@@ -149,6 +157,7 @@ jobs:
           fi
 
           if [[ "$(existing_count ga-final-security-review.yml)" -eq 0 ]]; then
+            assert_final_head
             gh workflow run ga-final-security-review.yml \
               --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
               -f release_signing_run_id="$SIGNING_RUN_ID" \
