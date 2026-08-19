@@ -1,0 +1,108 @@
+name: ops-windows-lab-prereq-audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/ops-windows-lab-prereq-audit.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: ops-windows-lab-prereq-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 10
+    environment: production-ga-windows-lab
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PSMATRIX_WINDOWS_GA_ROOT: ${{ vars.PSMATRIX_WINDOWS_GA_ROOT }}
+      PSMATRIX_WPS40_ADMIN_PASSWORD: ${{ secrets.PSMATRIX_WPS40_ADMIN_PASSWORD }}
+      PSMATRIX_WPS50_ADMIN_PASSWORD: ${{ secrets.PSMATRIX_WPS50_ADMIN_PASSWORD }}
+      PSMATRIX_WPS51_ADMIN_PASSWORD: ${{ secrets.PSMATRIX_WPS51_ADMIN_PASSWORD }}
+    steps:
+      - name: Audit value-free Windows lab prerequisites
+        id: audit
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $rootConfigured = -not [string]::IsNullOrWhiteSpace($env:PSMATRIX_WINDOWS_GA_ROOT)
+          $rootExists = $false
+          $mediaExternalExists = $false
+          $isoCount = 0
+          $configExists = $false
+          $hypervCmd = $null -ne (Get-Command Get-VM -ErrorAction SilentlyContinue)
+          $vmmsRunning = $false
+
+          if ($rootConfigured -and [System.IO.Path]::IsPathRooted($env:PSMATRIX_WINDOWS_GA_ROOT)) {
+            $root = [System.IO.Path]::GetFullPath($env:PSMATRIX_WINDOWS_GA_ROOT)
+            $rootExists = Test-Path -LiteralPath $root -PathType Container
+            if ($rootExists) {
+              $external = Join-Path $root 'media\external'
+              $config = Join-Path $root 'config'
+              $mediaExternalExists = Test-Path -LiteralPath $external -PathType Container
+              $configExists = Test-Path -LiteralPath $config -PathType Container
+              if ($mediaExternalExists) {
+                $isoCount = @(Get-ChildItem -LiteralPath $external -File -Filter '*.iso' -ErrorAction SilentlyContinue).Count
+              }
+            }
+          }
+
+          $svc = Get-Service -Name vmms -ErrorAction SilentlyContinue
+          if ($null -ne $svc -and $svc.Status -eq 'Running') { $vmmsRunning = $true }
+
+          $wps40 = -not [string]::IsNullOrWhiteSpace($env:PSMATRIX_WPS40_ADMIN_PASSWORD)
+          $wps50 = -not [string]::IsNullOrWhiteSpace($env:PSMATRIX_WPS50_ADMIN_PASSWORD)
+          $wps51 = -not [string]::IsNullOrWhiteSpace($env:PSMATRIX_WPS51_ADMIN_PASSWORD)
+
+          $rows = [ordered]@{
+            runner_exact_naveax = ($env:RUNNER_NAME -eq 'NAVEAX')
+            ga_root_configured = $rootConfigured
+            ga_root_exists = $rootExists
+            ga_config_dir_exists = $configExists
+            media_external_dir_exists = $mediaExternalExists
+            external_iso_count = $isoCount
+            hyperv_cmd_available = $hypervCmd
+            vmms_running = $vmmsRunning
+            wps40_admin_secret_present = $wps40
+            wps50_admin_secret_present = $wps50
+            wps51_admin_secret_present = $wps51
+          }
+
+          $json = $rows | ConvertTo-Json -Compress
+          "AUDIT_JSON=$json" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          Write-Host ('windows_lab_prereq_audit=PASS root={0} media={1} iso_count={2} hyperv={3} vmms={4} wps40={5} wps50={6} wps51={7}' -f $rootExists,$mediaExternalExists,$isoCount,$hypervCmd,$vmmsRunning,$wps40,$wps50,$wps51)
+
+      - name: Publish value-free audit to issue 261
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $v = $env:AUDIT_JSON | ConvertFrom-Json
+          $body = @"
+          ### Windows-lab prerequisite audit
+
+          Run: `$env:GITHUB_RUN_ID`
+          Runner exact NAVEAX: `$($v.runner_exact_naveax)`
+          GA root configured: `$($v.ga_root_configured)`
+          GA root exists: `$($v.ga_root_exists)`
+          GA config directory exists: `$($v.ga_config_dir_exists)`
+          External media directory exists: `$($v.media_external_dir_exists)`
+          External ISO count: `$($v.external_iso_count)`
+          Hyper-V cmdlets available: `$($v.hyperv_cmd_available)`
+          VMMS running: `$($v.vmms_running)`
+          WinPS 4.0 admin secret present: `$($v.wps40_admin_secret_present)`
+          WinPS 5.0 admin secret present: `$($v.wps50_admin_secret_present)`
+          WinPS 5.1 admin secret present: `$($v.wps51_admin_secret_present)`
+
+          No secret values, hashes, or lengths were emitted.
+          "@
+          gh api "repos/$env:GITHUB_REPOSITORY/issues/261/comments" --method POST -f body="$body" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to publish Windows-lab prerequisite audit.' }
