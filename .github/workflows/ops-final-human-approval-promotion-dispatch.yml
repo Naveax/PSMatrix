@@ -61,15 +61,17 @@ jobs:
       - name: Revalidate frozen branch and exact successful review provenance
         env:
           REVIEW_RUN_ID: ${{ steps.binding.outputs.review_run_id }}
+          REVIEW_ATTEMPT: ${{ steps.binding.outputs.review_attempt }}
           CONTROL_HEAD: ${{ steps.binding.outputs.control_head }}
         shell: bash
         run: |
           set -euo pipefail
+          [[ "$REVIEW_RUN_ID" =~ ^[1-9][0-9]*$ && "$REVIEW_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
           current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_LOCK_CONTROL_BRANCH" --jq '.object.sha')
           [[ "$current" == "$CONTROL_HEAD" ]] || { echo "Final lock-control branch moved after human review: $current != $CONTROL_HEAD" >&2; exit 1; }
           python - <<'PY'
           import json,os,urllib.request
-          repo=os.environ['GITHUB_REPOSITORY']; run_id=os.environ['REVIEW_RUN_ID']; control=os.environ['CONTROL_HEAD']
+          repo=os.environ['GITHUB_REPOSITORY']; run_id=os.environ['REVIEW_RUN_ID']; attempt=os.environ['REVIEW_ATTEMPT']; control=os.environ['CONTROL_HEAD']
           headers={'Accept':'application/vnd.github+json','Authorization':f"Bearer {os.environ['GH_TOKEN']}",'X-GitHub-Api-Version':'2022-11-28','User-Agent':'psmatrix-final-human-approval'}
           def fetch(path):
               req=urllib.request.Request(f'https://api.github.com/repos/{repo}/{path}',headers=headers)
@@ -79,10 +81,12 @@ jobs:
               raise SystemExit('final review run provenance/status mismatch')
           if (run.get('head_sha') or '').lower()!=control:
               raise SystemExit('final review control head mismatch')
+          if str(run.get('run_attempt'))!=attempt:
+              raise SystemExit(f'final review run attempt mismatch: actual={run.get("run_attempt")} bound={attempt}')
           artifacts=fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts',[])
           matches=[a for a in artifacts if a.get('name')=='psmatrix-2.0.0-final-release-lock-review' and not a.get('expired')]
           if len(matches)!=1: raise SystemExit(f'expected exactly one live final review artifact; found {len(matches)}')
-          print(f'final_review_provenance=PASS artifact_id={matches[0].get("id")}')
+          print(f'final_review_provenance=PASS run_id={run_id} attempt={attempt} artifact_id={matches[0].get("id")}')
           PY
 
       - name: Suppress duplicate final promotion on the same frozen head
