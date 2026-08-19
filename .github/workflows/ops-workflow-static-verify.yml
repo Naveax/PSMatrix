@@ -49,6 +49,7 @@ jobs:
           errors << 'no ops workflows found' if ops_files.empty?
           script_index = 0
           contract_refs = 0
+          dispatch_targets_checked = 0
           dispatch_input_refs = 0
           required_dispatch_inputs_checked = 0
           docs = {}
@@ -146,12 +147,16 @@ jobs:
                       end
 
                       contract_refs += 1
+                      dispatch_targets_checked += 1
                       target = File.join('.github', 'workflows', target_name)
                       unless File.file?(target)
                         errors << "#{path}: gh workflow run target missing: #{target_name}"
                       else
                         target_doc = docs[target]
                         target_trigger = target_doc.is_a?(Hash) ? (target_doc['on'] || target_doc[true]) : nil
+                        unless target_trigger.is_a?(Hash) && target_trigger.key?('workflow_dispatch')
+                          errors << "#{path}: gh workflow run target is not workflow_dispatch enabled: #{target_name}"
+                        end
                         target_dispatch = target_trigger.is_a?(Hash) ? target_trigger['workflow_dispatch'] : nil
                         target_input_specs = if target_dispatch.is_a?(Hash) && target_dispatch['inputs'].is_a?(Hash)
                                                target_dispatch['inputs']
@@ -197,7 +202,7 @@ jobs:
           end
 
           File.write(File.join(root, 'yaml-errors.txt'), errors.join("\n") + (errors.empty? ? '' : "\n"))
-          File.write(File.join(root, 'counts.txt'), "workflows=#{ops_files.length}\nbash_blocks=#{script_index}\ncontract_refs=#{contract_refs}\ndispatch_input_refs=#{dispatch_input_refs}\nrequired_dispatch_inputs_checked=#{required_dispatch_inputs_checked}\n")
+          File.write(File.join(root, 'counts.txt'), "workflows=#{ops_files.length}\nbash_blocks=#{script_index}\ncontract_refs=#{contract_refs}\ndispatch_targets_checked=#{dispatch_targets_checked}\ndispatch_input_refs=#{dispatch_input_refs}\nrequired_dispatch_inputs_checked=#{required_dispatch_inputs_checked}\n")
           exit(errors.empty? ? 0 : 1)
           RUBY
 
