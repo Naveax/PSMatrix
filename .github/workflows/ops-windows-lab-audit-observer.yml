@@ -5,10 +5,13 @@ on:
     branches: [main]
     paths:
       - .github/workflows/ops-windows-lab-audit-observer.yml
+  workflow_run:
+    workflows: [ops-windows-lab-prereq-audit]
+    types: [in_progress, completed]
   workflow_dispatch:
 
 concurrency:
-  group: ops-windows-lab-audit-observer-${{ github.ref }}
+  group: ops-windows-lab-audit-observer-${{ github.event.workflow_run.id || github.run_id }}
   cancel-in-progress: false
 
 permissions:
@@ -22,21 +25,63 @@ jobs:
     timeout-minutes: 5
     env:
       GH_TOKEN: ${{ github.token }}
+      STATE_ISSUE: '261'
     steps:
-      - name: Report latest audit run safely
+      - name: Update canonical Windows-lab audit status safely
         shell: bash
         run: |
           set -euo pipefail
-          json="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ops-windows-lab-prereq-audit.yml/runs?per_page=5")"
-          count="$(jq '.workflow_runs | length' <<<"$json")"
-          if [[ "$count" -lt 1 ]]; then
-            body='### Windows-lab audit observer\n\nNo audit run was visible yet.'
+
+          if [[ "${{ github.event_name }}" == 'workflow_run' ]]; then
+            id='${{ github.event.workflow_run.id }}'
           else
-            id="$(jq -r '.workflow_runs[0].id' <<<"$json")"
-            status="$(jq -r '.workflow_runs[0].status' <<<"$json")"
-            conclusion="$(jq -r '.workflow_runs[0].conclusion // "pending"' <<<"$json")"
-            event="$(jq -r '.workflow_runs[0].event' <<<"$json")"
-            head="$(jq -r '.workflow_runs[0].head_sha' <<<"$json")"
-            body=$(printf '### Windows-lab audit observer\n\nLatest audit run: `%s`\nStatus: `%s`\nConclusion: `%s`\nEvent: `%s`\nHead: `%s`\n\nNo secret values were inspected.' "$id" "$status" "$conclusion" "$event" "$head")
+            id=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ops-windows-lab-prereq-audit.yml/runs?per_page=1" --jq '.workflow_runs[0].id // empty')
           fi
-          gh api "repos/$GITHUB_REPOSITORY/issues/261/comments" --method POST -f body="$body" >/dev/null
+
+          if [[ -z "$id" ]]; then
+            body=$'### Windows-lab audit observer\n\nNo audit run is visible yet.\n\nNo secret values were inspected.'
+          else
+            run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id")
+            status=$(jq -r '.status' <<<"$run")
+            conclusion=$(jq -r '.conclusion // "pending"' <<<"$run")
+            event=$(jq -r '.event' <<<"$run")
+            head=$(jq -r '.head_sha' <<<"$run")
+            created=$(jq -r '.created_at' <<<"$run")
+            updated=$(jq -r '.updated_at' <<<"$run")
+
+            age_minutes=0
+            if created_epoch=$(date -u -d "$created" +%s 2>/dev/null); then
+              now_epoch=$(date -u +%s)
+              if (( now_epoch >= created_epoch )); then
+                age_minutes=$(( (now_epoch - created_epoch) / 60 ))
+              fi
+            fi
+
+            stale=false
+            interpretation='The audit run is active or complete.'
+            if [[ "$status" == 'queued' ]]; then
+              if (( age_minutes >= 10 )); then stale=true; fi
+              interpretation='No eligible runner has accepted the job yet; this does not distinguish offline, busy, or registration/access causes.'
+            elif [[ "$status" == 'in_progress' ]]; then
+              interpretation='NAVEAX-compatible runner capacity has accepted the audit job.'
+            elif [[ "$status" == 'completed' ]]; then
+              interpretation='The audit run has reached a terminal state; use its conclusion and job logs as source of truth.'
+            fi
+
+            body=$(printf '### Windows-lab audit observer\n\nLatest audit run: `%s`\nStatus: `%s`\nConclusion: `%s`\nEvent: `%s`\nHead: `%s`\nCreated: `%s`\nUpdated: `%s`\nQueue age: `%s min`\nStale queued: `%s`\n\nRunner contract: `self-hosted, Windows, X64, psmatrix-hyperv` (same contract used by the successful RC4 staging workflow).\n\nInterpretation: %s\n\nObserver is event-driven for `in_progress` and `completed`; it does **not** create or rerun audit jobs. No secret values were inspected.' "$id" "$status" "$conclusion" "$event" "$head" "$created" "$updated" "$age_minutes" "$stale" "$interpretation")
+          fi
+
+          comment_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("### Windows-lab audit observer"))) | .id' \
+            | tail -n 1)
+
+          if [[ -n "$comment_id" ]]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" -f body="$body" >/dev/null
+            echo "windows_lab_audit_observer_comment=updated id=$comment_id"
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" -f body="$body" >/dev/null
+            echo 'windows_lab_audit_observer_comment=created'
+          fi
+
+          echo "windows_lab_audit_observer=PASS run_id=${id:-none}"
+          echo 'audit_rerun_created=false'
