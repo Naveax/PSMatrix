@@ -108,10 +108,28 @@ jobs:
           else
             gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/heads/$FINAL_ACTIVE_BRANCH" -f sha="$LOCK_CONTROL_HEAD" >/dev/null
           fi
-          gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "RC4_CHAIN_STATE stage=final_active_lock run_id=$GITHUB_RUN_ID attempt=$GITHUB_RUN_ATTEMPT control_head=$LOCK_CONTROL_HEAD"
+          marker="RC4_CHAIN_STATE stage=final_active_lock run_id=$GITHUB_RUN_ID attempt=$GITHUB_RUN_ATTEMPT control_head=$LOCK_CONTROL_HEAD"
+          if ! gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body' | grep -Fxq "$marker"; then
+            gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$marker"
+          fi
           echo "final_active_lock_ref=PASS sha=$LOCK_CONTROL_HEAD"
 
-      - name: Dispatch canonical protected final signing
+      - name: Check protected final signing dispatch budget
+        id: dedupe
+        shell: bash
+        run: |
+          set -euo pipefail
+          count=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ga-windows-authority-final-release-sign-from-lock.yml/runs?branch=$FINAL_ACTIVE_BRANCH&event=workflow_dispatch&per_page=100" \
+            --jq ".workflow_runs | map(select(.head_sha == \"$LOCK_CONTROL_HEAD\")) | length")
+          if [[ "$count" -gt 0 ]]; then
+            echo 'duplicate=true' >> "$GITHUB_OUTPUT"
+            echo "protected_final_signing_duplicate_suppressed=true existing_runs=$count"
+          else
+            echo 'duplicate=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Dispatch canonical protected final signing once
+        if: steps.dedupe.outputs.duplicate != 'true'
         env:
           STAGING_RUN_ID: ${{ steps.lock.outputs.staging_run_id }}
           REVIEW_RUN_ID: ${{ steps.lock.outputs.review_run_id }}
