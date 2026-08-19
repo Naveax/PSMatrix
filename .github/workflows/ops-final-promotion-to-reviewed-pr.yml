@@ -39,7 +39,7 @@ jobs:
           [[ "$current" == "$PROMOTION_CONTROL_HEAD" ]] || { echo "Final lock-control branch moved during promotion: $current != $PROMOTION_CONTROL_HEAD" >&2; exit 1; }
           echo 'final_promotion_control_frozen=PASS'
 
-      - name: Suppress duplicate exact promotion PR
+      - name: Suppress duplicate PR or detect recoverable orphan branch
         id: dedupe
         shell: bash
         run: |
@@ -57,9 +57,19 @@ jobs:
             [[ "$base" == "$FINAL_LOCK_CONTROL_BRANCH" ]] || { echo 'Existing final promotion PR base mismatch.' >&2; exit 1; }
             [[ "$title" == 'Promote human-reviewed final 2.0.0 release lock' ]] || { echo 'Existing final promotion PR title mismatch.' >&2; exit 1; }
             echo 'duplicate=true' >> "$GITHUB_OUTPUT"
+            echo 'branch_exists=true' >> "$GITHUB_OUTPUT"
             echo "final_promotion_pr_duplicate_suppressed=true branch=$branch"
+            exit 0
+          fi
+
+          echo 'duplicate=false' >> "$GITHUB_OUTPUT"
+          if branch_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$branch" --jq '.object.sha' 2>/dev/null); then
+            [[ "$branch_sha" =~ ^[0-9a-f]{40}$ ]]
+            echo 'branch_exists=true' >> "$GITHUB_OUTPUT"
+            echo "orphan_branch_sha=$branch_sha" >> "$GITHUB_OUTPUT"
+            echo "final_promotion_orphan_branch_detected=true branch=$branch sha=$branch_sha"
           else
-            echo 'duplicate=false' >> "$GITHUB_OUTPUT"
+            echo 'branch_exists=false' >> "$GITHUB_OUTPUT"
           fi
 
       - name: Download exact final promotion candidate artifact
@@ -138,7 +148,7 @@ jobs:
           persist-credentials: true
 
       - name: Materialize exact two-file reviewed final-lock change
-        if: steps.dedupe.outputs.duplicate != 'true'
+        if: steps.dedupe.outputs.duplicate != 'true' && steps.dedupe.outputs.branch_exists != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -157,23 +167,49 @@ jobs:
           cmp -s release-assets/2.0.0/psmatrix-2.0.0-release-public.pem ../promotion/release-assets/2.0.0/psmatrix-2.0.0-release-public.pem
           echo 'exact_final_repository_change_set=PASS files=2'
 
-      - name: Commit exact branch and open draft reviewed PR
+      - name: Recover or create exact branch and open draft reviewed PR
         if: steps.dedupe.outputs.duplicate != 'true'
         env:
           REVIEW_RUN_ID: ${{ steps.validate.outputs.review_run_id }}
           DRAFT_SHA256: ${{ steps.validate.outputs.draft_sha256 }}
           PUBLIC_SHA256: ${{ steps.validate.outputs.public_sha256 }}
+          BRANCH_EXISTS: ${{ steps.dedupe.outputs.branch_exists }}
         shell: bash
         run: |
           set -euo pipefail
           cd repo
           branch="ops/final-lock-promotion-${PROMOTION_RUN_ID}"
+          expected=('ga-packs/03-authoritative-windows/final-release-lock.json' 'release-assets/2.0.0/psmatrix-2.0.0-release-public.pem')
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git switch -c "$branch"
-          git add -- ga-packs/03-authoritative-windows/final-release-lock.json release-assets/2.0.0/psmatrix-2.0.0-release-public.pem
-          git commit -m 'Promote human-reviewed final 2.0.0 release lock'
-          git push origin "$branch"
+
+          if [[ "$BRANCH_EXISTS" == true ]]; then
+            branch_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$branch" --jq '.object.sha')
+            [[ "$branch_sha" =~ ^[0-9a-f]{40}$ ]]
+            commit_json=$(gh api "repos/$GITHUB_REPOSITORY/commits/$branch_sha")
+            message=$(jq -r '.commit.message' <<<"$commit_json")
+            [[ "$message" == 'Promote human-reviewed final 2.0.0 release lock' ]] || { echo 'Orphan final promotion branch commit message mismatch.' >&2; exit 1; }
+            mapfile -t branch_files < <(jq -r '.files[].filename' <<<"$commit_json" | sort)
+            if [[ ${#branch_files[@]} -ne 2 || "${branch_files[0]}" != "${expected[0]}" || "${branch_files[1]}" != "${expected[1]}" ]]; then
+              printf 'Orphan final promotion branch changed unexpected files:\n%s\n' "${branch_files[*]}" >&2
+              exit 1
+            fi
+            git reset --hard
+            git clean -fd
+            git fetch --no-tags origin "$branch"
+            git switch --detach FETCH_HEAD
+            [[ "$(git rev-parse HEAD)" == "$branch_sha" ]]
+            cmp -s ga-packs/03-authoritative-windows/final-release-lock.json ../promotion/ga-packs/03-authoritative-windows/final-release-lock.json
+            cmp -s release-assets/2.0.0/psmatrix-2.0.0-release-public.pem ../promotion/release-assets/2.0.0/psmatrix-2.0.0-release-public.pem
+            echo "final_promotion_orphan_branch_recovered=PASS sha=$branch_sha"
+          else
+            git switch -c "$branch"
+            git add -- ga-packs/03-authoritative-windows/final-release-lock.json release-assets/2.0.0/psmatrix-2.0.0-release-public.pem
+            git commit -m 'Promote human-reviewed final 2.0.0 release lock'
+            git push origin "$branch"
+            echo 'final_promotion_branch_created=true'
+          fi
+
           body=$(cat <<EOF
           Exact two-file repository commit candidate from canonical final lock promotion.
 
@@ -195,7 +231,20 @@ jobs:
           - \`ga_eligible=false\`
           EOF
           )
-          gh pr create --repo "$GITHUB_REPOSITORY" --base "$FINAL_LOCK_CONTROL_BRANCH" --head "$branch" --draft --title 'Promote human-reviewed final 2.0.0 release lock' --body "$body"
-          echo 'final_exact_repository_change_pr_created=true'
+
+          prs=$(gh api "repos/$GITHUB_REPOSITORY/pulls?state=all&head=Naveax:$branch&per_page=100")
+          count=$(jq 'length' <<<"$prs")
+          if [[ "$count" -gt 1 ]]; then
+            echo 'Multiple PRs appeared for exact final promotion branch.' >&2
+            exit 1
+          elif [[ "$count" -eq 1 ]]; then
+            base=$(jq -r '.[0].base.ref' <<<"$prs")
+            title=$(jq -r '.[0].title' <<<"$prs")
+            [[ "$base" == "$FINAL_LOCK_CONTROL_BRANCH" && "$title" == 'Promote human-reviewed final 2.0.0 release lock' ]] || { echo 'Recovered final promotion PR metadata mismatch.' >&2; exit 1; }
+            echo 'final_promotion_pr_create_race_suppressed=true'
+          else
+            gh pr create --repo "$GITHUB_REPOSITORY" --base "$FINAL_LOCK_CONTROL_BRANCH" --head "$branch" --draft --title 'Promote human-reviewed final 2.0.0 release lock' --body "$body"
+            echo 'final_exact_repository_change_pr_created=true'
+          fi
           echo 'merge_performed=false'
           echo 'ga_eligible=false'
