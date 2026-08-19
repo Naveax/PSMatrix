@@ -7,6 +7,10 @@ on:
       - .github/workflows/ops-windows-lab-audit-observer.yml
   workflow_dispatch:
 
+concurrency:
+  group: ops-windows-lab-audit-observer-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
   actions: read

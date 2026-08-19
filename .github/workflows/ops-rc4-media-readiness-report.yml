@@ -5,6 +5,10 @@ on:
     workflows: [production-ga-windows-authority-rc4-media-readiness-selfhosted]
     types: [completed]
 
+concurrency:
+  group: ops-rc4-media-readiness-report
+  cancel-in-progress: false
+
 permissions:
   contents: read
   actions: read
