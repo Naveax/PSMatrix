@@ -1,0 +1,38 @@
+name: ops-windows-lab-audit-observer
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/ops-windows-lab-audit-observer.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Report latest audit run safely
+        shell: bash
+        run: |
+          set -euo pipefail
+          json="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ops-windows-lab-prereq-audit.yml/runs?per_page=5")"
+          count="$(jq '.workflow_runs | length' <<<"$json")"
+          if [[ "$count" -lt 1 ]]; then
+            body='### Windows-lab audit observer\n\nNo audit run was visible yet.'
+          else
+            id="$(jq -r '.workflow_runs[0].id' <<<"$json")"
+            status="$(jq -r '.workflow_runs[0].status' <<<"$json")"
+            conclusion="$(jq -r '.workflow_runs[0].conclusion // "pending"' <<<"$json")"
+            event="$(jq -r '.workflow_runs[0].event' <<<"$json")"
+            head="$(jq -r '.workflow_runs[0].head_sha' <<<"$json")"
+            body=$(printf '### Windows-lab audit observer\n\nLatest audit run: `%s`\nStatus: `%s`\nConclusion: `%s`\nEvent: `%s`\nHead: `%s`\n\nNo secret values were inspected.' "$id" "$status" "$conclusion" "$event" "$head")
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/issues/261/comments" --method POST -f body="$body" >/dev/null
