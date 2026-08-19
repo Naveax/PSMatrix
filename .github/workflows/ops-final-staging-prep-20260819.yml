@@ -1,0 +1,157 @@
+name: ops-final-staging-prep-20260819
+
+on:
+  push:
+    branches: [ops/ga-control-20260818]
+    paths:
+      - .github/workflows/ops-final-staging-prep-20260819.yml
+
+concurrency:
+  group: ops-final-staging-prep-20260819
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+  issues: write
+
+jobs:
+  prepare-final-staging:
+    if: github.event.head_commit.message == 'Dispatch final 2.0.0 staging prep'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FINAL_BRANCH: final/2.0.0-release-preparation
+      FINAL_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
+      SOURCE_WORKFLOW: ga-windows-authority-final-release-source-preflight.yml
+      STAGING_WORKFLOW: ga-windows-authority-final-staging-candidate-selfhosted.yml
+      STATUS_ISSUE: '261'
+    steps:
+      - name: Verify exact frozen final source
+        shell: bash
+        run: |
+          set -euo pipefail
+          frozen=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_BRANCH" --jq '.object.sha')
+          [[ "$frozen" == "$FINAL_COMMIT" ]] || { echo "Final release source moved: $frozen != $FINAL_COMMIT" >&2; exit 1; }
+          echo "final_source_frozen=PASS branch=$FINAL_BRANCH sha=$FINAL_COMMIT"
+
+      - name: Reuse exact run or dispatch one missing prerequisite
+        id: control
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          runs_for() {
+            gh api --method GET \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/$1/runs" \
+              -f branch="$FINAL_BRANCH" \
+              -f event='workflow_dispatch' \
+              -f per_page=100
+          }
+
+          exact_rows() {
+            jq -c --arg sha "$FINAL_COMMIT" '[.workflow_runs[] | select(.head_sha == $sha)] | sort_by(.created_at) | reverse'
+          }
+
+          staging_payload=$(runs_for "$STAGING_WORKFLOW")
+          staging_rows=$(exact_rows <<<"$staging_payload")
+          staging_count=$(jq 'length' <<<"$staging_rows")
+          if [[ "$staging_count" -gt 0 ]]; then
+            staging_id=$(jq -r '.[0].id' <<<"$staging_rows")
+            staging_status=$(jq -r '.[0].status' <<<"$staging_rows")
+            staging_conclusion=$(jq -r '.[0].conclusion // ""' <<<"$staging_rows")
+            staging_attempt=$(jq -r '.[0].run_attempt' <<<"$staging_rows")
+            echo "action=REUSE_STAGING" >> "$GITHUB_OUTPUT"
+            echo "run_id=$staging_id" >> "$GITHUB_OUTPUT"
+            echo "run_status=$staging_status" >> "$GITHUB_OUTPUT"
+            echo "run_conclusion=$staging_conclusion" >> "$GITHUB_OUTPUT"
+            echo "run_attempt=$staging_attempt" >> "$GITHUB_OUTPUT"
+            echo "final_staging_reused=true run_id=$staging_id status=$staging_status conclusion=$staging_conclusion attempt=$staging_attempt existing_count=$staging_count"
+            exit 0
+          fi
+
+          source_payload=$(runs_for "$SOURCE_WORKFLOW")
+          source_rows=$(exact_rows <<<"$source_payload")
+          source_count=$(jq 'length' <<<"$source_rows")
+          success_id=$(jq -r '[.[] | select(.status == "completed" and .conclusion == "success")][0].id // empty' <<<"$source_rows")
+          active_id=$(jq -r '[.[] | select(.status == "queued" or .status == "in_progress" or .status == "waiting" or .status == "requested" or .status == "pending")][0].id // empty' <<<"$source_rows")
+          failed_id=$(jq -r '[.[] | select(.status == "completed" and (.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out"))][0].id // empty' <<<"$source_rows")
+
+          if [[ -n "$success_id" ]]; then
+            echo "Exact final source preflight already PASS: run_id=$success_id; dispatching staging once."
+            gh workflow run "$STAGING_WORKFLOW" --repo "$GITHUB_REPOSITORY" --ref "$FINAL_BRANCH" -f release_commit="$FINAL_COMMIT"
+            action='DISPATCH_STAGING_FROM_EXISTING_SOURCE_PASS'
+          elif [[ -n "$active_id" ]]; then
+            echo "Exact final source preflight already active: run_id=$active_id; source->staging chain will consume it on success."
+            action='REUSE_ACTIVE_SOURCE_PREFLIGHT'
+          elif [[ -n "$failed_id" ]]; then
+            echo "Exact final source preflight failed previously: run_id=$failed_id; rerunning failed jobs on the same run."
+            gh run rerun "$failed_id" --repo "$GITHUB_REPOSITORY" --failed
+            action='RERUN_EXISTING_SOURCE_PREFLIGHT'
+          elif [[ "$source_count" -eq 0 ]]; then
+            echo 'No exact final source-preflight run exists; dispatching exactly one.'
+            gh workflow run "$SOURCE_WORKFLOW" --repo "$GITHUB_REPOSITORY" --ref "$FINAL_BRANCH"
+            action='DISPATCH_SOURCE_PREFLIGHT'
+          else
+            echo "Exact source-preflight runs exist but none are reusable/active/retriable. count=$source_count" >&2
+            exit 1
+          fi
+
+          echo "action=$action" >> "$GITHUB_OUTPUT"
+
+          observed_id=''
+          observed_status=''
+          observed_conclusion=''
+          observed_attempt=''
+          for _ in $(seq 1 15); do
+            sleep 2
+            if [[ "$action" == 'DISPATCH_STAGING_FROM_EXISTING_SOURCE_PASS' ]]; then
+              payload=$(runs_for "$STAGING_WORKFLOW")
+            else
+              payload=$(runs_for "$SOURCE_WORKFLOW")
+            fi
+            rows=$(exact_rows <<<"$payload")
+            observed_id=$(jq -r '.[0].id // empty' <<<"$rows")
+            observed_status=$(jq -r '.[0].status // empty' <<<"$rows")
+            observed_conclusion=$(jq -r '.[0].conclusion // ""' <<<"$rows")
+            observed_attempt=$(jq -r '.[0].run_attempt // empty' <<<"$rows")
+            [[ -n "$observed_id" ]] && break
+          done
+          echo "run_id=$observed_id" >> "$GITHUB_OUTPUT"
+          echo "run_status=$observed_status" >> "$GITHUB_OUTPUT"
+          echo "run_conclusion=$observed_conclusion" >> "$GITHUB_OUTPUT"
+          echo "run_attempt=$observed_attempt" >> "$GITHUB_OUTPUT"
+          echo "final_staging_control_action=$action observed_run_id=$observed_id status=$observed_status conclusion=$observed_conclusion attempt=$observed_attempt"
+
+      - name: Publish value-free status into external22 handoff issue
+        if: always()
+        env:
+          ACTION: ${{ steps.control.outputs.action }}
+          RUN_ID: ${{ steps.control.outputs.run_id }}
+          RUN_STATUS: ${{ steps.control.outputs.run_status }}
+          RUN_CONCLUSION: ${{ steps.control.outputs.run_conclusion }}
+          RUN_ATTEMPT: ${{ steps.control.outputs.run_attempt }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          current=$(gh issue view "$STATUS_ISSUE" --repo "$GITHUB_REPOSITORY" --json body --jq '.body')
+          marker='<!-- final-staging-prep-20260819 -->'
+          base=$(printf '%s\n' "$current" | sed "/$marker/,$ d")
+          section=$(cat <<EOF
+          $marker
+          ## Final 2.0.0 unsigned staging preparation — 2026-08-19
+
+          - frozen source: \`$FINAL_BRANCH\` @ \`$FINAL_COMMIT\`
+          - control action: \`${ACTION:-UNKNOWN}\`
+          - observed run id: \`${RUN_ID:-none}\`
+          - observed status: \`${RUN_STATUS:-unknown}\`
+          - observed conclusion: \`${RUN_CONCLUSION:-}\`
+          - observed attempt: \`${RUN_ATTEMPT:-unknown}\`
+          - human RC4 gate bypassed: \`false\`
+          - signed final release claimed: \`false\`
+          - ga_eligible: \`false\`
+          EOF
+          )
+          printf '%s\n\n%s\n' "$base" "$section" > "$RUNNER_TEMP/issue-body.md"
+          gh issue edit "$STATUS_ISSUE" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/issue-body.md"
