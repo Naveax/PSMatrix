@@ -31,7 +31,31 @@ jobs:
       REVIEWED_DRAFT_SHA256: a2a97763f679b18562e19ec99f066374b097a50c44a3bea4d1208328e9b339d9
       REVIEWED_PUBLIC_KEY_SHA256: ece4d7087449cb42cde9183b0b1e2b82db610d4ffffd726e6737d2ba09578a08
     steps:
+      - name: Suppress duplicate exact promotion PR
+        id: dedupe
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="ops/rc4-lock-promotion-${PROMOTION_RUN_ID}"
+          prs=$(gh api "repos/$GITHUB_REPOSITORY/pulls?state=all&head=Naveax:$branch&per_page=100")
+          count=$(jq 'length' <<<"$prs")
+          if [[ "$count" -gt 1 ]]; then
+            echo "Multiple PRs already exist for exact RC4 promotion branch: $branch" >&2
+            exit 1
+          fi
+          if [[ "$count" -eq 1 ]]; then
+            base=$(jq -r '.[0].base.ref' <<<"$prs")
+            title=$(jq -r '.[0].title' <<<"$prs")
+            [[ "$base" == 'main' ]] || { echo 'Existing RC4 promotion PR base mismatch.' >&2; exit 1; }
+            [[ "$title" == 'Promote human-reviewed RC4 release lock' ]] || { echo 'Existing RC4 promotion PR title mismatch.' >&2; exit 1; }
+            echo 'duplicate=true' >> "$GITHUB_OUTPUT"
+            echo "rc4_promotion_pr_duplicate_suppressed=true branch=$branch"
+          else
+            echo 'duplicate=false' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Download exact promotion candidate artifact
+        if: steps.dedupe.outputs.duplicate != 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: psmatrix-2.0.0rc4-release-lock-promotion-candidate
@@ -41,6 +65,7 @@ jobs:
           github-token: ${{ github.token }}
 
       - name: Validate promotion artifact and exact human-review binding
+        if: steps.dedupe.outputs.duplicate != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -116,6 +141,7 @@ jobs:
           PY
 
       - name: Check out current main for separate reviewed change
+        if: steps.dedupe.outputs.duplicate != 'true'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
         with:
           ref: main
@@ -124,6 +150,7 @@ jobs:
           persist-credentials: true
 
       - name: Materialize exact two-file repository change
+        if: steps.dedupe.outputs.duplicate != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -149,6 +176,7 @@ jobs:
           echo 'exact_repository_change_set=PASS files=2'
 
       - name: Commit branch and open draft PR
+        if: steps.dedupe.outputs.duplicate != 'true'
         shell: bash
         run: |
           set -euo pipefail
