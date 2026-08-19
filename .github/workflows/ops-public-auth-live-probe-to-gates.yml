@@ -39,18 +39,45 @@ jobs:
           artifact_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$LIVE_PROBE_RUN_ID/artifacts?per_page=100" \
             --jq '[.artifacts[] | select(.name == "psmatrix-2.0.0-final-public-auth-live-report" and (.expired|not))] | if length == 1 then .[0].id else error("expected exactly one live public-auth report artifact") end')
           [[ "$artifact_id" =~ ^[1-9][0-9]*$ ]] || { echo 'Public-auth live artifact ID invalid.' >&2; exit 1; }
-          gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "RC4_CHAIN_STATE stage=public_auth_live_probe run_id=$LIVE_PROBE_RUN_ID attempt=$LIVE_PROBE_ATTEMPT control_head=$CONTROL_HEAD"
+          marker="RC4_CHAIN_STATE stage=public_auth_live_probe run_id=$LIVE_PROBE_RUN_ID attempt=$LIVE_PROBE_ATTEMPT control_head=$CONTROL_HEAD"
+          if ! gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body' | grep -Fxq "$marker"; then
+            gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$marker"
+          fi
           echo "public_auth_live_probe=PASS artifact_id=$artifact_id"
 
-      - name: Dispatch signed OAuth and mTLS evaluator gates
+      - name: Dispatch signed OAuth and mTLS evaluator gates once
         shell: bash
         run: |
           set -euo pipefail
-          gh workflow run ga-final-public-oauth.yml \
-            --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
-            -f live_probe_run_id="$LIVE_PROBE_RUN_ID"
-          gh workflow run ga-final-public-mtls.yml \
-            --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
-            -f live_probe_run_id="$LIVE_PROBE_RUN_ID"
-          echo 'public_oauth_and_mtls_gate_dispatch=PASS count=2'
+
+          existing_count() {
+            local workflow="$1"
+            gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?branch=$FINAL_ACTIVE_BRANCH&event=workflow_dispatch&per_page=100" \
+              --jq ".workflow_runs | map(select(.head_sha == \"$CONTROL_HEAD\")) | length"
+          }
+
+          dispatched=0
+          suppressed=0
+
+          if [[ "$(existing_count ga-final-public-oauth.yml)" -eq 0 ]]; then
+            gh workflow run ga-final-public-oauth.yml \
+              --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
+              -f live_probe_run_id="$LIVE_PROBE_RUN_ID"
+            dispatched=$((dispatched+1))
+          else
+            echo 'public_oauth_duplicate_suppressed=true'
+            suppressed=$((suppressed+1))
+          fi
+
+          if [[ "$(existing_count ga-final-public-mtls.yml)" -eq 0 ]]; then
+            gh workflow run ga-final-public-mtls.yml \
+              --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
+              -f live_probe_run_id="$LIVE_PROBE_RUN_ID"
+            dispatched=$((dispatched+1))
+          else
+            echo 'public_mtls_duplicate_suppressed=true'
+            suppressed=$((suppressed+1))
+          fi
+
+          echo "public_oauth_and_mtls_gate_dispatch=PASS dispatched=$dispatched suppressed=$suppressed"
           echo 'ga_eligible=false'
