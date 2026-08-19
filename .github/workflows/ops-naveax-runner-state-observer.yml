@@ -20,26 +20,49 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      ADMIN_TOKEN: ${{ secrets.PSMATRIX_TEMP_ADMIN_TOKEN }}
       EXTERNAL_ISSUE: '261'
     steps:
       - name: Inspect runner metadata only
+        id: inspect
+        continue-on-error: true
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.PSMATRIX_TEMP_ADMIN_TOKEN }}
         run: |
           set -euo pipefail
-          [[ -n "$GH_TOKEN" ]] || { echo 'temporary admin token missing' >&2; exit 1; }
-          json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runners?per_page=100")
+          output="$RUNNER_TEMP/naveax-runner-state.txt"
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo 'NAVEAX_RUNNER_STATE status=UNRESOLVED reason=temp_admin_secret_missing secret_values_logged=false' > "$output"
+            exit 2
+          fi
+          if ! json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runners?per_page=100" 2>"$RUNNER_TEMP/runner-api-error.txt"); then
+            echo 'NAVEAX_RUNNER_STATE status=UNRESOLVED reason=runner_api_denied_or_unavailable secret_values_logged=false' > "$output"
+            exit 3
+          fi
           count=$(jq '[.runners[] | select(.name == "NAVEAX")] | length' <<<"$json")
           if [[ "$count" -ne 1 ]]; then
-            body="NAVEAX_RUNNER_STATE status=UNRESOLVED matching_runners=$count secret_values_logged=false"
-          else
-            status=$(jq -r '.runners[] | select(.name == "NAVEAX") | .status' <<<"$json")
-            busy=$(jq -r '.runners[] | select(.name == "NAVEAX") | .busy' <<<"$json")
-            labels=$(jq -r '[.runners[] | select(.name == "NAVEAX") | .labels[].name] | sort | join(",")' <<<"$json")
-            required_ok=$(jq -r '[.runners[] | select(.name == "NAVEAX") | .labels[].name] as $l | (["self-hosted","Windows","X64","psmatrix-hyperv"] | all(. as $x | $l | index($x) != null))' <<<"$json")
-            body="NAVEAX_RUNNER_STATE status=$status busy=$busy required_labels_present=$required_ok labels=$labels secret_values_logged=false"
+            echo "NAVEAX_RUNNER_STATE status=UNRESOLVED matching_runners=$count secret_values_logged=false" > "$output"
+            exit 0
           fi
-          GH_TOKEN='${{ github.token }}' gh issue comment "$EXTERNAL_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$body"
+          status=$(jq -r '.runners[] | select(.name == "NAVEAX") | .status' <<<"$json")
+          busy=$(jq -r '.runners[] | select(.name == "NAVEAX") | .busy' <<<"$json")
+          labels=$(jq -r '[.runners[] | select(.name == "NAVEAX") | .labels[].name] | sort | join(",")' <<<"$json")
+          required_ok=$(jq -r '[.runners[] | select(.name == "NAVEAX") | .labels[].name] as $l | (["self-hosted","Windows","X64","psmatrix-hyperv"] | all(. as $x | $l | index($x) != null))' <<<"$json")
+          echo "NAVEAX_RUNNER_STATE status=$status busy=$busy required_labels_present=$required_ok labels=$labels secret_values_logged=false" > "$output"
+
+      - name: Publish sanitized runner observation
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/naveax-runner-state.txt"
+          if [[ -f "$output" ]]; then
+            body=$(cat "$output")
+          else
+            body="NAVEAX_RUNNER_STATE status=UNRESOLVED reason=observer_failed_before_sanitized_output inspect_outcome=${{ steps.inspect.outcome }} secret_values_logged=false"
+          fi
+          gh issue comment "$EXTERNAL_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$body"
           echo "$body"
+          [[ "${{ steps.inspect.outcome }}" == success ]] || exit 1
