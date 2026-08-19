@@ -24,67 +24,12 @@ jobs:
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
-      ADMIN_TOKEN: ${{ secrets.PSMATRIX_TEMP_ADMIN_TOKEN }}
       READINESS_BRANCH: final/2.0.0-production-control-plane-publication-anchor
       READINESS_HEAD: 3ffc6b6d7cd58d64224f780aa819b50f50f72491
       FINAL_ACTIVE_BRANCH: release/2.0.0-final-active-lock
       STATE_ISSUE: '262'
       EXTERNAL_ISSUE: '261'
     steps:
-      - name: Require isolated temporary environment-audit credential
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ -n "$ADMIN_TOKEN" ]] || { echo 'PSMATRIX_TEMP_ADMIN_TOKEN is missing; cannot audit environment secret names.' >&2; exit 1; }
-          echo 'temporary_environment_audit_credential_present=true'
-
-      - name: Audit exact external22 names without reading secret values
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json,os,urllib.parse,urllib.request
-          repo=os.environ['GITHUB_REPOSITORY']
-          headers={
-              'Accept':'application/vnd.github+json',
-              'Authorization':f"Bearer {os.environ['ADMIN_TOKEN']}",
-              'X-GitHub-Api-Version':'2022-11-28',
-              'User-Agent':'psmatrix-external22-name-audit',
-          }
-          def fetch(path):
-              req=urllib.request.Request(f'https://api.github.com/repos/{repo}/{path}',headers=headers)
-              with urllib.request.urlopen(req,timeout=30) as r:return json.load(r)
-          def names(env,kind):
-              e=urllib.parse.quote(env,safe='')
-              if kind=='secrets':
-                  data=fetch(f'environments/{e}/secrets?per_page=100')
-                  return {str(x.get('name')) for x in data.get('secrets',[]) if x.get('name')}
-              data=fetch(f'environments/{e}/variables?per_page=100')
-              return {str(x.get('name')) for x in data.get('variables',[]) if x.get('name')}
-          requirements={
-              ('production-ga-public-auth-probe','secrets'):{
-                  'PSMATRIX_OAUTH_VALID_TOKEN','PSMATRIX_OAUTH_EXPIRED_TOKEN','PSMATRIX_OAUTH_WRONG_AUDIENCE_TOKEN','PSMATRIX_OAUTH_MISSING_SCOPE_TOKEN','PSMATRIX_OAUTH_REPLAY_TOKEN','PSMATRIX_OAUTH_RATE_LIMIT_TOKEN',
-                  'PSMATRIX_MTLS_CURRENT_CERT','PSMATRIX_MTLS_CURRENT_KEY','PSMATRIX_MTLS_ROTATION_CERT','PSMATRIX_MTLS_ROTATION_KEY','PSMATRIX_MTLS_UNTRUSTED_CERT','PSMATRIX_MTLS_UNTRUSTED_KEY','PSMATRIX_MTLS_REVOKED_CERT','PSMATRIX_MTLS_REVOKED_KEY',
-              },
-              ('production-ga-public-auth-probe','variables'):{
-                  'PSMATRIX_OAUTH_ENDPOINT','PSMATRIX_OAUTH_DISCOVERY_URL','PSMATRIX_OAUTH_EXPECTED_ISSUER','PSMATRIX_MTLS_ENDPOINT','PSMATRIX_MTLS_FINGERPRINT_HEADER',
-              },
-              ('production-ga-external-otlp-probe','secrets'):{'PSMATRIX_GA_EXTERNAL_OTLP_HEADERS_JSON'},
-              ('production-ga-external-otlp-probe','variables'):{'PSMATRIX_GA_EXTERNAL_OTLP_ENDPOINT'},
-              ('production-ga-security-review-signing','variables'):{'PSMATRIX_GA_SECURITY_REVIEW_REPORT_JSON'},
-          }
-          missing=[]
-          for (env,kind),expected in requirements.items():
-              observed=names(env,kind)
-              for name in sorted(expected-observed): missing.append(f'{env}:{kind}:{name}')
-          expected_count=sum(len(v) for v in requirements.values())
-          if expected_count!=22: raise SystemExit(f'internal external22 cardinality mismatch: {expected_count}')
-          if missing:
-              print('external22_environment_name_audit=FAIL missing=' + ','.join(missing))
-              raise SystemExit(2)
-          print('external22_environment_name_audit=PASS checks=22 secret_values_read=false')
-          PY
-
       - name: Require final signed-release and reviewer-packet prerequisites
         shell: bash
         run: |
@@ -143,7 +88,8 @@ jobs:
 
           gh workflow run ga-final-production-readiness.yml --repo "$GITHUB_REPOSITORY" --ref "$READINESS_BRANCH"
           gh issue comment "$EXTERNAL_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$marker"
-          gh issue comment "$EXTERNAL_ISSUE" --repo "$GITHUB_REPOSITORY" --body "External22 name audit PASS (22/22). Fresh canonical Production GA readiness dispatched from \`$READINESS_HEAD\`. External proof producers remain blocked until that fresh readiness run is fully \`12/12 PASS\`."
+          gh issue comment "$EXTERNAL_ISSUE" --repo "$GITHUB_REPOSITORY" --body "External22 operator readiness signal accepted after final signing/packet prerequisites. Fresh canonical Production GA readiness dispatched from \`$READINESS_HEAD\`. The canonical readiness workflow remains responsible for exact environment-name/cardinality validation; external proof producers remain blocked until that fresh readiness run is fully \`12/12 PASS\`."
+          echo 'external22_operator_signal_accepted=true'
           echo 'fresh_production_readiness_dispatched=true'
           echo 'external_producers_dispatched=false'
           echo 'ga_eligible=false'
