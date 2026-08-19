@@ -27,12 +27,14 @@ jobs:
       CONTROL_HEAD: ${{ github.event.workflow_run.head_sha }}
       FROZEN_CONTROL_BRANCH: release/2.0.0rc4-active-lock
     steps:
-      - name: Validate successful intake provenance
+      - name: Validate successful intake provenance and frozen control
         shell: bash
         run: |
           set -euo pipefail
           [[ "$CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]]
           [[ "${{ github.event.workflow_run.id }}" =~ ^[1-9][0-9]*$ ]]
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FROZEN_CONTROL_BRANCH" --jq '.object.sha')
+          [[ "$current" == "$CONTROL_HEAD" ]] || { echo "Frozen RC4 active-lock moved after intake: $current != $CONTROL_HEAD" >&2; exit 1; }
           run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/${{ github.event.workflow_run.id }}")"
           [[ "$(jq -r '.name' <<<"$run")" == 'production-ga-windows-authority-rc4-release-intake-selfhosted' ]]
           [[ "$(jq -r '.event' <<<"$run")" == 'workflow_dispatch' ]]
@@ -65,6 +67,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FROZEN_CONTROL_BRANCH" --jq '.object.sha')
+          [[ "$current" == "$CONTROL_HEAD" ]] || { echo 'Frozen RC4 active-lock moved before media-readiness dispatch.' >&2; exit 1; }
           gh workflow run ga-windows-authority-rc4-media-readiness-selfhosted.yml \
             --repo "$GITHUB_REPOSITORY" \
             --ref "$FROZEN_CONTROL_BRANCH" \
