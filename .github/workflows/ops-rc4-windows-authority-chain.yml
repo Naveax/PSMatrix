@@ -1,0 +1,212 @@
+name: ops-rc4-windows-authority-chain
+
+on:
+  workflow_run:
+    workflows:
+      - production-ga-windows-authority-rc4-release-intake-selfhosted
+      - production-ga-windows-authority-rc4-media-readiness-selfhosted
+      - production-ga-windows-authority-rc4-provisioning-manifest-selfhosted
+      - production-ga-windows-authority-rc4-operation-package-selfhosted
+      - production-ga-windows-authority-rc4-provision-selfhosted
+      - production-ga-windows-authority-rc4-image-identity-measurement-selfhosted
+      - production-ga-windows-authority-rc4-certification-campaign-selfhosted
+    types: [completed]
+
+concurrency:
+  group: ops-rc4-windows-authority-chain
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  dispatch-next:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.head_branch == 'release/2.0.0rc4-active-lock'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FROZEN_CONTROL_BRANCH: release/2.0.0rc4-active-lock
+      RELEASE_COMMIT: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
+      CONTROL_HEAD: ${{ github.event.workflow_run.head_sha }}
+      UPSTREAM_NAME: ${{ github.event.workflow_run.name }}
+      UPSTREAM_RUN_ID: ${{ github.event.workflow_run.id }}
+      UPSTREAM_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+    steps:
+      - name: Validate frozen control ref and upstream provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$UPSTREAM_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$UPSTREAM_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+
+          frozen=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FROZEN_CONTROL_BRANCH" --jq '.object.sha')
+          [[ "$frozen" == "$CONTROL_HEAD" ]] || {
+            echo "Frozen RC4 control ref changed or upstream head differs: frozen=$frozen upstream=$CONTROL_HEAD" >&2
+            exit 1
+          }
+
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$UPSTREAM_RUN_ID")
+          [[ "$(jq -r '.head_sha' <<<"$run")" == "$CONTROL_HEAD" ]]
+          [[ "$(jq -r '.head_branch' <<<"$run")" == "$FROZEN_CONTROL_BRANCH" ]]
+          [[ "$(jq -r '.event' <<<"$run")" == 'workflow_dispatch' ]]
+          [[ "$(jq -r '.status' <<<"$run")" == 'completed' && "$(jq -r '.conclusion' <<<"$run")" == 'success' ]]
+          [[ "$(jq -r '.run_attempt' <<<"$run")" == "$UPSTREAM_RUN_ATTEMPT" ]]
+          [[ "$(jq -r '.actor.login' <<<"$run")" == 'github-actions[bot]' ]] || {
+            echo 'RC4 downstream automation only accepts canonical bot-dispatched upstream runs.' >&2
+            exit 1
+          }
+
+          case "$UPSTREAM_NAME" in
+            production-ga-windows-authority-rc4-release-intake-selfhosted)
+              expected='.github/workflows/ga-windows-authority-rc4-release-intake-selfhosted.yml' ;;
+            production-ga-windows-authority-rc4-media-readiness-selfhosted)
+              expected='.github/workflows/ga-windows-authority-rc4-media-readiness-selfhosted.yml' ;;
+            production-ga-windows-authority-rc4-provisioning-manifest-selfhosted)
+              expected='.github/workflows/ga-windows-authority-rc4-provisioning-manifest-selfhosted.yml' ;;
+            production-ga-windows-authority-rc4-operation-package-selfhosted)
+              expected='.github/workflows/ga-windows-authority-rc4-operation-package-selfhosted.yml' ;;
+            production-ga-windows-authority-rc4-provision-selfhosted)
+              expected='.github/workflows/ga-windows-authority-rc4-provision-selfhosted.yml' ;;
+            production-ga-windows-authority-rc4-image-identity-measurement-selfhosted)
+              expected='.github/workflows/ga-windows-authority-rc4-image-identity-measurement-selfhosted.yml' ;;
+            production-ga-windows-authority-rc4-certification-campaign-selfhosted)
+              expected='.github/workflows/ga-windows-authority-rc4-certification-campaign-selfhosted.yml' ;;
+            *) echo "Unexpected RC4 upstream workflow: $UPSTREAM_NAME" >&2; exit 1 ;;
+          esac
+          [[ "$(jq -r '.path' <<<"$run")" == "$expected" ]] || {
+            echo "RC4 upstream workflow path mismatch: $(jq -r '.path' <<<"$run") != $expected" >&2
+            exit 1
+          }
+          echo "rc4_chain_upstream=PASS name=$UPSTREAM_NAME run_id=$UPSTREAM_RUN_ID attempt=$UPSTREAM_RUN_ATTEMPT control=$CONTROL_HEAD"
+
+      - name: Dispatch exactly one canonical next stage
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          downstream_state() {
+            local workflow="$1"
+            local payload count
+            payload=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?branch=$FROZEN_CONTROL_BRANCH&event=workflow_dispatch&per_page=100")
+            count=$(jq --arg sha "$CONTROL_HEAD" '[.workflow_runs[] | select(.head_sha == $sha)] | length' <<<"$payload")
+            if [[ "$count" -gt 1 ]]; then
+              echo "More than one equivalent downstream run already exists for $workflow on $CONTROL_HEAD; refusing any new dispatch." >&2
+              return 2
+            fi
+            if [[ "$count" -eq 1 ]]; then
+              jq -r --arg sha "$CONTROL_HEAD" '.workflow_runs[] | select(.head_sha == $sha) | "existing_downstream_run id=\(.id) status=\(.status) conclusion=\(.conclusion // \"\") attempt=\(.run_attempt)"' <<<"$payload"
+              return 1
+            fi
+            return 0
+          }
+
+          dispatch_if_absent() {
+            local workflow="$1"; shift
+            if downstream_state "$workflow"; then
+              gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref "$FROZEN_CONTROL_BRANCH" "$@"
+              echo "rc4_next_stage_dispatched=true workflow=$workflow upstream_run=$UPSTREAM_RUN_ID"
+            else
+              rc=$?
+              if [[ "$rc" -eq 1 ]]; then
+                echo "rc4_duplicate_dispatch_suppressed=true workflow=$workflow upstream_run=$UPSTREAM_RUN_ID"
+                return 0
+              fi
+              return "$rc"
+            fi
+          }
+
+          unique_success_run() {
+            local workflow="$1"
+            local payload count
+            payload=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?branch=$FROZEN_CONTROL_BRANCH&event=workflow_dispatch&per_page=100")
+            count=$(jq --arg sha "$CONTROL_HEAD" '[.workflow_runs[] | select(.head_sha == $sha)] | length' <<<"$payload")
+            [[ "$count" -eq 1 ]] || {
+              echo "Expected exactly one canonical run for $workflow on $CONTROL_HEAD; found $count." >&2
+              return 2
+            }
+            jq -e --arg sha "$CONTROL_HEAD" '.workflow_runs[] | select(.head_sha == $sha) | select(.status == "completed" and .conclusion == "success")' <<<"$payload" >/dev/null || {
+              echo "Canonical run for $workflow is not completed/success." >&2
+              return 2
+            }
+            jq -r --arg sha "$CONTROL_HEAD" '.workflow_runs[] | select(.head_sha == $sha) | "\(.id) \(.run_attempt)"' <<<"$payload"
+          }
+
+          case "$UPSTREAM_NAME" in
+            production-ga-windows-authority-rc4-release-intake-selfhosted)
+              dispatch_if_absent ga-windows-authority-rc4-media-readiness-selfhosted.yml \
+                -f release_commit="$RELEASE_COMMIT" \
+                -f control_head="$CONTROL_HEAD" \
+                -f inspect_iso_images=true
+              ;;
+
+            production-ga-windows-authority-rc4-media-readiness-selfhosted)
+              dispatch_if_absent ga-windows-authority-rc4-provisioning-manifest-selfhosted.yml \
+                -f release_commit="$RELEASE_COMMIT" \
+                -f control_head="$CONTROL_HEAD"
+              ;;
+
+            production-ga-windows-authority-rc4-provisioning-manifest-selfhosted)
+              dispatch_if_absent ga-windows-authority-rc4-operation-package-selfhosted.yml \
+                -f release_commit="$RELEASE_COMMIT" \
+                -f control_head="$CONTROL_HEAD"
+              ;;
+
+            production-ga-windows-authority-rc4-operation-package-selfhosted)
+              dispatch_if_absent ga-windows-authority-rc4-provision-selfhosted.yml \
+                -f release_commit="$RELEASE_COMMIT" \
+                -f control_head="$CONTROL_HEAD" \
+                -f operation_run_id="$UPSTREAM_RUN_ID" \
+                -f operation_run_attempt="$UPSTREAM_RUN_ATTEMPT" \
+                -f provision_timeout_seconds=7200
+              ;;
+
+            production-ga-windows-authority-rc4-provision-selfhosted)
+              dispatch_if_absent ga-windows-authority-rc4-image-identity-measurement-selfhosted.yml \
+                -f release_commit="$RELEASE_COMMIT" \
+                -f control_head="$CONTROL_HEAD" \
+                -f provisioning_run_id="$UPSTREAM_RUN_ID" \
+                -f provisioning_run_attempt="$UPSTREAM_RUN_ATTEMPT" \
+                -f measurement_timeout_seconds=1800
+              ;;
+
+            production-ga-windows-authority-rc4-image-identity-measurement-selfhosted)
+              dispatch_if_absent ga-windows-authority-rc4-certification-campaign-selfhosted.yml \
+                -f release_commit="$RELEASE_COMMIT" \
+                -f control_head="$CONTROL_HEAD" \
+                -f measurement_run_id="$UPSTREAM_RUN_ID" \
+                -f measurement_run_attempt="$UPSTREAM_RUN_ATTEMPT" \
+                -f iterations=10 \
+                -f campaign_timeout_seconds=1800
+              ;;
+
+            production-ga-windows-authority-rc4-certification-campaign-selfhosted)
+              read -r operation_id operation_attempt < <(unique_success_run ga-windows-authority-rc4-operation-package-selfhosted.yml)
+              read -r provision_id provision_attempt < <(unique_success_run ga-windows-authority-rc4-provision-selfhosted.yml)
+              read -r measurement_id measurement_attempt < <(unique_success_run ga-windows-authority-rc4-image-identity-measurement-selfhosted.yml)
+              read -r campaign_id campaign_attempt < <(unique_success_run ga-windows-authority-rc4-certification-campaign-selfhosted.yml)
+              [[ "$campaign_id" == "$UPSTREAM_RUN_ID" && "$campaign_attempt" == "$UPSTREAM_RUN_ATTEMPT" ]] || {
+                echo 'Campaign event does not match the unique canonical campaign run.' >&2
+                exit 1
+              }
+              dispatch_if_absent ga-windows-authority-rc4-candidate-closure-hardened-selfhosted.yml \
+                -f release_commit="$RELEASE_COMMIT" \
+                -f control_head="$CONTROL_HEAD" \
+                -f operation_run_id="$operation_id" \
+                -f operation_run_attempt="$operation_attempt" \
+                -f provisioning_run_id="$provision_id" \
+                -f provisioning_run_attempt="$provision_attempt" \
+                -f measurement_run_id="$measurement_id" \
+                -f measurement_run_attempt="$measurement_attempt" \
+                -f campaign_run_id="$campaign_id" \
+                -f campaign_run_attempt="$campaign_attempt"
+              ;;
+          esac
+
+          echo 'authoritative=false'
+          echo 'ga_eligible=false'
