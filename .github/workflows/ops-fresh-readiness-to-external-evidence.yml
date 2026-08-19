@@ -20,7 +20,9 @@ jobs:
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'workflow_dispatch' &&
       github.event.workflow_run.head_branch == 'final/2.0.0-production-control-plane-publication-anchor' &&
-      github.event.workflow_run.head_sha == '3ffc6b6d7cd58d64224f780aa819b50f50f72491'
+      github.event.workflow_run.head_sha == '3ffc6b6d7cd58d64224f780aa819b50f50f72491' &&
+      github.event.workflow_run.actor.login == 'github-actions[bot]' &&
+      github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -31,6 +33,22 @@ jobs:
       STATE_ISSUE: '262'
       EXTERNAL_ISSUE: '261'
     steps:
+      - name: Revalidate automated fresh readiness source
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$READINESS_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$READINESS_RUN_ID")
+          [[ "$(jq -r '.name' <<<"$run")" == 'production-ga-final-production-readiness' ]] || { echo 'Fresh readiness workflow name mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.path' <<<"$run")" == '.github/workflows/ga-final-production-readiness.yml' ]] || { echo 'Fresh readiness workflow path mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.event' <<<"$run")" == 'workflow_dispatch' ]] || { echo 'Fresh readiness event mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.status' <<<"$run")" == 'completed' && "$(jq -r '.conclusion' <<<"$run")" == 'success' ]] || { echo 'Fresh readiness run is not successful.' >&2; exit 1; }
+          [[ "$(jq -r '.head_branch' <<<"$run")" == 'final/2.0.0-production-control-plane-publication-anchor' && "$(jq -r '.head_sha' <<<"$run")" == "$READINESS_HEAD" ]] || { echo 'Fresh readiness frozen-head provenance mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.actor.login' <<<"$run")" == 'github-actions[bot]' && "$(jq -r '.triggering_actor.login' <<<"$run")" == 'github-actions[bot]' ]] || { echo 'Fresh readiness was not created by the External22 gate dispatcher.' >&2; exit 1; }
+          artifact_count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$READINESS_RUN_ID/artifacts?per_page=100" --jq '[.artifacts[] | select(.name == "psmatrix-2.0.0-production-readiness" and (.expired|not))] | length')
+          [[ "$artifact_count" == '1' ]] || { echo "Fresh readiness artifact cardinality mismatch: $artifact_count" >&2; exit 1; }
+          echo "fresh_readiness_source_provenance=PASS run_id=$READINESS_RUN_ID head=$READINESS_HEAD artifact_count=1 automated_dispatch=true"
+
       - name: Download exact fresh readiness summary
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
