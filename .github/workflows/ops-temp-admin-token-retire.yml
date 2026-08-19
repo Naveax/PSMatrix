@@ -1,0 +1,57 @@
+name: ops-temp-admin-token-retire
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/ops-temp-admin-token-retire.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ops-temp-admin-token-retire
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  retire:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RETIRE_TOKEN: ${{ secrets.PSMATRIX_TEMP_ADMIN_TOKEN }}
+      STATE_ISSUE: '262'
+      SECRET_NAME: PSMATRIX_TEMP_ADMIN_TOKEN
+    steps:
+      - name: Retire temporary repository admin secret without exposing its value
+        id: retire
+        shell: bash
+        run: |
+          set -euo pipefail
+          outcome='already_absent'
+          if [[ -n "$RETIRE_TOKEN" ]]; then
+            if GH_TOKEN="$RETIRE_TOKEN" gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/secrets/$SECRET_NAME" >/dev/null 2>"$RUNNER_TEMP/retire-error.txt"; then
+              outcome='deleted'
+            else
+              outcome='delete_failed'
+            fi
+          fi
+          echo "outcome=$outcome" >> "$GITHUB_OUTPUT"
+          echo "temporary_admin_secret_retire=$outcome"
+          echo 'secret_value_logged=false'
+
+      - name: Publish retirement result
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.retire.outputs.outcome }}
+        run: |
+          set -euo pipefail
+          body="OPS_TEMP_ADMIN_TOKEN_RETIRE status=$OUTCOME secret_name=$SECRET_NAME secret_value_logged=false"
+          gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$body"
+          if [[ "$OUTCOME" == 'delete_failed' ]]; then
+            echo 'Temporary admin secret could not be deleted with the credential permissions available.' >&2
+            exit 1
+          fi
+          echo "$body"
