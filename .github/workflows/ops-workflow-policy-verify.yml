@@ -45,6 +45,7 @@ jobs:
           retired_credential = ['PSMATRIX','TEMP','ADMIN','TOKEN'].join('_')
           retired_credential_refs = 0
           owner_gate_contracts_checked = 0
+          promotion_pr_human_gate_contracts_checked = 0
           issue_comment_triggers_checked = 0
           pull_request_target_refs = 0
           source_run_bindings_checked = 0
@@ -210,8 +211,8 @@ jobs:
               "github.event.comment.body == 'EXTERNAL22 MATERIAL READY'",
               'Protected final signing artifact cardinality mismatch',
               'Final security-review packet artifact cardinality mismatch',
-              "production-ga-windows-authority-final-release-sign-from-lock",
-              "production-ga-final-security-review-packet",
+              'production-ga-windows-authority-final-release-sign-from-lock',
+              'production-ga-final-security-review-packet',
             ],
           }
 
@@ -225,6 +226,44 @@ jobs:
               errors << "#{path}: owner-only release gate invariant missing: #{fragment}" unless raw.include?(fragment)
             end
             owner_gate_contracts_checked += 1
+          end
+
+          promotion_pr_gate_requirements = {
+            '.github/workflows/ops-rc4-promotion-to-reviewed-pr.yml' => [
+              "HUMAN_GATE_ISSUE: '260'",
+              "github.event.workflow_run.actor.login == 'github-actions[bot]'",
+              "github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'",
+              'production-ga-windows-authority-rc4-release-lock-promotion',
+              '.github/workflows/ga-windows-authority-rc4-release-lock-promotion.yml',
+              'RC4 HUMAN REVIEW APPROVED:',
+              'Exact RC4 owner approval is missing.',
+              'RC4 promotion predates owner approval:',
+              'rc4_first_human_gate_provenance=PASS',
+            ],
+            '.github/workflows/ops-final-promotion-to-reviewed-pr.yml' => [
+              "HUMAN_GATE_ISSUE: '263'",
+              "github.event.workflow_run.actor.login == 'github-actions[bot]'",
+              "github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'",
+              'production-ga-windows-authority-final-release-lock-promotion',
+              '.github/workflows/ga-windows-authority-final-release-lock-promotion.yml',
+              'FINAL_REVIEW_BINDING',
+              'FINAL HUMAN REVIEW APPROVED:',
+              'Exact final owner approval is missing.',
+              'Final promotion predates owner approval:',
+              'final_first_human_gate_provenance=PASS',
+            ],
+          }
+
+          promotion_pr_gate_requirements.each do |path, fragments|
+            unless File.file?(path)
+              errors << "#{path}: required promotion-to-reviewed-PR workflow is missing"
+              next
+            end
+            raw = File.read(path, encoding: 'utf-8')
+            fragments.each do |fragment|
+              errors << "#{path}: first-human-gate promotion provenance invariant missing: #{fragment}" unless raw.include?(fragment)
+            end
+            promotion_pr_human_gate_contracts_checked += 1
           end
 
           files.each do |path|
@@ -276,7 +315,7 @@ jobs:
             end
           end
 
-          puts "release_workflow_policy_scan workflow_files=#{all_workflows.length} critical_workflows=#{files.length} action_refs=#{action_refs} top_permissions=#{permissions_checked} job_permissions=#{job_permissions_checked} retired_credential_refs=#{retired_credential_refs} owner_gate_contracts_checked=#{owner_gate_contracts_checked} issue_comment_triggers=#{issue_comment_triggers_checked} pull_request_target_refs=#{pull_request_target_refs} source_run_bindings_checked=#{source_run_bindings_checked} source_artifact_bindings_checked=#{source_artifact_bindings_checked} privileged_source_event_guards_checked=#{privileged_source_event_guards_checked} mutation_source_guards_checked=#{mutation_source_guards_checked}"
+          puts "release_workflow_policy_scan workflow_files=#{all_workflows.length} critical_workflows=#{files.length} action_refs=#{action_refs} top_permissions=#{permissions_checked} job_permissions=#{job_permissions_checked} retired_credential_refs=#{retired_credential_refs} owner_gate_contracts_checked=#{owner_gate_contracts_checked} promotion_pr_human_gate_contracts_checked=#{promotion_pr_human_gate_contracts_checked} issue_comment_triggers=#{issue_comment_triggers_checked} pull_request_target_refs=#{pull_request_target_refs} source_run_bindings_checked=#{source_run_bindings_checked} source_artifact_bindings_checked=#{source_artifact_bindings_checked} privileged_source_event_guards_checked=#{privileged_source_event_guards_checked} mutation_source_guards_checked=#{mutation_source_guards_checked}"
           unless errors.empty?
             warn errors.join("\n")
             exit 1
@@ -290,7 +329,7 @@ jobs:
           set -euo pipefail
           if [[ "${{ job.status }}" == success ]]; then status=PASS; else status=FAIL; fi
           marker="OPS_WORKFLOW_POLICY_VERIFY head=$GITHUB_SHA "
-          body="${marker}status=$status scope=all-retired-credential+ops+ga-policy retired_temp_admin_refs=0 owner_gate_contracts=3 issue_comment_gate_set=3 pull_request_target_refs=0 source_artifact_binding=enabled privileged_source_event_guard=enabled mutation_source_guard=enabled human_gate_attempt_binding=enabled external22_prerequisite_provenance=enabled"
+          body="${marker}status=$status scope=all-retired-credential+ops+ga-policy retired_temp_admin_refs=0 owner_gate_contracts=3 promotion_pr_human_gate_contracts=2 issue_comment_gate_set=3 pull_request_target_refs=0 source_artifact_binding=enabled privileged_source_event_guard=enabled mutation_source_guard=enabled human_gate_attempt_binding=enabled first_human_gate_runtime_provenance=enabled external22_prerequisite_provenance=enabled"
           comment_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
             --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" \
             | tail -n 1)
