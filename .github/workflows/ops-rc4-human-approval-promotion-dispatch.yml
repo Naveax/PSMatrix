@@ -26,6 +26,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       CANDIDATE_COMMIT: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
       REVIEW_RUN_ID: '32137455148'
+      REVIEW_RUN_ATTEMPT: '1'
       REVIEWED_DRAFT_SHA256: a2a97763f679b18562e19ec99f066374b097a50c44a3bea4d1208328e9b339d9
       REVIEWED_PUBLIC_KEY_SHA256: ece4d7087449cb42cde9183b0b1e2b82db610d4ffffd726e6737d2ba09578a08
       REVIEW_ISSUE: '260'
@@ -63,7 +64,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          marker="RC4_PROMOTION_DISPATCHED candidate=$CANDIDATE_COMMIT review_run=$REVIEW_RUN_ID draft_sha256=$REVIEWED_DRAFT_SHA256 public_key_sha256=$REVIEWED_PUBLIC_KEY_SHA256"
+          marker="RC4_PROMOTION_DISPATCHED candidate=$CANDIDATE_COMMIT review_run=$REVIEW_RUN_ID review_attempt=$REVIEW_RUN_ATTEMPT draft_sha256=$REVIEWED_DRAFT_SHA256 public_key_sha256=$REVIEWED_PUBLIC_KEY_SHA256"
           comments=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$REVIEW_ISSUE/comments" --slurp | jq 'add')
 
           if jq -r '.[] | select(.user.login == "github-actions[bot]") | .body' <<<"$comments" | grep -Fxq "$marker"; then
@@ -92,15 +93,17 @@ jobs:
           echo 'already_dispatched=false' >> "$GITHUB_OUTPUT"
           echo 'rc4_promotion_dispatch_budget=AVAILABLE'
 
-      - name: Revalidate exact successful review run
+      - name: Revalidate exact successful review run and attempt
         if: steps.dedup.outputs.already_dispatched != 'true'
         shell: bash
         run: |
           set -euo pipefail
+          [[ "$REVIEW_RUN_ID" =~ ^[1-9][0-9]*$ && "$REVIEW_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
           python - <<'PY'
           import json, os, urllib.request
           repo = os.environ['GITHUB_REPOSITORY']
           run_id = os.environ['REVIEW_RUN_ID']
+          attempt = os.environ['REVIEW_RUN_ATTEMPT']
           candidate = os.environ['CANDIDATE_COMMIT']
           headers = {
               'Accept': 'application/vnd.github+json',
@@ -121,11 +124,13 @@ jobs:
               raise SystemExit('review run is not completed successfully')
           if (run.get('head_sha') or '').lower() != candidate:
               raise SystemExit('review run candidate SHA mismatch')
+          if str(run.get('run_attempt')) != attempt:
+              raise SystemExit(f'review run attempt mismatch: actual={run.get("run_attempt")} bound={attempt}')
           artifacts = fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts', [])
           matches = [a for a in artifacts if a.get('name') == 'psmatrix-2.0.0rc4-release-lock-review' and not a.get('expired')]
           if len(matches) != 1:
               raise SystemExit(f'expected exactly one live review artifact; found {len(matches)}')
-          print(f'rc4_review_provenance=PASS run_id={run_id} artifact_id={matches[0].get("id")}')
+          print(f'rc4_review_provenance=PASS run_id={run_id} attempt={attempt} artifact_id={matches[0].get("id")}')
           PY
 
       - name: Dispatch canonical RC4 lock promotion
@@ -140,7 +145,7 @@ jobs:
             -f review_run_id="$REVIEW_RUN_ID" \
             -f reviewed_draft_sha256="$REVIEWED_DRAFT_SHA256" \
             -f reviewed_public_key_sha256="$REVIEWED_PUBLIC_KEY_SHA256"
-          marker="RC4_PROMOTION_DISPATCHED candidate=$CANDIDATE_COMMIT review_run=$REVIEW_RUN_ID draft_sha256=$REVIEWED_DRAFT_SHA256 public_key_sha256=$REVIEWED_PUBLIC_KEY_SHA256"
+          marker="RC4_PROMOTION_DISPATCHED candidate=$CANDIDATE_COMMIT review_run=$REVIEW_RUN_ID review_attempt=$REVIEW_RUN_ATTEMPT draft_sha256=$REVIEWED_DRAFT_SHA256 public_key_sha256=$REVIEWED_PUBLIC_KEY_SHA256"
           gh issue comment "$REVIEW_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$marker"
           echo 'rc4_lock_promotion_dispatched=true'
           echo 'human_review_bound=true'
