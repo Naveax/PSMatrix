@@ -1,0 +1,82 @@
+name: ops-rc4-windows-lab-visible-audit-20260819
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/ops-rc4-windows-lab-visible-audit-20260819.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ops-rc4-windows-lab-visible-audit-20260819-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
+    timeout-minutes: 10
+    environment: production-ga-windows-lab
+    env:
+      PSMATRIX_WINDOWS_GA_ROOT: ${{ vars.PSMATRIX_WINDOWS_GA_ROOT }}
+      PSMATRIX_WPS40_ADMIN_PASSWORD: ${{ secrets.PSMATRIX_WPS40_ADMIN_PASSWORD }}
+      PSMATRIX_WPS50_ADMIN_PASSWORD: ${{ secrets.PSMATRIX_WPS50_ADMIN_PASSWORD }}
+      PSMATRIX_WPS51_ADMIN_PASSWORD: ${{ secrets.PSMATRIX_WPS51_ADMIN_PASSWORD }}
+    steps:
+      - name: Audit value-free Windows lab prerequisites
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $rootConfigured = -not [string]::IsNullOrWhiteSpace($env:PSMATRIX_WINDOWS_GA_ROOT)
+          $rootAbsolute = $false
+          $rootExists = $false
+          $configExists = $false
+          $externalExists = $false
+          $isoCount = 0
+          $hypervCmd = $null -ne (Get-Command Get-VM -ErrorAction SilentlyContinue)
+          $vmmsRunning = $false
+
+          if ($rootConfigured) {
+            try {
+              $rootAbsolute = [System.IO.Path]::IsPathRooted($env:PSMATRIX_WINDOWS_GA_ROOT)
+              if ($rootAbsolute) {
+                $root = [System.IO.Path]::GetFullPath($env:PSMATRIX_WINDOWS_GA_ROOT)
+                $rootExists = Test-Path -LiteralPath $root -PathType Container
+                if ($rootExists) {
+                  $config = Join-Path $root 'config'
+                  $external = Join-Path $root 'media\external'
+                  $configExists = Test-Path -LiteralPath $config -PathType Container
+                  $externalExists = Test-Path -LiteralPath $external -PathType Container
+                  if ($externalExists) {
+                    $isoCount = @(Get-ChildItem -LiteralPath $external -File -Filter '*.iso' -ErrorAction SilentlyContinue).Count
+                  }
+                }
+              }
+            } catch {
+              $rootAbsolute = $false
+            }
+          }
+
+          $svc = Get-Service -Name vmms -ErrorAction SilentlyContinue
+          if ($null -ne $svc -and $svc.Status -eq 'Running') { $vmmsRunning = $true }
+
+          $wps40 = -not [string]::IsNullOrWhiteSpace($env:PSMATRIX_WPS40_ADMIN_PASSWORD)
+          $wps50 = -not [string]::IsNullOrWhiteSpace($env:PSMATRIX_WPS50_ADMIN_PASSWORD)
+          $wps51 = -not [string]::IsNullOrWhiteSpace($env:PSMATRIX_WPS51_ADMIN_PASSWORD)
+
+          Write-Host ('runner_exact_naveax={0}' -f ($env:RUNNER_NAME -eq 'NAVEAX'))
+          Write-Host ('ga_root_configured={0}' -f $rootConfigured)
+          Write-Host ('ga_root_absolute={0}' -f $rootAbsolute)
+          Write-Host ('ga_root_exists={0}' -f $rootExists)
+          Write-Host ('ga_config_dir_exists={0}' -f $configExists)
+          Write-Host ('media_external_dir_exists={0}' -f $externalExists)
+          Write-Host ('external_iso_count={0}' -f $isoCount)
+          Write-Host ('hyperv_cmd_available={0}' -f $hypervCmd)
+          Write-Host ('vmms_running={0}' -f $vmmsRunning)
+          Write-Host ('wps40_admin_secret_present={0}' -f $wps40)
+          Write-Host ('wps50_admin_secret_present={0}' -f $wps50)
+          Write-Host ('wps51_admin_secret_present={0}' -f $wps51)
+          Write-Host 'secret_values_logged=false'
