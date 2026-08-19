@@ -3,7 +3,6 @@ name: ops-rc4-post-intake-canonical-chain
 on:
   workflow_run:
     workflows:
-      - production-ga-windows-authority-rc4-release-intake-selfhosted
       - production-ga-windows-authority-rc4-media-readiness-selfhosted
       - production-ga-windows-authority-rc4-provisioning-manifest-selfhosted
       - production-ga-windows-authority-rc4-operation-package-selfhosted
@@ -60,6 +59,13 @@ jobs:
             gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "RC4_CHAIN_STATE stage=$stage run_id=$COMPLETED_RUN_ID attempt=$COMPLETED_RUN_ATTEMPT control_head=$CONTROL_HEAD"
           }
 
+          state_exists() {
+            local stage="$1"
+            gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
+              --jq ".[] | select(.user.login == \"github-actions[bot]\") | .body" \
+              | grep -Fxq "RC4_CHAIN_STATE stage=${stage} run_id=${COMPLETED_RUN_ID} attempt=${COMPLETED_RUN_ATTEMPT} control_head=${CONTROL_HEAD}"
+          }
+
           get_state() {
             local stage="$1"
             gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
@@ -76,18 +82,52 @@ jobs:
             sed -E 's/.* attempt=([1-9][0-9]*).*/\1/'
           }
 
-          case "$COMPLETED_WORKFLOW" in
-            production-ga-windows-authority-rc4-release-intake-selfhosted)
-              record_state intake
-              gh workflow run ga-windows-authority-rc4-media-readiness-selfhosted.yml \
-                --repo "$GITHUB_REPOSITORY" --ref "$CONTROL_BRANCH" \
-                -f release_commit="$RELEASE_COMMIT" \
-                -f control_head="$CONTROL_HEAD" \
-                -f inspect_iso_images=true
-              echo 'next_stage=rc4_media_readiness'
-              ;;
+          mark_once() {
+            local stage="$1"
+            if state_exists "$stage"; then
+              echo "rc4_chain_duplicate_suppressed=true stage=$stage run=$COMPLETED_RUN_ID attempt=$COMPLETED_RUN_ATTEMPT"
+              exit 0
+            fi
+            record_state "$stage"
+          }
 
+          case "$COMPLETED_WORKFLOW" in
             production-ga-windows-authority-rc4-media-readiness-selfhosted)
+              if state_exists media_readiness || state_exists media_readiness_blocked; then
+                echo "rc4_chain_duplicate_suppressed=true stage=media_readiness run=$COMPLETED_RUN_ID attempt=$COMPLETED_RUN_ATTEMPT"
+                exit 0
+              fi
+
+              evidence="$RUNNER_TEMP/rc4-media-readiness-$COMPLETED_RUN_ID-$COMPLETED_RUN_ATTEMPT"
+              rm -rf "$evidence"
+              mkdir -p "$evidence"
+              gh run download "$COMPLETED_RUN_ID" \
+                --repo "$GITHUB_REPOSITORY" \
+                --name windows-authority-rc4-media-readiness \
+                --dir "$evidence"
+              status_file=$(find "$evidence" -type f -name 'media-readiness-status.json' -print -quit)
+              [[ -n "$status_file" && -f "$status_file" ]] || { echo 'Canonical RC4 media-readiness status artifact is missing.' >&2; exit 1; }
+
+              status=$(jq -r '.status // ""' "$status_file")
+              ready=$(jq -r '.ready_for_provisioning_manifest_materialization // false' "$status_file")
+              release_commit=$(jq -r '.release_commit // ""' "$status_file")
+              control_head=$(jq -r '.control_head // ""' "$status_file")
+              authoritative=$(jq -r '.authoritative // true' "$status_file")
+              ga_eligible=$(jq -r '.ga_eligible // true' "$status_file")
+
+              [[ "$release_commit" == "$RELEASE_COMMIT" ]] || { echo 'RC4 media-readiness release_commit mismatch.' >&2; exit 1; }
+              [[ "$control_head" == "$CONTROL_HEAD" ]] || { echo 'RC4 media-readiness control_head mismatch.' >&2; exit 1; }
+              [[ "$authoritative" == 'false' && "$ga_eligible" == 'false' ]] || { echo 'RC4 media-readiness artifact crossed forbidden authority/GA boundary.' >&2; exit 1; }
+
+              if [[ "$status" != 'READY_FOR_PROVISIONING_MANIFEST_MATERIALIZATION' || "$ready" != 'true' ]]; then
+                record_state media_readiness_blocked
+                gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "RC4_CHAIN_BLOCKED stage=media_readiness status=$status run_id=$COMPLETED_RUN_ID attempt=$COMPLETED_RUN_ATTEMPT control_head=$CONTROL_HEAD next=operator_or_external_media_action"
+                echo "rc4_media_readiness_boundary_preserved=true status=$status"
+                echo 'rc4_chain_advanced=false'
+                echo 'ga_eligible=false'
+                exit 0
+              fi
+
               record_state media_readiness
               gh workflow run ga-windows-authority-rc4-provisioning-manifest-selfhosted.yml \
                 --repo "$GITHUB_REPOSITORY" --ref "$CONTROL_BRANCH" \
@@ -97,7 +137,7 @@ jobs:
               ;;
 
             production-ga-windows-authority-rc4-provisioning-manifest-selfhosted)
-              record_state provisioning_manifest
+              mark_once provisioning_manifest
               gh workflow run ga-windows-authority-rc4-operation-package-selfhosted.yml \
                 --repo "$GITHUB_REPOSITORY" --ref "$CONTROL_BRANCH" \
                 -f release_commit="$RELEASE_COMMIT" \
@@ -106,7 +146,7 @@ jobs:
               ;;
 
             production-ga-windows-authority-rc4-operation-package-selfhosted)
-              record_state operation
+              mark_once operation
               gh workflow run ga-windows-authority-rc4-provision-selfhosted.yml \
                 --repo "$GITHUB_REPOSITORY" --ref "$CONTROL_BRANCH" \
                 -f release_commit="$RELEASE_COMMIT" \
@@ -118,7 +158,7 @@ jobs:
               ;;
 
             production-ga-windows-authority-rc4-provision-selfhosted)
-              record_state provisioning
+              mark_once provisioning
               gh workflow run ga-windows-authority-rc4-image-identity-measurement-selfhosted.yml \
                 --repo "$GITHUB_REPOSITORY" --ref "$CONTROL_BRANCH" \
                 -f release_commit="$RELEASE_COMMIT" \
@@ -130,7 +170,7 @@ jobs:
               ;;
 
             production-ga-windows-authority-rc4-image-identity-measurement-selfhosted)
-              record_state measurement
+              mark_once measurement
               gh workflow run ga-windows-authority-rc4-certification-campaign-selfhosted.yml \
                 --repo "$GITHUB_REPOSITORY" --ref "$CONTROL_BRANCH" \
                 -f release_commit="$RELEASE_COMMIT" \
@@ -143,7 +183,7 @@ jobs:
               ;;
 
             production-ga-windows-authority-rc4-certification-campaign-selfhosted)
-              record_state campaign
+              mark_once campaign
               operation=$(get_state operation)
               provisioning=$(get_state provisioning)
               measurement=$(get_state measurement)
