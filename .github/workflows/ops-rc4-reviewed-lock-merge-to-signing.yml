@@ -17,6 +17,7 @@ jobs:
   dispatch-signing:
     if: >-
       github.event.pull_request.merged == true &&
+      github.event.pull_request.merged_by.login == 'Naveax' &&
       github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.title == 'Promote human-reviewed RC4 release lock' &&
       startsWith(github.event.pull_request.head.ref, 'ops/rc4-lock-promotion-') &&
@@ -27,9 +28,11 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       HEAD_REF: ${{ github.event.pull_request.head.ref }}
       HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
       PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+      MERGED_BY: ${{ github.event.pull_request.merged_by.login }}
       LOCK_CONTROL_HEAD: ${{ github.event.pull_request.merge_commit_sha }}
       CANDIDATE_COMMIT: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
       ENROLLMENT_RUN_ID: '32136341027'
@@ -45,11 +48,27 @@ jobs:
           set -euo pipefail
           [[ "$HEAD_REPOSITORY" == "$GITHUB_REPOSITORY" ]] || { echo "RC4 reviewed PR head repository mismatch: $HEAD_REPOSITORY" >&2; exit 1; }
           [[ "$PR_AUTHOR" == 'github-actions[bot]' ]] || { echo "RC4 reviewed PR was not created by the promotion materializer bot: $PR_AUTHOR" >&2; exit 1; }
+          [[ "$MERGED_BY" == 'Naveax' ]] || { echo "RC4 reviewed PR was not merged by the repository owner: $MERGED_BY" >&2; exit 1; }
+          [[ "$PR_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'RC4 reviewed PR head SHA is invalid' >&2; exit 1; }
           [[ "$HEAD_REF" =~ ^ops/rc4-lock-promotion-([1-9][0-9]*)$ ]] || { echo 'unexpected RC4 promotion PR head ref' >&2; exit 1; }
           promotion_run_id="${BASH_REMATCH[1]}"
           [[ "$LOCK_CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]] || { echo 'merge commit SHA is invalid' >&2; exit 1; }
           echo "PROMOTION_RUN_ID=$promotion_run_id" >> "$GITHUB_ENV"
-          echo 'rc4_reviewed_pr_identity=PASS same_repo=true bot_created=true'
+          echo 'rc4_reviewed_pr_identity=PASS same_repo=true bot_created=true owner_merged=true'
+
+      - name: Require exact owner approval review for merged PR head
+        shell: bash
+        run: |
+          set -euo pipefail
+          reviews=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews?per_page=100" --jq 'add')
+          decisive=$(jq -c --arg sha "$PR_HEAD_SHA" '[.[] | select(.user.login == "Naveax" and .author_association == "OWNER" and .commit_id == $sha and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED"))] | sort_by(.submitted_at // "") | last // empty' <<<"$reviews")
+          [[ -n "$decisive" ]] || { echo 'No decisive Naveax OWNER review exists for the exact RC4 PR head.' >&2; exit 1; }
+          state=$(jq -r '.state' <<<"$decisive")
+          [[ "$state" == 'APPROVED' ]] || { echo "Latest decisive Naveax review for exact RC4 head is not APPROVED: $state" >&2; exit 1; }
+          review_id=$(jq -r '.id' <<<"$decisive")
+          submitted_at=$(jq -r '.submitted_at' <<<"$decisive")
+          [[ "$review_id" =~ ^[1-9][0-9]*$ ]] || { echo 'RC4 owner review ID is invalid.' >&2; exit 1; }
+          echo "rc4_second_human_gate=PASS reviewer=Naveax association=OWNER state=APPROVED review_id=$review_id head=$PR_HEAD_SHA submitted_at=$submitted_at merged_by=$MERGED_BY"
 
       - name: Enforce exact two-file PR boundary
         shell: bash
