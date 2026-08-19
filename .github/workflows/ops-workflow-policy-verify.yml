@@ -29,7 +29,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Validate ops and GA workflow supply-chain and permissions policy
+      - name: Validate workflow supply-chain, permissions, and retired-credential policy
         shell: bash
         run: |
           set -euo pipefail
@@ -37,6 +37,7 @@ jobs:
           require 'yaml'
 
           errors = []
+          all_workflows = Dir['.github/workflows/*.yml'].sort
           files = (Dir['.github/workflows/ops-*.yml'] + Dir['.github/workflows/ga-*.yml']).uniq.sort
           action_refs = 0
           permissions_checked = 0
@@ -44,13 +45,16 @@ jobs:
           retired_credential = ['PSMATRIX','TEMP','ADMIN','TOKEN'].join('_')
           retired_credential_refs = 0
 
-          files.each do |path|
+          all_workflows.each do |path|
             raw = File.read(path, encoding: 'utf-8')
             if raw.include?(retired_credential)
               retired_credential_refs += 1
               errors << "#{path}: retired temporary admin credential reference is forbidden"
             end
+          end
 
+          files.each do |path|
+            raw = File.read(path, encoding: 'utf-8')
             begin
               doc = YAML.safe_load(raw, aliases: true)
             rescue => e
@@ -98,7 +102,7 @@ jobs:
             end
           end
 
-          puts "release_workflow_policy_scan workflows=#{files.length} action_refs=#{action_refs} top_permissions=#{permissions_checked} job_permissions=#{job_permissions_checked} retired_credential_refs=#{retired_credential_refs}"
+          puts "release_workflow_policy_scan workflow_files=#{all_workflows.length} critical_workflows=#{files.length} action_refs=#{action_refs} top_permissions=#{permissions_checked} job_permissions=#{job_permissions_checked} retired_credential_refs=#{retired_credential_refs}"
           unless errors.empty?
             warn errors.join("\n")
             exit 1
@@ -112,7 +116,7 @@ jobs:
           set -euo pipefail
           if [[ "${{ job.status }}" == success ]]; then status=PASS; else status=FAIL; fi
           marker="OPS_WORKFLOW_POLICY_VERIFY head=$GITHUB_SHA "
-          body="${marker}status=$status scope=ops+ga retired_temp_admin_refs=0"
+          body="${marker}status=$status scope=all-retired-credential+ops+ga-policy retired_temp_admin_refs=0"
           comment_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
             --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" \
             | tail -n 1)

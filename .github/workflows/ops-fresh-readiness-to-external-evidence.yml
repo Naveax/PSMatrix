@@ -60,6 +60,27 @@ jobs:
           print('fresh_production_readiness=PASS environments=12/12')
           PY
 
+      - name: Require canonical owner External22 readiness signal before this run
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$READINESS_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          comments=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/$EXTERNAL_ISSUE/comments?per_page=100" --jq 'add')
+          ready_at=$(jq -r '[.[] | select(.user.login == "Naveax" and .author_association == "OWNER" and .body == "EXTERNAL22 MATERIAL READY") | .created_at] | sort | .[0] // empty' <<<"$comments")
+          [[ "$ready_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] || { echo 'Canonical owner EXTERNAL22 MATERIAL READY signal is missing.' >&2; exit 1; }
+          run_created=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$READINESS_RUN_ID" --jq '.created_at')
+          [[ "$run_created" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] || { echo 'Readiness run creation timestamp is invalid.' >&2; exit 1; }
+          READY_AT="$ready_at" RUN_CREATED="$run_created" python - <<'PY'
+          import datetime, os
+          def parse(value):
+              return datetime.datetime.fromisoformat(value.replace('Z','+00:00'))
+          ready=parse(os.environ['READY_AT'])
+          created=parse(os.environ['RUN_CREATED'])
+          if created < ready:
+              raise SystemExit(f'readiness run predates canonical External22 readiness signal: {created.isoformat()} < {ready.isoformat()}')
+          print(f'external22_signal_binding=PASS ready_at={ready.isoformat()} readiness_created={created.isoformat()}')
+          PY
+
       - name: Recover exact final signing and independent-review packet runs
         id: state
         shell: bash
@@ -138,6 +159,17 @@ jobs:
             echo 'security_review_duplicate_suppressed=true'
           fi
 
-          gh issue comment "$EXTERNAL_ISSUE" --repo "$GITHUB_REPOSITORY" --body "Fresh Production GA readiness run \`$READINESS_RUN_ID\` is exact \`12/12 PASS\`. External evidence dispatch bounded on final control \`$FINAL_HEAD\`: dispatched=$dispatched, suppressed=$suppressed. No GA claim is made until all 11 evaluator gates pass."
+          marker="EXTERNAL_EVIDENCE_DISPATCH readiness_run=$READINESS_RUN_ID final_head=$FINAL_HEAD"
+          body="$marker dispatched=$dispatched suppressed=$suppressed ga_eligible=false"
+          comment_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$EXTERNAL_ISSUE/comments" \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" \
+            | tail -n 1)
+          if [[ -n "$comment_id" ]]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" -f body="$body" >/dev/null
+            echo "external_evidence_dispatch_comment=updated comment_id=$comment_id"
+          else
+            gh issue comment "$EXTERNAL_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$body"
+            echo 'external_evidence_dispatch_comment=created'
+          fi
           echo "external_evidence_producers=PASS dispatched=$dispatched suppressed=$suppressed expected=3"
           echo 'ga_eligible=false'
