@@ -94,15 +94,35 @@ jobs:
             exit 0
           fi
 
+          completion_marker="FINAL_GA_COMPLETION evaluator_run=$EVALUATOR_RUN_ID attempt=$EVALUATOR_RUN_ATTEMPT control_head=$CONTROL_HEAD"
           summary="Canonical final evaluator verified: run $EVALUATOR_RUN_ID attempt $EVALUATOR_RUN_ATTEMPT, control head $CONTROL_HEAD, 11/11 gates PASS, final GA attestation verified, ga_eligible=true."
+
           for issue in 260 261 263 "$STATE_ISSUE"; do
             state=$(gh issue view "$issue" --repo "$GITHUB_REPOSITORY" --json state --jq '.state')
             if [[ "$state" == OPEN ]]; then
-              gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body "$summary"
+              seen=false
+              if gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$issue/comments" \
+                --jq '.[] | select(.user.login == "github-actions[bot]") | .body' \
+                | grep -Fq "$completion_marker"; then
+                seen=true
+              fi
+              if [[ "$seen" != true ]]; then
+                gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body "$summary
+
+$completion_marker"
+                echo "verified_closure_comment_created=$issue"
+              else
+                echo "verified_closure_comment_duplicate_suppressed=$issue"
+              fi
               gh issue close "$issue" --repo "$GITHUB_REPOSITORY" --reason completed
             else
               echo "verified_closure_issue_already_closed=$issue"
             fi
           done
-          gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$marker"
+
+          if ! gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]") | .body' \
+            | grep -Fxq "$marker"; then
+            gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$marker"
+          fi
           echo 'psmatrix_final_ga_verified_closure=PASS'
