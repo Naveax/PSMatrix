@@ -19,7 +19,9 @@ jobs:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'workflow_dispatch' &&
-      github.event.workflow_run.head_branch == 'release/2.0.0-final-active-lock'
+      github.event.workflow_run.head_branch == 'release/2.0.0-final-active-lock' &&
+      github.event.workflow_run.actor.login == 'github-actions[bot]' &&
+      github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -50,10 +52,12 @@ jobs:
           if run.get('name')!='production-ga-windows-authority-final-release-sign-from-lock' or run.get('event')!='workflow_dispatch' or run.get('status')!='completed' or run.get('conclusion')!='success':
               raise SystemExit('final signing run identity/status mismatch')
           if (run.get('head_sha') or '').lower()!=head: raise SystemExit('final signing control head mismatch')
+          if (run.get('actor') or {}).get('login')!='github-actions[bot]' or (run.get('triggering_actor') or {}).get('login')!='github-actions[bot]':
+              raise SystemExit('final signing was not created by the reviewed-lock merge automation')
           artifacts=fetch(f'actions/runs/{run_id}/artifacts?per_page=100').get('artifacts',[])
           matches=[a for a in artifacts if a.get('name')=='psmatrix-2.0.0-protected-release' and not a.get('expired')]
           if len(matches)!=1: raise SystemExit(f'expected exactly one live protected final release artifact; found {len(matches)}')
-          print(f'protected_final_release=PASS artifact_id={matches[0].get("id")}')
+          print(f'protected_final_release=PASS artifact_id={matches[0].get("id")} automated_dispatch=true')
           PY
 
       - name: Recover exact RC4 campaign and closure provenance
