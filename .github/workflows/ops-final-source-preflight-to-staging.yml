@@ -1,0 +1,71 @@
+name: ops-final-source-preflight-to-staging
+
+on:
+  workflow_run:
+    workflows: [production-ga-windows-authority-final-release-source-preflight]
+    types: [completed]
+
+concurrency:
+  group: ops-final-source-preflight-to-staging
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  dispatch-staging:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.head_branch == 'final/2.0.0-release-preparation' &&
+      github.event.workflow_run.head_sha == '02cef95d40cf524ce00f9d917188343dc49e6f2c'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FINAL_BRANCH: final/2.0.0-release-preparation
+      FINAL_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
+      SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+      SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+      STAGING_WORKFLOW: ga-windows-authority-final-staging-candidate-selfhosted.yml
+    steps:
+      - name: Revalidate exact final source-preflight run
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ && "$SOURCE_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          frozen=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_BRANCH" --jq '.object.sha')
+          [[ "$frozen" == "$FINAL_COMMIT" ]] || { echo "Final source branch moved: $frozen != $FINAL_COMMIT" >&2; exit 1; }
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID")
+          [[ "$(jq -r '.name' <<<"$run")" == 'production-ga-windows-authority-final-release-source-preflight' ]]
+          [[ "$(jq -r '.path' <<<"$run")" == '.github/workflows/ga-windows-authority-final-release-source-preflight.yml' ]]
+          [[ "$(jq -r '.event' <<<"$run")" == 'workflow_dispatch' ]]
+          [[ "$(jq -r '.status' <<<"$run")" == 'completed' && "$(jq -r '.conclusion' <<<"$run")" == 'success' ]]
+          [[ "$(jq -r '.head_branch' <<<"$run")" == "$FINAL_BRANCH" && "$(jq -r '.head_sha' <<<"$run")" == "$FINAL_COMMIT" ]]
+          [[ "$(jq -r '.run_attempt' <<<"$run")" == "$SOURCE_RUN_ATTEMPT" ]]
+          echo "final_source_preflight=PASS run_id=$SOURCE_RUN_ID attempt=$SOURCE_RUN_ATTEMPT"
+
+      - name: Dispatch exact final staging only if absent
+        shell: bash
+        run: |
+          set -euo pipefail
+          payload=$(gh api --method GET \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/$STAGING_WORKFLOW/runs" \
+            -f branch="$FINAL_BRANCH" \
+            -f event='workflow_dispatch' \
+            -f per_page=100)
+          count=$(jq --arg sha "$FINAL_COMMIT" '[.workflow_runs[] | select(.head_sha == $sha)] | length' <<<"$payload")
+          if [[ "$count" -gt 0 ]]; then
+            jq -r --arg sha "$FINAL_COMMIT" '.workflow_runs[] | select(.head_sha == $sha) | "final_staging_existing id=\(.id) status=\(.status) conclusion=\(.conclusion // "") attempt=\(.run_attempt) actor=\(.actor.login)"' <<<"$payload"
+            echo "duplicate_final_staging_dispatch_suppressed=true count=$count"
+            exit 0
+          fi
+          frozen=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_BRANCH" --jq '.object.sha')
+          [[ "$frozen" == "$FINAL_COMMIT" ]] || { echo 'Final release preparation branch moved before staging dispatch.' >&2; exit 1; }
+          gh workflow run "$STAGING_WORKFLOW" \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$FINAL_BRANCH" \
+            -f release_commit="$FINAL_COMMIT"
+          echo 'final_unsigned_staging_dispatched=true'
+          echo 'ga_eligible=false'
