@@ -233,6 +233,7 @@ jobs:
           download_refs = 0
           literal_downloads = 0
           cross_run_downloads = 0
+          expression_prefix = '$' + '{{'
 
           files.each do |path|
             begin
@@ -255,7 +256,7 @@ jobs:
                 with = step['with']
                 next unless with.is_a?(Hash)
                 name = with['name'].to_s.strip
-                producers[name] << path unless name.empty? || name.include?('${{')
+                producers[name] << path unless name.empty? || name.include?(expression_prefix)
               end
             end
           end
@@ -277,7 +278,7 @@ jobs:
                   next
                 end
                 name = with['name'].to_s.strip
-                if !name.empty? && !name.include?('${{')
+                if !name.empty? && !name.include?(expression_prefix)
                   literal_downloads += 1
                   errors << "#{path}: literal artifact download has no literal upload producer: #{name}" unless producers.key?(name)
                 end
