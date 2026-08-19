@@ -166,13 +166,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          count=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ga-windows-authority-final-release-sign-from-lock.yml/runs?branch=$FINAL_ACTIVE_BRANCH&event=workflow_dispatch&per_page=100" \
-            --jq ".workflow_runs | map(select(.head_sha == \"$LOCK_CONTROL_HEAD\")) | length")
-          if [[ "$count" -gt 0 ]]; then
+          runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ga-windows-authority-final-release-sign-from-lock.yml/runs?branch=$FINAL_ACTIVE_BRANCH&event=workflow_dispatch&per_page=100")
+          canonical=$(jq -r --arg head "$LOCK_CONTROL_HEAD" '[.workflow_runs[] | select(.head_sha == $head and .actor.login == "github-actions[bot]" and .triggering_actor.login == "github-actions[bot]")] | length' <<<"$runs")
+          noncanonical_active=$(jq -r --arg head "$LOCK_CONTROL_HEAD" '[.workflow_runs[] | select(.head_sha == $head and (.actor.login != "github-actions[bot]" or .triggering_actor.login != "github-actions[bot]") and .status != "completed")] | length' <<<"$runs")
+          if [[ "$canonical" -gt 0 ]]; then
             echo 'duplicate=true' >> "$GITHUB_OUTPUT"
-            echo "protected_final_signing_duplicate_suppressed=true existing_runs=$count"
+            echo "protected_final_signing_duplicate_suppressed=true canonical_bot_runs=$canonical"
+          elif [[ "$noncanonical_active" -gt 0 ]]; then
+            echo "Noncanonical protected final signing run is active on the exact final head; refusing concurrent canonical dispatch. active_runs=$noncanonical_active" >&2
+            exit 1
           else
             echo 'duplicate=false' >> "$GITHUB_OUTPUT"
+            echo 'protected_final_signing_dispatch_budget=AVAILABLE canonical_bot_runs=0 active_noncanonical_runs=0'
           fi
 
       - name: Dispatch canonical protected final signing once
