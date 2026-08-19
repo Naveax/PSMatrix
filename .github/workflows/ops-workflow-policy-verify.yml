@@ -45,6 +45,7 @@ jobs:
           retired_credential = ['PSMATRIX','TEMP','ADMIN','TOKEN'].join('_')
           retired_credential_refs = 0
           owner_gate_contracts_checked = 0
+          final_review_publisher_contracts_checked = 0
           promotion_pr_human_gate_contracts_checked = 0
           promotion_merge_contracts_checked = 0
           second_human_gate_contracts_checked = 0
@@ -67,6 +68,7 @@ jobs:
 
           authoritative_issue_mutation_workflows = [
             '.github/workflows/ops-final-evaluator-verified-closure.yml',
+            '.github/workflows/ops-final-lock-review-human-gate.yml',
             '.github/workflows/ops-final-security-review-packet-handoff.yml',
           ].sort
 
@@ -204,7 +206,11 @@ jobs:
               "github.event.comment.author_association == 'OWNER'",
               "github.event.comment.body == 'RC4 HUMAN REVIEW APPROVED: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63'",
               "REVIEW_RUN_ATTEMPT: '1'",
+              '.github/workflows/ga-windows-authority-rc4-release-lock-review.yml',
               'review run attempt mismatch',
+              'review run was not created by the canonical automation chain',
+              'expected exactly one live review artifact',
+              'rc4_human_review_artifact_binding=PASS',
             ],
             '.github/workflows/ops-final-human-approval-promotion-dispatch.yml' => [
               'issue_comment:',
@@ -215,7 +221,11 @@ jobs:
               "startsWith(github.event.comment.body, 'FINAL HUMAN REVIEW APPROVED: ')",
               'approval comment does not exactly match the published human-review binding',
               'REVIEW_ATTEMPT:',
+              '.github/workflows/ga-windows-authority-final-release-lock-review.yml',
               'final review run attempt mismatch',
+              'final review run was not created by the canonical automation chain',
+              'expected exactly one live final review artifact',
+              'final_human_review_artifact_binding=PASS',
             ],
             '.github/workflows/ops-external22-ready-to-fresh-readiness.yml' => [
               'issue_comment:',
@@ -227,7 +237,13 @@ jobs:
               'Protected final signing artifact cardinality mismatch',
               'Final security-review packet artifact cardinality mismatch',
               'production-ga-windows-authority-final-release-sign-from-lock',
+              '.github/workflows/ga-windows-authority-final-release-sign-from-lock.yml',
+              'Protected final signing was not created by the canonical automation chain.',
               'production-ga-final-security-review-packet',
+              '.github/workflows/ga-final-security-review-packet.yml',
+              'Final security-review packet was not created by the canonical automation chain.',
+              'source=canonical_bot_actions',
+              'noncanonical_active',
             ],
           }
 
@@ -243,6 +259,29 @@ jobs:
             owner_gate_contracts_checked += 1
           end
 
+          final_review_publisher_requirements = {
+            '.github/workflows/ops-final-lock-review-human-gate.yml' => [
+              "github.event.workflow_run.actor.login == 'github-actions[bot]'",
+              "github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'",
+              '.github/workflows/ga-windows-authority-final-release-lock-review.yml',
+              'Final lock-review artifact cardinality mismatch: expected 1 live artifact',
+              'final_lock_review_source_provenance=PASS automated_dispatch=true artifact_count=1',
+              'human_approval_created=false',
+            ],
+          }
+
+          final_review_publisher_requirements.each do |path, fragments|
+            unless File.file?(path)
+              errors << "#{path}: required final human-review publisher workflow is missing"
+              next
+            end
+            raw = File.read(path, encoding: 'utf-8')
+            fragments.each do |fragment|
+              errors << "#{path}: final human-review publisher provenance invariant missing: #{fragment}" unless raw.include?(fragment)
+            end
+            final_review_publisher_contracts_checked += 1
+          end
+
           promotion_pr_gate_requirements = {
             '.github/workflows/ops-rc4-promotion-to-reviewed-pr.yml' => [
               "HUMAN_GATE_ISSUE: '260'",
@@ -254,6 +293,10 @@ jobs:
               'Exact RC4 owner approval is missing.',
               'RC4 promotion predates owner approval:',
               'rc4_first_human_gate_provenance=PASS',
+              'Existing RC4 promotion PR is not the same-repository materializer-bot PR.',
+              'main moved before RC4 promotion PR recovery/create:',
+              'Orphan RC4 promotion branch is not a single commit directly on the promotion control head:',
+              'rc4_promotion_orphan_branch_recovered=PASS',
             ],
             '.github/workflows/ops-final-promotion-to-reviewed-pr.yml' => [
               "HUMAN_GATE_ISSUE: '263'",
@@ -266,6 +309,9 @@ jobs:
               'Exact final owner approval is missing.',
               'Final promotion predates owner approval:',
               'final_first_human_gate_provenance=PASS',
+              'Existing final promotion PR is not the same-repository materializer-bot PR.',
+              'Orphan final promotion branch is not a single commit directly on the frozen promotion control head:',
+              'final_promotion_orphan_branch_recovered=PASS',
             ],
           }
 
@@ -291,6 +337,11 @@ jobs:
               '.github/workflows/ga-windows-authority-rc4-release-lock-promotion.yml',
               'psmatrix-2.0.0rc4-release-lock-promotion-candidate',
               'RC4 promotion artifact cardinality mismatch:',
+              'Merged RC4 release-lock bytes differ from canonical promotion artifact.',
+              'Merged RC4 public-key bytes differ from canonical promotion artifact.',
+              'exact_bytes=true',
+              'canonical_bot_runs=',
+              'active_noncanonical_runs=0',
               'rc4_promotion_merge_provenance=PASS',
             ],
             '.github/workflows/ops-final-reviewed-lock-merge-to-signing.yml' => [
@@ -302,6 +353,11 @@ jobs:
               '.github/workflows/ga-windows-authority-final-release-lock-promotion.yml',
               'psmatrix-2.0.0-final-release-lock-promotion-candidate',
               'Final promotion artifact cardinality mismatch:',
+              'Merged final release-lock bytes differ from canonical promotion artifact.',
+              'Merged final public-key bytes differ from canonical promotion artifact.',
+              'exact_bytes=true',
+              'canonical_bot_runs=',
+              'active_noncanonical_runs=0',
               'final_promotion_merge_provenance=PASS',
             ],
           }
@@ -402,7 +458,7 @@ jobs:
             end
           end
 
-          puts "release_workflow_policy_scan workflow_files=#{all_workflows.length} critical_workflows=#{files.length} action_refs=#{action_refs} top_permissions=#{permissions_checked} job_permissions=#{job_permissions_checked} retired_credential_refs=#{retired_credential_refs} owner_gate_contracts_checked=#{owner_gate_contracts_checked} promotion_pr_human_gate_contracts_checked=#{promotion_pr_human_gate_contracts_checked} promotion_merge_contracts_checked=#{promotion_merge_contracts_checked} second_human_gate_contracts_checked=#{second_human_gate_contracts_checked} issue_comment_triggers=#{issue_comment_triggers_checked} pull_request_target_refs=#{pull_request_target_refs} source_run_bindings_checked=#{source_run_bindings_checked} source_artifact_bindings_checked=#{source_artifact_bindings_checked} privileged_source_event_guards_checked=#{privileged_source_event_guards_checked} mutation_source_guards_checked=#{mutation_source_guards_checked} automated_mutation_source_guards_checked=#{automated_mutation_source_guards_checked}"
+          puts "release_workflow_policy_scan workflow_files=#{all_workflows.length} critical_workflows=#{files.length} action_refs=#{action_refs} top_permissions=#{permissions_checked} job_permissions=#{job_permissions_checked} retired_credential_refs=#{retired_credential_refs} owner_gate_contracts_checked=#{owner_gate_contracts_checked} final_review_publisher_contracts_checked=#{final_review_publisher_contracts_checked} promotion_pr_human_gate_contracts_checked=#{promotion_pr_human_gate_contracts_checked} promotion_merge_contracts_checked=#{promotion_merge_contracts_checked} second_human_gate_contracts_checked=#{second_human_gate_contracts_checked} issue_comment_triggers=#{issue_comment_triggers_checked} pull_request_target_refs=#{pull_request_target_refs} source_run_bindings_checked=#{source_run_bindings_checked} source_artifact_bindings_checked=#{source_artifact_bindings_checked} privileged_source_event_guards_checked=#{privileged_source_event_guards_checked} mutation_source_guards_checked=#{mutation_source_guards_checked} automated_mutation_source_guards_checked=#{automated_mutation_source_guards_checked}"
           unless errors.empty?
             warn errors.join("\n")
             exit 1
@@ -416,7 +472,7 @@ jobs:
           set -euo pipefail
           if [[ "${{ job.status }}" == success ]]; then status=PASS; else status=FAIL; fi
           marker="OPS_WORKFLOW_POLICY_VERIFY head=$GITHUB_SHA "
-          body="${marker}status=$status scope=all-retired-credential+ops+ga-policy retired_temp_admin_refs=0 owner_gate_contracts=3 promotion_pr_human_gate_contracts=2 promotion_merge_contracts=2 second_human_gate_contracts=2 issue_comment_gate_set=3 pull_request_target_refs=0 source_artifact_binding=enabled privileged_source_event_guard=enabled mutation_source_guard=enabled automated_mutation_source_guard=enabled human_gate_attempt_binding=enabled first_human_gate_runtime_provenance=enabled reviewed_merge_promotion_provenance=enabled same_repo_bot_promotion_pr=enabled second_human_gate_exact_head_review=enabled external22_prerequisite_provenance=enabled"
+          body="${marker}status=$status scope=all-retired-credential+ops+ga-policy retired_temp_admin_refs=0 owner_gate_contracts=3 final_review_publisher_contracts=1 promotion_pr_human_gate_contracts=2 promotion_merge_contracts=2 second_human_gate_contracts=2 issue_comment_gate_set=3 pull_request_target_refs=0 source_artifact_binding=enabled privileged_source_event_guard=enabled mutation_source_guard=enabled automated_mutation_source_guard=enabled human_gate_attempt_binding=enabled first_human_gate_runtime_provenance=enabled final_review_publisher_provenance=enabled reviewed_merge_promotion_provenance=enabled promotion_merge_exact_bytes=enabled promotion_orphan_parent_binding=enabled canonical_dispatch_dedupe=enabled same_repo_bot_promotion_pr=enabled second_human_gate_exact_head_review=enabled external22_prerequisite_provenance=enabled"
           comment_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
             --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" \
             | tail -n 1)
