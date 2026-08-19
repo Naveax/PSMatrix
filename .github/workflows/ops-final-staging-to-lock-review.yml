@@ -1,0 +1,105 @@
+name: ops-final-staging-to-lock-review
+
+on:
+  workflow_run:
+    workflows: [production-ga-windows-authority-final-staging-candidate-selfhosted]
+    types: [completed]
+
+concurrency:
+  group: ops-final-staging-to-lock-review
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  dispatch-review:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.head_branch == 'final/2.0.0-release-preparation' &&
+      github.event.workflow_run.head_sha == '02cef95d40cf524ce00f9d917188343dc49e6f2c'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FINAL_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
+      FINAL_BRANCH: final/2.0.0-release-preparation
+      STAGING_RUN_ID: ${{ github.event.workflow_run.id }}
+      STAGING_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+      RC4_ENROLLMENT_RUN_ID: '32136341027'
+      REVIEW_CONTROL_BRANCH: final/2.0.0-lock-review-control
+      REVIEW_WORKFLOW: ga-windows-authority-final-release-lock-review.yml
+    steps:
+      - name: Revalidate exact final staging provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$STAGING_RUN_ID" =~ ^[1-9][0-9]*$ && "$STAGING_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          frozen=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_BRANCH" --jq '.object.sha')
+          [[ "$frozen" == "$FINAL_COMMIT" ]] || { echo "Final release source moved: $frozen" >&2; exit 1; }
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$STAGING_RUN_ID")
+          [[ "$(jq -r '.name' <<<"$run")" == 'production-ga-windows-authority-final-staging-candidate-selfhosted' ]]
+          [[ "$(jq -r '.path' <<<"$run")" == '.github/workflows/ga-windows-authority-final-staging-candidate-selfhosted.yml' ]]
+          [[ "$(jq -r '.event' <<<"$run")" == 'workflow_dispatch' ]]
+          [[ "$(jq -r '.status' <<<"$run")" == 'completed' && "$(jq -r '.conclusion' <<<"$run")" == 'success' ]]
+          [[ "$(jq -r '.head_branch' <<<"$run")" == "$FINAL_BRANCH" && "$(jq -r '.head_sha' <<<"$run")" == "$FINAL_COMMIT" ]]
+          [[ "$(jq -r '.run_attempt' <<<"$run")" == "$STAGING_RUN_ATTEMPT" ]]
+          artifact_count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$STAGING_RUN_ID/artifacts?per_page=100" --jq '[.artifacts[] | select(.name == "windows-authority-final-unlocked-staging-candidate" and (.expired|not))] | length')
+          [[ "$artifact_count" == '1' ]] || { echo "Final staging artifact cardinality mismatch: $artifact_count" >&2; exit 1; }
+          echo "final_staging_provenance=PASS run_id=$STAGING_RUN_ID attempt=$STAGING_RUN_ATTEMPT"
+
+      - name: Freeze exact final lock-review control head
+        id: freeze
+        shell: bash
+        run: |
+          set -euo pipefail
+          if existing=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$REVIEW_CONTROL_BRANCH" --jq '.object.sha' 2>/dev/null); then
+            control="$existing"
+            echo "final_lock_review_control_reused=true sha=$control"
+          else
+            control=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+            [[ "$control" =~ ^[0-9a-f]{40}$ ]]
+            for path in \
+              .github/workflows/ga-windows-authority-final-release-lock-review.yml \
+              .github/workflows/ga-windows-authority-final-release-lock-promotion.yml \
+              ga-packs/03-authoritative-windows/final-release-lock-signing-control-contract.json; do
+              gh api "repos/$GITHUB_REPOSITORY/contents/$path?ref=$control" >/dev/null
+            done
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/heads/$REVIEW_CONTROL_BRANCH" \
+              -f sha="$control" >/dev/null
+            echo "final_lock_review_control_frozen=true sha=$control"
+          fi
+          echo "control_head=$control" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch one final lock-review bundle or reuse existing
+        env:
+          CONTROL_HEAD: ${{ steps.freeze.outputs.control_head }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          payload=$(gh api --method GET \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/$REVIEW_WORKFLOW/runs" \
+            -f branch="$REVIEW_CONTROL_BRANCH" \
+            -f event='workflow_dispatch' \
+            -f per_page=100)
+          count=$(jq --arg sha "$CONTROL_HEAD" '[.workflow_runs[] | select(.head_sha == $sha)] | length' <<<"$payload")
+          if [[ "$count" -gt 0 ]]; then
+            jq -r --arg sha "$CONTROL_HEAD" '.workflow_runs[] | select(.head_sha == $sha) | "final_lock_review_existing id=\(.id) status=\(.status) conclusion=\(.conclusion // "") attempt=\(.run_attempt)"' <<<"$payload"
+            echo "duplicate_final_lock_review_dispatch_suppressed=true count=$count"
+            exit 0
+          fi
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$REVIEW_CONTROL_BRANCH" --jq '.object.sha')
+          [[ "$current" == "$CONTROL_HEAD" ]] || { echo 'Final lock-review control branch moved before dispatch.' >&2; exit 1; }
+          gh workflow run "$REVIEW_WORKFLOW" \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$REVIEW_CONTROL_BRANCH" \
+            -f final_candidate_commit="$FINAL_COMMIT" \
+            -f rc4_enrollment_run_id="$RC4_ENROLLMENT_RUN_ID" \
+            -f staging_run_id="$STAGING_RUN_ID"
+          echo "final_lock_review_dispatched=true control_head=$CONTROL_HEAD staging_run=$STAGING_RUN_ID"
+          echo 'active_final_lock_written=false'
+          echo 'release_artifacts_signed=false'
+          echo 'ga_eligible=false'
