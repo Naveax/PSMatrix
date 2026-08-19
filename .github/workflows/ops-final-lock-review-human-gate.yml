@@ -19,7 +19,9 @@ jobs:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'workflow_dispatch' &&
-      github.event.workflow_run.head_branch == 'release/2.0.0-final-lock-control'
+      github.event.workflow_run.head_branch == 'release/2.0.0-final-lock-control' &&
+      github.event.workflow_run.actor.login == 'github-actions[bot]' &&
+      github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -33,7 +35,7 @@ jobs:
       HUMAN_GATE_ISSUE: '263'
       STATE_ISSUE: '262'
     steps:
-      - name: Validate exact review control branch
+      - name: Validate exact automated review provenance and artifact cardinality
         shell: bash
         run: |
           set -euo pipefail
@@ -42,7 +44,21 @@ jobs:
           [[ "$REVIEW_CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]]
           current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_LOCK_CONTROL_BRANCH" --jq '.object.sha')
           [[ "$current" == "$REVIEW_CONTROL_HEAD" ]] || { echo "Frozen final lock-control branch moved: $current != $REVIEW_CONTROL_HEAD" >&2; exit 1; }
+
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$REVIEW_RUN_ID")
+          [[ "$(jq -r '.name' <<<"$run")" == 'production-ga-windows-authority-final-release-lock-review' ]] || { echo 'Final lock-review workflow name mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.path' <<<"$run")" == '.github/workflows/ga-windows-authority-final-release-lock-review.yml' ]] || { echo 'Final lock-review workflow path mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.event' <<<"$run")" == 'workflow_dispatch' ]] || { echo 'Final lock-review event mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.status' <<<"$run")" == 'completed' && "$(jq -r '.conclusion' <<<"$run")" == 'success' ]] || { echo 'Final lock-review run is not completed/success.' >&2; exit 1; }
+          [[ "$(jq -r '.head_branch' <<<"$run")" == "$FINAL_LOCK_CONTROL_BRANCH" && "$(jq -r '.head_sha' <<<"$run")" == "$REVIEW_CONTROL_HEAD" ]] || { echo 'Final lock-review control provenance mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.run_attempt' <<<"$run")" == "$REVIEW_RUN_ATTEMPT" ]] || { echo 'Final lock-review run attempt mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.actor.login' <<<"$run")" == 'github-actions[bot]' && "$(jq -r '.triggering_actor.login' <<<"$run")" == 'github-actions[bot]' ]] || { echo 'Final lock-review run was not created by the canonical automation chain.' >&2; exit 1; }
+
+          artifacts=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$REVIEW_RUN_ID/artifacts?per_page=100")
+          artifact_count=$(jq '[.artifacts[] | select(.name == "psmatrix-2.0.0-final-release-lock-review" and (.expired | not))] | length' <<<"$artifacts")
+          [[ "$artifact_count" -eq 1 ]] || { echo "Final lock-review artifact cardinality mismatch: expected 1 live artifact, found $artifact_count" >&2; exit 1; }
           echo 'final_lock_review_control=PASS'
+          echo 'final_lock_review_source_provenance=PASS automated_dispatch=true artifact_count=1'
 
       - name: Download exact final lock review artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
