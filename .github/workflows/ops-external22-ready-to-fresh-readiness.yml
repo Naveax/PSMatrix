@@ -67,25 +67,29 @@ jobs:
 
           signing=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SIGNING_RUN_ID")
           [[ "$(jq -r '.name' <<<"$signing")" == 'production-ga-windows-authority-final-release-sign-from-lock' ]] || { echo 'Ledger signing run is not canonical protected final signing.' >&2; exit 1; }
+          [[ "$(jq -r '.path' <<<"$signing")" == '.github/workflows/ga-windows-authority-final-release-sign-from-lock.yml' ]] || { echo 'Protected final signing workflow path mismatch.' >&2; exit 1; }
           [[ "$(jq -r '.event' <<<"$signing")" == 'workflow_dispatch' ]] || { echo 'Protected final signing event mismatch.' >&2; exit 1; }
           [[ "$(jq -r '.status' <<<"$signing")" == 'completed' && "$(jq -r '.conclusion' <<<"$signing")" == 'success' ]] || { echo 'Protected final signing run is not successful.' >&2; exit 1; }
-          [[ "$(jq -r '.head_sha' <<<"$signing")" == "$final_head" ]] || { echo 'Protected final signing head mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.head_branch' <<<"$signing")" == "$FINAL_ACTIVE_BRANCH" && "$(jq -r '.head_sha' <<<"$signing")" == "$final_head" ]] || { echo 'Protected final signing branch/head mismatch.' >&2; exit 1; }
           [[ "$(jq -r '.run_attempt' <<<"$signing")" == "$SIGNING_ATTEMPT" ]] || { echo 'Protected final signing attempt does not match ledger.' >&2; exit 1; }
+          [[ "$(jq -r '.actor.login' <<<"$signing")" == 'github-actions[bot]' && "$(jq -r '.triggering_actor.login' <<<"$signing")" == 'github-actions[bot]' ]] || { echo 'Protected final signing was not created by the canonical automation chain.' >&2; exit 1; }
           signing_artifacts=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SIGNING_RUN_ID/artifacts?per_page=100" \
             --jq '[.artifacts[] | select(.name == "psmatrix-2.0.0-protected-release" and (.expired|not))] | length')
           [[ "$signing_artifacts" == '1' ]] || { echo "Protected final signing artifact cardinality mismatch: $signing_artifacts" >&2; exit 1; }
 
           packet=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PACKET_RUN_ID")
           [[ "$(jq -r '.name' <<<"$packet")" == 'production-ga-final-security-review-packet' ]] || { echo 'Ledger packet run is not canonical final security-review packet producer.' >&2; exit 1; }
+          [[ "$(jq -r '.path' <<<"$packet")" == '.github/workflows/ga-final-security-review-packet.yml' ]] || { echo 'Final security-review packet workflow path mismatch.' >&2; exit 1; }
           [[ "$(jq -r '.event' <<<"$packet")" == 'workflow_dispatch' ]] || { echo 'Final security-review packet event mismatch.' >&2; exit 1; }
           [[ "$(jq -r '.status' <<<"$packet")" == 'completed' && "$(jq -r '.conclusion' <<<"$packet")" == 'success' ]] || { echo 'Final security-review packet run is not successful.' >&2; exit 1; }
-          [[ "$(jq -r '.head_sha' <<<"$packet")" == "$final_head" ]] || { echo 'Final security-review packet head mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.head_branch' <<<"$packet")" == "$FINAL_ACTIVE_BRANCH" && "$(jq -r '.head_sha' <<<"$packet")" == "$final_head" ]] || { echo 'Final security-review packet branch/head mismatch.' >&2; exit 1; }
           [[ "$(jq -r '.run_attempt' <<<"$packet")" == "$PACKET_ATTEMPT" ]] || { echo 'Final security-review packet attempt does not match ledger.' >&2; exit 1; }
+          [[ "$(jq -r '.actor.login' <<<"$packet")" == 'github-actions[bot]' && "$(jq -r '.triggering_actor.login' <<<"$packet")" == 'github-actions[bot]' ]] || { echo 'Final security-review packet was not created by the canonical automation chain.' >&2; exit 1; }
           packet_artifacts=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PACKET_RUN_ID/artifacts?per_page=100" \
             --jq '[.artifacts[] | select(.name == "psmatrix-2.0.0-final-security-review-packet" and (.expired|not))] | length')
           [[ "$packet_artifacts" == '1' ]] || { echo "Final security-review packet artifact cardinality mismatch: $packet_artifacts" >&2; exit 1; }
 
-          echo "external22_final_prerequisites=PASS signing_run=$SIGNING_RUN_ID packet_run=$PACKET_RUN_ID control_head=$final_head provenance=revalidated"
+          echo "external22_final_prerequisites=PASS signing_run=$SIGNING_RUN_ID packet_run=$PACKET_RUN_ID control_head=$final_head provenance=revalidated automated_dispatch=true"
 
       - name: Revalidate frozen readiness anchor and dispatch one fresh post-external22 readiness run
         shell: bash
@@ -98,9 +102,13 @@ jobs:
           ready_at=$(jq -r '[.[] | select(.user.login == "Naveax" and .author_association == "OWNER" and .body == "EXTERNAL22 MATERIAL READY") | .created_at] | sort | .[0] // empty' <<<"$ready_comments")
           [[ "$ready_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] || { echo 'Canonical EXTERNAL22 MATERIAL READY event timestamp cannot be resolved.' >&2; exit 1; }
 
-          existing=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ga-final-production-readiness.yml/runs?branch=$READINESS_BRANCH&event=workflow_dispatch&per_page=100" \
-            --jq ".workflow_runs[] | select(.head_sha == \"$READINESS_HEAD\" and .created_at >= \"$ready_at\") | .id" \
-            | head -n 1)
+          runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ga-final-production-readiness.yml/runs?branch=$READINESS_BRANCH&event=workflow_dispatch&per_page=100")
+          existing=$(jq -r --arg head "$READINESS_HEAD" --arg ready "$ready_at" '
+            [.workflow_runs[] | select(.head_sha == $head and .created_at >= $ready and .actor.login == "github-actions[bot]" and .triggering_actor.login == "github-actions[bot]")] | sort_by(.created_at) | .[0].id // empty
+          ' <<<"$runs")
+          noncanonical_active=$(jq -r --arg head "$READINESS_HEAD" --arg ready "$ready_at" '
+            [.workflow_runs[] | select(.head_sha == $head and .created_at >= $ready and (.actor.login != "github-actions[bot]" or .triggering_actor.login != "github-actions[bot]") and (.status != "completed"))] | length
+          ' <<<"$runs")
 
           marker="EXTERNAL22_FRESH_READINESS_DISPATCH head=$READINESS_HEAD"
           marker_exists=false
@@ -112,14 +120,19 @@ jobs:
             if [[ "$marker_exists" != true ]]; then
               gh issue comment "$EXTERNAL_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$marker"
             fi
-            echo "fresh_production_readiness_duplicate_suppressed=true existing_run_id=$existing source=actions"
+            echo "fresh_production_readiness_duplicate_suppressed=true existing_run_id=$existing source=canonical_bot_actions"
             echo 'external_producers_dispatched=false'
             echo 'ga_eligible=false'
             exit 0
           fi
 
           if [[ "$marker_exists" == true ]]; then
-            echo 'Fresh-readiness ledger marker exists but no matching post-external22 Actions run exists; failing closed.' >&2
+            echo 'Fresh-readiness ledger marker exists but no matching canonical post-external22 bot run exists; failing closed.' >&2
+            exit 1
+          fi
+
+          if [[ "$noncanonical_active" -gt 0 ]]; then
+            echo "A noncanonical post-external22 readiness run is active on the frozen head; refusing concurrent canonical dispatch. active_runs=$noncanonical_active" >&2
             exit 1
           fi
 
