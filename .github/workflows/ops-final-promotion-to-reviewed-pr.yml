@@ -93,8 +93,11 @@ jobs:
           if [[ "$count" -eq 1 ]]; then
             base=$(jq -r '.[0].base.ref' <<<"$prs")
             title=$(jq -r '.[0].title' <<<"$prs")
+            author=$(jq -r '.[0].user.login' <<<"$prs")
+            head_repo=$(jq -r '.[0].head.repo.full_name' <<<"$prs")
             [[ "$base" == "$FINAL_LOCK_CONTROL_BRANCH" ]] || { echo 'Existing final promotion PR base mismatch.' >&2; exit 1; }
             [[ "$title" == 'Promote human-reviewed final 2.0.0 release lock' ]] || { echo 'Existing final promotion PR title mismatch.' >&2; exit 1; }
+            [[ "$author" == 'github-actions[bot]' && "$head_repo" == "$GITHUB_REPOSITORY" ]] || { echo 'Existing final promotion PR is not the same-repository materializer-bot PR.' >&2; exit 1; }
             echo 'duplicate=true' >> "$GITHUB_OUTPUT"
             echo 'branch_exists=true' >> "$GITHUB_OUTPUT"
             echo "final_promotion_pr_duplicate_suppressed=true branch=$branch"
@@ -231,6 +234,9 @@ jobs:
             commit_json=$(gh api "repos/$GITHUB_REPOSITORY/commits/$branch_sha")
             message=$(jq -r '.commit.message' <<<"$commit_json")
             [[ "$message" == 'Promote human-reviewed final 2.0.0 release lock' ]] || { echo 'Orphan final promotion branch commit message mismatch.' >&2; exit 1; }
+            parent_count=$(jq '.parents | length' <<<"$commit_json")
+            parent_sha=$(jq -r '.parents[0].sha // empty' <<<"$commit_json")
+            [[ "$parent_count" -eq 1 && "$parent_sha" == "$PROMOTION_CONTROL_HEAD" ]] || { echo "Orphan final promotion branch is not a single commit directly on the frozen promotion control head: parent=$parent_sha expected=$PROMOTION_CONTROL_HEAD count=$parent_count" >&2; exit 1; }
             mapfile -t branch_files < <(jq -r '.files[].filename' <<<"$commit_json" | sort)
             if [[ ${#branch_files[@]} -ne 2 || "${branch_files[0]}" != "${expected[0]}" || "${branch_files[1]}" != "${expected[1]}" ]]; then
               printf 'Orphan final promotion branch changed unexpected files:\n%s\n' "${branch_files[*]}" >&2
@@ -243,7 +249,7 @@ jobs:
             [[ "$(git rev-parse HEAD)" == "$branch_sha" ]]
             cmp -s ga-packs/03-authoritative-windows/final-release-lock.json ../promotion/ga-packs/03-authoritative-windows/final-release-lock.json
             cmp -s release-assets/2.0.0/psmatrix-2.0.0-release-public.pem ../promotion/release-assets/2.0.0/psmatrix-2.0.0-release-public.pem
-            echo "final_promotion_orphan_branch_recovered=PASS sha=$branch_sha"
+            echo "final_promotion_orphan_branch_recovered=PASS sha=$branch_sha parent=$parent_sha exact_parent=true"
           else
             git switch -c "$branch"
             git add -- ga-packs/03-authoritative-windows/final-release-lock.json release-assets/2.0.0/psmatrix-2.0.0-release-public.pem
