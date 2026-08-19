@@ -137,6 +137,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_ACTIVE_BRANCH" --jq '.object.sha')
+          [[ "$current" == "$LOCK_CONTROL_HEAD" ]] || { echo "Final active-lock moved before signing dispatch: $current != $LOCK_CONTROL_HEAD" >&2; exit 1; }
           gh workflow run ga-windows-authority-final-release-sign-from-lock.yml \
             --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
             -f lock_control_head="$LOCK_CONTROL_HEAD" \

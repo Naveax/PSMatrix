@@ -149,6 +149,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FROZEN_CONTROL_BRANCH" --jq '.object.sha')
+          [[ "$current" == "$LOCK_CONTROL_HEAD" ]] || { echo "Frozen RC4 active-lock moved before signing dispatch: $current != $LOCK_CONTROL_HEAD" >&2; exit 1; }
           gh workflow run ga-windows-authority-rc4-release-sign-from-lock.yml \
             --repo "$GITHUB_REPOSITORY" \
             --ref "$FROZEN_CONTROL_BRANCH" \
