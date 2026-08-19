@@ -105,13 +105,23 @@ jobs:
           print(f'external22_final_prerequisites=PASS signing_run={s[-1][0]} packet_run={p[-1][0]} control_head={head}')
           PY
 
-      - name: Revalidate frozen readiness anchor and dispatch fresh readiness
+      - name: Revalidate frozen readiness anchor and dispatch fresh readiness once
         shell: bash
         run: |
           set -euo pipefail
           readiness_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$READINESS_BRANCH" --jq '.object.sha')
           [[ "$readiness_sha" == "$READINESS_HEAD" ]] || { echo "Readiness anchor moved: $readiness_sha != $READINESS_HEAD" >&2; exit 1; }
+
+          marker="EXTERNAL22_FRESH_READINESS_DISPATCH head=$READINESS_HEAD"
+          if gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$EXTERNAL_ISSUE/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body' | grep -Fxq "$marker"; then
+            echo 'fresh_production_readiness_duplicate_suppressed=true'
+            echo 'external_producers_dispatched=false'
+            echo 'ga_eligible=false'
+            exit 0
+          fi
+
           gh workflow run ga-final-production-readiness.yml --repo "$GITHUB_REPOSITORY" --ref "$READINESS_BRANCH"
+          gh issue comment "$EXTERNAL_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$marker"
           gh issue comment "$EXTERNAL_ISSUE" --repo "$GITHUB_REPOSITORY" --body "External22 name audit PASS (22/22). Fresh canonical Production GA readiness dispatched from \`$READINESS_HEAD\`. External proof producers remain blocked until that fresh readiness run is fully \`12/12 PASS\`."
           echo 'fresh_production_readiness_dispatched=true'
           echo 'external_producers_dispatched=false'
