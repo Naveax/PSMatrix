@@ -54,6 +54,7 @@ jobs:
           source_artifact_bindings_checked = 0
           privileged_source_event_guards_checked = 0
           mutation_source_guards_checked = 0
+          automated_mutation_source_guards_checked = 0
           expression_prefix = '$' + '{{'
           workflow_docs = {}
           workflow_paths_by_name = Hash.new { |h, k| h[k] = [] }
@@ -62,6 +63,11 @@ jobs:
             '.github/workflows/ops-rc4-human-approval-promotion-dispatch.yml',
             '.github/workflows/ops-final-human-approval-promotion-dispatch.yml',
             '.github/workflows/ops-external22-ready-to-fresh-readiness.yml',
+          ].sort
+
+          authoritative_issue_mutation_workflows = [
+            '.github/workflows/ops-final-evaluator-verified-closure.yml',
+            '.github/workflows/ops-final-security-review-packet-handoff.yml',
           ].sort
 
           all_workflows.each do |path|
@@ -136,7 +142,7 @@ jobs:
               next unless job.is_a?(Hash)
               effective_permissions = job['permissions'].is_a?(Hash) ? job['permissions'] : top_permissions
               write_capable = effective_permissions.any? { |_scope, level| level.to_s == 'write' }
-              release_mutation_capable = %w[actions contents pull-requests].any? { |scope| effective_permissions[scope].to_s == 'write' }
+              release_mutation_capable = %w[actions contents pull-requests].any? { |scope| effective_permissions[scope].to_s == 'write' } || authoritative_issue_mutation_workflows.include?(path)
               cross_run_artifact_job = false
 
               Array(job['steps']).each_with_index do |step, index|
@@ -174,11 +180,18 @@ jobs:
 
               next unless release_mutation_capable
               successful_source = job_if.match?(/github\.event\.workflow_run\.conclusion\s*==\s*['\"]success['\"]/)
+              trusted_actor = job_if.match?(/github\.event\.workflow_run\.actor\.login\s*==\s*['\"]github-actions\[bot\]['\"]/) 
+              trusted_triggering_actor = job_if.match?(/github\.event\.workflow_run\.triggering_actor\.login\s*==\s*['\"]github-actions\[bot\]['\"]/) 
               unless trusted_source_event && successful_source
                 errors << "#{path}: workflow_run release-mutation job #{job_name} must require trusted source event and conclusion == success"
                 next
               end
               mutation_source_guards_checked += 1
+              unless trusted_actor && trusted_triggering_actor
+                errors << "#{path}: workflow_run release-mutation job #{job_name} must require github-actions[bot] actor and triggering_actor"
+                next
+              end
+              automated_mutation_source_guards_checked += 1
             end
           end
 
@@ -389,7 +402,7 @@ jobs:
             end
           end
 
-          puts "release_workflow_policy_scan workflow_files=#{all_workflows.length} critical_workflows=#{files.length} action_refs=#{action_refs} top_permissions=#{permissions_checked} job_permissions=#{job_permissions_checked} retired_credential_refs=#{retired_credential_refs} owner_gate_contracts_checked=#{owner_gate_contracts_checked} promotion_pr_human_gate_contracts_checked=#{promotion_pr_human_gate_contracts_checked} promotion_merge_contracts_checked=#{promotion_merge_contracts_checked} second_human_gate_contracts_checked=#{second_human_gate_contracts_checked} issue_comment_triggers=#{issue_comment_triggers_checked} pull_request_target_refs=#{pull_request_target_refs} source_run_bindings_checked=#{source_run_bindings_checked} source_artifact_bindings_checked=#{source_artifact_bindings_checked} privileged_source_event_guards_checked=#{privileged_source_event_guards_checked} mutation_source_guards_checked=#{mutation_source_guards_checked}"
+          puts "release_workflow_policy_scan workflow_files=#{all_workflows.length} critical_workflows=#{files.length} action_refs=#{action_refs} top_permissions=#{permissions_checked} job_permissions=#{job_permissions_checked} retired_credential_refs=#{retired_credential_refs} owner_gate_contracts_checked=#{owner_gate_contracts_checked} promotion_pr_human_gate_contracts_checked=#{promotion_pr_human_gate_contracts_checked} promotion_merge_contracts_checked=#{promotion_merge_contracts_checked} second_human_gate_contracts_checked=#{second_human_gate_contracts_checked} issue_comment_triggers=#{issue_comment_triggers_checked} pull_request_target_refs=#{pull_request_target_refs} source_run_bindings_checked=#{source_run_bindings_checked} source_artifact_bindings_checked=#{source_artifact_bindings_checked} privileged_source_event_guards_checked=#{privileged_source_event_guards_checked} mutation_source_guards_checked=#{mutation_source_guards_checked} automated_mutation_source_guards_checked=#{automated_mutation_source_guards_checked}"
           unless errors.empty?
             warn errors.join("\n")
             exit 1
@@ -403,7 +416,7 @@ jobs:
           set -euo pipefail
           if [[ "${{ job.status }}" == success ]]; then status=PASS; else status=FAIL; fi
           marker="OPS_WORKFLOW_POLICY_VERIFY head=$GITHUB_SHA "
-          body="${marker}status=$status scope=all-retired-credential+ops+ga-policy retired_temp_admin_refs=0 owner_gate_contracts=3 promotion_pr_human_gate_contracts=2 promotion_merge_contracts=2 second_human_gate_contracts=2 issue_comment_gate_set=3 pull_request_target_refs=0 source_artifact_binding=enabled privileged_source_event_guard=enabled mutation_source_guard=enabled human_gate_attempt_binding=enabled first_human_gate_runtime_provenance=enabled reviewed_merge_promotion_provenance=enabled same_repo_bot_promotion_pr=enabled second_human_gate_exact_head_review=enabled external22_prerequisite_provenance=enabled"
+          body="${marker}status=$status scope=all-retired-credential+ops+ga-policy retired_temp_admin_refs=0 owner_gate_contracts=3 promotion_pr_human_gate_contracts=2 promotion_merge_contracts=2 second_human_gate_contracts=2 issue_comment_gate_set=3 pull_request_target_refs=0 source_artifact_binding=enabled privileged_source_event_guard=enabled mutation_source_guard=enabled automated_mutation_source_guard=enabled human_gate_attempt_binding=enabled first_human_gate_runtime_provenance=enabled reviewed_merge_promotion_provenance=enabled same_repo_bot_promotion_pr=enabled second_human_gate_exact_head_review=enabled external22_prerequisite_provenance=enabled"
           comment_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
             --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" \
             | tail -n 1)
