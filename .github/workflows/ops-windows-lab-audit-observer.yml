@@ -42,12 +42,16 @@ jobs:
             body=$'### Windows-lab audit observer\n\nNo audit run is visible yet.\n\nNo secret values were inspected.'
           else
             run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id")
+            jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs?filter=all&per_page=100")
             status=$(jq -r '.status' <<<"$run")
             conclusion=$(jq -r '.conclusion // "pending"' <<<"$run")
             event=$(jq -r '.event' <<<"$run")
             head=$(jq -r '.head_sha' <<<"$run")
             created=$(jq -r '.created_at' <<<"$run")
             updated=$(jq -r '.updated_at' <<<"$run")
+            job_count=$(jq '.jobs | length' <<<"$jobs")
+            runner_accepted_count=$(jq '[.jobs[] | select(((.runner_name // "") | length) > 0)] | length' <<<"$jobs")
+            step_count=$(jq '[.jobs[] | (.steps // [])[]] | length' <<<"$jobs")
 
             age_minutes=0
             if created_epoch=$(date -u -d "$created" +%s 2>/dev/null); then
@@ -58,17 +62,26 @@ jobs:
             fi
 
             stale=false
+            runner_accepted=unknown
+            if (( runner_accepted_count > 0 )); then
+              runner_accepted=true
+            elif (( job_count > 0 )); then
+              runner_accepted=false
+            fi
+
             interpretation='The audit run is active or complete.'
             if [[ "$status" == 'queued' ]]; then
               if (( age_minutes >= 10 )); then stale=true; fi
               interpretation='No eligible runner has accepted the job yet; this does not distinguish offline, busy, or registration/access causes.'
             elif [[ "$status" == 'in_progress' ]]; then
               interpretation='NAVEAX-compatible runner capacity has accepted the audit job.'
+            elif [[ "$status" == 'completed' && "$conclusion" == 'cancelled' && "$runner_accepted" == 'false' && "$step_count" -eq 0 ]]; then
+              interpretation='The audit was cancelled before any runner accepted the job and before workflow steps began. This is a runner/scheduler infrastructure terminal, not a prerequisite-test failure; do not rerun until runner eligibility or availability is re-established.'
             elif [[ "$status" == 'completed' ]]; then
               interpretation='The audit run has reached a terminal state; use its conclusion and job logs as source of truth.'
             fi
 
-            body=$(printf '### Windows-lab audit observer\n\nLatest audit run: `%s`\nStatus: `%s`\nConclusion: `%s`\nEvent: `%s`\nHead: `%s`\nCreated: `%s`\nUpdated: `%s`\nQueue age: `%s min`\nStale queued: `%s`\n\nRunner contract: `self-hosted, Windows, X64, psmatrix-hyperv` (same contract used by the successful RC4 staging workflow).\n\nInterpretation: %s\n\nObserver is event-driven for `in_progress` and `completed`; it does **not** create or rerun audit jobs. No secret values were inspected.' "$id" "$status" "$conclusion" "$event" "$head" "$created" "$updated" "$age_minutes" "$stale" "$interpretation")
+            body=$(printf '### Windows-lab audit observer\n\nLatest audit run: `%s`\nStatus: `%s`\nConclusion: `%s`\nEvent: `%s`\nHead: `%s`\nCreated: `%s`\nUpdated: `%s`\nQueue age: `%s min`\nStale queued: `%s`\nJobs observed: `%s`\nRunner accepted: `%s`\nWorkflow steps observed: `%s`\n\nRunner contract: `self-hosted, Windows, X64, psmatrix-hyperv` (same contract used by the successful RC4 staging workflow).\n\nInterpretation: %s\n\nObserver is event-driven for `in_progress` and `completed`; it does **not** create or rerun audit jobs. No secret values were inspected.' "$id" "$status" "$conclusion" "$event" "$head" "$created" "$updated" "$age_minutes" "$stale" "$job_count" "$runner_accepted" "$step_count" "$interpretation")
           fi
 
           comment_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
