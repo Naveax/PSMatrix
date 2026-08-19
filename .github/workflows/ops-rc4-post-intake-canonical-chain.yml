@@ -49,27 +49,32 @@ jobs:
           [[ "$branch_sha" == "$CONTROL_HEAD" ]] || { echo "Frozen RC4 control branch moved: $branch_sha != $CONTROL_HEAD" >&2; exit 1; }
           echo "rc4_chain_event=PASS workflow=$COMPLETED_WORKFLOW run=$COMPLETED_RUN_ID attempt=$COMPLETED_RUN_ATTEMPT"
 
-      - name: Advance exact canonical RC4 stage
+      - name: Advance exact canonical RC4 stage once
         shell: bash
         run: |
           set -euo pipefail
 
-          record_state() {
-            local stage="$1"
-            gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "RC4_CHAIN_STATE stage=$stage run_id=$COMPLETED_RUN_ID attempt=$COMPLETED_RUN_ATTEMPT control_head=$CONTROL_HEAD"
+          comments() {
+            gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
+              --jq '.[] | select(.user.login == "github-actions[bot]") | .body'
           }
 
-          state_exists() {
+          stage_exists() {
             local stage="$1"
-            gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
-              --jq ".[] | select(.user.login == \"github-actions[bot]\") | .body" \
-              | grep -Fxq "RC4_CHAIN_STATE stage=${stage} run_id=${COMPLETED_RUN_ID} attempt=${COMPLETED_RUN_ATTEMPT} control_head=${CONTROL_HEAD}"
+            comments | grep -Eq "^RC4_CHAIN_STATE stage=${stage} run_id=[1-9][0-9]* attempt=[1-9][0-9]* control_head=${CONTROL_HEAD}$"
+          }
+
+          record_state_once() {
+            local stage="$1"
+            if ! stage_exists "$stage"; then
+              gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" \
+                --body "RC4_CHAIN_STATE stage=$stage run_id=$COMPLETED_RUN_ID attempt=$COMPLETED_RUN_ATTEMPT control_head=$CONTROL_HEAD"
+            fi
           }
 
           get_state() {
             local stage="$1"
-            gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
-              --jq ".[] | select(.user.login == \"github-actions[bot]\") | .body" \
+            comments \
               | grep -E "^RC4_CHAIN_STATE stage=${stage} run_id=[1-9][0-9]* attempt=[1-9][0-9]* control_head=${CONTROL_HEAD}$" \
               | tail -n 1
           }
@@ -82,18 +87,38 @@ jobs:
             sed -E 's/.* attempt=([1-9][0-9]*).*/\1/'
           }
 
-          require_unseen() {
+          downstream_run() {
+            local workflow="$1"
+            gh api --method GET \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs" \
+              -f branch="$CONTROL_BRANCH" \
+              -f event='workflow_dispatch' \
+              -f per_page=100 \
+              --jq ".workflow_runs[] | select(.head_sha == \"$CONTROL_HEAD\") | .id" \
+              | head -n 1
+          }
+
+          suppress_or_repair() {
             local stage="$1"
-            if state_exists "$stage"; then
-              echo "rc4_chain_duplicate_suppressed=true stage=$stage run=$COMPLETED_RUN_ID attempt=$COMPLETED_RUN_ATTEMPT"
-              exit 0
+            local workflow="$2"
+            if stage_exists "$stage"; then
+              echo "rc4_chain_duplicate_suppressed=true stage=$stage reason=ledger"
+              return 0
             fi
+            local existing
+            existing=$(downstream_run "$workflow")
+            if [[ -n "$existing" ]]; then
+              record_state_once "$stage"
+              echo "rc4_chain_duplicate_suppressed=true stage=$stage reason=downstream_run existing_run_id=$existing"
+              return 0
+            fi
+            return 1
           }
 
           case "$COMPLETED_WORKFLOW" in
             production-ga-windows-authority-rc4-media-readiness-selfhosted)
-              if state_exists media_readiness || state_exists media_readiness_blocked; then
-                echo "rc4_chain_duplicate_suppressed=true stage=media_readiness run=$COMPLETED_RUN_ID attempt=$COMPLETED_RUN_ATTEMPT"
+              if stage_exists media_readiness || stage_exists media_readiness_blocked; then
+                echo 'rc4_chain_duplicate_suppressed=true stage=media_readiness reason=ledger'
                 exit 0
               fi
 
@@ -119,34 +144,36 @@ jobs:
               [[ "$authoritative" == 'false' && "$ga_eligible" == 'false' ]] || { echo 'RC4 media-readiness artifact crossed forbidden authority/GA boundary.' >&2; exit 1; }
 
               if [[ "$status" != 'READY_FOR_PROVISIONING_MANIFEST_MATERIALIZATION' || "$ready" != 'true' ]]; then
-                record_state media_readiness_blocked
-                gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "RC4_CHAIN_BLOCKED stage=media_readiness status=$status run_id=$COMPLETED_RUN_ID attempt=$COMPLETED_RUN_ATTEMPT control_head=$CONTROL_HEAD next=operator_or_external_media_action"
+                record_state_once media_readiness_blocked
+                gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" \
+                  --body "RC4_CHAIN_BLOCKED stage=media_readiness status=$status run_id=$COMPLETED_RUN_ID attempt=$COMPLETED_RUN_ATTEMPT control_head=$CONTROL_HEAD next=operator_or_external_media_action"
                 echo "rc4_media_readiness_boundary_preserved=true status=$status"
                 echo 'rc4_chain_advanced=false'
                 echo 'ga_eligible=false'
                 exit 0
               fi
 
+              if suppress_or_repair media_readiness ga-windows-authority-rc4-provisioning-manifest-selfhosted.yml; then exit 0; fi
               gh workflow run ga-windows-authority-rc4-provisioning-manifest-selfhosted.yml \
                 --repo "$GITHUB_REPOSITORY" --ref "$CONTROL_BRANCH" \
                 -f release_commit="$RELEASE_COMMIT" \
                 -f control_head="$CONTROL_HEAD"
-              record_state media_readiness
+              record_state_once media_readiness
               echo 'next_stage=rc4_provisioning_manifest'
               ;;
 
             production-ga-windows-authority-rc4-provisioning-manifest-selfhosted)
-              require_unseen provisioning_manifest
+              if suppress_or_repair provisioning_manifest ga-windows-authority-rc4-operation-package-selfhosted.yml; then exit 0; fi
               gh workflow run ga-windows-authority-rc4-operation-package-selfhosted.yml \
                 --repo "$GITHUB_REPOSITORY" --ref "$CONTROL_BRANCH" \
                 -f release_commit="$RELEASE_COMMIT" \
                 -f control_head="$CONTROL_HEAD"
-              record_state provisioning_manifest
+              record_state_once provisioning_manifest
               echo 'next_stage=rc4_operation_package'
               ;;
 
             production-ga-windows-authority-rc4-operation-package-selfhosted)
-              require_unseen operation
+              if suppress_or_repair operation ga-windows-authority-rc4-provision-selfhosted.yml; then exit 0; fi
               gh workflow run ga-windows-authority-rc4-provision-selfhosted.yml \
                 --repo "$GITHUB_REPOSITORY" --ref "$CONTROL_BRANCH" \
                 -f release_commit="$RELEASE_COMMIT" \
@@ -154,12 +181,12 @@ jobs:
                 -f operation_run_id="$COMPLETED_RUN_ID" \
                 -f operation_run_attempt="$COMPLETED_RUN_ATTEMPT" \
                 -f provision_timeout_seconds=7200
-              record_state operation
+              record_state_once operation
               echo 'next_stage=rc4_hyperv_provision'
               ;;
 
             production-ga-windows-authority-rc4-provision-selfhosted)
-              require_unseen provisioning
+              if suppress_or_repair provisioning ga-windows-authority-rc4-image-identity-measurement-selfhosted.yml; then exit 0; fi
               gh workflow run ga-windows-authority-rc4-image-identity-measurement-selfhosted.yml \
                 --repo "$GITHUB_REPOSITORY" --ref "$CONTROL_BRANCH" \
                 -f release_commit="$RELEASE_COMMIT" \
@@ -167,12 +194,12 @@ jobs:
                 -f provisioning_run_id="$COMPLETED_RUN_ID" \
                 -f provisioning_run_attempt="$COMPLETED_RUN_ATTEMPT" \
                 -f measurement_timeout_seconds=1800
-              record_state provisioning
+              record_state_once provisioning
               echo 'next_stage=rc4_image_identity_measurement'
               ;;
 
             production-ga-windows-authority-rc4-image-identity-measurement-selfhosted)
-              require_unseen measurement
+              if suppress_or_repair measurement ga-windows-authority-rc4-certification-campaign-selfhosted.yml; then exit 0; fi
               gh workflow run ga-windows-authority-rc4-certification-campaign-selfhosted.yml \
                 --repo "$GITHUB_REPOSITORY" --ref "$CONTROL_BRANCH" \
                 -f release_commit="$RELEASE_COMMIT" \
@@ -181,12 +208,12 @@ jobs:
                 -f measurement_run_attempt="$COMPLETED_RUN_ATTEMPT" \
                 -f iterations=10 \
                 -f campaign_timeout_seconds=1800
-              record_state measurement
+              record_state_once measurement
               echo 'next_stage=rc4_certification_campaign'
               ;;
 
             production-ga-windows-authority-rc4-certification-campaign-selfhosted)
-              require_unseen campaign
+              if suppress_or_repair campaign ga-windows-authority-rc4-candidate-closure-hardened-selfhosted.yml; then exit 0; fi
               operation=$(get_state operation)
               provisioning=$(get_state provisioning)
               measurement=$(get_state measurement)
@@ -212,7 +239,7 @@ jobs:
                 -f measurement_run_attempt="$measurement_attempt" \
                 -f campaign_run_id="$COMPLETED_RUN_ID" \
                 -f campaign_run_attempt="$COMPLETED_RUN_ATTEMPT"
-              record_state campaign
+              record_state_once campaign
               echo 'next_stage=rc4_hardened_candidate_closure'
               ;;
 
