@@ -19,7 +19,9 @@ jobs:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'workflow_dispatch' &&
-      github.event.workflow_run.head_branch == 'release/2.0.0-final-active-lock'
+      github.event.workflow_run.head_branch == 'release/2.0.0-final-active-lock' &&
+      github.event.workflow_run.actor.login == 'github-actions[bot]' &&
+      github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -30,6 +32,33 @@ jobs:
       FINAL_ACTIVE_BRANCH: release/2.0.0-final-active-lock
       STATE_ISSUE: '262'
     steps:
+      - name: Revalidate canonical automated evaluator run
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EVALUATOR_RUN_ID" =~ ^[1-9][0-9]*$ && "$EVALUATOR_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ && "$CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_ACTIVE_BRANCH" --jq '.object.sha')
+          [[ "$current" == "$CONTROL_HEAD" ]] || { echo 'Final active control moved after evaluator.' >&2; exit 1; }
+
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$EVALUATOR_RUN_ID")
+          [[ "$(jq -r '.name' <<<"$run")" == 'production-ga-final-evaluator' ]] || { echo 'Final evaluator workflow name mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.path' <<<"$run")" == '.github/workflows/ga-final-evaluator.yml' ]] || { echo 'Final evaluator workflow path mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.event' <<<"$run")" == 'workflow_dispatch' ]] || { echo 'Final evaluator event mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.status' <<<"$run")" == 'completed' && "$(jq -r '.conclusion' <<<"$run")" == 'success' ]] || { echo 'Final evaluator run is not completed/success.' >&2; exit 1; }
+          [[ "$(jq -r '.head_branch' <<<"$run")" == "$FINAL_ACTIVE_BRANCH" && "$(jq -r '.head_sha' <<<"$run")" == "$CONTROL_HEAD" ]] || { echo 'Final evaluator execution control mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.run_attempt' <<<"$run")" == "$EVALUATOR_RUN_ATTEMPT" ]] || { echo 'Final evaluator run attempt mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.actor.login' <<<"$run")" == 'github-actions[bot]' && "$(jq -r '.triggering_actor.login' <<<"$run")" == 'github-actions[bot]' ]] || { echo 'Final evaluator was not dispatched by the canonical gate ledger automation.' >&2; exit 1; }
+
+          marker="FINAL_EVALUATOR_DISPATCH control_head=$CONTROL_HEAD"
+          marker_count=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and .body == \"$marker\") | .id" | wc -l | tr -d ' ')
+          [[ "$marker_count" == '1' ]] || { echo "Canonical evaluator dispatch marker cardinality mismatch: $marker_count" >&2; exit 1; }
+
+          artifact_count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$EVALUATOR_RUN_ID/artifacts?per_page=100" \
+            --jq '[.artifacts[] | select(.name == "psmatrix-2.0.0-final-ga-attestation" and (.expired|not))] | length')
+          [[ "$artifact_count" == '1' ]] || { echo "Final GA attestation artifact cardinality mismatch: $artifact_count" >&2; exit 1; }
+          echo "final_evaluator_source_provenance=PASS run_id=$EVALUATOR_RUN_ID attempt=$EVALUATOR_RUN_ATTEMPT control_head=$CONTROL_HEAD artifact_count=1 automated_dispatch=true"
+
       - name: Download exact final GA attestation
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
