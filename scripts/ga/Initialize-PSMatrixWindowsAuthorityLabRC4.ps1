@@ -104,7 +104,8 @@ Bootstrap readiness cannot open the authoritative or Production GA gate.
     'module=loaded; vmms=Running'
 })
 [void](Invoke-Check 'ga-root-layout' $true {
-    $missing = @($releaseRoot,$externalRoot,$operationRoot,$provisioningRoot,$configRoot,$trustRoot | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Container) })
+    $requiredPaths = @($releaseRoot,$externalRoot,$operationRoot,$provisioningRoot,$configRoot,$trustRoot)
+    $missing = @($requiredPaths | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Container) })
     if ($missing.Count -gt 0) { throw ('Missing RC4 GA root directories: {0}. Run with -CreateLayout.' -f ($missing -join ', ')) }
     $root
 })

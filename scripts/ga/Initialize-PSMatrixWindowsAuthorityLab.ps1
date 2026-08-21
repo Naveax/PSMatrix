@@ -15,4 +15,3 @@ if (-not (Test-Path -LiteralPath $implementation -PathType Leaf)) {
     throw "RC4 Windows authority initializer is missing: $implementation"
 }
 & $implementation @PSBoundParameters
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
