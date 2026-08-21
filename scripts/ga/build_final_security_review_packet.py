@@ -21,7 +21,7 @@ from psmatrix.security_review import (
     _validate_completed_report,
     build_security_review_packet,
 )
-from psmatrix.signing import SigningError, canonical_json_bytes, public_key_id
+from psmatrix.signing import SigningError, canonical_json_bytes, public_key_der, public_key_id
 from psmatrix.util import atomic_write_json, read_json, sha256_file
 
 
@@ -38,6 +38,7 @@ _COMMITMENT_KIND = "psmatrix.independent-security-reviewer-commitment"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 _KEY_ID_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_ED25519_SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
 _REVIEWER_TEXT_FIELDS = ("name", "organization", "role", "contact")
 _REVIEWER_FIELDS = (*_REVIEWER_TEXT_FIELDS, "conflict_of_interest", "key_controlled_by_reviewer")
 _COMMITMENT_FIELDS = (
@@ -158,6 +159,12 @@ def _load_reviewer_commitment(path: Path, *, expected_commit: str) -> dict[str, 
     }
 
 
+def _require_ed25519_public_key(public_key: Path) -> None:
+    der = public_key_der(public_key)
+    if len(der) != 44 or not der.startswith(_ED25519_SPKI_PREFIX):
+        raise FinalSecurityReviewPacketError("security reviewer public key must be Ed25519")
+
+
 def normalize_reviewer_commitment(*, input_path: Path, expected_commit: str, output: Path) -> dict[str, Any]:
     commitment = _load_reviewer_commitment(input_path, expected_commit=expected_commit)
     output = output.resolve()
@@ -189,6 +196,7 @@ def validate_reviewer_authority(
     public_key = public_key.resolve()
     if not public_key.is_file():
         raise FinalSecurityReviewPacketError("security reviewer public key is missing or unsafe")
+    _require_ed25519_public_key(public_key)
     actual_key_id = public_key_id(public_key)
     if actual_key_id != commitment["security_review_key_id"]:
         raise FinalSecurityReviewPacketError("security reviewer public key differs from precommitted reviewer authority")
@@ -198,6 +206,7 @@ def validate_reviewer_authority(
         "status": "PASS",
         "version": _FINAL_VERSION,
         "reviewed_commit": expected_commit.lower(),
+        "security_review_key_algorithm": "Ed25519",
         "security_review_key_id": actual_key_id,
         "reviewer_commitment_sha256": sha256_file(commitment_path.resolve()),
         "reviewer_identity_precommitted": True,
