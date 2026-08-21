@@ -15,6 +15,7 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         raw = HELPER.read_text(encoding="utf-8")
 
         for fragment in (
+            "[ValidateSet('Naveax/PSMatrix')]",
             "[ValidateSet('production-ga-windows-lab')]",
             "PSMATRIX_WINDOWS_GA_ROOT",
             "PSMATRIX_WPS40_ADMIN_PASSWORD",
@@ -28,6 +29,21 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         self.assertNotIn("final-production-readiness-contract.json", raw)
         self.assertNotIn("PSMATRIX_WINDOWS_LAB_PRIVATE_KEY", raw)
         self.assertNotIn("PSMATRIX_WINDOWS_LAB_PUBLIC_KEY", raw)
+
+    def test_repository_target_is_pinned_before_any_secret_mutation(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+
+        for fragment in (
+            "$canonicalRepository = 'Naveax/PSMatrix'",
+            "$Repository -cne $canonicalRepository",
+            "Repository target is fixed to Naveax/PSMatrix",
+            "target_repository=$canonicalRepository",
+        ):
+            self.assertIn(fragment, raw)
+        self.assertNotIn("Repository must use owner/name syntax.", raw)
+        guard = raw.index("$Repository -cne $canonicalRepository")
+        first_mutation = raw.index("@('variable', 'set', 'PSMATRIX_WINDOWS_GA_ROOT'")
+        self.assertLess(guard, first_mutation)
 
     def test_material_sources_must_be_absolute_external_files(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
@@ -83,7 +99,7 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
     def test_live_mode_checks_auth_environment_and_repository_before_mutation(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
 
-        repository_guard = raw.index("Repository must use owner/name syntax.")
+        repository_guard = raw.index("$Repository -cne $canonicalRepository")
         auth = raw.index("@('auth', 'status', '--hostname', 'github.com')")
         environment = raw.index('"repos/$Repository/environments/$Environment"')
         first_mutation = raw.index("@('variable', 'set', 'PSMATRIX_WINDOWS_GA_ROOT'")
@@ -140,7 +156,9 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         raw = RUNBOOK.read_text(encoding="utf-8")
 
         for fragment in (
+            "Target repository: `Naveax/PSMatrix`",
             "Target environment: `production-ga-windows-lab`",
+            "cannot redirect",
             "variable `PSMATRIX_WINDOWS_GA_ROOT`",
             "secret `PSMATRIX_WPS40_ADMIN_PASSWORD`",
             "secret `PSMATRIX_WPS50_ADMIN_PASSWORD`",

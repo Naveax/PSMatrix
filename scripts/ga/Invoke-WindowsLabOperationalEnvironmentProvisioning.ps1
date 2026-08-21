@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory)] [string]$Wps40AdminPasswordFile,
     [Parameter(Mandatory)] [string]$Wps50AdminPasswordFile,
     [Parameter(Mandatory)] [string]$Wps51AdminPasswordFile,
-    [Parameter()] [string]$Repository = 'Naveax/PSMatrix',
+    [Parameter()] [ValidateSet('Naveax/PSMatrix')] [string]$Repository = 'Naveax/PSMatrix',
     [Parameter()] [ValidateSet('production-ga-windows-lab')] [string]$Environment = 'production-ga-windows-lab',
     [Parameter()] [switch]$DryRun,
     [Parameter()] [string]$GhPath
@@ -107,8 +107,9 @@ function Invoke-GhCaptured {
     }
 }
 
-if ($Repository -cnotmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
-    throw 'Repository must use owner/name syntax.'
+$canonicalRepository = 'Naveax/PSMatrix'
+if ($Repository -cne $canonicalRepository) {
+    throw 'Repository target is fixed to Naveax/PSMatrix for Windows-lab operational provisioning.'
 }
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
@@ -158,6 +159,7 @@ foreach ($secretPath in @($wps40Source, $wps50Source, $wps51Source)) {
 
 Write-Host 'windows_lab_operational_material_validation=PASS checks=4'
 Write-Host 'windows_lab_root_layout_validation=PASS'
+Write-Host "target_repository=$canonicalRepository"
 Write-Host "target_environment=$Environment"
 Write-Host 'configured_paths_logged=false'
 Write-Host 'secret_values_logged=false'

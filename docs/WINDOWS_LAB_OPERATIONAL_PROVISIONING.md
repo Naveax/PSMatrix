@@ -6,7 +6,11 @@ These inputs are intentionally separate from final Production GA evidence provis
 
 ## GitHub environment
 
+Target repository: `Naveax/PSMatrix`
+
 Target environment: `production-ga-windows-lab`
+
+The provisioning helper is intentionally pinned to this repository and environment. Its `-Repository` parameter cannot redirect the three real administrator secrets or the GA-root variable to another repository.
 
 Operational inputs:
 
@@ -76,7 +80,7 @@ The helper reports only value-free validation state. It does not print configure
 
 After dry-run succeeds and the real material has been independently checked, run the same command without `-DryRun`.
 
-Live mode first verifies GitHub CLI authentication and that `production-ga-windows-lab` exists. It then invalidates the GA-root **commit marker** by temporarily setting `PSMATRIX_WINDOWS_GA_ROOT` to a deliberately relative sentinel value. Because the prerequisite audit requires an absolute existing root, any failure after this point remains fail-closed even when the environment had been successfully provisioned before.
+Live mode first verifies that the target is still exactly `Naveax/PSMatrix`, verifies GitHub CLI authentication, and checks that `production-ga-windows-lab` exists. It then invalidates the GA-root **commit marker** by temporarily setting `PSMATRIX_WINDOWS_GA_ROOT` to a deliberately relative sentinel value. Because the prerequisite audit requires an absolute existing root, any failure after this point remains fail-closed even when the environment had been successfully provisioned before.
 
 The helper then writes the three administrator secrets through standard input. Only after all three writes succeed does it replace the sentinel with the real absolute GA-root value, again through standard input. A partially completed initial provisioning or re-provisioning therefore cannot leave a valid root commit marker behind.
 
