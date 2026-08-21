@@ -18,6 +18,7 @@ $requiredRunnerLabels = @('self-hosted','Windows','X64','psmatrix-hyperv')
 $requiredHyperVCommands = @('Get-VM','Get-VMHost','Get-VMSnapshot','Restore-VMSnapshot','Checkpoint-VM')
 $requiredSecrets = @('PSMATRIX_WPS40_ADMIN_PASSWORD','PSMATRIX_WPS50_ADMIN_PASSWORD','PSMATRIX_WPS51_ADMIN_PASSWORD')
 $operationZipName = 'psmatrix-2.0.0rc4-windows-authoritative-operation.zip'
+$operationDirectoryPattern = '^run-([1-9][0-9]*)-attempt-([1-9][0-9]*)$'
 $checks = New-Object System.Collections.ArrayList
 $remaining = New-Object System.Collections.ArrayList
 
@@ -72,6 +73,15 @@ function Test-OperationPackagePhysicalClosure([string]$Directory,[object]$Metada
         return $true
     } catch {
         return $false
+    }
+}
+function Get-OperationCandidateIdentity([string]$Name) {
+    $match = [regex]::Match($Name,$operationDirectoryPattern)
+    if (-not $match.Success) { throw ('Operation candidate directory identity is invalid: {0}' -f $Name) }
+    return [ordered]@{
+        name = $Name
+        run_id = $match.Groups[1].Value
+        run_attempt = $match.Groups[2].Value
     }
 }
 
@@ -196,6 +206,9 @@ $mediaReady = $false
 $operationReady = $false
 $provisioningReady = $false
 $releaseCommit = ''
+$operationCandidate = ''
+$operationRunId = ''
+$operationRunAttempt = ''
 
 [void](Invoke-Check 'verified-rc4-release-inputs' $releaseRequired {
     foreach ($path in @($releaseManifestPath,$releasePublicKeyPath,$releaseWheelPath,$intakePath)) {
@@ -250,7 +263,7 @@ $releaseCommit = ''
 [void](Invoke-Check 'rc4-operation-package-candidate' $releaseRequired {
     $candidates = @()
     if (Test-Path $operationRoot -PathType Container) {
-        foreach ($dir in @(Get-ChildItem $operationRoot -Directory -ErrorAction Stop | Where-Object { $_.Name -match '^run-[0-9]+-attempt-[1-9][0-9]*$' })) {
+        foreach ($dir in @(Get-ChildItem $operationRoot -Directory -ErrorAction Stop | Where-Object { $_.Name -match $operationDirectoryPattern })) {
             $metaPath = Join-Path $dir.FullName 'psmatrix-2.0.0rc4-windows-authoritative-operation-package.json'
             $bindingPath = Join-Path $dir.FullName 'windows-authority-operation-package-binding.json'
             if ((Test-Path $metaPath -PathType Leaf) -and (Test-Path $bindingPath -PathType Leaf)) {
@@ -264,8 +277,13 @@ $releaseCommit = ''
         }
     }
     if ($candidates.Count -eq 0) { throw 'No RC4 operation package has READY_FOR_WINDOWS_HOST + PASS binding + physical ZIP closure for the current release.' }
+    if ($candidates.Count -ne 1) { throw ('Multiple closure-valid RC4 operation packages make provisioning dispatch ambiguous: {0}' -f ($candidates -join ', ')) }
+    $identity = Get-OperationCandidateIdentity -Name ([string]$candidates[0])
+    $script:operationCandidate = [string]$identity.name
+    $script:operationRunId = [string]$identity.run_id
+    $script:operationRunAttempt = [string]$identity.run_attempt
     $script:operationReady = $true
-    $candidates -join ','
+    'candidate={0}; operation_run_id={1}; operation_run_attempt={2}' -f $operationCandidate,$operationRunId,$operationRunAttempt
 })
 
 [void](Invoke-Check 'rc4-provisioning-inputs' $releaseRequired {
@@ -282,7 +300,7 @@ $releaseCommit = ''
 
     $closureCandidates = @()
     if (Test-Path $operationRoot -PathType Container) {
-        foreach ($dir in @(Get-ChildItem $operationRoot -Directory -ErrorAction Stop | Where-Object { $_.Name -match '^run-[0-9]+-attempt-[1-9][0-9]*$' })) {
+        foreach ($dir in @(Get-ChildItem $operationRoot -Directory -ErrorAction Stop | Where-Object { $_.Name -match $operationDirectoryPattern })) {
             $metaPath = Join-Path $dir.FullName 'psmatrix-2.0.0rc4-windows-authoritative-operation-package.json'
             $bindingPath = Join-Path $dir.FullName 'windows-authority-operation-package-binding.json'
             if (-not (Test-Path $metaPath -PathType Leaf) -or -not (Test-Path $bindingPath -PathType Leaf)) { continue }
@@ -297,9 +315,11 @@ $releaseCommit = ''
         }
     }
     if ($closureCandidates.Count -eq 0) { throw 'No RC4 operation package is physically and SHA-bound to the current provisioning manifest and materialization report.' }
+    if ($closureCandidates.Count -ne 1) { throw ('Multiple fully closure-valid RC4 operation packages make provisioning dispatch ambiguous: {0}' -f ($closureCandidates -join ', ')) }
+    if ([string]$closureCandidates[0] -ne $operationCandidate) { throw 'RC4 operation candidate differs between operation and provisioning closure checks.' }
 
     $script:provisioningReady = $true
-    'materialization=PASS; media_operation_sha_closure=PASS; operation_zip_closure=PASS; hyperv-host-endpoint=present'
+    'materialization=PASS; media_operation_sha_closure=PASS; operation_zip_closure=PASS; operation_candidate=unique; hyperv-host-endpoint=present'
 })
 
 $missingSecrets = @()
@@ -311,8 +331,8 @@ foreach ($name in $requiredSecrets) {
 }
 if (-not $releaseReady) { [void]$remaining.Add('Run protected RC4 release intake and keep the exact signed manifest/public key/wheel under media/release/2.0.0rc4/.') }
 if (-not $mediaReady) { [void]$remaining.Add('Complete reviewed RC4 media readiness and materialize config/windows-lab-media.json.') }
-if (-not $operationReady) { [void]$remaining.Add('Keep a PASS-bound RC4 operation run with its exact metadata-bound ZIP under operation/2.0.0rc4/.') }
-if (-not $provisioningReady) { [void]$remaining.Add('Materialize RC4 provisioning inputs, preserve media/operation SHA closure, and configure config/hyperv-host-endpoint.json.') }
+if (-not $operationReady) { [void]$remaining.Add('Keep exactly one PASS-bound RC4 operation run with its exact metadata-bound ZIP under operation/2.0.0rc4/.') }
+if (-not $provisioningReady) { [void]$remaining.Add('Materialize RC4 provisioning inputs, preserve media/operation SHA closure, and keep exactly one closure-valid operation candidate.') }
 [void]$remaining.Add('Set production-ga-windows-lab variable PSMATRIX_WINDOWS_GA_ROOT to this exact absolute root.')
 
 $requiredFailures = @($checks | Where-Object { $_.required -and $_.status -ne 'PASS' })
@@ -335,6 +355,9 @@ $report = [ordered]@{
     verified_rc4_release_ready = $releaseReady
     media_manifest_ready = $mediaReady
     operation_package_candidate_present = $operationReady
+    operation_candidate = $operationCandidate
+    operation_run_id = $operationRunId
+    operation_run_attempt = $operationRunAttempt
     provisioning_inputs_present = $provisioningReady
     ready_to_dispatch_rc4_provisioning = $controllerReady -and $runnerReady -and $inputsReady -and $secretsReady
     authority_level = 'local-controller-bootstrap'

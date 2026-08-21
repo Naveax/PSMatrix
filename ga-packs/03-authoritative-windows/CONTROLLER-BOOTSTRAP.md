@@ -97,7 +97,7 @@ Before `-RequireReleaseInputs` can pass, the selected GA root must contain the c
 - verified release material under `media/release/2.0.0rc4`, including the signed release manifest, public key, and signed wheel;
 - `windows-authority-protected-release-intake.json` with schema `2`, status `RELEASE_CLOSURE_READY`, the reviewed `lost_previous_private_authority` rotation boundary, and no authority/GA claim;
 - `config/windows-lab-media.json` for exactly `windows-powershell-4.0`, `windows-powershell-5.0`, and `windows-powershell-5.1`, complete and ready for Hyper-V provisioning;
-- an RC4 operation-package candidate under `operation/2.0.0rc4/run-<run_id>-attempt-<run_attempt>` with `READY_FOR_WINDOWS_HOST` metadata, a `PASS` binding, and its exact `psmatrix-2.0.0rc4-windows-authoritative-operation.zip` artifact;
+- exactly one RC4 operation-package candidate under `operation/2.0.0rc4/run-<run_id>-attempt-<run_attempt>` with `READY_FOR_WINDOWS_HOST` metadata, a `PASS` binding, and its exact `psmatrix-2.0.0rc4-windows-authoritative-operation.zip` artifact;
 - `windows-authority-provisioning-manifest-materialization.json` with `PASS` status and `actual_os_identity_measured = false`;
 - `config/hyperv-host-endpoint.json`.
 
@@ -109,8 +109,18 @@ File presence is not enough. Strict readiness enforces both protected release by
 - the provisioning materialization must bind the current media SHA and report both product-loader and operation-package-handoff validation as `PASS`;
 - the operation ZIP must physically exist with the exact canonical filename and its SHA-256/size must match operation metadata;
 - the operation binding must already prove ZIP hash/size metadata closure, valid release binding, canonical release-manifest correspondence, and embedded release-artifact binding;
-- a matching operation-package candidate must bind the same release commit, current media SHA, selection/profile SHA values from the materialization report, and the current materialization-report SHA;
+- the single matching operation-package candidate must bind the same release commit, current media SHA, selection/profile SHA values from the materialization report, and the current materialization-report SHA;
 - the operation binding must name that same release commit.
+
+The operation directory is also the dispatch identity. Only positive-decimal directory names of the exact form `run-<run_id>-attempt-<run_attempt>` are eligible. Zero-valued run IDs are rejected. If zero candidates satisfy the full closure, readiness fails. If more than one candidate satisfies it, readiness also fails because the provisioning inputs would be ambiguous.
+
+When exactly one candidate survives, `controller-bootstrap-report.json` exposes:
+
+- `operation_candidate`
+- `operation_run_id`
+- `operation_run_attempt`
+
+Those two numeric fields map directly to the `operation_run_id` and `operation_run_attempt` inputs of `.github/workflows/ga-windows-authority-rc4-provision-selfhosted.yml`. No provenance field is invented inside operation metadata; the operation workflow itself creates the canonical `run-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}` directory.
 
 If any one of those links differs, `ready_to_dispatch_rc4_provisioning` must remain false.
 
@@ -146,6 +156,6 @@ The current provisioning workflow is:
 
 `.github/workflows/ga-windows-authority-rc4-provision-selfhosted.yml`
 
-It provisions the exact RC4 Hyper-V VM set from the reviewed release, operation package, media manifest, provisioning materialization, host endpoint, and the three protected administrator secrets.
+It provisions the exact RC4 Hyper-V VM set from the reviewed release, the uniquely selected operation package, media manifest, provisioning materialization, host endpoint, and the three protected administrator secrets.
 
 Do not dispatch it until the bootstrap prerequisites are genuinely present. Provisioning is followed by real image identity measurement and the authoritative certification campaign; only those later real-Windows stages can produce the evidence required by the GA chain.

@@ -85,6 +85,10 @@
     },
     "operation_package": {
       "root_pattern": "operation/2.0.0rc4/run-<run_id>-attempt-<run_attempt>",
+      "run_id_positive_decimal_required": true,
+      "run_attempt_positive_decimal_required": true,
+      "exactly_one_dispatch_candidate_required": true,
+      "directory_name_encodes_dispatch_identity": true,
       "metadata_status": "READY_FOR_WINDOWS_HOST",
       "binding_status": "PASS",
       "artifact_name": "psmatrix-2.0.0rc4-windows-authoritative-operation.zip",
@@ -129,6 +133,10 @@
     "operation_profile_sha256_matches_materialization": true,
     "operation_materialization_report_sha256_matches_current_report": true,
     "operation_binding_release_commit_matches_release_intake": true,
+    "exactly_one_operation_candidate_required": true,
+    "operation_candidate_directory_is_dispatch_identity": true,
+    "operation_run_id_report_field": "operation_run_id",
+    "operation_run_attempt_report_field": "operation_run_attempt",
     "file_presence_without_sha_closure_is_ready": false
   },
   "protected_configuration": {
@@ -151,6 +159,8 @@
       "protected_provisioning_secrets_present"
     ],
     "provisioning_workflow": ".github/workflows/ga-windows-authority-rc4-provision-selfhosted.yml",
+    "provisioning_operation_run_id_input_from_report": "operation_run_id",
+    "provisioning_operation_run_attempt_input_from_report": "operation_run_attempt",
     "actual_os_identity_measurement_required_after_bootstrap": true,
     "authoritative_campaign_required_after_bootstrap": true,
     "authoritative": false,
