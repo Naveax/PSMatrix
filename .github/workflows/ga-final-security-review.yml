@@ -70,8 +70,14 @@ jobs:
           if head!=os.environ['GITHUB_SHA'].lower():
               raise SystemExit('security-review control checkout is not exact GITHUB_SHA')
           contract=json.loads(Path('control/ga-packs/03-authoritative-windows/final-security-vulnerability-evidence-producer-contract.json').read_text(encoding='utf-8'))
-          if contract['security_review']['workflow']!='production-ga-final-security-review':
+          security_review=contract['security_review']
+          packet_contract=contract['security_review_packet']
+          if security_review['workflow']!='production-ga-final-security-review':
               raise SystemExit('security-review producer workflow contract mismatch')
+          if security_review.get('reviewer_commitment_required') is not True or security_review.get('reviewer_identity_must_match_commitment') is not True or security_review.get('reviewer_public_key_must_match_commitment') is not True:
+              raise SystemExit('security-review reviewer commitment contract is not fail-closed')
+          if packet_contract.get('reviewer_commitment')!='security-reviewer-commitment.json':
+              raise SystemExit('security-review reviewer commitment artifact contract mismatch')
           headers={'Accept':'application/vnd.github+json','Authorization':f'Bearer {os.environ["GH_TOKEN"]}','X-GitHub-Api-Version':'2026-03-10','User-Agent':'psmatrix-final-security-review'}
           def fetch(path):
               request=urllib.request.Request(f'https://api.github.com/repos/Naveax/PSMatrix/{path}',headers=headers)
@@ -211,17 +217,23 @@ jobs:
               raise SystemExit('security-review protected final release verification failed')
           packet_status=json.loads(Path('review-packet/security-review-packet-status.json').read_text(encoding='utf-8'))
           packet=Path('review-packet/psmatrix-2.0.0-security-review-packet.zip')
+          commitment=Path('review-packet/security-reviewer-commitment.json')
           if packet_status.get('status')!='PASS' or packet_status.get('control_head')!=os.environ['GITHUB_SHA'].lower():
               raise SystemExit('security-review packet status/control-head mismatch')
           if str(packet_status.get('release_signing_run_id') or '')!=os.environ['RELEASE_SIGNING_RUN_ID']:
               raise SystemExit('security-review packet was built from a different release-signing run')
           if packet_status.get('reviewed_commit')!=os.environ['FINAL_RELEASE_COMMIT'].lower() or packet_status.get('packet_sha256')!=sha256_file(packet):
               raise SystemExit('security-review packet exact binding mismatch')
-          print('security_review_release_packet_pre_secret=PASS')
+          if not commitment.is_file() or commitment.is_symlink() or packet_status.get('reviewer_commitment_sha256')!=sha256_file(commitment):
+              raise SystemExit('security-review reviewer commitment binding mismatch')
+          if packet_status.get('reviewer_identity_precommitted') is not True or packet_status.get('reviewer_key_precommitted') is not True:
+              raise SystemExit('security-review packet did not precommit reviewer identity and authority')
+          print('security_review_release_packet_pre_secret=PASS reviewer_commitment_bound=true')
           PY
           PYTHONPATH=control/src python control/scripts/ga/build_final_security_review_packet.py validate-submission \
             --report "$output/security-review-report.json" \
             --packet review-packet/psmatrix-2.0.0-security-review-packet.zip \
+            --commitment review-packet/security-reviewer-commitment.json \
             --source-archive signed-release/psmatrix-2.0.0-source.zip \
             --release-manifest signed-release/psmatrix-2.0.0-release.json \
             --expected-commit "$FINAL_RELEASE_COMMIT" \
@@ -233,28 +245,55 @@ jobs:
           state=json.loads((root/'security-review-submission-validation.json').read_text(encoding='utf-8'))
           if state.get('status')!='PASS' or state.get('independent_review') is not True or state.get('critical_high_blockers_absent') is not True:
               raise SystemExit('independent security-review submission validation is not PASS')
+          if state.get('reviewer_commitment_verified') is not True or state.get('reviewer_identity_precommitted') is not True:
+              raise SystemExit('independent security-review submission is not bound to precommitted reviewer identity')
           reviewer=state.get('reviewer') or {}
           if reviewer.get('conflict_of_interest') is not False or reviewer.get('key_controlled_by_reviewer') is not True:
               raise SystemExit('independent reviewer declaration/key-control boundary is invalid')
-          print(f'security_review_submission_pre_secret=PASS report_sha256={state.get("review_report_sha256")}')
+          print(f'security_review_submission_pre_secret=PASS report_sha256={state.get("review_report_sha256")} reviewer_commitment_verified=true')
           PY
           echo "PSMATRIX_REVIEW_UNSIGNED=$output" >> "$GITHUB_ENV"
 
-      - name: Materialize reviewer-controlled authority, finalize exact review, verify, and remove private key
+      - name: Validate committed reviewer public authority before reviewer-private-key access
         shell: bash
         env:
-          REVIEW_PRIVATE_KEY: ${{ secrets.PSMATRIX_GA_SECURITY_REVIEW_PRIVATE_KEY }}
           REVIEW_PUBLIC_KEY: ${{ secrets.PSMATRIX_GA_SECURITY_REVIEW_PUBLIC_KEY }}
         run: |
           set -euo pipefail
-          [[ -n "$REVIEW_PRIVATE_KEY" ]] || { echo 'PSMATRIX_GA_SECURITY_REVIEW_PRIVATE_KEY is missing from production-ga-security-review-signing.' >&2; exit 1; }
           [[ "$REVIEW_PUBLIC_KEY" == *'-----BEGIN PUBLIC KEY-----'* ]] || { echo 'PSMATRIX_GA_SECURITY_REVIEW_PUBLIC_KEY is missing from production-ga-security-review-signing.' >&2; exit 1; }
           key_root="$RUNNER_TEMP/psmatrix-final-security-review-keys"
-          output="$RUNNER_TEMP/psmatrix-2.0.0-final-security-review"
-          rm -rf "$key_root" "$output"
-          install -d -m 0700 "$key_root" "$output"
-          printf '%s\n' "$REVIEW_PRIVATE_KEY" > "$key_root/security-review.private.pem"
+          rm -rf "$key_root"
+          install -d -m 0700 "$key_root"
           printf '%s\n' "$REVIEW_PUBLIC_KEY" > "$key_root/security-review.public.pem"
+          chmod 0600 "$key_root/security-review.public.pem"
+          PYTHONPATH="$PSMATRIX_FINAL_SECURITY_REVIEW_RUNTIME" python control/scripts/ga/build_final_security_review_packet.py validate-authority \
+            --commitment review-packet/security-reviewer-commitment.json \
+            --public-key "$key_root/security-review.public.pem" \
+            --expected-commit "$FINAL_RELEASE_COMMIT" \
+            --output "$PSMATRIX_REVIEW_UNSIGNED/security-review-authority-validation.json" >/dev/null
+          PSMATRIX_REVIEW_UNSIGNED="$PSMATRIX_REVIEW_UNSIGNED" PYTHONPATH=control/src python - <<'PY'
+          import json, os
+          from pathlib import Path
+          state=json.loads((Path(os.environ['PSMATRIX_REVIEW_UNSIGNED'])/'security-review-authority-validation.json').read_text(encoding='utf-8'))
+          if state.get('status')!='PASS' or state.get('reviewer_public_authority_verified') is not True or state.get('private_key_read') is not False:
+              raise SystemExit('precommitted reviewer public authority validation is not PASS')
+          print('security_review_public_authority_pre_secret=PASS reviewer_key_precommitted=true private_key_read=false')
+          PY
+          echo "PSMATRIX_REVIEW_KEY_ROOT=$key_root" >> "$GITHUB_ENV"
+
+      - name: Materialize reviewer-controlled private authority, finalize exact review, verify, and remove private key
+        shell: bash
+        env:
+          REVIEW_PRIVATE_KEY: ${{ secrets.PSMATRIX_GA_SECURITY_REVIEW_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$REVIEW_PRIVATE_KEY" ]] || { echo 'PSMATRIX_GA_SECURITY_REVIEW_PRIVATE_KEY is missing from production-ga-security-review-signing.' >&2; exit 1; }
+          key_root="$PSMATRIX_REVIEW_KEY_ROOT"
+          output="$RUNNER_TEMP/psmatrix-2.0.0-final-security-review"
+          [[ -d "$key_root" && -f "$key_root/security-review.public.pem" && ! -L "$key_root/security-review.public.pem" ]] || { echo 'prevalidated reviewer public authority is unavailable or unsafe' >&2; exit 1; }
+          rm -rf "$output"
+          install -d -m 0700 "$output"
+          printf '%s\n' "$REVIEW_PRIVATE_KEY" > "$key_root/security-review.private.pem"
           chmod 0600 "$key_root/security-review.private.pem"
           cleanup() {
             shred -u "$key_root/security-review.private.pem" 2>/dev/null || rm -f "$key_root/security-review.private.pem"
@@ -264,6 +303,8 @@ jobs:
           trap cleanup EXIT
           cp "$PSMATRIX_REVIEW_UNSIGNED/security-review-report.json" "$output/security-review-report.json"
           cp "$PSMATRIX_REVIEW_UNSIGNED/security-review-submission-validation.json" "$output/security-review-submission-validation.json"
+          cp "$PSMATRIX_REVIEW_UNSIGNED/security-review-authority-validation.json" "$output/security-review-authority-validation.json"
+          cp review-packet/security-reviewer-commitment.json "$output/security-reviewer-commitment.json"
           cp review-packet/psmatrix-2.0.0-security-review-packet.zip "$output/psmatrix-2.0.0-security-review-packet.zip"
           PYTHONPATH="$PSMATRIX_FINAL_SECURITY_REVIEW_RUNTIME" python -m psmatrix.cli ga review-finalize \
             --report "$output/security-review-report.json" \
@@ -299,22 +340,27 @@ jobs:
           reviewer=assertions.get('reviewer') if isinstance(assertions.get('reviewer'),dict) else {}
           if assertions.get('independent_review') is not True or reviewer.get('conflict_of_interest') is not False or reviewer.get('key_controlled_by_reviewer') is not True:
               raise SystemExit('signed security-review independent reviewer assertions are invalid')
-          if assertions.get('reviewed_commit')!=os.environ['FINAL_RELEASE_COMMIT'].lower():
-              raise SystemExit('signed security-review proof does not bind frozen final commit')
+          commitment=read_json(root/'security-reviewer-commitment.json')
+          if reviewer!=commitment.get('reviewer'):
+              raise SystemExit('signed reviewer identity differs from precommitted reviewer identity')
+          if assertions.get('reviewed_commit')!=os.environ['FINAL_RELEASE_COMMIT'].lower() or commitment.get('reviewed_commit')!=os.environ['FINAL_RELEASE_COMMIT'].lower():
+              raise SystemExit('signed security-review proof or reviewer commitment does not bind frozen final commit')
           report_sha=sha256_file(root/'security-review-report.json')
           if assertions.get('review_report_sha256')!=report_sha:
               raise SystemExit('signed security-review proof does not bind completed review report')
           release_public=Path('signed-release/psmatrix-2.0.0-release-public.pem')
           review_key_id=public_key_id(root/'security-review-public.pem')
+          if review_key_id!=commitment.get('security_review_key_id'):
+              raise SystemExit('signed security-review authority differs from precommitted reviewer key')
           if review_key_id==public_key_id(release_public):
               raise SystemExit('security-review and release authorities must be independent')
-          status={'schema':1,'kind':'psmatrix.final-security-review-producer-status','status':'PASS','version':'2.0.0','reviewed_commit':os.environ['FINAL_RELEASE_COMMIT'].lower(),'review_report_sha256':report_sha,'release_wheel_sha256':os.environ['PSMATRIX_FINAL_SECURITY_REVIEW_WHEEL_SHA256'],'exact_release_wheel_runtime':True,'security_review_key_id':review_key_id,'security_review_public_key_sha256':sha256_file(root/'security-review-public.pem'),'proof_verified':True,'independent_review_attested':True,'reviewer_key_control_attested':True,'critical_high_blockers_absent':True,'security_review_private_key_copied_to_output':False,'final_ga_evaluator_invoked':False,'ga_eligible':False}
+          status={'schema':1,'kind':'psmatrix.final-security-review-producer-status','status':'PASS','version':'2.0.0','reviewed_commit':os.environ['FINAL_RELEASE_COMMIT'].lower(),'review_report_sha256':report_sha,'reviewer_commitment_sha256':sha256_file(root/'security-reviewer-commitment.json'),'release_wheel_sha256':os.environ['PSMATRIX_FINAL_SECURITY_REVIEW_WHEEL_SHA256'],'exact_release_wheel_runtime':True,'security_review_key_id':review_key_id,'security_review_public_key_sha256':sha256_file(root/'security-review-public.pem'),'proof_verified':True,'independent_review_attested':True,'reviewer_key_control_attested':True,'reviewer_identity_precommitted':True,'reviewer_key_precommitted':True,'reviewer_public_authority_verified_before_private_key':True,'critical_high_blockers_absent':True,'security_review_private_key_copied_to_output':False,'final_ga_evaluator_invoked':False,'ga_eligible':False}
           atomic_write_json(root/'security-review-producer-status.json',status)
           markers=(b'-----BEGIN PRIVATE KEY-----',b'-----BEGIN RSA PRIVATE KEY-----',b'-----BEGIN EC PRIVATE KEY-----',b'-----BEGIN OPENSSH PRIVATE KEY-----',b'-----BEGIN ED25519 PRIVATE KEY-----')
           for path in root.rglob('*'):
               if path.is_file() and any(marker in path.read_bytes() for marker in markers):
                   raise SystemExit(f'private-key material found in security-review output: {path.name}')
-          print(f'signed_security_review=PASS key_id={review_key_id} independent_review=true exact_release_wheel=true')
+          print(f'signed_security_review=PASS key_id={review_key_id} independent_review=true reviewer_precommit=true exact_release_wheel=true')
           print('final_ga_evaluator_invoked=false')
           print('ga_eligible=false')
           PY
