@@ -12,6 +12,8 @@ PUBLIC_AUTH_SCRIPT = ROOT / "scripts" / "ga" / "validate_public_auth_provisionin
 OTLP_SCRIPT = ROOT / "scripts" / "ga" / "validate_external_otlp_provisioning.py"
 PUBLIC_AUTH_BIND_SCRIPT = ROOT / "scripts" / "ga" / "bind_public_auth_release.py"
 OTLP_BIND_SCRIPT = ROOT / "scripts" / "ga" / "bind_external_otlp_release.py"
+PUBLIC_AUTH_ENFORCE_SCRIPT = ROOT / "scripts" / "ga" / "enforce_public_auth_report.py"
+OTLP_ENFORCE_SCRIPT = ROOT / "scripts" / "ga" / "enforce_external_otlp_report.py"
 
 
 def load(path: Path, name: str):
@@ -30,6 +32,8 @@ class External22ProvisioningPathSafetyTests(unittest.TestCase):
         cls.otlp = load(OTLP_SCRIPT, "external22_otlp_path_safety")
         cls.public_auth_bind = load(PUBLIC_AUTH_BIND_SCRIPT, "external22_public_auth_bind_path_safety")
         cls.otlp_bind = load(OTLP_BIND_SCRIPT, "external22_otlp_bind_path_safety")
+        cls.public_auth_enforce = load(PUBLIC_AUTH_ENFORCE_SCRIPT, "external22_public_auth_enforce_path_safety")
+        cls.otlp_enforce = load(OTLP_ENFORCE_SCRIPT, "external22_otlp_enforce_path_safety")
 
     def _symlink_or_skip(self, link: Path, target: Path, *, target_is_directory: bool = False) -> None:
         try:
@@ -160,6 +164,63 @@ class External22ProvisioningPathSafetyTests(unittest.TestCase):
             with self.assertRaisesRegex(self.public_auth_bind.BindingError, "JSON output path is unsafe"):
                 self.public_auth_bind.atomic_json(output, {"status": "PASS"})
             self.assertEqual(target.read_text(encoding="utf-8"), "sentinel\n")
+
+    def test_otlp_enforcement_main_preserves_symlink_identity(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="psmatrix-otlp-enforce-input-symlink-") as temporary:
+            root = Path(temporary)
+            target = root / "report-target.json"
+            target.write_text("{}\n", encoding="utf-8")
+            report = root / "report.json"
+            self._symlink_or_skip(report, target)
+            proof = root / "proof.json"
+            proof.write_text("{}\n", encoding="utf-8")
+            original = self.otlp_enforce.parse_args
+            self.otlp_enforce.parse_args = lambda: SimpleNamespace(
+                report=report,
+                proof=proof,
+                release_commit="0" * 40,
+                expected_version="2.0.0",
+                release_manifest_sha256="1" * 64,
+                release_wheel_sha256="2" * 64,
+            )
+            try:
+                with self.assertRaisesRegex(
+                    self.otlp_enforce.EnforcementError,
+                    "external OTLP live report is missing or unsafe",
+                ):
+                    self.otlp_enforce.main()
+            finally:
+                self.otlp_enforce.parse_args = original
+
+    def test_public_auth_enforcement_main_preserves_symlink_identity(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="psmatrix-public-auth-enforce-input-symlink-") as temporary:
+            root = Path(temporary)
+            target = root / "report-target.json"
+            target.write_text("{}\n", encoding="utf-8")
+            report = root / "report.json"
+            self._symlink_or_skip(report, target)
+            oauth = root / "oauth.json"
+            mtls = root / "mtls.json"
+            oauth.write_text("{}\n", encoding="utf-8")
+            mtls.write_text("{}\n", encoding="utf-8")
+            original = self.public_auth_enforce.parse_args
+            self.public_auth_enforce.parse_args = lambda: SimpleNamespace(
+                report=report,
+                oauth_proof=oauth,
+                mtls_proof=mtls,
+                release_commit="0" * 40,
+                expected_version="2.0.0",
+                release_manifest_sha256="1" * 64,
+                release_wheel_sha256="2" * 64,
+            )
+            try:
+                with self.assertRaisesRegex(
+                    self.public_auth_enforce.EnforcementError,
+                    "live report is missing or unsafe",
+                ):
+                    self.public_auth_enforce.main()
+            finally:
+                self.public_auth_enforce.parse_args = original
 
 
 if __name__ == "__main__":
