@@ -127,29 +127,44 @@ jobs:
           $body = @"
           ### Windows-lab prerequisite audit
 
-          Run: `$env:GITHUB_RUN_ID`
-          Attempt: `$env:GITHUB_RUN_ATTEMPT`
-          Head: `$env:GITHUB_SHA`
-          Gate status: `$gateStatus`
-          Failed required checks: `$failedText`
-          Runner exact NAVEAX/Windows: `$($v.runner_exact_naveax)`
-          GA root configured: `$($v.ga_root_configured)`
-          GA root absolute: `$($v.ga_root_absolute)`
-          GA root exists: `$($v.ga_root_exists)`
-          GA config directory exists: `$($v.ga_config_dir_exists)`
-          External media directory exists: `$($v.media_external_dir_exists)`
-          External ISO count (informational, not a prerequisite gate): `$($v.external_iso_count)`
-          Hyper-V cmdlets available: `$($v.hyperv_cmd_available)`
-          VMMS running: `$($v.vmms_running)`
-          WinPS 4.0 admin secret present: `$($v.wps40_admin_secret_present)`
-          WinPS 5.0 admin secret present: `$($v.wps50_admin_secret_present)`
-          WinPS 5.1 admin secret present: `$($v.wps51_admin_secret_present)`
+          Run: $env:GITHUB_RUN_ID
+          Attempt: $env:GITHUB_RUN_ATTEMPT
+          Head: $env:GITHUB_SHA
+          Gate status: $gateStatus
+          Failed required checks: $failedText
+          Runner exact NAVEAX/Windows: $($v.runner_exact_naveax)
+          GA root configured: $($v.ga_root_configured)
+          GA root absolute: $($v.ga_root_absolute)
+          GA root exists: $($v.ga_root_exists)
+          GA config directory exists: $($v.ga_config_dir_exists)
+          External media directory exists: $($v.media_external_dir_exists)
+          External ISO count (informational, not a prerequisite gate): $($v.external_iso_count)
+          Hyper-V cmdlets available: $($v.hyperv_cmd_available)
+          VMMS running: $($v.vmms_running)
+          WinPS 4.0 admin secret present: $($v.wps40_admin_secret_present)
+          WinPS 5.0 admin secret present: $($v.wps50_admin_secret_present)
+          WinPS 5.1 admin secret present: $($v.wps51_admin_secret_present)
 
           The raw ISO count is intentionally informational; canonical RC4 media completeness is enforced later by the reviewed media inventory/selection workflow.
           No secret values, hashes, lengths, or configured paths were emitted.
           "@
-          gh api "repos/$env:GITHUB_REPOSITORY/issues/261/comments" --method POST -f body="$body" | Out-Null
-          if ($LASTEXITCODE -ne 0) { throw 'Failed to publish Windows-lab prerequisite audit.' }
+
+          $commentId = @(
+            gh api --paginate "repos/$env:GITHUB_REPOSITORY/issues/261/comments?per_page=100" --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("### Windows-lab prerequisite audit"))) | .id'
+          ) | Select-Object -Last 1
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to locate existing Windows-lab prerequisite audit comment.' }
+
+          if (-not [string]::IsNullOrWhiteSpace([string]$commentId)) {
+            gh api "repos/$env:GITHUB_REPOSITORY/issues/comments/$commentId" --method PATCH -f body="$body" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Failed to update Windows-lab prerequisite audit comment.' }
+            Write-Host "windows_lab_prereq_audit_comment=updated id=$commentId"
+          }
+          else {
+            gh api "repos/$env:GITHUB_REPOSITORY/issues/261/comments" --method POST -f body="$body" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Failed to publish Windows-lab prerequisite audit comment.' }
+            Write-Host 'windows_lab_prereq_audit_comment=created'
+          }
+          Write-Host 'audit_comment_idempotent=true'
 
       - name: Enforce required Windows lab prerequisites
         if: always()

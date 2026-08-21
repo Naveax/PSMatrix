@@ -35,9 +35,18 @@ jobs:
           if [[ "${{ github.event_name }}" == 'workflow_run' ]]; then
             id='${{ github.event.workflow_run.id }}'
           else
-            # Push/manual fallback preserves the historical prerequisite-audit view.
+            # Push/manual fallback preserves the prerequisite-audit view without dispatching it.
             id=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ops-windows-lab-prereq-audit.yml/runs?per_page=1" --jq '.workflow_runs[0].id // empty')
           fi
+
+          machine_status='UNKNOWN'
+          machine_reason='no_run_visible'
+          machine_workflow='none'
+          machine_run_id='none'
+          machine_runner_accepted='unknown'
+          scheduler_proven=false
+          prerequisites_proven=false
+          recovery_proven=false
 
           if [[ -z "$id" ]]; then
             header='### Windows-lab audit observer'
@@ -99,7 +108,7 @@ jobs:
             elif [[ "$status" == 'in_progress' ]]; then
               interpretation='NAVEAX-compatible runner capacity has accepted the prerequisite audit job.'
             elif [[ "$status" == 'completed' && "$conclusion" == 'success' && "$kind" == 'scheduler' ]]; then
-              interpretation='Scheduler diagnostic succeeded on NAVEAX. After dedupe, the next canonical recovery action is exactly one prerequisite-audit dispatch; do not rerun the scheduler diagnostic as polling.'
+              interpretation='Scheduler diagnostic succeeded on NAVEAX. After dedupe, the next canonical recovery action is exactly one prerequisite-audit execution; do not rerun the scheduler diagnostic as polling.'
             elif [[ "$status" == 'completed' && "$conclusion" == 'success' ]]; then
               interpretation='Prerequisite audit succeeded. Runner assignment and the value-free Windows-lab prerequisite checks are proven for this recovery attempt.'
             elif [[ "$status" == 'completed' && "$conclusion" == 'cancelled' && "$runner_accepted" == 'false' && "$step_count" -eq 0 ]]; then
@@ -108,8 +117,60 @@ jobs:
               interpretation='The run has reached a terminal non-success state; use its conclusion and job logs as source of truth and do not rerun it as polling.'
             fi
 
+            machine_workflow="$workflow"
+            machine_run_id="$id"
+            machine_runner_accepted="$runner_accepted"
+
+            if [[ "$kind" == 'scheduler' ]]; then
+              if [[ "$runner_accepted" == 'true' ]]; then scheduler_proven=true; fi
+              if [[ "$status" == 'completed' && "$conclusion" == 'success' ]]; then
+                machine_status='SCHEDULER_PROVEN'
+                machine_reason='scheduler_diagnostic_success'
+                scheduler_proven=true
+              elif [[ "$status" == 'completed' && "$conclusion" == 'cancelled' && "$runner_accepted" == 'false' && "$step_count" -eq 0 ]]; then
+                machine_status='UNRESOLVED'
+                machine_reason='scheduler_runner_not_accepted'
+              elif [[ "$status" == 'completed' ]]; then
+                machine_status='SCHEDULER_FAILED'
+                machine_reason='scheduler_diagnostic_non_success'
+              elif [[ "$status" == 'in_progress' && "$runner_accepted" == 'true' ]]; then
+                machine_status='SCHEDULER_ASSIGNED'
+                machine_reason='scheduler_runner_accepted'
+              else
+                machine_status='SCHEDULER_PENDING'
+                machine_reason='scheduler_waiting_for_terminal'
+              fi
+            else
+              if [[ "$runner_accepted" == 'true' ]]; then scheduler_proven=true; fi
+              if [[ "$status" == 'completed' && "$conclusion" == 'success' ]]; then
+                machine_status='RECOVERED'
+                machine_reason='prerequisite_audit_success'
+                scheduler_proven=true
+                prerequisites_proven=true
+                recovery_proven=true
+              elif [[ "$status" == 'completed' && "$conclusion" == 'cancelled' && "$runner_accepted" == 'false' && "$step_count" -eq 0 ]]; then
+                machine_status='UNRESOLVED'
+                machine_reason='audit_runner_not_accepted'
+              elif [[ "$status" == 'completed' && "$runner_accepted" == 'true' ]]; then
+                machine_status='PREREQUISITES_FAILED'
+                machine_reason='prerequisite_audit_non_success'
+              elif [[ "$status" == 'completed' ]]; then
+                machine_status='UNRESOLVED'
+                machine_reason='audit_terminal_without_runner_proof'
+              elif [[ "$status" == 'in_progress' ]]; then
+                machine_status='PREREQUISITE_RUNNING'
+                machine_reason='prerequisite_audit_in_progress'
+              else
+                machine_status='PREREQUISITE_QUEUED'
+                machine_reason='prerequisite_audit_waiting_for_runner'
+              fi
+            fi
+
             body=$(printf '%s\n\nSource workflow: `%s`\nObserved run: `%s`\nStatus: `%s`\nConclusion: `%s`\nEvent: `%s`\nHead: `%s`\nCreated: `%s`\nUpdated: `%s`\nQueue age: `%s min`\nStale queued: `%s`\nJobs observed: `%s`\nRunner accepted: `%s`\nWorkflow steps observed: `%s`\n\nRunner contract: `self-hosted, Windows, X64, psmatrix-hyperv`.\n\nInterpretation: %s\n\nObserver is event-driven for `in_progress` and `completed`; it does **not** create, dispatch, cancel, or rerun scheduler/audit jobs. No secret values were inspected.' "$header" "$workflow" "$id" "$status" "$conclusion" "$event" "$head" "$created" "$updated" "$age_minutes" "$stale" "$job_count" "$runner_accepted" "$step_count" "$interpretation")
           fi
+
+          machine_body=$(printf 'NAVEAX_RUNNER_STATE status=%s source_workflow=%s run_id=%s runner_accepted=%s scheduler_assignment_proven=%s prerequisites_proven=%s recovery_proven=%s reason=%s secret_values_logged=false' \
+            "$machine_status" "$machine_workflow" "$machine_run_id" "$machine_runner_accepted" "$scheduler_proven" "$prerequisites_proven" "$recovery_proven" "$machine_reason")
 
           comment_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
             --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$header\"))) | .id" \
@@ -123,6 +184,20 @@ jobs:
             echo "$observer_key comment=created"
           fi
 
+          machine_comment_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("NAVEAX_RUNNER_STATE "))) | .id' \
+            | tail -n 1)
+
+          if [[ -n "$machine_comment_id" ]]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$machine_comment_id" -f body="$machine_body" >/dev/null
+            echo "naveax_runner_state comment=updated id=$machine_comment_id"
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" -f body="$machine_body" >/dev/null
+            echo 'naveax_runner_state comment=created'
+          fi
+
           echo "$observer_key=PASS run_id=${id:-none}"
+          echo "naveax_runner_state=PASS status=$machine_status"
+          echo 'machine_state_idempotent=true'
           echo 'scheduler_or_audit_dispatch_created=false'
           echo 'audit_rerun_created=false'
