@@ -21,6 +21,8 @@ The three password values must be real operator-controlled material. Do not gene
 
 `PSMATRIX_WINDOWS_GA_ROOT` is the Windows-authority staging **root**, not the Local19 `provisioning` directory and not another child directory.
 
+The GA root and the repository must be disjoint paths: the GA root cannot equal or sit inside the repository, and it also cannot be an ancestor that contains the repository. Do not use an overly broad drive/root directory as the protected Windows-lab root.
+
 Before the variable can be provisioned, the selected root must already exist and contain at least:
 
 ```text
@@ -53,7 +55,7 @@ Prepare four files **outside the repository**:
 
 Keep the password files access-restricted on the operator host. Do not commit them, attach them to issues, upload them as Actions artifacts, or paste them into workflow inputs.
 
-The provisioning helper rejects relative source-file paths, repository-contained source files, empty files, links/reparse points, a non-absolute GA-root value, a missing root, and a root without the required `config` and `media\external` layout.
+The provisioning helper rejects relative source-file paths, repository-contained source files, empty files, links/reparse points, a non-absolute GA-root value, a missing root, overlapping repository/GA-root paths, and a root without the required `config` and `media\external` layout.
 
 ## Validate without mutation
 

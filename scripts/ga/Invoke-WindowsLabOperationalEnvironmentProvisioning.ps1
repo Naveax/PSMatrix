@@ -129,8 +129,10 @@ if (-not [IO.Path]::IsPathRooted($rootValue)) {
 }
 
 $gaRoot = [IO.Path]::GetFullPath($rootValue)
-if (Test-PathWithinRoot -Candidate $gaRoot -Root $repoRoot) {
-    throw 'PSMATRIX_WINDOWS_GA_ROOT must stay outside the repository.'
+$gaRootInsideRepository = Test-PathWithinRoot -Candidate $gaRoot -Root $repoRoot
+$repositoryInsideGaRoot = Test-PathWithinRoot -Candidate $repoRoot -Root $gaRoot
+if ($gaRootInsideRepository -or $repositoryInsideGaRoot) {
+    throw 'PSMATRIX_WINDOWS_GA_ROOT and the repository must be disjoint paths.'
 }
 if (-not (Test-Path -LiteralPath $gaRoot -PathType Container)) {
     throw 'PSMATRIX_WINDOWS_GA_ROOT directory does not exist.'

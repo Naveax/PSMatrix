@@ -38,18 +38,27 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         self.assertIn("path must not contain links or reparse points", raw)
         self.assertIn("source file is empty", raw)
 
-    def test_repository_root_itself_is_rejected_as_external_material(self) -> None:
+    def test_ga_root_and_repository_must_be_disjoint_in_both_directions(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
 
         self.assertIn("$candidateFull.Equals($rootBase, [StringComparison]::OrdinalIgnoreCase)", raw)
         self.assertIn("$rootPrefix = $rootBase + [IO.Path]::DirectorySeparatorChar", raw)
-        self.assertIn("PSMATRIX_WINDOWS_GA_ROOT must stay outside the repository.", raw)
+        self.assertIn(
+            "$gaRootInsideRepository = Test-PathWithinRoot -Candidate $gaRoot -Root $repoRoot",
+            raw,
+        )
+        self.assertIn(
+            "$repositoryInsideGaRoot = Test-PathWithinRoot -Candidate $repoRoot -Root $gaRoot",
+            raw,
+        )
+        self.assertIn("PSMATRIX_WINDOWS_GA_ROOT and the repository must be disjoint paths.", raw)
 
     def test_ga_root_is_validated_before_any_github_mutation(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
 
         for fragment in (
             "PSMATRIX_WINDOWS_GA_ROOT value must be an absolute path.",
+            "PSMATRIX_WINDOWS_GA_ROOT and the repository must be disjoint paths.",
             "PSMATRIX_WINDOWS_GA_ROOT directory does not exist.",
             "Join-Path $gaRoot 'config'",
             "Join-Path $gaRoot 'media\\external'",
@@ -137,6 +146,7 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
             "secret `PSMATRIX_WPS50_ADMIN_PASSWORD`",
             "secret `PSMATRIX_WPS51_ADMIN_PASSWORD`",
             "not the Local19 `provisioning` directory",
+            "repository must be disjoint",
             "Invoke-WindowsLabOperationalEnvironmentProvisioning.ps1",
             "-DryRun",
             "commit marker",
