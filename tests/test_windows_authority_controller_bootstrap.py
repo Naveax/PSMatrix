@@ -32,6 +32,8 @@ class WindowsAuthorityControllerBootstrapTests(unittest.TestCase):
         )
         self.assertEqual(value["layout"]["isolated_release_root"], "media/release/2.0.0rc3")
         self.assertEqual(value["layout"]["isolated_operation_root"], "operation/2.0.0rc3")
+        self.assertFalse(value["layout"]["templates_are_evidence"])
+        self.assertTrue(value["layout"]["templates_must_not_use_validator_filenames"])
         self.assertEqual(
             value["controller"]["release_public_key_source"],
             "verified-protected-release-bundle",
@@ -99,6 +101,7 @@ class WindowsAuthorityControllerBootstrapTests(unittest.TestCase):
         self.assertNotIn("2.0.0rc3", text)
         self.assertNotIn("PSMATRIX_WINDOWS_LAB_PRIVATE_KEY", text)
         self.assertNotIn("PSMATRIX_WINDOWS_LAB_PUBLIC_KEY", text)
+        self.assertNotIn("protected secret: PSMATRIX_RELEASE_PUBLIC_KEY", text)
         self.assertNotIn("Join-Path $root 'release'", text)
         self.assertNotIn("Invoke-Expression", text)
 
@@ -134,9 +137,12 @@ class WindowsAuthorityControllerBootstrapTests(unittest.TestCase):
         required = (
             "ga-packs/03-authoritative-windows/**",
             "scripts/ga/Initialize-PSMatrixWindowsAuthorityLab.ps1",
+            "scripts/ga/Initialize-PSMatrixWindowsAuthorityLabRC4.ps1",
             "tests/test_windows_authority_controller_bootstrap.py",
+            "tests/test_windows_lab_initializer_rc4.py",
             "Parse Windows authority PowerShell scripts",
             "tests.test_windows_authority_controller_bootstrap",
+            "tests.test_windows_lab_initializer_rc4",
         )
         for value in required:
             with self.subTest(value=value):
