@@ -43,6 +43,7 @@ jobs:
           machine_reason='no_run_visible'
           machine_workflow='none'
           machine_run_id='none'
+          machine_run_attempt='none'
           machine_runner_accepted='unknown'
           machine_canonical_source='unknown'
           scheduler_proven=false
@@ -79,6 +80,7 @@ jobs:
             event=$(jq -r '.event' <<<"$run")
             head=$(jq -r '.head_sha' <<<"$run")
             branch=$(jq -r '.head_branch // ""' <<<"$run")
+            attempt=$(jq -r '.run_attempt // 0' <<<"$run")
             created=$(jq -r '.created_at' <<<"$run")
             updated=$(jq -r '.updated_at' <<<"$run")
             job_count=$(jq '.jobs | length' <<<"$jobs")
@@ -86,9 +88,9 @@ jobs:
             step_count=$(jq '[.jobs[] | (.steps // [])[]] | length' <<<"$jobs")
 
             canonical_source=true
-            if [[ "$kind" == 'audit' && ( "$event" != 'push' || "$branch" != 'main' ) ]]; then
+            if [[ "$kind" == 'audit' && ( "$event" != 'push' || "$branch" != 'main' || "$attempt" != '1' ) ]]; then
               canonical_source=false
-            elif [[ "$kind" == 'scheduler' && "$event" != 'workflow_dispatch' ]]; then
+            elif [[ "$kind" == 'scheduler' && ( "$event" != 'workflow_dispatch' || "$attempt" != '1' ) ]]; then
               canonical_source=false
             fi
 
@@ -110,7 +112,7 @@ jobs:
 
             interpretation='The observed run is active or complete.'
             if [[ "$canonical_source" != 'true' ]]; then
-              interpretation='The observed run is not a canonical recovery source for this lane. Runner assignment may still be observable, but it cannot prove prerequisite recovery.'
+              interpretation='The observed run is not a canonical recovery source for this lane. Only a first-attempt canonical source may prove recovery; runner assignment may still be observable.'
             elif [[ "$status" == 'queued' ]]; then
               if (( age_minutes >= 10 )); then stale=true; fi
               interpretation='No eligible runner has accepted the job yet; this does not distinguish offline, busy, or registration/access causes.'
@@ -130,6 +132,7 @@ jobs:
 
             machine_workflow="$workflow"
             machine_run_id="$id"
+            machine_run_attempt="$attempt"
             machine_runner_accepted="$runner_accepted"
             machine_canonical_source="$canonical_source"
 
@@ -184,11 +187,11 @@ jobs:
               fi
             fi
 
-            body=$(printf '%s\n\nSource workflow: `%s`\nObserved run: `%s`\nStatus: `%s`\nConclusion: `%s`\nEvent: `%s`\nHead branch: `%s`\nHead: `%s`\nCanonical recovery source: `%s`\nCreated: `%s`\nUpdated: `%s`\nQueue age: `%s min`\nStale queued: `%s`\nJobs observed: `%s`\nRunner accepted: `%s`\nWorkflow steps observed: `%s`\n\nRunner contract: `self-hosted, Windows, X64, psmatrix-hyperv`.\n\nInterpretation: %s\n\nObserver is event-driven for `in_progress` and `completed`; it does **not** create, dispatch, cancel, or rerun scheduler/audit jobs. No secret values were inspected.' "$header" "$workflow" "$id" "$status" "$conclusion" "$event" "$branch" "$head" "$canonical_source" "$created" "$updated" "$age_minutes" "$stale" "$job_count" "$runner_accepted" "$step_count" "$interpretation")
+            body=$(printf '%s\n\nSource workflow: `%s`\nObserved run: `%s`\nAttempt: `%s`\nStatus: `%s`\nConclusion: `%s`\nEvent: `%s`\nHead branch: `%s`\nHead: `%s`\nCanonical recovery source: `%s`\nCreated: `%s`\nUpdated: `%s`\nQueue age: `%s min`\nStale queued: `%s`\nJobs observed: `%s`\nRunner accepted: `%s`\nWorkflow steps observed: `%s`\n\nRunner contract: `self-hosted, Windows, X64, psmatrix-hyperv`.\n\nInterpretation: %s\n\nObserver is event-driven for `in_progress` and `completed`; it does **not** create, dispatch, cancel, or rerun scheduler/audit jobs. No secret values were inspected.' "$header" "$workflow" "$id" "$attempt" "$status" "$conclusion" "$event" "$branch" "$head" "$canonical_source" "$created" "$updated" "$age_minutes" "$stale" "$job_count" "$runner_accepted" "$step_count" "$interpretation")
           fi
 
-          machine_body=$(printf 'NAVEAX_RUNNER_STATE status=%s source_workflow=%s run_id=%s runner_accepted=%s canonical_source=%s scheduler_assignment_proven=%s prerequisites_proven=%s recovery_proven=%s reason=%s secret_values_logged=false' \
-            "$machine_status" "$machine_workflow" "$machine_run_id" "$machine_runner_accepted" "$machine_canonical_source" "$scheduler_proven" "$prerequisites_proven" "$recovery_proven" "$machine_reason")
+          machine_body=$(printf 'NAVEAX_RUNNER_STATE status=%s source_workflow=%s run_id=%s run_attempt=%s runner_accepted=%s canonical_source=%s scheduler_assignment_proven=%s prerequisites_proven=%s recovery_proven=%s reason=%s secret_values_logged=false' \
+            "$machine_status" "$machine_workflow" "$machine_run_id" "$machine_run_attempt" "$machine_runner_accepted" "$machine_canonical_source" "$scheduler_proven" "$prerequisites_proven" "$recovery_proven" "$machine_reason")
 
           comment_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
             --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$header\"))) | .id" \
