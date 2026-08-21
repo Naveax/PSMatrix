@@ -86,4 +86,6 @@ Do not rerun `ops-windows-lab-prereq-audit` as polling.
 
 The prepared formatter correction modifies that workflow path. Once the real environment inputs and host layout have materially changed, merging the correction provides the next single path-scoped `push` audit execution. Require that run to complete successfully before treating Windows-lab prerequisites or runner recovery as proven.
 
+The observer may inspect other scheduler/audit runs for diagnostics, but **only an `ops-windows-lab-prereq-audit` run whose event is `push` and whose head branch is `main` may set the machine state to `RECOVERED`**. A successful manual dispatch or feature-branch audit can prove runner assignment, but it cannot prove canonical prerequisite recovery.
+
 RC4 human approval and External22 remain independent gates; operational lab provisioning does not bypass either one.

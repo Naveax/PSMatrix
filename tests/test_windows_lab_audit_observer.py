@@ -31,6 +31,7 @@ class WindowsLabAuditObserverTests(unittest.TestCase):
             "machine_reason='prerequisite_audit_non_success'",
             "machine_reason='audit_runner_not_accepted'",
             "machine_reason='audit_terminal_without_runner_proof'",
+            "machine_reason='audit_noncanonical_source'",
         ):
             self.assertIn(fragment, raw)
 
@@ -48,6 +49,22 @@ class WindowsLabAuditObserverTests(unittest.TestCase):
         unresolved_index = raw.index("machine_reason='audit_terminal_without_runner_proof'", failure_index)
         self.assertLess(accepted_index, failure_index)
         self.assertLess(failure_index, unresolved_index)
+
+    def test_recovery_requires_canonical_main_push_audit_source(self) -> None:
+        raw = OBSERVER.read_text(encoding="utf-8")
+
+        self.assertIn("branch=$(jq -r '.head_branch // \"\"' <<<\"$run\")", raw)
+        self.assertIn(
+            "if [[ \"$kind\" == 'audit' && ( \"$event\" != 'push' || \"$branch\" != 'main' ) ]]; then",
+            raw,
+        )
+        self.assertIn("canonical_source=false", raw)
+        self.assertIn("machine_canonical_source=\"$canonical_source\"", raw)
+        self.assertIn("canonical_source=%s", raw)
+
+        noncanonical = raw.index("machine_reason='audit_noncanonical_source'")
+        recovered = raw.index("machine_status='RECOVERED'", noncanonical)
+        self.assertLess(noncanonical, recovered)
 
     def test_successful_prerequisite_audit_is_the_only_recovered_state(self) -> None:
         raw = OBSERVER.read_text(encoding="utf-8")
@@ -68,6 +85,7 @@ class WindowsLabAuditObserverTests(unittest.TestCase):
         self.assertIn("issues/comments/$machine_comment_id", raw)
         self.assertIn("--method PATCH", raw)
         self.assertIn("machine_state_idempotent=true", raw)
+        self.assertIn("canonical_source=%s", raw)
         self.assertIn("scheduler_assignment_proven=%s", raw)
         self.assertIn("prerequisites_proven=%s", raw)
         self.assertIn("recovery_proven=%s", raw)
