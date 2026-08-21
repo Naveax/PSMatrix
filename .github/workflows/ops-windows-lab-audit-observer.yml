@@ -6,7 +6,7 @@ on:
     paths:
       - .github/workflows/ops-windows-lab-audit-observer.yml
   workflow_run:
-    workflows: [ops-windows-lab-prereq-audit]
+    workflows: [ci-selfhosted-scheduler-diagnostic, ops-windows-lab-prereq-audit]
     types: [in_progress, completed]
   workflow_dispatch:
 
@@ -27,7 +27,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       STATE_ISSUE: '261'
     steps:
-      - name: Update canonical Windows-lab audit status safely
+      - name: Update canonical Windows-lab scheduler/audit status safely
         shell: bash
         run: |
           set -euo pipefail
@@ -35,14 +35,35 @@ jobs:
           if [[ "${{ github.event_name }}" == 'workflow_run' ]]; then
             id='${{ github.event.workflow_run.id }}'
           else
+            # Push/manual fallback preserves the historical prerequisite-audit view.
             id=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ops-windows-lab-prereq-audit.yml/runs?per_page=1" --jq '.workflow_runs[0].id // empty')
           fi
 
           if [[ -z "$id" ]]; then
+            header='### Windows-lab audit observer'
             body=$'### Windows-lab audit observer\n\nNo audit run is visible yet.\n\nNo secret values were inspected.'
+            observer_key='windows_lab_audit_observer'
           else
             run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id")
             jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs?filter=all&per_page=100")
+            workflow=$(jq -r '.name' <<<"$run")
+            case "$workflow" in
+              ci-selfhosted-scheduler-diagnostic)
+                kind='scheduler'
+                header='### NAVEAX scheduler diagnostic observer'
+                observer_key='windows_lab_scheduler_observer'
+                ;;
+              ops-windows-lab-prereq-audit)
+                kind='audit'
+                header='### Windows-lab audit observer'
+                observer_key='windows_lab_audit_observer'
+                ;;
+              *)
+                echo "Observer received noncanonical workflow: $workflow" >&2
+                exit 1
+                ;;
+            esac
+
             status=$(jq -r '.status' <<<"$run")
             conclusion=$(jq -r '.conclusion // "pending"' <<<"$run")
             event=$(jq -r '.event' <<<"$run")
@@ -69,32 +90,39 @@ jobs:
               runner_accepted=false
             fi
 
-            interpretation='The audit run is active or complete.'
+            interpretation='The observed run is active or complete.'
             if [[ "$status" == 'queued' ]]; then
               if (( age_minutes >= 10 )); then stale=true; fi
               interpretation='No eligible runner has accepted the job yet; this does not distinguish offline, busy, or registration/access causes.'
+            elif [[ "$status" == 'in_progress' && "$kind" == 'scheduler' ]]; then
+              interpretation='NAVEAX-compatible runner capacity has accepted the scheduler diagnostic. Do not dispatch the prerequisite audit until this diagnostic reaches successful completion.'
             elif [[ "$status" == 'in_progress' ]]; then
-              interpretation='NAVEAX-compatible runner capacity has accepted the audit job.'
+              interpretation='NAVEAX-compatible runner capacity has accepted the prerequisite audit job.'
+            elif [[ "$status" == 'completed' && "$conclusion" == 'success' && "$kind" == 'scheduler' ]]; then
+              interpretation='Scheduler diagnostic succeeded on NAVEAX. After dedupe, the next canonical recovery action is exactly one prerequisite-audit dispatch; do not rerun the scheduler diagnostic as polling.'
+            elif [[ "$status" == 'completed' && "$conclusion" == 'success' ]]; then
+              interpretation='Prerequisite audit succeeded. Runner assignment and the value-free Windows-lab prerequisite checks are proven for this recovery attempt.'
             elif [[ "$status" == 'completed' && "$conclusion" == 'cancelled' && "$runner_accepted" == 'false' && "$step_count" -eq 0 ]]; then
-              interpretation='The audit was cancelled before any runner accepted the job and before workflow steps began. This is a runner/scheduler infrastructure terminal, not a prerequisite-test failure; do not rerun until runner eligibility or availability is re-established.'
+              interpretation='The run was cancelled before any runner accepted the job and before workflow steps began. This is a runner/scheduler infrastructure terminal, not a prerequisite-test failure; do not rerun until runner eligibility or availability is re-established.'
             elif [[ "$status" == 'completed' ]]; then
-              interpretation='The audit run has reached a terminal state; use its conclusion and job logs as source of truth.'
+              interpretation='The run has reached a terminal non-success state; use its conclusion and job logs as source of truth and do not rerun it as polling.'
             fi
 
-            body=$(printf '### Windows-lab audit observer\n\nLatest audit run: `%s`\nStatus: `%s`\nConclusion: `%s`\nEvent: `%s`\nHead: `%s`\nCreated: `%s`\nUpdated: `%s`\nQueue age: `%s min`\nStale queued: `%s`\nJobs observed: `%s`\nRunner accepted: `%s`\nWorkflow steps observed: `%s`\n\nRunner contract: `self-hosted, Windows, X64, psmatrix-hyperv` (same contract used by the successful RC4 staging workflow).\n\nInterpretation: %s\n\nObserver is event-driven for `in_progress` and `completed`; it does **not** create or rerun audit jobs. No secret values were inspected.' "$id" "$status" "$conclusion" "$event" "$head" "$created" "$updated" "$age_minutes" "$stale" "$job_count" "$runner_accepted" "$step_count" "$interpretation")
+            body=$(printf '%s\n\nSource workflow: `%s`\nObserved run: `%s`\nStatus: `%s`\nConclusion: `%s`\nEvent: `%s`\nHead: `%s`\nCreated: `%s`\nUpdated: `%s`\nQueue age: `%s min`\nStale queued: `%s`\nJobs observed: `%s`\nRunner accepted: `%s`\nWorkflow steps observed: `%s`\n\nRunner contract: `self-hosted, Windows, X64, psmatrix-hyperv`.\n\nInterpretation: %s\n\nObserver is event-driven for `in_progress` and `completed`; it does **not** create, dispatch, cancel, or rerun scheduler/audit jobs. No secret values were inspected.' "$header" "$workflow" "$id" "$status" "$conclusion" "$event" "$head" "$created" "$updated" "$age_minutes" "$stale" "$job_count" "$runner_accepted" "$step_count" "$interpretation")
           fi
 
           comment_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
-            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("### Windows-lab audit observer"))) | .id' \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$header\"))) | .id" \
             | tail -n 1)
 
           if [[ -n "$comment_id" ]]; then
             gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" -f body="$body" >/dev/null
-            echo "windows_lab_audit_observer_comment=updated id=$comment_id"
+            echo "$observer_key comment=updated id=$comment_id"
           else
             gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" -f body="$body" >/dev/null
-            echo 'windows_lab_audit_observer_comment=created'
+            echo "$observer_key comment=created"
           fi
 
-          echo "windows_lab_audit_observer=PASS run_id=${id:-none}"
+          echo "$observer_key=PASS run_id=${id:-none}"
+          echo 'scheduler_or_audit_dispatch_created=false'
           echo 'audit_rerun_created=false'
