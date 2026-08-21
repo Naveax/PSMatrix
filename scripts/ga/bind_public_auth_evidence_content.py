@@ -17,18 +17,39 @@ class PublicAuthContentBindingError(RuntimeError):
     pass
 
 
+def _safe_directory(path: Path, label: str) -> Path:
+    candidate = Path(path).expanduser()
+    if candidate.is_symlink():
+        raise PublicAuthContentBindingError(f"{label} is missing or unsafe")
+    resolved = candidate.resolve()
+    if not resolved.is_dir():
+        raise PublicAuthContentBindingError(f"{label} is missing or unsafe")
+    return resolved
+
+
+def _safe_file(path: Path, label: str) -> Path:
+    candidate = Path(path).expanduser()
+    if candidate.is_symlink():
+        raise PublicAuthContentBindingError(f"{label} is missing or unsafe")
+    resolved = candidate.resolve()
+    if not resolved.is_file():
+        raise PublicAuthContentBindingError(f"{label} is missing or unsafe")
+    return resolved
+
+
 def _sha256(path: Path) -> str:
+    candidate = Path(path).expanduser()
+    if candidate.is_symlink():
+        raise PublicAuthContentBindingError("hash input is missing or unsafe")
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
+    with candidate.resolve().open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
 
 
 def tree_state(root: Path) -> dict[str, Any]:
-    root = root.resolve()
-    if not root.is_dir():
-        raise PublicAuthContentBindingError("materialized public-auth root is missing")
+    root = _safe_directory(root, "materialized public-auth root")
     files: list[dict[str, Any]] = []
     for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
         if path.is_symlink():
@@ -58,22 +79,27 @@ def run_semantic(oauth_root: Path, mtls_root: Path, extra_args: list[str]) -> di
     for value in extra_args:
         if value in {"--oauth-root", "--mtls-root", "--output"}:
             raise PublicAuthContentBindingError(f"reserved verifier argument: {value}")
-    script = EXPECTED_VERIFIER.resolve()
+    verifier_candidate = EXPECTED_VERIFIER
+    if verifier_candidate.is_symlink():
+        raise PublicAuthContentBindingError("repository-owned public-auth verifier is unavailable")
+    script = verifier_candidate.resolve()
     ga_root = (ROOT / "scripts" / "ga").resolve()
     try:
         script.relative_to(ga_root)
     except ValueError as exc:
         raise PublicAuthContentBindingError("public-auth verifier resolved outside repository GA scripts") from exc
-    if not script.is_file() or script.is_symlink():
+    if not script.is_file():
         raise PublicAuthContentBindingError("repository-owned public-auth verifier is unavailable")
+    oauth_root = _safe_directory(oauth_root, "OAuth evidence root")
+    mtls_root = _safe_directory(mtls_root, "mTLS evidence root")
     with tempfile.TemporaryDirectory(prefix="psmatrix-public-auth-semantic-") as temporary:
         output = Path(temporary) / "semantic-receipt.json"
-        command = [sys.executable, str(script), "--oauth-root", str(oauth_root.resolve()), "--mtls-root", str(mtls_root.resolve()), *extra_args, "--output", str(output)]
+        command = [sys.executable, str(script), "--oauth-root", str(oauth_root), "--mtls-root", str(mtls_root), *extra_args, "--output", str(output)]
         completed = subprocess.run(command, cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=180, check=False)
         if completed.returncode != 0:
             raise PublicAuthContentBindingError(f"public-auth semantic verifier failed: {completed.stdout.strip()}")
-        if not output.is_file():
-            raise PublicAuthContentBindingError("public-auth semantic verifier did not emit receipt")
+        if not output.is_file() or output.is_symlink():
+            raise PublicAuthContentBindingError("public-auth semantic verifier did not emit a safe receipt")
         semantic = json.loads(output.read_text(encoding="utf-8"))
         if semantic.get("schema") != 1 or semantic.get("kind") != "psmatrix.public-auth-cross-gate-bundle-verification" or semantic.get("version") != "2.0.0" or semantic.get("status") != "PASS" or semantic.get("ga_eligible") is not False:
             raise PublicAuthContentBindingError("public-auth semantic receipt identity/boundary mismatch")
@@ -130,16 +156,22 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
-        oauth_materialization = json.loads(args.oauth_materialization_receipt.read_text(encoding="utf-8"))
-        mtls_materialization = json.loads(args.mtls_materialization_receipt.read_text(encoding="utf-8"))
+        oauth_receipt = _safe_file(args.oauth_materialization_receipt, "OAuth materialization receipt")
+        mtls_receipt = _safe_file(args.mtls_materialization_receipt, "mTLS materialization receipt")
+        oauth_materialization = json.loads(oauth_receipt.read_text(encoding="utf-8"))
+        mtls_materialization = json.loads(mtls_receipt.read_text(encoding="utf-8"))
         oauth_before = tree_state(args.oauth_root)
         mtls_before = tree_state(args.mtls_root)
         validate_materialization(oauth_materialization, "public-oauth", oauth_before)
         validate_materialization(mtls_materialization, "public-mtls", mtls_before)
         semantic = run_semantic(args.oauth_root, args.mtls_root, list(args.verifier_arg))
         value = bind(oauth_materialization, mtls_materialization, oauth_before, tree_state(args.oauth_root), mtls_before, tree_state(args.mtls_root), semantic)
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        output = Path(args.output).expanduser()
+        if output.is_symlink():
+            raise PublicAuthContentBindingError("public-auth content-binding output is unsafe")
+        output = output.resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print("public_auth_content_binding=PASS gates=2/2")
         print("cross_gate_semantics_verified=true")
         print("ga_eligible=false")

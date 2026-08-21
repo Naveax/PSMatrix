@@ -17,24 +17,43 @@ class PublicAuthEvidenceContentOperationError(RuntimeError):
     pass
 
 
+def _safe_file(path: Path, label: str) -> Path:
+    candidate = Path(path).expanduser()
+    if candidate.is_symlink():
+        raise PublicAuthEvidenceContentOperationError(f"{label} is missing or unsafe")
+    resolved = candidate.resolve()
+    if not resolved.is_file():
+        raise PublicAuthEvidenceContentOperationError(f"{label} is missing or unsafe")
+    return resolved
+
+
 def _sha256(path: Path) -> str:
+    candidate = Path(path).expanduser()
+    if candidate.is_symlink():
+        raise PublicAuthEvidenceContentOperationError("hash input is missing or unsafe")
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
+    with candidate.resolve().open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
 
 
 def _external_workspace(path: Path) -> Path:
-    resolved = path.expanduser().resolve()
+    candidate = Path(path).expanduser()
+    if candidate.is_symlink():
+        raise PublicAuthEvidenceContentOperationError("public-auth evidence workspace is unsafe")
+    resolved = candidate.resolve()
     try:
         resolved.relative_to(ROOT.resolve())
     except ValueError:
         pass
     else:
         raise PublicAuthEvidenceContentOperationError("public-auth evidence workspace must stay outside repository")
-    if resolved.exists() and any(resolved.iterdir()):
-        raise PublicAuthEvidenceContentOperationError("public-auth evidence workspace must be absent or empty")
+    if resolved.exists():
+        if not resolved.is_dir():
+            raise PublicAuthEvidenceContentOperationError("public-auth evidence workspace must be a directory")
+        if any(resolved.iterdir()):
+            raise PublicAuthEvidenceContentOperationError("public-auth evidence workspace must be absent or empty")
     resolved.mkdir(parents=True, exist_ok=True)
     return resolved
 
@@ -61,9 +80,7 @@ def validate_binding(binding: dict[str, Any]) -> None:
 
 
 def run_operation(api_verification: Path, workspace: Path, repository: str, gh: str) -> dict[str, Any]:
-    api_path = api_verification.expanduser().resolve()
-    if not api_path.is_file() or api_path.is_symlink():
-        raise PublicAuthEvidenceContentOperationError("evidence API verification is missing or unsafe")
+    api_path = _safe_file(api_verification, "evidence API verification")
     root = _external_workspace(workspace)
     paths: dict[str, dict[str, Path]] = {}
     for gate in ("public-oauth", "public-mtls"):
@@ -94,6 +111,8 @@ def run_operation(api_verification: Path, workspace: Path, repository: str, gh: 
         "--output", str(binding_receipt),
     ], "public-auth cross-gate content binding")
 
+    if binding_receipt.is_symlink() or not binding_receipt.is_file():
+        raise PublicAuthEvidenceContentOperationError("public-auth binding receipt is missing or unsafe")
     binding = json.loads(binding_receipt.read_text(encoding="utf-8"))
     validate_binding(binding)
     return {
@@ -126,8 +145,12 @@ def main() -> int:
     args = parser.parse_args()
     try:
         value = run_operation(args.api_verification, args.workspace, args.repository, args.gh)
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        output = Path(args.output).expanduser()
+        if output.is_symlink():
+            raise PublicAuthEvidenceContentOperationError("public-auth evidence operation output is unsafe")
+        output = output.resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print("public_auth_evidence_content_operation=PASS gates=2/2")
         print("cross_gate_semantics_verified=true")
         print("ga_eligible=false")
