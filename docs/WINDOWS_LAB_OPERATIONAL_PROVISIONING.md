@@ -90,8 +90,10 @@ The helper provisions exactly the four operational names listed above. It does n
 
 Do not rerun `ops-windows-lab-prereq-audit` as polling.
 
-The prepared formatter correction modifies that workflow path. Once the real environment inputs and host layout have materially changed, merging the correction provides the next single path-scoped `push` audit execution. Require that run to complete successfully before treating Windows-lab prerequisites or runner recovery as proven.
+The prepared formatter correction modifies that workflow path. Once the real environment inputs and host layout have materially changed, merging the correction provides the next single path-scoped `push` audit execution. Require that **fresh first attempt** to complete successfully before treating Windows-lab prerequisites or runner recovery as proven.
 
-The observer may inspect other scheduler/audit runs for diagnostics, but **only an `ops-windows-lab-prereq-audit` run whose event is `push` and whose head branch is `main` may set the machine state to `RECOVERED`**. A successful manual dispatch or feature-branch audit can prove runner assignment, but it cannot prove canonical prerequisite recovery.
+The prerequisite audit independently rechecks the real NAVEAX/Windows/X64 runner identity, GA-root/repository disjointness, and absence of links/reparse points across the selected GA root plus the required `config` and `media\external` layout. These checks remain fail-closed even if the environment variable was configured outside the provisioning helper.
+
+The observer may inspect other scheduler/audit runs for diagnostics, but **only an `ops-windows-lab-prereq-audit` run whose event is `push`, whose head branch is `main`, and whose `run_attempt` is `1` may set the machine state to `RECOVERED`**. A rerun attempt, successful manual dispatch, or feature-branch audit may still provide diagnostic runner-assignment evidence, but it cannot prove canonical prerequisite recovery.
 
 RC4 human approval and External22 remain independent gates; operational lab provisioning does not bypass either one.

@@ -33,9 +33,51 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
+          function Test-PathWithinRoot {
+            param(
+              [Parameter(Mandatory)] [string]$Candidate,
+              [Parameter(Mandatory)] [string]$Root
+            )
+
+            $candidateFull = [IO.Path]::GetFullPath($Candidate).TrimEnd('\', '/')
+            $rootBase = [IO.Path]::GetFullPath($Root).TrimEnd('\', '/')
+            if ($candidateFull.Equals($rootBase, [StringComparison]::OrdinalIgnoreCase)) {
+              return $true
+            }
+            $rootPrefix = $rootBase + [IO.Path]::DirectorySeparatorChar
+            return $candidateFull.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)
+          }
+
+          function Test-NoLinkOrReparsePath {
+            param([Parameter(Mandatory)] [string]$Path)
+
+            try {
+              $current = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+              while ($null -ne $current) {
+                $linkProperty = $current.PSObject.Properties['LinkType']
+                $linkType = if ($null -ne $linkProperty) { [string]$linkProperty.Value } else { '' }
+                $isReparsePoint = (($current.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+                if ($isReparsePoint -or -not [string]::IsNullOrWhiteSpace($linkType)) {
+                  return $false
+                }
+
+                if ($current -is [IO.FileInfo]) { $current = $current.Directory }
+                elseif ($current -is [IO.DirectoryInfo]) { $current = $current.Parent }
+                else { break }
+              }
+              return $true
+            }
+            catch {
+              return $false
+            }
+          }
+
           $rootConfigured = -not [string]::IsNullOrWhiteSpace($env:PSMATRIX_WINDOWS_GA_ROOT)
           $rootAbsolute = $false
           $rootExists = $false
+          $rootRepositoryDisjoint = $false
+          $rootNoReparsePoints = $false
+          $layoutNoReparsePoints = $false
           $mediaExternalExists = $false
           $isoCount = 0
           $configExists = $false
@@ -49,10 +91,19 @@ jobs:
             $root = [System.IO.Path]::GetFullPath($env:PSMATRIX_WINDOWS_GA_ROOT)
             $rootExists = Test-Path -LiteralPath $root -PathType Container
             if ($rootExists) {
+              if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_WORKSPACE)) {
+                $workspace = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+                $rootRepositoryDisjoint = -not (Test-PathWithinRoot -Candidate $root -Root $workspace) -and -not (Test-PathWithinRoot -Candidate $workspace -Root $root)
+              }
+              $rootNoReparsePoints = Test-NoLinkOrReparsePath -Path $root
+
               $external = Join-Path $root 'media\external'
               $config = Join-Path $root 'config'
               $mediaExternalExists = Test-Path -LiteralPath $external -PathType Container
               $configExists = Test-Path -LiteralPath $config -PathType Container
+              if ($mediaExternalExists -and $configExists) {
+                $layoutNoReparsePoints = (Test-NoLinkOrReparsePath -Path $external) -and (Test-NoLinkOrReparsePath -Path $config)
+              }
               if ($mediaExternalExists) {
                 $isoCount = @(Get-ChildItem -LiteralPath $external -File -Filter '*.iso' -ErrorAction SilentlyContinue).Count
               }
@@ -66,14 +117,19 @@ jobs:
           $wps50 = -not [string]::IsNullOrWhiteSpace($env:PSMATRIX_WPS50_ADMIN_PASSWORD)
           $wps51 = -not [string]::IsNullOrWhiteSpace($env:PSMATRIX_WPS51_ADMIN_PASSWORD)
           $runnerExact = ($env:RUNNER_NAME -eq 'NAVEAX') -and ($env:RUNNER_OS -eq 'Windows')
+          $runnerArchX64 = ($env:RUNNER_ARCH -eq 'X64')
 
           $required = @(
             [pscustomobject]@{ Name = 'runner_exact_naveax'; Value = $runnerExact }
+            [pscustomobject]@{ Name = 'runner_arch_x64'; Value = $runnerArchX64 }
             [pscustomobject]@{ Name = 'ga_root_configured'; Value = $rootConfigured }
             [pscustomobject]@{ Name = 'ga_root_absolute'; Value = $rootAbsolute }
             [pscustomobject]@{ Name = 'ga_root_exists'; Value = $rootExists }
+            [pscustomobject]@{ Name = 'ga_root_repository_disjoint'; Value = $rootRepositoryDisjoint }
+            [pscustomobject]@{ Name = 'ga_root_no_reparse_points'; Value = $rootNoReparsePoints }
             [pscustomobject]@{ Name = 'ga_config_dir_exists'; Value = $configExists }
             [pscustomobject]@{ Name = 'media_external_dir_exists'; Value = $mediaExternalExists }
+            [pscustomobject]@{ Name = 'ga_layout_no_reparse_points'; Value = $layoutNoReparsePoints }
             [pscustomobject]@{ Name = 'hyperv_cmd_available'; Value = $hypervCmd }
             [pscustomobject]@{ Name = 'vmms_running'; Value = $vmmsRunning }
             [pscustomobject]@{ Name = 'wps40_admin_secret_present'; Value = $wps40 }
@@ -88,11 +144,15 @@ jobs:
             kind = 'psmatrix.windows-lab-prerequisite-audit'
             audit_pass = $auditPass
             runner_exact_naveax = $runnerExact
+            runner_arch_x64 = $runnerArchX64
             ga_root_configured = $rootConfigured
             ga_root_absolute = $rootAbsolute
             ga_root_exists = $rootExists
+            ga_root_repository_disjoint = $rootRepositoryDisjoint
+            ga_root_no_reparse_points = $rootNoReparsePoints
             ga_config_dir_exists = $configExists
             media_external_dir_exists = $mediaExternalExists
+            ga_layout_no_reparse_points = $layoutNoReparsePoints
             external_iso_count = $isoCount
             external_iso_count_gate = $false
             hyperv_cmd_available = $hypervCmd
@@ -133,11 +193,15 @@ jobs:
           Gate status: $gateStatus
           Failed required checks: $failedText
           Runner exact NAVEAX/Windows: $($v.runner_exact_naveax)
+          Runner architecture X64: $($v.runner_arch_x64)
           GA root configured: $($v.ga_root_configured)
           GA root absolute: $($v.ga_root_absolute)
           GA root exists: $($v.ga_root_exists)
+          GA root/repository disjoint: $($v.ga_root_repository_disjoint)
+          GA root has no links/reparse points: $($v.ga_root_no_reparse_points)
           GA config directory exists: $($v.ga_config_dir_exists)
           External media directory exists: $($v.media_external_dir_exists)
+          GA layout has no links/reparse points: $($v.ga_layout_no_reparse_points)
           External ISO count (informational, not a prerequisite gate): $($v.external_iso_count)
           Hyper-V cmdlets available: $($v.hyperv_cmd_available)
           VMMS running: $($v.vmms_running)
