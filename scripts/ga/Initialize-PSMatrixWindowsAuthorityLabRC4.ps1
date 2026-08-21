@@ -204,11 +204,12 @@ $releaseCommit = ''
                 $meta = Get-Content $metaPath -Raw | ConvertFrom-Json
                 $binding = Get-Content $bindingPath -Raw | ConvertFrom-Json
                 $commitMatches = (-not $releaseCommit) -or [string]$meta.release_commit -eq $releaseCommit
-                if ([string]$meta.kind -eq 'psmatrix.windows-authoritative-operation-package' -and [string]$meta.status -eq 'READY_FOR_WINDOWS_HOST' -and [string]$meta.release_version -eq $releaseVersion -and $commitMatches -and [bool]$meta.release_lock.authority_rotation_reviewed -eq $true -and [bool]$meta.release_lock.release_authority_rotated_during_signing -eq $false -and [bool]$meta.stale_rc2_operation_package_used -eq $false -and [bool]$meta.authoritative -eq $false -and [bool]$meta.ga_eligible -eq $false -and [string]$binding.status -eq 'PASS' -and [bool]$binding.ready_for_release_artifact_recovery -eq $true -and [bool]$binding.authoritative -eq $false -and [bool]$binding.ga_eligible -eq $false) { $candidates += $dir.Name }
+                $bindingCommitMatches = (-not $releaseCommit) -or [string]$binding.operation_package.release_commit -eq $releaseCommit
+                if ([string]$meta.kind -eq 'psmatrix.windows-authoritative-operation-package' -and [string]$meta.status -eq 'READY_FOR_WINDOWS_HOST' -and [string]$meta.release_version -eq $releaseVersion -and $commitMatches -and $bindingCommitMatches -and [bool]$meta.release_lock.authority_rotation_reviewed -eq $true -and [bool]$meta.release_lock.release_authority_rotated_during_signing -eq $false -and [bool]$meta.stale_rc2_operation_package_used -eq $false -and [bool]$meta.authoritative -eq $false -and [bool]$meta.ga_eligible -eq $false -and [string]$binding.status -eq 'PASS' -and [bool]$binding.ready_for_release_artifact_recovery -eq $true -and [bool]$binding.authoritative -eq $false -and [bool]$binding.ga_eligible -eq $false) { $candidates += $dir.Name }
             }
         }
     }
-    if ($candidates.Count -eq 0) { throw 'No RC4 operation package has READY_FOR_WINDOWS_HOST + PASS binding.' }
+    if ($candidates.Count -eq 0) { throw 'No RC4 operation package has READY_FOR_WINDOWS_HOST + PASS binding for the current release.' }
     $script:operationReady = $true
     $candidates -join ','
 })
@@ -218,9 +219,32 @@ $releaseCommit = ''
     $m = Get-Content $materializationPath -Raw | ConvertFrom-Json
     if ([int]$m.schema -ne 1 -or [string]$m.kind -ne 'psmatrix.windows-authority-provisioning-manifest-materialization' -or [string]$m.status -ne 'PASS' -or [string]$m.release_version -ne $releaseVersion) { throw 'RC4 provisioning materialization identity/status mismatch.' }
     if ($releaseCommit -and [string]$m.release_commit -ne $releaseCommit) { throw 'RC4 provisioning materialization release_commit differs from protected intake.' }
+    if ([string]$m.product_loader_validation -ne 'PASS' -or [string]$m.operation_package_handoff_validation -ne 'PASS') { throw 'RC4 provisioning materialization product/handoff validation is not PASS.' }
     if ([bool]$m.actual_os_identity_measured -ne $false -or [bool]$m.authoritative -ne $false -or [bool]$m.ga_eligible -ne $false) { throw 'RC4 provisioning materialization improperly claims measured OS identity/authority/GA eligibility.' }
+
+    $mediaSha = (Get-FileHash -LiteralPath $mediaPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $materializationSha = (Get-FileHash -LiteralPath $materializationPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ([string]$m.manifest_sha256 -ne $mediaSha) { throw 'RC4 provisioning materialization manifest_sha256 differs from current media manifest.' }
+
+    $closureCandidates = @()
+    if (Test-Path $operationRoot -PathType Container) {
+        foreach ($dir in @(Get-ChildItem $operationRoot -Directory -ErrorAction Stop | Where-Object { $_.Name -match '^run-[0-9]+-attempt-[1-9][0-9]*$' })) {
+            $metaPath = Join-Path $dir.FullName 'psmatrix-2.0.0rc4-windows-authoritative-operation-package.json'
+            $bindingPath = Join-Path $dir.FullName 'windows-authority-operation-package-binding.json'
+            if (-not (Test-Path $metaPath -PathType Leaf) -or -not (Test-Path $bindingPath -PathType Leaf)) { continue }
+            $meta = Get-Content $metaPath -Raw | ConvertFrom-Json
+            $binding = Get-Content $bindingPath -Raw | ConvertFrom-Json
+            $provisioning = $meta.provisioning_manifest
+            $commitMatches = (-not $releaseCommit) -or ([string]$meta.release_commit -eq $releaseCommit -and [string]$binding.operation_package.release_commit -eq $releaseCommit)
+            if ([string]$meta.kind -eq 'psmatrix.windows-authoritative-operation-package' -and [string]$meta.status -eq 'READY_FOR_WINDOWS_HOST' -and [string]$meta.release_version -eq $releaseVersion -and $commitMatches -and [string]$provisioning.sha256 -eq $mediaSha -and [string]$provisioning.selection_sha256 -eq [string]$m.selection_manifest_sha256 -and [string]$provisioning.profile_sha256 -eq [string]$m.profile_sha256 -and [string]$provisioning.materialization_report_sha256 -eq $materializationSha -and [string]$provisioning.product_loader_validation -eq 'PASS' -and [string]$provisioning.operation_package_handoff_validation -eq 'PASS' -and [string]$binding.status -eq 'PASS' -and [bool]$binding.ready_for_release_artifact_recovery -eq $true -and [bool]$binding.authoritative -eq $false -and [bool]$binding.ga_eligible -eq $false) {
+                $closureCandidates += $dir.Name
+            }
+        }
+    }
+    if ($closureCandidates.Count -eq 0) { throw 'No RC4 operation package is SHA-bound to the current provisioning manifest and materialization report.' }
+
     $script:provisioningReady = $true
-    'materialization=PASS; hyperv-host-endpoint=present'
+    'materialization=PASS; media_operation_sha_closure=PASS; hyperv-host-endpoint=present'
 })
 
 $missingSecrets = @()
@@ -233,7 +257,7 @@ foreach ($name in $requiredSecrets) {
 if (-not $releaseReady) { [void]$remaining.Add('Run protected RC4 release intake and keep verified files under media/release/2.0.0rc4/.') }
 if (-not $mediaReady) { [void]$remaining.Add('Complete reviewed RC4 media readiness and materialize config/windows-lab-media.json.') }
 if (-not $operationReady) { [void]$remaining.Add('Keep a PASS-bound RC4 operation run under operation/2.0.0rc4/.') }
-if (-not $provisioningReady) { [void]$remaining.Add('Materialize RC4 provisioning inputs and configure config/hyperv-host-endpoint.json.') }
+if (-not $provisioningReady) { [void]$remaining.Add('Materialize RC4 provisioning inputs, preserve media/operation SHA closure, and configure config/hyperv-host-endpoint.json.') }
 [void]$remaining.Add('Set production-ga-windows-lab variable PSMATRIX_WINDOWS_GA_ROOT to this exact absolute root.')
 
 $requiredFailures = @($checks | Where-Object { $_.required -and $_.status -ne 'PASS' })

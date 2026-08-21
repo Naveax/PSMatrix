@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WRAPPER = ROOT / "scripts" / "ga" / "Initialize-PSMatrixWindowsAuthorityLab.ps1"
 RC4 = ROOT / "scripts" / "ga" / "Initialize-PSMatrixWindowsAuthorityLabRC4.ps1"
 
+
 class WindowsLabInitializerRc4Tests(unittest.TestCase):
     def test_generic_initializer_delegates_to_rc4(self) -> None:
         raw = WRAPPER.read_text(encoding="utf-8")
@@ -34,6 +35,24 @@ class WindowsLabInitializerRc4Tests(unittest.TestCase):
         self.assertNotIn("PSMATRIX_WINDOWS_LAB_PRIVATE_KEY", raw)
         self.assertNotIn("PSMATRIX_WINDOWS_LAB_PUBLIC_KEY", raw)
 
+    def test_rc4_dispatch_readiness_requires_sha_closure(self) -> None:
+        raw = RC4.read_text(encoding="utf-8")
+        for fragment in (
+            "product_loader_validation -ne 'PASS'",
+            "operation_package_handoff_validation -ne 'PASS'",
+            "Get-FileHash -LiteralPath $mediaPath -Algorithm SHA256",
+            "Get-FileHash -LiteralPath $materializationPath -Algorithm SHA256",
+            "$m.manifest_sha256 -ne $mediaSha",
+            "$provisioning.sha256 -eq $mediaSha",
+            "$provisioning.selection_sha256 -eq [string]$m.selection_manifest_sha256",
+            "$provisioning.profile_sha256 -eq [string]$m.profile_sha256",
+            "$provisioning.materialization_report_sha256 -eq $materializationSha",
+            "$binding.operation_package.release_commit -eq $releaseCommit",
+            "No RC4 operation package is SHA-bound to the current provisioning manifest and materialization report.",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, raw)
+
     def test_secret_handling_is_value_free(self) -> None:
         raw = RC4.read_text(encoding="utf-8")
         for name in (
@@ -47,6 +66,7 @@ class WindowsLabInitializerRc4Tests(unittest.TestCase):
         self.assertIn("secret_values_persisted = $false", raw)
         self.assertNotIn("secret_values =", raw)
         self.assertNotIn("password_values =", raw)
+
 
 if __name__ == "__main__":
     unittest.main()
