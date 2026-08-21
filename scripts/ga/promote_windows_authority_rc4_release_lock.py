@@ -7,6 +7,7 @@ import json
 import re
 import shutil
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,9 @@ from psmatrix.util import atomic_write_json
 _VERSION = "2.0.0rc4"
 _PACK = "03-authoritative-windows"
 _ROTATION_REASON = "lost_previous_private_authority"
+_APPROVAL_ISSUE = 260
+_APPROVAL_ACTOR = "Naveax"
+_APPROVAL_ASSOCIATION = "OWNER"
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _RUN_ID = re.compile(r"^[0-9]+$")
@@ -72,6 +76,59 @@ def _require_bool(value: dict[str, Any], name: str, expected: bool) -> None:
         raise RuntimeError(f"RC4 review boundary mismatch: {name}")
 
 
+def _parse_bound_timestamp(value: str, name: str) -> datetime:
+    raw = value.strip()
+    if not raw:
+        raise RuntimeError(f"{name} must not be empty")
+    try:
+        parsed = datetime.fromisoformat(raw[:-1] + "+00:00" if raw.endswith("Z") else raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise RuntimeError(f"{name} must include an explicit timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+def _build_human_review_proof(
+    *,
+    candidate_commit: str,
+    review_run_updated_at: str,
+    approval_comment_id: str,
+    approval_created_at: str,
+    approval_actor: str,
+    approval_author_association: str,
+    approval_body_sha256: str,
+) -> dict[str, Any]:
+    comment_id = approval_comment_id.strip()
+    actor = approval_actor.strip()
+    association = approval_author_association.strip()
+    body_sha256 = approval_body_sha256.strip().lower()
+    if not _RUN_ID.fullmatch(comment_id) or int(comment_id) <= 0:
+        raise RuntimeError("approval_comment_id must be a positive decimal GitHub issue-comment ID")
+    if actor != _APPROVAL_ACTOR:
+        raise RuntimeError("RC4 human approval actor must be Naveax")
+    if association != _APPROVAL_ASSOCIATION:
+        raise RuntimeError("RC4 human approval author association must be OWNER")
+    marker = f"RC4 HUMAN REVIEW APPROVED: {candidate_commit}"
+    expected_body_sha256 = hashlib.sha256(marker.encode("utf-8")).hexdigest()
+    if not _SHA256.fullmatch(body_sha256) or body_sha256 != expected_body_sha256:
+        raise RuntimeError("RC4 human approval body SHA-256 does not bind the exact candidate approval marker")
+    review_at = _parse_bound_timestamp(review_run_updated_at, "review_run_updated_at")
+    approval_at = _parse_bound_timestamp(approval_created_at, "approval_created_at")
+    if approval_at < review_at:
+        raise RuntimeError("RC4 human approval predates completion/update of the reviewed workflow run")
+    return {
+        "issue_number": _APPROVAL_ISSUE,
+        "comment_id": int(comment_id),
+        "created_at": approval_created_at.strip(),
+        "actor": actor,
+        "author_association": association,
+        "approval_body_sha256": body_sha256,
+        "review_run_updated_at": review_run_updated_at.strip(),
+        "approval_not_before_review_run_update": True,
+    }
+
+
 def promote(
     *,
     review_root: Path,
@@ -82,6 +139,12 @@ def promote(
     review_run_id: str,
     reviewed_draft_sha256: str,
     reviewed_public_key_sha256: str,
+    review_run_updated_at: str,
+    approval_comment_id: str,
+    approval_created_at: str,
+    approval_actor: str,
+    approval_author_association: str,
+    approval_body_sha256: str,
 ) -> dict[str, Any]:
     candidate_commit = candidate_commit.strip().lower()
     promotion_control_head = promotion_control_head.strip().lower()
@@ -103,6 +166,16 @@ def promote(
         raise RuntimeError("reviewed_draft_sha256 must be 64 lowercase hexadecimal characters")
     if not _SHA256.fullmatch(reviewed_public_key_sha256):
         raise RuntimeError("reviewed_public_key_sha256 must be 64 lowercase hexadecimal characters")
+
+    human_review = _build_human_review_proof(
+        candidate_commit=candidate_commit,
+        review_run_updated_at=review_run_updated_at,
+        approval_comment_id=approval_comment_id,
+        approval_created_at=approval_created_at,
+        approval_actor=approval_actor,
+        approval_author_association=approval_author_association,
+        approval_body_sha256=approval_body_sha256,
+    )
 
     review = review_root.resolve()
     if not review.is_dir():
@@ -218,6 +291,7 @@ def promote(
         "reviewed_public_key_sha256": reviewed_public_key_sha256,
         "promotion_control_head": promotion_control_head,
         "human_review_bound": True,
+        "human_review": human_review,
         "promotion_candidate_only": True,
         "repository_commit_required": True,
     }
@@ -246,6 +320,9 @@ def promote(
         "review_run_id": review_run_id,
         "reviewed_draft_sha256": reviewed_draft_sha256,
         "reviewed_public_key_sha256": reviewed_public_key_sha256,
+        "human_review_bound": True,
+        "human_review": human_review,
+        "repository_commit_required": True,
         "promoted_lock": {
             "path": f"ga-packs/{_PACK}/rc4-release-lock.json",
             "sha256": _sha256(lock_output),
@@ -263,7 +340,7 @@ def promote(
         "authoritative": False,
         "ga_eligible": False,
         "next_required": [
-            "Independently compare this promotion report with the reviewed RC4 lock-review artifact.",
+            "Independently compare this promotion report with the reviewed RC4 lock-review artifact and bound owner-approval evidence.",
             "Commit the promoted lock and public key byte-for-byte at the reported repository paths in a separate reviewed change.",
             "Revalidate the exact commit containing the active RC4 lock before protected signing.",
         ],
@@ -283,6 +360,12 @@ def main() -> int:
     parser.add_argument("--review-run-id", required=True)
     parser.add_argument("--reviewed-draft-sha256", required=True)
     parser.add_argument("--reviewed-public-key-sha256", required=True)
+    parser.add_argument("--review-run-updated-at", required=True)
+    parser.add_argument("--approval-comment-id", required=True)
+    parser.add_argument("--approval-created-at", required=True)
+    parser.add_argument("--approval-actor", required=True)
+    parser.add_argument("--approval-author-association", required=True)
+    parser.add_argument("--approval-body-sha256", required=True)
     args = parser.parse_args()
     result = promote(
         review_root=args.review_root,
@@ -293,6 +376,12 @@ def main() -> int:
         review_run_id=args.review_run_id,
         reviewed_draft_sha256=args.reviewed_draft_sha256,
         reviewed_public_key_sha256=args.reviewed_public_key_sha256,
+        review_run_updated_at=args.review_run_updated_at,
+        approval_comment_id=args.approval_comment_id,
+        approval_created_at=args.approval_created_at,
+        approval_actor=args.approval_actor,
+        approval_author_association=args.approval_author_association,
+        approval_body_sha256=args.approval_body_sha256,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0

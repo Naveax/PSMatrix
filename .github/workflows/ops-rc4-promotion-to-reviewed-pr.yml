@@ -12,6 +12,7 @@ concurrency:
 permissions:
   contents: write
   actions: read
+  issues: read
   pull-requests: write
 
 jobs:
@@ -50,12 +51,19 @@ jobs:
           promotion_created_at=$(jq -r '.created_at' <<<"$promotion")
           [[ "$promotion_created_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] || { echo 'RC4 promotion creation timestamp is invalid.' >&2; exit 1; }
 
+          review=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$REVIEW_RUN_ID")
+          review_updated_at=$(jq -r '.updated_at' <<<"$review")
+          [[ "$review_updated_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] || { echo 'RC4 review updated_at is invalid.' >&2; exit 1; }
+          [[ "$(jq -r '.name' <<<"$review")" == 'production-ga-windows-authority-rc4-release-lock-review' ]] || { echo 'RC4 review workflow name mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.head_sha' <<<"$review")" == "$CANDIDATE_COMMIT" ]] || { echo 'RC4 review candidate mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.status' <<<"$review")" == 'completed' && "$(jq -r '.conclusion' <<<"$review")" == 'success' ]] || { echo 'RC4 review run is not successful.' >&2; exit 1; }
+
           approval="RC4 HUMAN REVIEW APPROVED: $CANDIDATE_COMMIT"
           comments=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/$HUMAN_GATE_ISSUE/comments?per_page=100" --jq 'add')
-          approval_at=$(jq -r --arg approval "$approval" '[.[] | select(.user.login == "Naveax" and .author_association == "OWNER" and .body == $approval) | .created_at] | sort | .[0] // empty' <<<"$comments")
-          [[ "$approval_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] || { echo 'Exact RC4 owner approval is missing.' >&2; exit 1; }
+          approval_at=$(jq -r --arg approval "$approval" --arg review_updated_at "$review_updated_at" '[.[] | select(.user.login == "Naveax" and .author_association == "OWNER" and .body == $approval and .created_at >= $review_updated_at) | .created_at] | sort | .[0] // empty' <<<"$comments")
+          [[ "$approval_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] || { echo 'Exact post-review RC4 owner approval is missing.' >&2; exit 1; }
           [[ "$promotion_created_at" == "$approval_at" || "$promotion_created_at" > "$approval_at" ]] || { echo "RC4 promotion predates owner approval: promotion=$promotion_created_at approval=$approval_at" >&2; exit 1; }
-          echo "rc4_first_human_gate_provenance=PASS approval_at=$approval_at promotion_run=$PROMOTION_RUN_ID created_at=$promotion_created_at automated_dispatch=true"
+          echo "rc4_first_human_gate_provenance=PASS approval_at=$approval_at review_updated_at=$review_updated_at promotion_run=$PROMOTION_RUN_ID created_at=$promotion_created_at automated_dispatch=true"
 
       - name: Suppress duplicate PR or detect recoverable orphan branch
         id: dedupe
@@ -110,6 +118,7 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import hashlib, json, os
+          from datetime import datetime, timezone
           from pathlib import Path
 
           root = Path('promotion').resolve()
@@ -148,6 +157,8 @@ jobs:
               raise SystemExit('reviewed draft digest mismatch')
           if report.get('reviewed_public_key_sha256') != os.environ['REVIEWED_PUBLIC_KEY_SHA256']:
               raise SystemExit('reviewed public-key digest mismatch')
+          if report.get('human_review_bound') is not True or report.get('repository_commit_required') is not True:
+              raise SystemExit('promotion report human-review/repository-commit boundary missing')
           if report.get('repository_mutated') is not False or report.get('release_artifacts_signed') is not False or report.get('authoritative') is not False or report.get('ga_eligible') is not False:
               raise SystemExit('promotion report crossed forbidden boundary')
           if report.get('promoted_lock', {}).get('sha256') != sha(lock_path):
@@ -157,7 +168,38 @@ jobs:
           if sha(public_path) != os.environ['REVIEWED_PUBLIC_KEY_SHA256']:
               raise SystemExit('public key no longer matches human-reviewed digest')
 
+          human_review = report.get('human_review')
           evidence = lock.get('promotion_evidence') or {}
+          lock_human_review = evidence.get('human_review')
+          if not isinstance(human_review, dict) or human_review != lock_human_review:
+              raise SystemExit('promotion report/lock human-review proof differs or is missing')
+          marker = f"RC4 HUMAN REVIEW APPROVED: {os.environ['CANDIDATE_COMMIT']}"
+          marker_sha256 = hashlib.sha256(marker.encode('utf-8')).hexdigest()
+          if human_review.get('issue_number') != 260:
+              raise SystemExit('human-review issue binding mismatch')
+          if not isinstance(human_review.get('comment_id'), int) or human_review['comment_id'] <= 0:
+              raise SystemExit('human-review comment ID is invalid')
+          if human_review.get('actor') != 'Naveax' or human_review.get('author_association') != 'OWNER':
+              raise SystemExit('human-review actor/association binding mismatch')
+          if human_review.get('approval_body_sha256') != marker_sha256:
+              raise SystemExit('human-review marker digest mismatch')
+          if human_review.get('approval_not_before_review_run_update') is not True:
+              raise SystemExit('human-review time-bound claim is missing')
+
+          def parse(value, name):
+              if not isinstance(value, str) or not value:
+                  raise SystemExit(f'{name} is missing')
+              try:
+                  parsed = datetime.fromisoformat(value[:-1] + '+00:00' if value.endswith('Z') else value)
+              except ValueError as exc:
+                  raise SystemExit(f'{name} is invalid') from exc
+              if parsed.tzinfo is None or parsed.utcoffset() is None:
+                  raise SystemExit(f'{name} must include timezone')
+              return parsed.astimezone(timezone.utc)
+
+          if parse(human_review.get('created_at'), 'approval created_at') < parse(human_review.get('review_run_updated_at'), 'review run updated_at'):
+              raise SystemExit('bound approval predates review run update')
+
           if lock.get('promotion_state') != 'READY_FOR_EXACT_REPOSITORY_COMMIT':
               raise SystemExit('active-lock candidate state mismatch')
           if lock.get('release_commit') != os.environ['CANDIDATE_COMMIT'] or lock.get('version') != '2.0.0rc4':
@@ -174,10 +216,40 @@ jobs:
               if p.is_file() and any(marker in p.read_bytes() for marker in forbidden):
                   raise SystemExit(f'private-key material found in promotion artifact: {p.name}')
           print('rc4_promotion_artifact_validation=PASS')
+          print(f"human_review_comment_id={human_review['comment_id']}")
           print('human_review_bound=true')
           print('release_artifacts_signed=false')
           print('ga_eligible=false')
           PY
+
+      - name: Revalidate exact bound owner approval from GitHub
+        if: steps.dedupe.outputs.duplicate != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          report='promotion/rc4-release-lock-promotion.json'
+          comment_id=$(jq -r '.human_review.comment_id' "$report")
+          proof_created_at=$(jq -r '.human_review.created_at' "$report")
+          proof_actor=$(jq -r '.human_review.actor' "$report")
+          proof_association=$(jq -r '.human_review.author_association' "$report")
+          proof_body_sha256=$(jq -r '.human_review.approval_body_sha256' "$report")
+          proof_review_updated_at=$(jq -r '.human_review.review_run_updated_at' "$report")
+          [[ "$comment_id" =~ ^[1-9][0-9]*$ ]] || { echo 'Bound approval comment ID is invalid.' >&2; exit 1; }
+
+          comment=$(gh api "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id")
+          approval="RC4 HUMAN REVIEW APPROVED: $CANDIDATE_COMMIT"
+          [[ "$(jq -r '.user.login' <<<"$comment")" == "$proof_actor" && "$proof_actor" == 'Naveax' ]] || { echo 'Bound approval actor no longer matches GitHub.' >&2; exit 1; }
+          [[ "$(jq -r '.author_association' <<<"$comment")" == "$proof_association" && "$proof_association" == 'OWNER' ]] || { echo 'Bound approval OWNER association no longer matches GitHub.' >&2; exit 1; }
+          [[ "$(jq -r '.body' <<<"$comment")" == "$approval" ]] || { echo 'Bound approval comment body no longer matches exact candidate marker.' >&2; exit 1; }
+          [[ "$(jq -r '.created_at' <<<"$comment")" == "$proof_created_at" ]] || { echo 'Bound approval comment timestamp no longer matches GitHub.' >&2; exit 1; }
+          actual_body_sha256=$(printf '%s' "$approval" | sha256sum | awk '{print $1}')
+          [[ "$actual_body_sha256" == "$proof_body_sha256" ]] || { echo 'Bound approval marker SHA-256 mismatch.' >&2; exit 1; }
+
+          review=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$REVIEW_RUN_ID")
+          [[ "$(jq -r '.updated_at' <<<"$review")" == "$proof_review_updated_at" ]] || { echo 'Bound review-run updated_at no longer matches GitHub.' >&2; exit 1; }
+          [[ "$(jq -r '.head_sha' <<<"$review")" == "$CANDIDATE_COMMIT" ]] || { echo 'Bound review-run candidate no longer matches.' >&2; exit 1; }
+          [[ "$(jq -r '.status' <<<"$review")" == 'completed' && "$(jq -r '.conclusion' <<<"$review")" == 'success' ]] || { echo 'Bound review run is no longer completed successfully.' >&2; exit 1; }
+          echo "rc4_bound_human_gate_revalidation=PASS issue=260 comment_id=$comment_id review_run=$REVIEW_RUN_ID"
 
       - name: Check out current main for separate reviewed change
         if: steps.dedupe.outputs.duplicate != 'true'
