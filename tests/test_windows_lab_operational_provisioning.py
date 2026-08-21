@@ -58,7 +58,7 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
             self.assertIn(fragment, raw)
 
         layout_check = raw.index("windows_lab_root_layout_validation=PASS")
-        first_mutation = raw.index("Invoke-GhCaptured -Executable $gh -Arguments @('secret', 'set'")
+        first_mutation = raw.index("@('variable', 'set', 'PSMATRIX_WINDOWS_GA_ROOT'")
         self.assertLess(layout_check, first_mutation)
 
     def test_dry_run_exits_before_gh_auth_or_mutation(self) -> None:
@@ -66,7 +66,7 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
 
         dry_run = raw.index("if ($DryRun)")
         auth = raw.index("@('auth', 'status', '--hostname', 'github.com')")
-        first_mutation = raw.index("@('secret', 'set', 'PSMATRIX_WPS40_ADMIN_PASSWORD'")
+        first_mutation = raw.index("@('variable', 'set', 'PSMATRIX_WINDOWS_GA_ROOT'")
         self.assertLess(dry_run, auth)
         self.assertLess(dry_run, first_mutation)
         self.assertIn("windows_lab_operational_environment_provisioning_executed=false dry_run=true", raw)
@@ -77,7 +77,7 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         repository_guard = raw.index("Repository must use owner/name syntax.")
         auth = raw.index("@('auth', 'status', '--hostname', 'github.com')")
         environment = raw.index('"repos/$Repository/environments/$Environment"')
-        first_mutation = raw.index("@('secret', 'set', 'PSMATRIX_WPS40_ADMIN_PASSWORD'")
+        first_mutation = raw.index("@('variable', 'set', 'PSMATRIX_WINDOWS_GA_ROOT'")
         self.assertLess(repository_guard, auth)
         self.assertLess(auth, environment)
         self.assertLess(environment, first_mutation)
@@ -87,21 +87,30 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
 
         self.assertNotIn("--body", raw)
         self.assertIn("RedirectStandardInput", raw)
+        self.assertIn("-InputFile $incompleteMarkerInput", raw)
         self.assertIn("-InputFile $sanitizedRootInput", raw)
         self.assertIn("-InputFile $wps40Source", raw)
         self.assertIn("-InputFile $wps50Source", raw)
         self.assertIn("-InputFile $wps51Source", raw)
 
-    def test_root_variable_is_written_only_after_all_three_admin_secrets(self) -> None:
+    def test_root_commit_marker_is_invalidated_before_secrets_and_committed_last(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
 
+        self.assertIn("$incompleteMarker = '__PSMATRIX_WINDOWS_GA_ROOT_PROVISIONING_INCOMPLETE__'", raw)
+        self.assertIn("windows_lab_root_commit_marker_valid=false", raw)
+        self.assertIn("windows_lab_root_commit_marker_valid=true", raw)
+
+        root_set = "@('variable', 'set', 'PSMATRIX_WINDOWS_GA_ROOT'"
+        first_root = raw.index(root_set)
+        final_root = raw.rindex(root_set)
         wps40 = raw.index("@('secret', 'set', 'PSMATRIX_WPS40_ADMIN_PASSWORD'")
         wps50 = raw.index("@('secret', 'set', 'PSMATRIX_WPS50_ADMIN_PASSWORD'")
         wps51 = raw.index("@('secret', 'set', 'PSMATRIX_WPS51_ADMIN_PASSWORD'")
-        root = raw.index("@('variable', 'set', 'PSMATRIX_WINDOWS_GA_ROOT'")
+        self.assertNotEqual(first_root, final_root)
+        self.assertLess(first_root, wps40)
         self.assertLess(wps40, wps50)
         self.assertLess(wps50, wps51)
-        self.assertLess(wps51, root)
+        self.assertLess(wps51, final_root)
 
     def test_helper_declares_no_value_hash_length_path_or_cli_stderr_logging(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
@@ -130,6 +139,7 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
             "not the Local19 `provisioning` directory",
             "Invoke-WindowsLabOperationalEnvironmentProvisioning.ps1",
             "-DryRun",
+            "commit marker",
             "Do not rerun `ops-windows-lab-prereq-audit` as polling.",
         ):
             self.assertIn(fragment, raw)

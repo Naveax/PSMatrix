@@ -180,12 +180,21 @@ else {
 Invoke-GhCaptured -Executable $gh -Arguments @('auth', 'status', '--hostname', 'github.com')
 Invoke-GhCaptured -Executable $gh -Arguments @('api', "repos/$Repository/environments/$Environment")
 
+# A prior successful provisioning may already have committed a valid root variable.
+# Invalidate that commit marker before touching any secret so every partial rerun remains
+# fail-closed. The sentinel is deliberately relative, so the prerequisite audit must fail
+# ga_root_absolute until the real absolute root is committed last.
+$incompleteMarker = '__PSMATRIX_WINDOWS_GA_ROOT_PROVISIONING_INCOMPLETE__'
+$incompleteMarkerInput = [IO.Path]::GetTempFileName()
 $sanitizedRootInput = [IO.Path]::GetTempFileName()
 try {
-    [IO.File]::WriteAllText($sanitizedRootInput, $gaRoot, (New-Object Text.UTF8Encoding($false)))
+    $utf8 = New-Object Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText($incompleteMarkerInput, $incompleteMarker, $utf8)
+    [IO.File]::WriteAllText($sanitizedRootInput, $gaRoot, $utf8)
 
-    # Secrets are provisioned first. The root variable is written last so a partial
-    # secret write cannot make the Windows-lab prerequisite state look committed.
+    Invoke-GhCaptured -Executable $gh -Arguments @('variable', 'set', 'PSMATRIX_WINDOWS_GA_ROOT', '--env', $Environment, '--repo', $Repository) -InputFile $incompleteMarkerInput
+    Write-Host 'windows_lab_root_commit_marker_valid=false'
+
     Invoke-GhCaptured -Executable $gh -Arguments @('secret', 'set', 'PSMATRIX_WPS40_ADMIN_PASSWORD', '--env', $Environment, '--repo', $Repository) -InputFile $wps40Source
     Write-Host 'provisioned=production-ga-windows-lab/secret/PSMATRIX_WPS40_ADMIN_PASSWORD'
 
@@ -197,9 +206,10 @@ try {
 
     Invoke-GhCaptured -Executable $gh -Arguments @('variable', 'set', 'PSMATRIX_WINDOWS_GA_ROOT', '--env', $Environment, '--repo', $Repository) -InputFile $sanitizedRootInput
     Write-Host 'provisioned=production-ga-windows-lab/var/PSMATRIX_WINDOWS_GA_ROOT'
+    Write-Host 'windows_lab_root_commit_marker_valid=true'
 }
 finally {
-    Remove-Item -LiteralPath $sanitizedRootInput -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $incompleteMarkerInput, $sanitizedRootInput -Force -ErrorAction SilentlyContinue
 }
 
 Write-Host 'windows_lab_operational_environment_provisioning_executed=true checks=4'
