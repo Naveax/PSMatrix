@@ -17,6 +17,7 @@
     "hardware_virtualization_required": true,
     "hyper_v_required": true,
     "vmms_required": true,
+    "repository_and_ga_root_must_be_disjoint": true,
     "required_hyper_v_commands": [
       "Get-VM",
       "Get-VMHost",
@@ -63,6 +64,11 @@
       "authority_rotation_reason": "lost_previous_private_authority",
       "release_authority_rotated": false,
       "release_authority_rotated_during_signing": false,
+      "imported_release_root_must_match_current_ga_root": true,
+      "selected_manifest_must_be_exact_current_release_manifest": true,
+      "selected_manifest_sha256_must_match_current_file": true,
+      "signed_wheel_required": true,
+      "signed_wheel_sha256_and_size_must_match_release_manifest": true,
       "authoritative": false,
       "ga_eligible": false
     },
@@ -81,6 +87,13 @@
       "root_pattern": "operation/2.0.0rc4/run-<run_id>-attempt-<run_attempt>",
       "metadata_status": "READY_FOR_WINDOWS_HOST",
       "binding_status": "PASS",
+      "artifact_name": "psmatrix-2.0.0rc4-windows-authoritative-operation.zip",
+      "artifact_file_required": true,
+      "artifact_sha256_matches_metadata": true,
+      "artifact_size_matches_metadata": true,
+      "release_binding_valid": true,
+      "release_manifest_matches_canonical": true,
+      "embedded_release_artifacts_match_binding": true,
       "ready_for_release_artifact_recovery": true,
       "product_loader_validation": "PASS",
       "operation_package_handoff_validation": "PASS",
@@ -100,13 +113,17 @@
     },
     "host_endpoint": {
       "path": "config/hyperv-host-endpoint.json",
-      "required": true
+      "required": true,
+      "full_product_validation_owned_by_provisioning_workflow": true
     }
   },
   "dispatch_closure": {
     "required": true,
     "same_release_commit_required": true,
+    "current_signed_release_manifest_matches_protected_intake": true,
+    "current_signed_wheel_matches_release_manifest": true,
     "materialization_manifest_sha256_matches_current_media_manifest": true,
+    "operation_artifact_file_matches_metadata": true,
     "operation_provisioning_sha256_matches_current_media_manifest": true,
     "operation_selection_sha256_matches_materialization": true,
     "operation_profile_sha256_matches_materialization": true,

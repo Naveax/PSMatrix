@@ -17,6 +17,7 @@ $requiredRuntimes = @('windows-powershell-4.0','windows-powershell-5.0','windows
 $requiredRunnerLabels = @('self-hosted','Windows','X64','psmatrix-hyperv')
 $requiredHyperVCommands = @('Get-VM','Get-VMHost','Get-VMSnapshot','Restore-VMSnapshot','Checkpoint-VM')
 $requiredSecrets = @('PSMATRIX_WPS40_ADMIN_PASSWORD','PSMATRIX_WPS50_ADMIN_PASSWORD','PSMATRIX_WPS51_ADMIN_PASSWORD')
+$operationZipName = 'psmatrix-2.0.0rc4-windows-authoritative-operation.zip'
 $checks = New-Object System.Collections.ArrayList
 $remaining = New-Object System.Collections.ArrayList
 
@@ -45,11 +46,43 @@ function Test-IsAdministrator {
     $p = New-Object System.Security.Principal.WindowsPrincipal($id)
     return $p.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
 }
+function Test-PathWithinRoot([string]$Candidate,[string]$RootPath) {
+    $candidateFull = [System.IO.Path]::GetFullPath($Candidate).TrimEnd([char[]]@('\','/'))
+    $rootFull = [System.IO.Path]::GetFullPath($RootPath).TrimEnd([char[]]@('\','/'))
+    if ($candidateFull.Equals($rootFull,[System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    $prefix = $rootFull + [System.IO.Path]::DirectorySeparatorChar
+    return $candidateFull.StartsWith($prefix,[System.StringComparison]::OrdinalIgnoreCase)
+}
+function Test-OperationPackagePhysicalClosure([string]$Directory,[object]$Metadata,[object]$Binding) {
+    try {
+        if ($null -eq $Metadata.artifact -or [string]$Metadata.artifact.name -ne $operationZipName) { return $false }
+        $expectedSha = ([string]$Metadata.artifact.sha256).ToLowerInvariant()
+        $expectedSize = [int64]$Metadata.artifact.size
+        if ($expectedSha -notmatch '^[0-9a-f]{64}$' -or $expectedSize -le 0) { return $false }
+        $zipPath = Join-Path $Directory $operationZipName
+        if (-not (Test-Path -LiteralPath $zipPath -PathType Leaf)) { return $false }
+        $actualSha = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+        $actualSize = [int64](Get-Item -LiteralPath $zipPath -ErrorAction Stop).Length
+        if ($actualSha -ne $expectedSha -or $actualSize -ne $expectedSize) { return $false }
+        if ([bool]$Binding.operation_package.zip_sha256_matches_metadata -ne $true) { return $false }
+        if ([bool]$Binding.operation_package.zip_size_matches_metadata -ne $true) { return $false }
+        if ([bool]$Binding.operation_package.release_binding_valid -ne $true) { return $false }
+        if ([bool]$Binding.operation_package.release_manifest_matches_canonical -ne $true) { return $false }
+        if ([bool]$Binding.operation_package.embedded_release_artifacts_match_binding -ne $true) { return $false }
+        return $true
+    } catch {
+        return $false
+    }
+}
 
 if (-not [System.IO.Path]::IsPathRooted($GaRoot)) {
     throw 'GaRoot must be an absolute path so it can match PSMATRIX_WINDOWS_GA_ROOT exactly.'
 }
 $root = [System.IO.Path]::GetFullPath($GaRoot)
+$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+if ((Test-PathWithinRoot -Candidate $root -RootPath $repoRoot) -or (Test-PathWithinRoot -Candidate $repoRoot -RootPath $root)) {
+    throw 'GaRoot and the repository must be disjoint paths.'
+}
 if ([string]::IsNullOrWhiteSpace($OutputPath)) { $OutputPath = Join-Path $root 'controller-bootstrap-report.json' }
 $output = [System.IO.Path]::GetFullPath($OutputPath)
 $releaseRoot = Join-Path $root 'media\release\2.0.0rc4'
@@ -59,6 +92,9 @@ $provisioningRoot = Join-Path $root 'provisioning\2.0.0rc4'
 $configRoot = Join-Path $root 'config'
 $trustRoot = Join-Path $root 'trust-home'
 $intakePath = Join-Path $root 'windows-authority-protected-release-intake.json'
+$releaseManifestPath = Join-Path $releaseRoot 'psmatrix-2.0.0rc4-release.json'
+$releasePublicKeyPath = Join-Path $releaseRoot 'psmatrix-2.0.0rc4-release-public.pem'
+$releaseWheelPath = Join-Path $releaseRoot 'psmatrix-2.0.0rc4-py3-none-any.whl'
 $mediaPath = Join-Path $configRoot 'windows-lab-media.json'
 $materializationPath = Join-Path $root 'windows-authority-provisioning-manifest-materialization.json'
 $hostEndpointPath = Join-Path $configRoot 'hyperv-host-endpoint.json'
@@ -162,11 +198,10 @@ $provisioningReady = $false
 $releaseCommit = ''
 
 [void](Invoke-Check 'verified-rc4-release-inputs' $releaseRequired {
-    foreach ($path in @(
-        (Join-Path $releaseRoot 'psmatrix-2.0.0rc4-release.json'),
-        (Join-Path $releaseRoot 'psmatrix-2.0.0rc4-release-public.pem'),
-        $intakePath
-    )) { if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw ('Missing verified RC4 release input: {0}' -f $path) } }
+    foreach ($path in @($releaseManifestPath,$releasePublicKeyPath,$releaseWheelPath,$intakePath)) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw ('Missing verified RC4 release input: {0}' -f $path) }
+        if ((Get-Item -LiteralPath $path -ErrorAction Stop).Length -le 0) { throw ('Verified RC4 release input is empty: {0}' -f $path) }
+    }
     $intake = Get-Content $intakePath -Raw | ConvertFrom-Json
     if ([int]$intake.schema -ne 2 -or [string]$intake.kind -ne 'psmatrix.windows-authority-protected-release-intake') { throw 'Protected RC4 intake identity mismatch.' }
     if ([string]$intake.status -ne 'RELEASE_CLOSURE_READY' -or [string]$intake.version -ne $releaseVersion) { throw 'Protected RC4 intake is not RELEASE_CLOSURE_READY.' }
@@ -176,9 +211,27 @@ $releaseCommit = ''
     if ([bool]$intake.release_authority_rotated -ne $false -or [bool]$intake.release_authority_rotated_during_signing -ne $false) { throw 'Protected RC4 intake reports unsafe authority rotation.' }
     if ([bool]$intake.stale_rc2_operation_package_used -ne $false -or [bool]$intake.broad_downloads_search_used -ne $false) { throw 'Protected RC4 intake used stale or broad material.' }
     if ([bool]$intake.authoritative -or [bool]$intake.ga_eligible) { throw 'Protected RC4 intake improperly claims authority/GA eligibility.' }
+
+    $reportedReleaseRoot = [System.IO.Path]::GetFullPath([string]$intake.imported_release_root)
+    if (-not $reportedReleaseRoot.Equals([System.IO.Path]::GetFullPath($releaseRoot),[System.StringComparison]::OrdinalIgnoreCase)) { throw 'Protected RC4 intake imported_release_root differs from the selected GA root.' }
+    $selectedManifestPath = [System.IO.Path]::GetFullPath([string]$intake.selected_manifest_path)
+    if (-not $selectedManifestPath.Equals([System.IO.Path]::GetFullPath($releaseManifestPath),[System.StringComparison]::OrdinalIgnoreCase)) { throw 'Protected RC4 intake selected manifest is not the exact RC4 release manifest.' }
+    $manifestSha = (Get-FileHash -LiteralPath $releaseManifestPath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+    if ([string]$intake.selected_manifest_sha256 -ne $manifestSha) { throw 'Protected RC4 intake selected_manifest_sha256 differs from the current release manifest.' }
+
+    $signedRelease = Get-Content -LiteralPath $releaseManifestPath -Raw | ConvertFrom-Json
+    $manifest = $signedRelease.manifest
+    if ($null -eq $manifest -or [int]$manifest.schema -ne 1 -or [string]$manifest.kind -ne 'psmatrix.release-manifest' -or [string]$manifest.version -ne $releaseVersion) { throw 'Signed RC4 release manifest payload identity mismatch.' }
+    $wheelName = 'psmatrix-2.0.0rc4-py3-none-any.whl'
+    $wheelEntries = @($manifest.artifacts | Where-Object { [string]$_.name -eq $wheelName })
+    if ($wheelEntries.Count -ne 1) { throw 'Signed RC4 release manifest must bind exactly one wheel.' }
+    $wheelSha = (Get-FileHash -LiteralPath $releaseWheelPath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+    $wheelSize = [int64](Get-Item -LiteralPath $releaseWheelPath -ErrorAction Stop).Length
+    if ([string]$wheelEntries[0].sha256 -ne $wheelSha -or [int64]$wheelEntries[0].size -ne $wheelSize) { throw 'Current RC4 wheel differs from the protected signed release manifest.' }
+
     $script:releaseCommit = [string]$intake.release_commit
     $script:releaseReady = $true
-    'schema=2; status=RELEASE_CLOSURE_READY'
+    'schema=2; status=RELEASE_CLOSURE_READY; signed_release_bytes=PASS'
 })
 
 [void](Invoke-Check 'windows-lab-media-manifest' $releaseRequired {
@@ -205,11 +258,12 @@ $releaseCommit = ''
                 $binding = Get-Content $bindingPath -Raw | ConvertFrom-Json
                 $commitMatches = (-not $releaseCommit) -or [string]$meta.release_commit -eq $releaseCommit
                 $bindingCommitMatches = (-not $releaseCommit) -or [string]$binding.operation_package.release_commit -eq $releaseCommit
-                if ([string]$meta.kind -eq 'psmatrix.windows-authoritative-operation-package' -and [string]$meta.status -eq 'READY_FOR_WINDOWS_HOST' -and [string]$meta.release_version -eq $releaseVersion -and $commitMatches -and $bindingCommitMatches -and [bool]$meta.release_lock.authority_rotation_reviewed -eq $true -and [bool]$meta.release_lock.release_authority_rotated_during_signing -eq $false -and [bool]$meta.stale_rc2_operation_package_used -eq $false -and [bool]$meta.authoritative -eq $false -and [bool]$meta.ga_eligible -eq $false -and [string]$binding.status -eq 'PASS' -and [bool]$binding.ready_for_release_artifact_recovery -eq $true -and [bool]$binding.authoritative -eq $false -and [bool]$binding.ga_eligible -eq $false) { $candidates += $dir.Name }
+                $physicalClosure = Test-OperationPackagePhysicalClosure -Directory $dir.FullName -Metadata $meta -Binding $binding
+                if ([string]$meta.kind -eq 'psmatrix.windows-authoritative-operation-package' -and [string]$meta.status -eq 'READY_FOR_WINDOWS_HOST' -and [string]$meta.release_version -eq $releaseVersion -and $commitMatches -and $bindingCommitMatches -and $physicalClosure -and [bool]$meta.release_lock.authority_rotation_reviewed -eq $true -and [bool]$meta.release_lock.release_authority_rotated_during_signing -eq $false -and [bool]$meta.stale_rc2_operation_package_used -eq $false -and [bool]$meta.authoritative -eq $false -and [bool]$meta.ga_eligible -eq $false -and [string]$binding.status -eq 'PASS' -and [bool]$binding.ready_for_release_artifact_recovery -eq $true -and [bool]$binding.authoritative -eq $false -and [bool]$binding.ga_eligible -eq $false) { $candidates += $dir.Name }
             }
         }
     }
-    if ($candidates.Count -eq 0) { throw 'No RC4 operation package has READY_FOR_WINDOWS_HOST + PASS binding for the current release.' }
+    if ($candidates.Count -eq 0) { throw 'No RC4 operation package has READY_FOR_WINDOWS_HOST + PASS binding + physical ZIP closure for the current release.' }
     $script:operationReady = $true
     $candidates -join ','
 })
@@ -236,15 +290,16 @@ $releaseCommit = ''
             $binding = Get-Content $bindingPath -Raw | ConvertFrom-Json
             $provisioning = $meta.provisioning_manifest
             $commitMatches = (-not $releaseCommit) -or ([string]$meta.release_commit -eq $releaseCommit -and [string]$binding.operation_package.release_commit -eq $releaseCommit)
-            if ([string]$meta.kind -eq 'psmatrix.windows-authoritative-operation-package' -and [string]$meta.status -eq 'READY_FOR_WINDOWS_HOST' -and [string]$meta.release_version -eq $releaseVersion -and $commitMatches -and [string]$provisioning.sha256 -eq $mediaSha -and [string]$provisioning.selection_sha256 -eq [string]$m.selection_manifest_sha256 -and [string]$provisioning.profile_sha256 -eq [string]$m.profile_sha256 -and [string]$provisioning.materialization_report_sha256 -eq $materializationSha -and [string]$provisioning.product_loader_validation -eq 'PASS' -and [string]$provisioning.operation_package_handoff_validation -eq 'PASS' -and [string]$binding.status -eq 'PASS' -and [bool]$binding.ready_for_release_artifact_recovery -eq $true -and [bool]$binding.authoritative -eq $false -and [bool]$binding.ga_eligible -eq $false) {
+            $physicalClosure = Test-OperationPackagePhysicalClosure -Directory $dir.FullName -Metadata $meta -Binding $binding
+            if ([string]$meta.kind -eq 'psmatrix.windows-authoritative-operation-package' -and [string]$meta.status -eq 'READY_FOR_WINDOWS_HOST' -and [string]$meta.release_version -eq $releaseVersion -and $commitMatches -and $physicalClosure -and [string]$provisioning.sha256 -eq $mediaSha -and [string]$provisioning.selection_sha256 -eq [string]$m.selection_manifest_sha256 -and [string]$provisioning.profile_sha256 -eq [string]$m.profile_sha256 -and [string]$provisioning.materialization_report_sha256 -eq $materializationSha -and [string]$provisioning.product_loader_validation -eq 'PASS' -and [string]$provisioning.operation_package_handoff_validation -eq 'PASS' -and [string]$binding.status -eq 'PASS' -and [bool]$binding.ready_for_release_artifact_recovery -eq $true -and [bool]$binding.authoritative -eq $false -and [bool]$binding.ga_eligible -eq $false) {
                 $closureCandidates += $dir.Name
             }
         }
     }
-    if ($closureCandidates.Count -eq 0) { throw 'No RC4 operation package is SHA-bound to the current provisioning manifest and materialization report.' }
+    if ($closureCandidates.Count -eq 0) { throw 'No RC4 operation package is physically and SHA-bound to the current provisioning manifest and materialization report.' }
 
     $script:provisioningReady = $true
-    'materialization=PASS; media_operation_sha_closure=PASS; hyperv-host-endpoint=present'
+    'materialization=PASS; media_operation_sha_closure=PASS; operation_zip_closure=PASS; hyperv-host-endpoint=present'
 })
 
 $missingSecrets = @()
@@ -254,9 +309,9 @@ foreach ($name in $requiredSecrets) {
         [void]$remaining.Add(('Configure protected environment secret {0}.' -f $name))
     }
 }
-if (-not $releaseReady) { [void]$remaining.Add('Run protected RC4 release intake and keep verified files under media/release/2.0.0rc4/.') }
+if (-not $releaseReady) { [void]$remaining.Add('Run protected RC4 release intake and keep the exact signed manifest/public key/wheel under media/release/2.0.0rc4/.') }
 if (-not $mediaReady) { [void]$remaining.Add('Complete reviewed RC4 media readiness and materialize config/windows-lab-media.json.') }
-if (-not $operationReady) { [void]$remaining.Add('Keep a PASS-bound RC4 operation run under operation/2.0.0rc4/.') }
+if (-not $operationReady) { [void]$remaining.Add('Keep a PASS-bound RC4 operation run with its exact metadata-bound ZIP under operation/2.0.0rc4/.') }
 if (-not $provisioningReady) { [void]$remaining.Add('Materialize RC4 provisioning inputs, preserve media/operation SHA closure, and configure config/hyperv-host-endpoint.json.') }
 [void]$remaining.Add('Set production-ga-windows-lab variable PSMATRIX_WINDOWS_GA_ROOT to this exact absolute root.')
 

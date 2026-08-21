@@ -23,6 +23,7 @@ class WindowsAuthorityControllerBootstrapTests(unittest.TestCase):
         self.assertFalse(value["authority"]["bootstrap_is_authoritative_evidence"])
         self.assertFalse(value["authority"]["bootstrap_is_ga_eligible"])
         self.assertFalse(value["authority"]["actual_os_identity_measured_at_bootstrap"])
+        self.assertTrue(value["controller"]["repository_and_ga_root_must_be_disjoint"])
         self.assertEqual(
             value["controller"]["required_runner_labels"],
             ["self-hosted", "Windows", "X64", "psmatrix-hyperv"],
@@ -52,55 +53,51 @@ class WindowsAuthorityControllerBootstrapTests(unittest.TestCase):
             value["required_runtime_ids"],
             ["windows-powershell-4.0", "windows-powershell-5.0", "windows-powershell-5.1"],
         )
-        self.assertEqual(value["protected_inputs"]["release_intake"]["schema"], 2)
+        release = value["protected_inputs"]["release_intake"]
+        self.assertEqual(release["schema"], 2)
+        self.assertEqual(release["status"], "RELEASE_CLOSURE_READY")
+        self.assertTrue(release["authority_rotation_reviewed"])
+        self.assertEqual(release["authority_rotation_reason"], "lost_previous_private_authority")
+        self.assertTrue(release["imported_release_root_must_match_current_ga_root"])
+        self.assertTrue(release["selected_manifest_must_be_exact_current_release_manifest"])
+        self.assertTrue(release["selected_manifest_sha256_must_match_current_file"])
+        self.assertTrue(release["signed_wheel_required"])
+        self.assertTrue(release["signed_wheel_sha256_and_size_must_match_release_manifest"])
+
+        operation = value["protected_inputs"]["operation_package"]
+        self.assertEqual(operation["metadata_status"], "READY_FOR_WINDOWS_HOST")
+        self.assertEqual(operation["binding_status"], "PASS")
         self.assertEqual(
-            value["protected_inputs"]["release_intake"]["status"],
-            "RELEASE_CLOSURE_READY",
+            operation["artifact_name"],
+            "psmatrix-2.0.0rc4-windows-authoritative-operation.zip",
         )
+        self.assertTrue(operation["artifact_file_required"])
+        self.assertTrue(operation["artifact_sha256_matches_metadata"])
+        self.assertTrue(operation["artifact_size_matches_metadata"])
+        self.assertTrue(operation["release_binding_valid"])
+        self.assertTrue(operation["release_manifest_matches_canonical"])
+        self.assertTrue(operation["embedded_release_artifacts_match_binding"])
+        self.assertEqual(operation["product_loader_validation"], "PASS")
+        self.assertEqual(operation["operation_package_handoff_validation"], "PASS")
+
+        materialization = value["protected_inputs"]["provisioning_manifest_materialization"]
+        self.assertEqual(materialization["status"], "PASS")
+        self.assertEqual(materialization["product_loader_validation"], "PASS")
+        self.assertEqual(materialization["operation_package_handoff_validation"], "PASS")
+        self.assertFalse(materialization["actual_os_identity_measured"])
         self.assertTrue(
-            value["protected_inputs"]["release_intake"]["authority_rotation_reviewed"]
-        )
-        self.assertEqual(
-            value["protected_inputs"]["release_intake"]["authority_rotation_reason"],
-            "lost_previous_private_authority",
-        )
-        self.assertEqual(
-            value["protected_inputs"]["operation_package"]["metadata_status"],
-            "READY_FOR_WINDOWS_HOST",
-        )
-        self.assertEqual(
-            value["protected_inputs"]["operation_package"]["binding_status"],
-            "PASS",
-        )
-        self.assertEqual(
-            value["protected_inputs"]["operation_package"]["product_loader_validation"],
-            "PASS",
-        )
-        self.assertEqual(
-            value["protected_inputs"]["operation_package"]["operation_package_handoff_validation"],
-            "PASS",
-        )
-        self.assertEqual(
-            value["protected_inputs"]["provisioning_manifest_materialization"]["status"],
-            "PASS",
-        )
-        self.assertEqual(
-            value["protected_inputs"]["provisioning_manifest_materialization"]["product_loader_validation"],
-            "PASS",
-        )
-        self.assertEqual(
-            value["protected_inputs"]["provisioning_manifest_materialization"]["operation_package_handoff_validation"],
-            "PASS",
-        )
-        self.assertFalse(
-            value["protected_inputs"]["provisioning_manifest_materialization"][
-                "actual_os_identity_measured"
+            value["protected_inputs"]["host_endpoint"][
+                "full_product_validation_owned_by_provisioning_workflow"
             ]
         )
+
         closure = value["dispatch_closure"]
         self.assertTrue(closure["required"])
         self.assertTrue(closure["same_release_commit_required"])
+        self.assertTrue(closure["current_signed_release_manifest_matches_protected_intake"])
+        self.assertTrue(closure["current_signed_wheel_matches_release_manifest"])
         self.assertTrue(closure["materialization_manifest_sha256_matches_current_media_manifest"])
+        self.assertTrue(closure["operation_artifact_file_matches_metadata"])
         self.assertTrue(closure["operation_provisioning_sha256_matches_current_media_manifest"])
         self.assertTrue(closure["operation_selection_sha256_matches_materialization"])
         self.assertTrue(closure["operation_profile_sha256_matches_materialization"])
@@ -176,6 +173,9 @@ class WindowsAuthorityControllerBootstrapTests(unittest.TestCase):
             "authoritative = $false",
             "ga_eligible = $false",
             "Bootstrap readiness is not infrastructure evidence",
+            "GaRoot and the repository must be disjoint paths.",
+            "psmatrix-2.0.0rc4-py3-none-any.whl",
+            "psmatrix-2.0.0rc4-windows-authoritative-operation.zip",
         )
         for value in required:
             with self.subTest(value=value):
@@ -207,6 +207,9 @@ class WindowsAuthorityControllerBootstrapTests(unittest.TestCase):
             "File presence is not enough.",
             "materialization-report SHA",
             "same release commit",
+            "repository must be disjoint",
+            "signed wheel",
+            "operation ZIP",
         )
         for value in required:
             with self.subTest(value=value):

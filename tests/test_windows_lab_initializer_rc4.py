@@ -29,13 +29,30 @@ class WindowsLabInitializerRc4Tests(unittest.TestCase):
             "authoritative = $false",
             "ga_eligible = $false",
             "GaRoot must be an absolute path",
+            "GaRoot and the repository must be disjoint paths.",
         ):
             self.assertIn(fragment, raw)
         self.assertNotIn("2.0.0rc3", raw)
         self.assertNotIn("PSMATRIX_WINDOWS_LAB_PRIVATE_KEY", raw)
         self.assertNotIn("PSMATRIX_WINDOWS_LAB_PUBLIC_KEY", raw)
 
-    def test_rc4_dispatch_readiness_requires_sha_closure(self) -> None:
+    def test_rc4_release_readiness_requires_exact_protected_bytes(self) -> None:
+        raw = RC4.read_text(encoding="utf-8")
+        for fragment in (
+            "$releaseManifestPath = Join-Path $releaseRoot 'psmatrix-2.0.0rc4-release.json'",
+            "$releasePublicKeyPath = Join-Path $releaseRoot 'psmatrix-2.0.0rc4-release-public.pem'",
+            "$releaseWheelPath = Join-Path $releaseRoot 'psmatrix-2.0.0rc4-py3-none-any.whl'",
+            "imported_release_root differs from the selected GA root",
+            "selected manifest is not the exact RC4 release manifest",
+            "selected_manifest_sha256 differs from the current release manifest",
+            "Signed RC4 release manifest must bind exactly one wheel.",
+            "Current RC4 wheel differs from the protected signed release manifest.",
+            "signed_release_bytes=PASS",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, raw)
+
+    def test_rc4_dispatch_readiness_requires_sha_and_operation_zip_closure(self) -> None:
         raw = RC4.read_text(encoding="utf-8")
         for fragment in (
             "product_loader_validation -ne 'PASS'",
@@ -48,7 +65,14 @@ class WindowsLabInitializerRc4Tests(unittest.TestCase):
             "$provisioning.profile_sha256 -eq [string]$m.profile_sha256",
             "$provisioning.materialization_report_sha256 -eq $materializationSha",
             "$binding.operation_package.release_commit -eq $releaseCommit",
-            "No RC4 operation package is SHA-bound to the current provisioning manifest and materialization report.",
+            "$operationZipName = 'psmatrix-2.0.0rc4-windows-authoritative-operation.zip'",
+            "Test-OperationPackagePhysicalClosure",
+            "zip_sha256_matches_metadata",
+            "zip_size_matches_metadata",
+            "release_binding_valid",
+            "release_manifest_matches_canonical",
+            "embedded_release_artifacts_match_binding",
+            "No RC4 operation package is physically and SHA-bound to the current provisioning manifest and materialization report.",
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, raw)
