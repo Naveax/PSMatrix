@@ -73,7 +73,23 @@ class WindowsAuthorityControllerBootstrapTests(unittest.TestCase):
             "PASS",
         )
         self.assertEqual(
+            value["protected_inputs"]["operation_package"]["product_loader_validation"],
+            "PASS",
+        )
+        self.assertEqual(
+            value["protected_inputs"]["operation_package"]["operation_package_handoff_validation"],
+            "PASS",
+        )
+        self.assertEqual(
             value["protected_inputs"]["provisioning_manifest_materialization"]["status"],
+            "PASS",
+        )
+        self.assertEqual(
+            value["protected_inputs"]["provisioning_manifest_materialization"]["product_loader_validation"],
+            "PASS",
+        )
+        self.assertEqual(
+            value["protected_inputs"]["provisioning_manifest_materialization"]["operation_package_handoff_validation"],
             "PASS",
         )
         self.assertFalse(
@@ -81,6 +97,16 @@ class WindowsAuthorityControllerBootstrapTests(unittest.TestCase):
                 "actual_os_identity_measured"
             ]
         )
+        closure = value["dispatch_closure"]
+        self.assertTrue(closure["required"])
+        self.assertTrue(closure["same_release_commit_required"])
+        self.assertTrue(closure["materialization_manifest_sha256_matches_current_media_manifest"])
+        self.assertTrue(closure["operation_provisioning_sha256_matches_current_media_manifest"])
+        self.assertTrue(closure["operation_selection_sha256_matches_materialization"])
+        self.assertTrue(closure["operation_profile_sha256_matches_materialization"])
+        self.assertTrue(closure["operation_materialization_report_sha256_matches_current_report"])
+        self.assertTrue(closure["operation_binding_release_commit_matches_release_intake"])
+        self.assertFalse(closure["file_presence_without_sha_closure_is_ready"])
         self.assertEqual(
             value["protected_configuration"]["required_provisioning_secret_names"],
             [
@@ -178,6 +204,9 @@ class WindowsAuthorityControllerBootstrapTests(unittest.TestCase):
             "ready_to_dispatch_rc4_provisioning",
             "ga-windows-authority-rc4-provision-selfhosted.yml",
             "controller-bootstrap-contract-rc3.json",
+            "File presence is not enough.",
+            "materialization-report SHA",
+            "same release commit",
         )
         for value in required:
             with self.subTest(value=value):

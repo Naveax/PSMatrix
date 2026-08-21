@@ -99,6 +99,8 @@ Before `-RequireReleaseInputs` can pass, the selected GA root must contain the c
 - `windows-authority-provisioning-manifest-materialization.json` with `PASS` status and `actual_os_identity_measured = false`;
 - `config/hyperv-host-endpoint.json`.
 
+File presence is not enough. Strict readiness recomputes the current media-manifest and materialization-report SHA-256 values. The provisioning materialization must bind the current media SHA and report both product-loader and operation-package-handoff validation as `PASS`. A matching operation-package candidate must bind the same release commit, current media SHA, selection/profile SHA values from the materialization report, and the current materialization-report SHA. The operation binding must name that same release commit. If any of those byte-level links differs, `ready_to_dispatch_rc4_provisioning` must remain false.
+
 These are protected inputs to provisioning. They are not a substitute for real VM execution.
 
 ## 7. Enforce final local readiness

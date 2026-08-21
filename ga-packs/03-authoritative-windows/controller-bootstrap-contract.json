@@ -82,6 +82,8 @@
       "metadata_status": "READY_FOR_WINDOWS_HOST",
       "binding_status": "PASS",
       "ready_for_release_artifact_recovery": true,
+      "product_loader_validation": "PASS",
+      "operation_package_handoff_validation": "PASS",
       "authoritative": false,
       "ga_eligible": false
     },
@@ -90,6 +92,8 @@
       "schema": 1,
       "kind": "psmatrix.windows-authority-provisioning-manifest-materialization",
       "status": "PASS",
+      "product_loader_validation": "PASS",
+      "operation_package_handoff_validation": "PASS",
       "actual_os_identity_measured": false,
       "authoritative": false,
       "ga_eligible": false
@@ -98,6 +102,17 @@
       "path": "config/hyperv-host-endpoint.json",
       "required": true
     }
+  },
+  "dispatch_closure": {
+    "required": true,
+    "same_release_commit_required": true,
+    "materialization_manifest_sha256_matches_current_media_manifest": true,
+    "operation_provisioning_sha256_matches_current_media_manifest": true,
+    "operation_selection_sha256_matches_materialization": true,
+    "operation_profile_sha256_matches_materialization": true,
+    "operation_materialization_report_sha256_matches_current_report": true,
+    "operation_binding_release_commit_matches_release_intake": true,
+    "file_presence_without_sha_closure_is_ready": false
   },
   "protected_configuration": {
     "environment": "production-ga-windows-lab",
