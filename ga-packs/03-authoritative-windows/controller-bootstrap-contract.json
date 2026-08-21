@@ -1,11 +1,14 @@
 {
-  "schema": 1,
+  "schema": 2,
   "kind": "psmatrix.windows-authority-controller-bootstrap-contract",
   "pack": "03-authoritative-windows",
+  "release_version": "2.0.0rc4",
+  "legacy_contract": "controller-bootstrap-contract-rc3.json",
   "authority": {
     "bootstrap_is_authoritative_evidence": false,
     "bootstrap_is_ga_eligible": false,
-    "github_hosted_is_authoritative": false
+    "github_hosted_is_authoritative": false,
+    "actual_os_identity_measured_at_bootstrap": false
   },
   "controller": {
     "required_os": "Windows",
@@ -14,6 +17,7 @@
     "hardware_virtualization_required": true,
     "hyper_v_required": true,
     "vmms_required": true,
+    "repository_and_ga_root_must_be_disjoint": true,
     "required_hyper_v_commands": [
       "Get-VM",
       "Get-VMHost",
@@ -28,40 +32,140 @@
       "psmatrix-hyperv"
     ],
     "protected_environment": "production-ga-windows-lab",
+    "ga_root_variable": "PSMATRIX_WINDOWS_GA_ROOT",
     "release_public_key_source": "verified-protected-release-bundle",
     "release_public_key_secret_required": false
   },
   "layout": {
     "required_directories": [
-      "media/release",
+      "media/release/2.0.0rc4",
       "media/external",
-      "operation",
+      "operation/2.0.0rc4",
+      "provisioning/2.0.0rc4",
       "config",
       "trust-home"
     ],
-    "isolated_release_root": "media/release/2.0.0rc3",
-    "isolated_operation_root": "operation/2.0.0rc3",
-    "template_suffix": ".example.json",
-    "templates_are_evidence": false,
-    "templates_must_not_use_validator_filenames": true
-  },
-  "infrastructure_dispatch_inputs": {
-    "protected_release_intake_status": "RELEASE_CLOSURE_READY",
-    "media_manifest_complete": true,
-    "media_manifest_ready_for_hyper_v_provisioning": true,
-    "operation_package_status": "READY_FOR_WINDOWS_HOST",
-    "operation_package_binding_status": "PASS",
-    "real_endpoint_and_image_manifests_required": true
+    "controller_setup_file": "CONTROLLER-SETUP.txt",
+    "controller_report_file": "controller-bootstrap-report.json",
+    "templates_are_evidence": false
   },
   "required_runtime_ids": [
     "windows-powershell-4.0",
     "windows-powershell-5.0",
     "windows-powershell-5.1"
   ],
+  "protected_inputs": {
+    "release_intake": {
+      "path": "windows-authority-protected-release-intake.json",
+      "schema": 2,
+      "kind": "psmatrix.windows-authority-protected-release-intake",
+      "status": "RELEASE_CLOSURE_READY",
+      "authority_rotation_reviewed": true,
+      "authority_rotation_reason": "lost_previous_private_authority",
+      "release_authority_rotated": false,
+      "release_authority_rotated_during_signing": false,
+      "imported_release_root_must_match_current_ga_root": true,
+      "selected_manifest_must_be_exact_current_release_manifest": true,
+      "selected_manifest_sha256_must_match_current_file": true,
+      "signed_wheel_required": true,
+      "signed_wheel_sha256_and_size_must_match_release_manifest": true,
+      "authoritative": false,
+      "ga_eligible": false
+    },
+    "media_manifest": {
+      "path": "config/windows-lab-media.json",
+      "schema": 1,
+      "kind": "psmatrix.windows-lab-media",
+      "complete": true,
+      "ready_for_hyper_v_provisioning": true,
+      "exact_runtime_set_required": true,
+      "actual_os_identity_measured": false,
+      "authoritative": false,
+      "ga_eligible": false
+    },
+    "operation_package": {
+      "root_pattern": "operation/2.0.0rc4/run-<run_id>-attempt-<run_attempt>",
+      "run_id_positive_decimal_required": true,
+      "run_attempt_positive_decimal_required": true,
+      "exactly_one_fully_current_dispatch_candidate_required": true,
+      "historical_noncurrent_candidates_allowed": true,
+      "directory_name_encodes_dispatch_identity": true,
+      "metadata_status": "READY_FOR_WINDOWS_HOST",
+      "binding_status": "PASS",
+      "artifact_name": "psmatrix-2.0.0rc4-windows-authoritative-operation.zip",
+      "artifact_file_required": true,
+      "artifact_sha256_matches_metadata": true,
+      "artifact_size_matches_metadata": true,
+      "release_binding_valid": true,
+      "release_manifest_matches_canonical": true,
+      "embedded_release_artifacts_match_binding": true,
+      "ready_for_release_artifact_recovery": true,
+      "product_loader_validation": "PASS",
+      "operation_package_handoff_validation": "PASS",
+      "authoritative": false,
+      "ga_eligible": false
+    },
+    "provisioning_manifest_materialization": {
+      "path": "windows-authority-provisioning-manifest-materialization.json",
+      "schema": 1,
+      "kind": "psmatrix.windows-authority-provisioning-manifest-materialization",
+      "status": "PASS",
+      "product_loader_validation": "PASS",
+      "operation_package_handoff_validation": "PASS",
+      "actual_os_identity_measured": false,
+      "authoritative": false,
+      "ga_eligible": false
+    },
+    "host_endpoint": {
+      "path": "config/hyperv-host-endpoint.json",
+      "required": true,
+      "full_product_validation_owned_by_provisioning_workflow": true
+    }
+  },
+  "dispatch_closure": {
+    "required": true,
+    "same_release_commit_required": true,
+    "current_signed_release_manifest_matches_protected_intake": true,
+    "current_signed_wheel_matches_release_manifest": true,
+    "materialization_manifest_sha256_matches_current_media_manifest": true,
+    "operation_artifact_file_matches_metadata": true,
+    "operation_provisioning_sha256_matches_current_media_manifest": true,
+    "operation_selection_sha256_matches_materialization": true,
+    "operation_profile_sha256_matches_materialization": true,
+    "operation_materialization_report_sha256_matches_current_report": true,
+    "operation_binding_release_commit_matches_release_intake": true,
+    "exactly_one_fully_current_operation_candidate_required": true,
+    "historical_noncurrent_operation_candidates_allowed": true,
+    "operation_candidate_directory_is_dispatch_identity": true,
+    "operation_run_id_report_field": "operation_run_id",
+    "operation_run_attempt_report_field": "operation_run_attempt",
+    "file_presence_without_sha_closure_is_ready": false
+  },
+  "protected_configuration": {
+    "environment": "production-ga-windows-lab",
+    "ga_root_variable": "PSMATRIX_WINDOWS_GA_ROOT",
+    "required_provisioning_secret_names": [
+      "PSMATRIX_WPS40_ADMIN_PASSWORD",
+      "PSMATRIX_WPS50_ADMIN_PASSWORD",
+      "PSMATRIX_WPS51_ADMIN_PASSWORD"
+    ],
+    "secret_values_must_not_be_persisted": true
+  },
   "completion": {
     "controller_bootstrap_status": "PASS_PARTIAL",
-    "infrastructure_preflight_required": true,
-    "authoritative_campaign_required": true,
+    "ready_field": "ready_to_dispatch_rc4_provisioning",
+    "ready_requires": [
+      "controller_ready",
+      "runner_service_ready",
+      "release_and_provisioning_inputs_present",
+      "protected_provisioning_secrets_present"
+    ],
+    "provisioning_workflow": ".github/workflows/ga-windows-authority-rc4-provision-selfhosted.yml",
+    "provisioning_operation_run_id_input_from_report": "operation_run_id",
+    "provisioning_operation_run_attempt_input_from_report": "operation_run_attempt",
+    "actual_os_identity_measurement_required_after_bootstrap": true,
+    "authoritative_campaign_required_after_bootstrap": true,
+    "authoritative": false,
     "ga_eligible": false
   }
 }

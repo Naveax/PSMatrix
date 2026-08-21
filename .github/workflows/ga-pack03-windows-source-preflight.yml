@@ -23,6 +23,7 @@ on:
       - "scripts/ga/build_windows_authority_operation_package.py"
       - "scripts/ga/Invoke-PSMatrixWindowsAuthorityProtectedReleaseIntake.ps1"
       - "scripts/ga/Initialize-PSMatrixWindowsAuthorityLab.ps1"
+      - "scripts/ga/Initialize-PSMatrixWindowsAuthorityLabRC4.ps1"
       - "scripts/ga/Get-PSMatrixWindowsAuthorityInputPlan.ps1"
       - "scripts/ga/Get-PSMatrixWindowsAuthorityMediaInventory.ps1"
       - "scripts/ga/Resolve-PSMatrixWindowsAuthorityMediaInventory.ps1"
@@ -34,6 +35,7 @@ on:
       - "src/psmatrix/__init__.py"
       - "tests/test_windows_authority_ga_contract.py"
       - "tests/test_windows_authority_controller_bootstrap.py"
+      - "tests/test_windows_lab_initializer_rc4.py"
       - "tests/test_windows_authority_input_provisioning.py"
       - "tests/test_windows_authority_media_inventory.py"
       - "tests/test_windows_authority_media_canonicalization.py"
@@ -118,6 +120,7 @@ jobs:
               scripts/ga/build_windows_authority_operation_package.py \
               tests/test_windows_authority_ga_contract.py \
               tests/test_windows_authority_controller_bootstrap.py \
+              tests/test_windows_lab_initializer_rc4.py \
               tests/test_windows_authority_input_provisioning.py \
               tests/test_windows_authority_media_inventory.py \
               tests/test_windows_authority_media_canonicalization.py \
@@ -142,6 +145,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $scripts = @(
               'scripts/ga/Initialize-PSMatrixWindowsAuthorityLab.ps1',
+              'scripts/ga/Initialize-PSMatrixWindowsAuthorityLabRC4.ps1',
               'scripts/ga/Get-PSMatrixWindowsAuthorityInputPlan.ps1',
               'scripts/ga/Get-PSMatrixWindowsAuthorityMediaInventory.ps1',
               'scripts/ga/Resolve-PSMatrixWindowsAuthorityMediaInventory.ps1',
@@ -173,6 +177,7 @@ jobs:
           python -m unittest -v \
             tests.test_windows_authority_ga_contract \
             tests.test_windows_authority_controller_bootstrap \
+            tests.test_windows_lab_initializer_rc4 \
             tests.test_windows_authority_input_provisioning \
             tests.test_windows_authority_media_inventory \
             tests.test_windows_authority_media_canonicalization \
@@ -228,6 +233,8 @@ jobs:
               'exact_hosted_check_count': 12,
               'controller_bootstrap_contract': 'PASS',
               'controller_bootstrap_powershell_parse': 'PASS',
+              'controller_bootstrap_rc4_contract': 'PASS',
+              'controller_bootstrap_rc4_powershell_parse': 'PASS',
               'input_provisioning_contract': 'PASS',
               'input_provisioning_powershell_parse': 'PASS',
               'media_inventory_contract': 'PASS',
