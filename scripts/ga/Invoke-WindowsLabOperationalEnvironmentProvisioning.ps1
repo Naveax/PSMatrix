@@ -6,8 +6,7 @@ param(
     [Parameter(Mandatory)] [string]$Wps51AdminPasswordFile,
     [Parameter()] [ValidateSet('Naveax/PSMatrix')] [string]$Repository = 'Naveax/PSMatrix',
     [Parameter()] [ValidateSet('production-ga-windows-lab')] [string]$Environment = 'production-ga-windows-lab',
-    [Parameter()] [switch]$DryRun,
-    [Parameter()] [string]$GhPath
+    [Parameter()] [switch]$DryRun
 )
 
 Set-StrictMode -Version Latest
@@ -171,14 +170,17 @@ if ($DryRun) {
     exit 0
 }
 
-$gh = if (-not [string]::IsNullOrWhiteSpace($GhPath)) {
-    if (-not [IO.Path]::IsPathRooted($GhPath)) { throw 'GhPath must be absolute when supplied.' }
-    $candidate = [IO.Path]::GetFullPath($GhPath)
-    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { throw 'GhPath executable does not exist.' }
-    $candidate
+# Live provisioning resolves only the GitHub CLI application from PATH. There is
+# deliberately no operator-supplied executable override because the three secret
+# files are redirected to this process over stdin.
+$ghCommand = Get-Command gh -CommandType Application -ErrorAction Stop
+$gh = [IO.Path]::GetFullPath([string]$ghCommand.Source)
+if (-not (Test-Path -LiteralPath $gh -PathType Leaf)) {
+    throw 'GitHub CLI application could not be resolved to an existing file.'
 }
-else {
-    (Get-Command gh -ErrorAction Stop).Source
+Assert-NoLinkOrReparsePath -Path $gh -Label 'GitHub CLI executable'
+if (Test-PathWithinRoot -Candidate $gh -Root $repoRoot) {
+    throw 'GitHub CLI executable must not be loaded from the repository.'
 }
 
 Invoke-GhCaptured -Executable $gh -Arguments @('auth', 'status', '--hostname', 'github.com')

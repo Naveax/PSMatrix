@@ -107,6 +107,25 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         self.assertLess(auth, environment)
         self.assertLess(environment, first_mutation)
 
+    def test_github_cli_executable_cannot_be_redirected_to_operator_supplied_program(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+
+        for fragment in (
+            "Get-Command gh -CommandType Application -ErrorAction Stop",
+            "GitHub CLI application could not be resolved to an existing file.",
+            "Assert-NoLinkOrReparsePath -Path $gh -Label 'GitHub CLI executable'",
+            "GitHub CLI executable must not be loaded from the repository.",
+        ):
+            self.assertIn(fragment, raw)
+
+        self.assertNotIn("[string]$GhPath", raw)
+        self.assertNotIn("IsPathRooted($GhPath)", raw)
+        cli_resolution = raw.index("Get-Command gh -CommandType Application -ErrorAction Stop")
+        auth = raw.index("@('auth', 'status', '--hostname', 'github.com')")
+        first_secret = raw.index("@('secret', 'set', 'PSMATRIX_WPS40_ADMIN_PASSWORD'")
+        self.assertLess(cli_resolution, auth)
+        self.assertLess(auth, first_secret)
+
     def test_values_are_sent_over_stdin_and_not_cli_body_arguments(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
 
