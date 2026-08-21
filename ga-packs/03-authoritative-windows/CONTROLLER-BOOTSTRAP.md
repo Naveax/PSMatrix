@@ -1,191 +1,134 @@
-# Windows authority controller bootstrap
+# RC4 Windows Authority Controller Bootstrap
 
-This procedure prepares the protected Hyper-V controller for
-`production-ga-windows-authority-infrastructure-preflight`.
+This guide describes the **current RC4 controller bootstrap** for Pack 03. It prepares the protected Hyper-V controller and validates whether the local host is ready to enter the RC4 provisioning lane. A successful bootstrap is still local readiness only: it is not authoritative Windows evidence and it cannot make the release GA-eligible.
 
-A successful bootstrap is only `PASS_PARTIAL`. It is not infrastructure evidence,
-authoritative campaign evidence or Production GA evidence.
+The historical RC3 bootstrap contract is preserved separately in `controller-bootstrap-contract-rc3.json`. It is evidence history, not the current dispatch contract.
 
 ## 1. Controller requirements
 
-Run on a dedicated 64-bit Windows 10/11 Pro, Enterprise, Education or Windows Server host with:
+Run the bootstrap on the intended protected Windows controller. The current contract requires:
 
-- firmware virtualization enabled;
-- Hyper-V enabled;
-- VMMS running;
-- administrator access;
-- enough storage for three immutable Windows/WMF VM images and clean snapshots;
-- outbound HTTPS access to GitHub and the three worker endpoints.
+- 64-bit Windows and a 64-bit PowerShell process;
+- an elevated Administrator session;
+- hardware virtualization enabled in firmware or an active hypervisor;
+- Hyper-V enabled, the Hyper-V PowerShell module available, and `vmms` running;
+- `Get-VM`, `Get-VMHost`, `Get-VMSnapshot`, `Restore-VMSnapshot`, and `Checkpoint-VM`;
+- enough local storage for three Windows authority images and provisioning outputs.
 
-The controller must not be one of the three authoritative worker guests.
+The authoritative runner label set remains:
 
-## 2. Create and inspect the GA root
+`self-hosted`, `Windows`, `X64`, `psmatrix-hyperv`.
 
-From an elevated PowerShell session in an exact PSMatrix checkout:
+## 2. Choose the GA root explicitly
+
+`PSMATRIX_WINDOWS_GA_ROOT` is operator-selected infrastructure state. The repository does not define a canonical drive or directory, so do not infer one from unrelated folders.
+
+Choose an **absolute path outside the repository**, then initialize the RC4 layout from an elevated PowerShell session:
 
 ```powershell
-$GaRoot = 'D:\PSMatrix-Windows-GA'
+$GaRoot = '<absolute-windows-lab-root>'
 
-& .\scripts\ga\Initialize-PSMatrixWindowsAuthorityLab.ps1 `
+pwsh -NoProfile -File .\scripts\ga\Initialize-PSMatrixWindowsAuthorityLab.ps1 `
     -GaRoot $GaRoot `
     -CreateLayout
 ```
 
-The command creates only:
+The generic initializer delegates to `Initialize-PSMatrixWindowsAuthorityLabRC4.ps1`.
 
-```text
-release/
-config/
-trust-home/
-CONTROLLER-SETUP.txt
-controller-bootstrap-report.json
-```
+`-CreateLayout` creates only controller-side RC4 scaffolding:
 
-It also creates `*.example.json` files. Templates deliberately do not use the real
-validator filenames and cannot satisfy the infrastructure preflight.
+- `media/release/2.0.0rc4`
+- `media/external`
+- `operation/2.0.0rc4`
+- `provisioning/2.0.0rc4`
+- `config`
+- `trust-home`
+- `CONTROLLER-SETUP.txt`
+- `controller-bootstrap-report.json`
 
-The bootstrap report must show:
+Creating these paths does **not** create release evidence, installation media, VM images, OS identity evidence, or campaign evidence.
 
-```text
-status = PASS_PARTIAL
-controller_ready = true
-ready_to_dispatch_infrastructure_preflight = false
-```
+## 3. Bootstrap report boundary
 
-until the runner, signed release and all three real worker/image manifests exist.
+The report kind is `psmatrix.windows-authority-controller-bootstrap`, schema `2`.
 
-## 3. Register the repository self-hosted runner
+On a valid controller, the bootstrap can report `PASS_PARTIAL`. It must still report:
 
-In GitHub:
+- `authority_level = local-controller-bootstrap`
+- `authoritative = false`
+- `ga_eligible = false`
 
-```text
-Settings
-→ Actions
-→ Runners
-→ New self-hosted runner
-→ Windows
-→ x64
-```
+`ready_to_dispatch_rc4_provisioning` remains false until the controller, runner service, protected RC4 inputs, and all three provisioning secrets are present.
 
-Run GitHub's generated commands on the controller. Configure the runner as a Windows
-service and assign these labels exactly:
+A failed required controller check produces `FAIL`.
 
-```text
-self-hosted
-Windows
-X64
-psmatrix-hyperv
-```
+## 4. Register the protected runner
 
-Do not place a runner registration token, PAT, private key or certificate private key
-in the repository, issue comments, workflow inputs or uploaded artifacts.
+Register the intended Windows controller as the PSMatrix self-hosted runner and apply the exact labels:
 
-After registration, rerun the local readiness check:
+`self-hosted`, `Windows`, `X64`, `psmatrix-hyperv`.
 
-```powershell
-& .\scripts\ga\Initialize-PSMatrixWindowsAuthorityLab.ps1 `
-    -GaRoot 'D:\PSMatrix-Windows-GA' `
-    -RequireRunnerService
-```
+Then rerun the initializer with `-RequireRunnerService`. Local service discovery can prove that a matching runner service is running; the GitHub-side labels still need to match the protected workflow contract.
 
-The script verifies the local PSMatrix runner service state. Server-side labels must
-still be confirmed in GitHub Settings because a local Windows service cannot prove its
-labels as registered by GitHub.
+## 5. Configure the protected environment
 
-## 4. Protected GitHub environment
+The current protected environment is `production-ga-windows-lab`.
 
-Create this GitHub Environment:
+Configure exactly one environment variable:
 
-```text
-production-ga-windows-lab
-```
+- `PSMATRIX_WINDOWS_GA_ROOT` = the same absolute GA root selected above.
 
-Set the environment variable:
+Configure these protected provisioning secrets:
 
-```text
-PSMATRIX_WINDOWS_GA_ROOT = D:\PSMatrix-Windows-GA
-```
+- `PSMATRIX_WPS40_ADMIN_PASSWORD`
+- `PSMATRIX_WPS50_ADMIN_PASSWORD`
+- `PSMATRIX_WPS51_ADMIN_PASSWORD`
 
-Set the protected secret:
+Release public authority comes from the verified protected release bundle. The bootstrap does not require a separate public-key secret.
 
-```text
-PSMATRIX_RELEASE_PUBLIC_KEY
-```
+Never commit, print, hash, measure, or persist the provisioning secret values in Git history, the GA root, bootstrap reports, or workflow artifacts.
 
-The infrastructure preflight does not require the Windows-lab private signing key.
-That key is required only by the later authoritative campaign.
+## 6. Materialize the protected RC4 inputs
 
-## 5. Real release and worker inputs
+Before `-RequireReleaseInputs` can pass, the selected GA root must contain the current RC4 closure material required by the provisioning workflow:
 
-Place exactly one signed release manifest under `release/`:
+- verified release material under `media/release/2.0.0rc4`, including the signed release manifest, public key, and wheel;
+- `windows-authority-protected-release-intake.json` with schema `2`, status `RELEASE_CLOSURE_READY`, the reviewed `lost_previous_private_authority` rotation boundary, and no authority/GA claim;
+- `config/windows-lab-media.json` for exactly `windows-powershell-4.0`, `windows-powershell-5.0`, and `windows-powershell-5.1`, complete and ready for Hyper-V provisioning;
+- an RC4 operation-package candidate under `operation/2.0.0rc4/run-<run_id>-attempt-<run_attempt>` with `READY_FOR_WINDOWS_HOST` metadata and a `PASS` binding;
+- `windows-authority-provisioning-manifest-materialization.json` with `PASS` status and `actual_os_identity_measured = false`;
+- `config/hyperv-host-endpoint.json`.
 
-```text
-psmatrix-2.0.0rcN-release.json
-```
+These are protected inputs to provisioning. They are not a substitute for real VM execution.
 
-or, after final promotion:
+## 7. Enforce final local readiness
 
-```text
-psmatrix-2.0.0-release.json
-```
-
-The signed manifest must bind the source archive, Windows workers package,
-certification kit and provisioning kit required by the product release-binding code.
-
-Provision real endpoint and image manifests under `config/`:
-
-```text
-windows-powershell-4.0-endpoint.json
-windows-powershell-4.0-image.json
-windows-powershell-5.0-endpoint.json
-windows-powershell-5.0-image.json
-windows-powershell-5.1-endpoint.json
-windows-powershell-5.1-image.json
-```
-
-Each endpoint must provide live mTLS health with a signed authoritative runtime
-identity. Each image manifest must bind the same worker identity, exact Windows and
-PowerShell version, immutable VM ID and clean snapshot ID.
-
-Templates are documentation only. Do not rename them before replacing every
-placeholder with real provisioned values.
-
-## 6. Final local readiness check
+After the real environment inputs exist, run the bootstrap in strict mode:
 
 ```powershell
-& .\scripts\ga\Initialize-PSMatrixWindowsAuthorityLab.ps1 `
-    -GaRoot 'D:\PSMatrix-Windows-GA' `
+pwsh -NoProfile -File .\scripts\ga\Initialize-PSMatrixWindowsAuthorityLab.ps1 `
+    -GaRoot '<absolute-windows-lab-root>' `
     -RequireRunnerService `
     -RequireReleaseInputs
 ```
 
-The report must show:
+For a local interactive readiness check, the three protected provisioning secret environment variables must also be present in the process. Do not place their values in command history.
 
-```text
-controller_ready = true
-runner_service_ready = true
-release_and_worker_inputs_present = true
-ready_to_dispatch_infrastructure_preflight = true
-```
+`ready_to_dispatch_rc4_provisioning = true` is allowed only when all of the following are true:
 
-This remains non-authoritative and `ga_eligible=false`.
+- `controller_ready`
+- `runner_service_ready`
+- `release_and_provisioning_inputs_present`
+- `protected_provisioning_secrets_present`
 
-## 7. Dispatch infrastructure preflight
+Even then, the bootstrap remains `authoritative = false` and `ga_eligible = false`.
 
-Workflow:
+## 8. Next protected workflow
 
-```text
-production-ga-windows-authority-infrastructure-preflight
-```
+The current provisioning workflow is:
 
-Inputs:
+`.github/workflows/ga-windows-authority-rc4-provision-selfhosted.yml`
 
-```text
-release_commit          exact lowercase 40-character commit
-worker_timeout_seconds  30
-```
+It provisions the exact RC4 Hyper-V VM set from the reviewed release, operation package, media manifest, provisioning materialization, host endpoint, and the three protected administrator secrets.
 
-The job will remain queued when no online self-hosted runner has all required labels.
-A green infrastructure preflight only proves that the protected controller, signed
-release binding and three worker endpoints are ready. It does not replace the later
-10-iteration clean-snapshot campaign.
+Do not dispatch it until the bootstrap prerequisites are genuinely present. Provisioning is followed by real image identity measurement and the authoritative certification campaign; only those later real-Windows stages can produce the evidence required by the GA chain.
