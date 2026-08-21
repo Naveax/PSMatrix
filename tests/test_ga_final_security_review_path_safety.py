@@ -9,6 +9,7 @@ from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.asymmetric.rsa import generate_private_key
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "ga" / "build_final_security_review_packet.py"
@@ -51,6 +52,15 @@ class FinalSecurityReviewPathSafetyTests(unittest.TestCase):
             "security_review_key_id": key_id,
             "independent_from_release_authority": True,
         }
+
+    @staticmethod
+    def _write_public_key(path: Path, public_key) -> None:
+        path.write_bytes(
+            public_key.public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+        )
 
     def test_read_zip_rejects_direct_symlink(self) -> None:
         with tempfile.TemporaryDirectory(prefix="psmatrix-final-review-zip-symlink-") as temporary:
@@ -110,13 +120,7 @@ class FinalSecurityReviewPathSafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="psmatrix-reviewer-key-symlink-") as temporary:
             root = Path(temporary)
             key_target = root / "reviewer-target.public.pem"
-            public_key = Ed25519PrivateKey.generate().public_key()
-            key_target.write_bytes(
-                public_key.public_bytes(
-                    encoding=serialization.Encoding.PEM,
-                    format=serialization.PublicFormat.SubjectPublicKeyInfo,
-                )
-            )
+            self._write_public_key(key_target, Ed25519PrivateKey.generate().public_key())
             commitment = root / "commitment.json"
             commitment.write_text(
                 json.dumps(self._commitment(self.review.public_key_id(key_target))) + "\n",
@@ -131,6 +135,48 @@ class FinalSecurityReviewPathSafetyTests(unittest.TestCase):
                 self.review.validate_reviewer_authority(
                     commitment_path=commitment,
                     public_key=key_link,
+                    expected_commit=self.review._FINAL_COMMIT,
+                    output=root / "authority-status.json",
+                )
+
+    def test_reviewer_authority_accepts_ed25519_public_key(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="psmatrix-reviewer-ed25519-") as temporary:
+            root = Path(temporary)
+            public_key = root / "reviewer.public.pem"
+            self._write_public_key(public_key, Ed25519PrivateKey.generate().public_key())
+            commitment = root / "commitment.json"
+            commitment.write_text(
+                json.dumps(self._commitment(self.review.public_key_id(public_key))) + "\n",
+                encoding="utf-8",
+            )
+            status = self.review.validate_reviewer_authority(
+                commitment_path=commitment,
+                public_key=public_key,
+                expected_commit=self.review._FINAL_COMMIT,
+                output=root / "authority-status.json",
+            )
+            self.assertEqual(status["security_review_key_algorithm"], "Ed25519")
+            self.assertTrue(status["reviewer_public_authority_verified"])
+            self.assertFalse(status["private_key_read"])
+
+    def test_reviewer_authority_rejects_non_ed25519_key_even_when_key_id_matches(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="psmatrix-reviewer-rsa-") as temporary:
+            root = Path(temporary)
+            public_key = root / "reviewer.public.pem"
+            rsa_public = generate_private_key(public_exponent=65537, key_size=2048).public_key()
+            self._write_public_key(public_key, rsa_public)
+            commitment = root / "commitment.json"
+            commitment.write_text(
+                json.dumps(self._commitment(self.review.public_key_id(public_key))) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                self.review.FinalSecurityReviewPacketError,
+                "security reviewer public key must be Ed25519",
+            ):
+                self.review.validate_reviewer_authority(
+                    commitment_path=commitment,
+                    public_key=public_key,
                     expected_commit=self.review._FINAL_COMMIT,
                     output=root / "authority-status.json",
                 )
