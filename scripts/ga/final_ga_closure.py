@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib.util
 import json
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -40,6 +42,100 @@ _LEGACY_BUILD_CLOSURE_STATEMENT = _legacy.build_closure_statement
 _CONTEXT_MODE: str | None = None
 _CONTEXT_METADATA_ROOT: Path | None = None
 _LAST_METADATA: dict[str, dict[str, Any]] | None = None
+
+
+def _lexical_absolute(path: Path) -> Path:
+    return Path(os.path.abspath(os.path.expanduser(str(path))))
+
+
+def _reject_symlink_components(path: Path, label: str) -> Path:
+    absolute = _lexical_absolute(path)
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current = current / part
+        if current.is_symlink():
+            raise ClosureError(f"{label} contains a symlink component")
+    return absolute
+
+
+def _safe_input_file(path: Path, label: str) -> Path:
+    candidate = _reject_symlink_components(path, label)
+    resolved = candidate.resolve()
+    if not resolved.is_file():
+        raise ClosureError(f"{label} is missing or unsafe")
+    return resolved
+
+
+def _safe_input_directory(path: Path, label: str) -> Path:
+    candidate = _reject_symlink_components(path, label)
+    resolved = candidate.resolve()
+    if not resolved.is_dir():
+        raise ClosureError(f"{label} is missing or unsafe")
+    return resolved
+
+
+def _safe_output_directory(path: Path, label: str) -> Path:
+    candidate = _reject_symlink_components(path, label)
+    resolved = candidate.resolve()
+    if resolved.exists() and not resolved.is_dir():
+        raise ClosureError(f"{label} must be a directory")
+    return resolved
+
+
+def _safe_output_file(path: Path, label: str) -> Path:
+    candidate = _reject_symlink_components(path, label)
+    resolved = candidate.resolve()
+    if resolved.exists() and not resolved.is_file():
+        raise ClosureError(f"{label} must be a file")
+    return resolved
+
+
+def _safe_policy_resolve(base: Path, value: Any, label: str, *, directory: bool = False) -> Path:
+    text = str(value or "")
+    if not text or "\x00" in text or len(text) > 4096:
+        raise ClosureError(f"{label} path is missing or invalid")
+    safe_base = _safe_input_directory(base, "GA policy root")
+    requested = Path(text)
+    candidate = requested if requested.is_absolute() else safe_base / requested
+    candidate = _reject_symlink_components(candidate, label)
+    resolved = candidate.resolve()
+    try:
+        resolved.relative_to(safe_base)
+    except ValueError as exc:
+        raise ClosureError(f"{label} escapes the policy root") from exc
+    if directory:
+        if not resolved.is_dir():
+            raise ClosureError(f"{label} directory is missing")
+    elif not resolved.is_file():
+        raise ClosureError(f"{label} file is missing")
+    return resolved
+
+
+def _prepare_sign_args(args: Any) -> Any:
+    safe = copy.copy(args)
+    safe.policy = _safe_input_file(args.policy, "GA policy")
+    safe.source_root = _safe_input_directory(args.source_root, "source root")
+    safe.private_key = _safe_input_file(args.private_key, "final GA private key")
+    safe.public_key = _safe_input_file(args.public_key, "final GA public key")
+    safe.output_dir = _safe_output_directory(args.output_dir, "final GA closure output")
+    return safe
+
+
+def _prepare_verify_args(args: Any) -> Any:
+    safe = copy.copy(args)
+    safe.policy = _safe_input_file(args.policy, "GA policy")
+    safe.source_root = _safe_input_directory(args.source_root, "source root")
+    safe.evaluation = _safe_input_file(args.evaluation, "Production GA evaluation")
+    safe.ga_attestation = _safe_input_file(args.ga_attestation, "Production GA attestation")
+    safe.closure_attestation = _safe_input_file(args.closure_attestation, "final closure attestation")
+    safe.public_key = _safe_input_file(args.public_key, "final GA public key")
+    safe.output = _safe_output_file(args.output, "final closure verification output") if args.output is not None else None
+    return safe
+
+
+# Keep the preserved signing implementation, but replace its resolve-first policy path helper
+# with the fail-closed lexical-component check used by the active wrapper.
+_legacy._resolve = _safe_policy_resolve
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -166,7 +262,7 @@ def _metadata_payloads(release: dict[str, Any]) -> dict[str, bytes]:
 
 
 def derive_supply_chain_metadata(release: dict[str, Any], output_root: Path) -> dict[str, dict[str, Any]]:
-    root = output_root.resolve()
+    root = _safe_output_directory(output_root, "closure metadata output root")
     root.mkdir(parents=True, exist_ok=True)
     result: dict[str, dict[str, Any]] = {}
     for name, data in _metadata_payloads(release).items():
@@ -187,12 +283,10 @@ def derive_supply_chain_metadata(release: dict[str, Any], output_root: Path) -> 
 
 
 def verify_supply_chain_metadata(release: dict[str, Any], metadata_root: Path) -> dict[str, dict[str, Any]]:
-    root = metadata_root.resolve()
+    root = _safe_input_directory(metadata_root, "closure metadata root")
     result: dict[str, dict[str, Any]] = {}
     for name, expected in _metadata_payloads(release).items():
-        path = root / name
-        if not path.is_file() or path.is_symlink():
-            raise ClosureError(f"final closure metadata is missing or unsafe: {name}")
+        path = _safe_input_file(root / name, f"final closure metadata {name}")
         observed = path.read_bytes()
         if observed != expected:
             raise ClosureError(f"final closure metadata no longer matches verified signed release: {name}")
@@ -267,33 +361,35 @@ def _augment_result(result: dict[str, Any], output: Path | None) -> dict[str, An
         }
     )
     if output is not None:
-        _legacy.atomic_write_json(output.resolve(), enriched)
+        _legacy.atomic_write_json(_safe_output_file(output, "final closure status output"), enriched)
     return enriched
 
 
 def sign_closure(args: Any) -> dict[str, Any]:
     global _CONTEXT_MODE, _CONTEXT_METADATA_ROOT, _LAST_METADATA
+    safe_args = _prepare_sign_args(args)
     _CONTEXT_MODE = "sign"
-    _CONTEXT_METADATA_ROOT = args.output_dir.resolve()
+    _CONTEXT_METADATA_ROOT = safe_args.output_dir
     _LAST_METADATA = None
-    result = _legacy.sign_closure(args)
-    status_path = args.output_dir.resolve() / "final-closure-status.json"
+    result = _legacy.sign_closure(safe_args)
+    status_path = safe_args.output_dir / "final-closure-status.json"
     enriched = _augment_result(result, status_path)
-    _legacy._scan_output_for_private_keys(args.output_dir.resolve())
+    _legacy._scan_output_for_private_keys(safe_args.output_dir)
     return enriched
 
 
 def verify_closure(args: Any) -> dict[str, Any]:
     global _CONTEXT_MODE, _CONTEXT_METADATA_ROOT, _LAST_METADATA
-    evaluation_parent = args.evaluation.resolve().parent
-    for path in (args.ga_attestation.resolve(), args.closure_attestation.resolve()):
+    safe_args = _prepare_verify_args(args)
+    evaluation_parent = safe_args.evaluation.parent
+    for path in (safe_args.ga_attestation, safe_args.closure_attestation):
         if path.parent != evaluation_parent:
             raise ClosureError("final closure verification inputs must share one evidence root")
     _CONTEXT_MODE = "verify"
     _CONTEXT_METADATA_ROOT = evaluation_parent
     _LAST_METADATA = None
-    result = _legacy.verify_closure(args)
-    return _augment_result(result, args.output.resolve() if args.output is not None else None)
+    result = _legacy.verify_closure(safe_args)
+    return _augment_result(result, safe_args.output)
 
 
 # The preserved implementation keeps all GA evaluation/signature logic. Only its release
