@@ -74,8 +74,11 @@ def _zip_info(name: str, mode: int = 0o100644) -> zipfile.ZipInfo:
 
 
 def _read_zip(path: Path) -> tuple[dict[str, bytes], dict[str, int]]:
-    path = path.resolve()
-    if not path.is_file() or path.is_symlink():
+    candidate = Path(path).expanduser()
+    if candidate.is_symlink():
+        raise FinalSecurityReviewPacketError(f"security review packet is missing or unsafe: {candidate}")
+    path = candidate.resolve()
+    if not path.is_file():
         raise FinalSecurityReviewPacketError(f"security review packet is missing or unsafe: {path}")
     entries: dict[str, bytes] = {}
     modes: dict[str, int] = {}
@@ -125,8 +128,11 @@ def _normalize_reviewer(value: Any, *, source: str) -> dict[str, Any]:
 
 
 def _load_reviewer_commitment(path: Path, *, expected_commit: str) -> dict[str, Any]:
-    resolved = path.resolve()
-    if not resolved.is_file() or resolved.is_symlink():
+    candidate = Path(path).expanduser()
+    if candidate.is_symlink():
+        raise FinalSecurityReviewPacketError("security reviewer commitment is missing or unsafe")
+    resolved = candidate.resolve()
+    if not resolved.is_file():
         raise FinalSecurityReviewPacketError("security reviewer commitment is missing or unsafe")
     value = read_json(resolved)
     if not isinstance(value, dict) or set(value) != set(_COMMITMENT_FIELDS):
@@ -177,8 +183,11 @@ def validate_reviewer_authority(
     *, commitment_path: Path, public_key: Path, expected_commit: str, output: Path,
 ) -> dict[str, Any]:
     commitment = _load_reviewer_commitment(commitment_path, expected_commit=expected_commit)
+    public_key = Path(public_key).expanduser()
+    if public_key.is_symlink():
+        raise FinalSecurityReviewPacketError("security reviewer public key is missing or unsafe")
     public_key = public_key.resolve()
-    if not public_key.is_file() or public_key.is_symlink():
+    if not public_key.is_file():
         raise FinalSecurityReviewPacketError("security reviewer public key is missing or unsafe")
     actual_key_id = public_key_id(public_key)
     if actual_key_id != commitment["security_review_key_id"]:
@@ -329,12 +338,13 @@ def validate_submission(
     commitment_path: Path | None = None,
 ) -> dict[str, Any]:
     report_path = report_path.resolve()
-    packet_path = packet_path.resolve()
+    packet_path = Path(packet_path).expanduser()
     source_archive = source_archive.resolve()
     release_manifest = release_manifest.resolve()
     if expected_commit.lower() != _FINAL_COMMIT:
         raise FinalSecurityReviewPacketError("security review submission expected commit is not frozen final release commit")
     entries, _ = _read_zip(packet_path)
+    packet_path = packet_path.resolve()
     source_sha, release_sha = _validate_packet_bindings(
         manifest=_json_entry(entries, _MANIFEST),
         template=_json_entry(entries, _TEMPLATE),
