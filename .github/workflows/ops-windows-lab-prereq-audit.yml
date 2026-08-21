@@ -34,6 +34,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
 
           $rootConfigured = -not [string]::IsNullOrWhiteSpace($env:PSMATRIX_WINDOWS_GA_ROOT)
+          $rootAbsolute = $false
           $rootExists = $false
           $mediaExternalExists = $false
           $isoCount = 0
@@ -41,7 +42,10 @@ jobs:
           $hypervCmd = $null -ne (Get-Command Get-VM -ErrorAction SilentlyContinue)
           $vmmsRunning = $false
 
-          if ($rootConfigured -and [System.IO.Path]::IsPathRooted($env:PSMATRIX_WINDOWS_GA_ROOT)) {
+          if ($rootConfigured) {
+            $rootAbsolute = [System.IO.Path]::IsPathRooted($env:PSMATRIX_WINDOWS_GA_ROOT)
+          }
+          if ($rootConfigured -and $rootAbsolute) {
             $root = [System.IO.Path]::GetFullPath($env:PSMATRIX_WINDOWS_GA_ROOT)
             $rootExists = Test-Path -LiteralPath $root -PathType Container
             if ($rootExists) {
@@ -61,48 +65,106 @@ jobs:
           $wps40 = -not [string]::IsNullOrWhiteSpace($env:PSMATRIX_WPS40_ADMIN_PASSWORD)
           $wps50 = -not [string]::IsNullOrWhiteSpace($env:PSMATRIX_WPS50_ADMIN_PASSWORD)
           $wps51 = -not [string]::IsNullOrWhiteSpace($env:PSMATRIX_WPS51_ADMIN_PASSWORD)
+          $runnerExact = ($env:RUNNER_NAME -eq 'NAVEAX') -and ($env:RUNNER_OS -eq 'Windows')
+
+          $required = @(
+            [pscustomobject]@{ Name = 'runner_exact_naveax'; Value = $runnerExact }
+            [pscustomobject]@{ Name = 'ga_root_configured'; Value = $rootConfigured }
+            [pscustomobject]@{ Name = 'ga_root_absolute'; Value = $rootAbsolute }
+            [pscustomobject]@{ Name = 'ga_root_exists'; Value = $rootExists }
+            [pscustomobject]@{ Name = 'ga_config_dir_exists'; Value = $configExists }
+            [pscustomobject]@{ Name = 'media_external_dir_exists'; Value = $mediaExternalExists }
+            [pscustomobject]@{ Name = 'hyperv_cmd_available'; Value = $hypervCmd }
+            [pscustomobject]@{ Name = 'vmms_running'; Value = $vmmsRunning }
+            [pscustomobject]@{ Name = 'wps40_admin_secret_present'; Value = $wps40 }
+            [pscustomobject]@{ Name = 'wps50_admin_secret_present'; Value = $wps50 }
+            [pscustomobject]@{ Name = 'wps51_admin_secret_present'; Value = $wps51 }
+          )
+          $failed = @($required | Where-Object { -not [bool]$_.Value } | ForEach-Object { [string]$_.Name })
+          $auditPass = ($failed.Count -eq 0)
 
           $rows = [ordered]@{
-            runner_exact_naveax = ($env:RUNNER_NAME -eq 'NAVEAX')
+            schema = 2
+            kind = 'psmatrix.windows-lab-prerequisite-audit'
+            audit_pass = $auditPass
+            runner_exact_naveax = $runnerExact
             ga_root_configured = $rootConfigured
+            ga_root_absolute = $rootAbsolute
             ga_root_exists = $rootExists
             ga_config_dir_exists = $configExists
             media_external_dir_exists = $mediaExternalExists
             external_iso_count = $isoCount
+            external_iso_count_gate = $false
             hyperv_cmd_available = $hypervCmd
             vmms_running = $vmmsRunning
             wps40_admin_secret_present = $wps40
             wps50_admin_secret_present = $wps50
             wps51_admin_secret_present = $wps51
+            failed_required_checks = $failed
           }
 
-          $json = $rows | ConvertTo-Json -Compress
+          $json = $rows | ConvertTo-Json -Compress -Depth 4
           "AUDIT_JSON=$json" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-          Write-Host ('windows_lab_prereq_audit=PASS root={0} media={1} iso_count={2} hyperv={3} vmms={4} wps40={5} wps50={6} wps51={7}' -f $rootExists,$mediaExternalExists,$isoCount,$hypervCmd,$vmmsRunning,$wps40,$wps50,$wps51)
+          $status = if ($auditPass) { 'PASS' } else { 'FAIL' }
+          Write-Host ('windows_lab_prereq_audit=OBSERVED status={0} required_failed={1} iso_count_informational={2}' -f $status,$failed.Count,$isoCount)
+          Write-Host 'secret_values_logged=false'
+          Write-Host 'secret_hashes_logged=false'
+          Write-Host 'secret_lengths_logged=false'
 
       - name: Publish value-free audit to issue 261
+        if: always()
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:AUDIT_JSON)) {
+            throw 'Windows-lab prerequisite audit state was not materialized.'
+          }
           $v = $env:AUDIT_JSON | ConvertFrom-Json
+          $failed = @($v.failed_required_checks)
+          $failedText = if ($failed.Count -eq 0) { 'none' } else { $failed -join ', ' }
+          $gateStatus = if ([bool]$v.audit_pass) { 'PASS' } else { 'FAIL' }
           $body = @"
           ### Windows-lab prerequisite audit
 
           Run: `$env:GITHUB_RUN_ID`
-          Runner exact NAVEAX: `$($v.runner_exact_naveax)`
+          Attempt: `$env:GITHUB_RUN_ATTEMPT`
+          Head: `$env:GITHUB_SHA`
+          Gate status: `$gateStatus`
+          Failed required checks: `$failedText`
+          Runner exact NAVEAX/Windows: `$($v.runner_exact_naveax)`
           GA root configured: `$($v.ga_root_configured)`
+          GA root absolute: `$($v.ga_root_absolute)`
           GA root exists: `$($v.ga_root_exists)`
           GA config directory exists: `$($v.ga_config_dir_exists)`
           External media directory exists: `$($v.media_external_dir_exists)`
-          External ISO count: `$($v.external_iso_count)`
+          External ISO count (informational, not a prerequisite gate): `$($v.external_iso_count)`
           Hyper-V cmdlets available: `$($v.hyperv_cmd_available)`
           VMMS running: `$($v.vmms_running)`
           WinPS 4.0 admin secret present: `$($v.wps40_admin_secret_present)`
           WinPS 5.0 admin secret present: `$($v.wps50_admin_secret_present)`
           WinPS 5.1 admin secret present: `$($v.wps51_admin_secret_present)`
 
-          No secret values, hashes, or lengths were emitted.
+          The raw ISO count is intentionally informational; canonical RC4 media completeness is enforced later by the reviewed media inventory/selection workflow.
+          No secret values, hashes, lengths, or configured paths were emitted.
           "@
           gh api "repos/$env:GITHUB_REPOSITORY/issues/261/comments" --method POST -f body="$body" | Out-Null
           if ($LASTEXITCODE -ne 0) { throw 'Failed to publish Windows-lab prerequisite audit.' }
+
+      - name: Enforce required Windows lab prerequisites
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:AUDIT_JSON)) {
+            throw 'Windows-lab prerequisite audit state is unavailable for enforcement.'
+          }
+          $v = $env:AUDIT_JSON | ConvertFrom-Json
+          $failed = @($v.failed_required_checks)
+          if (-not [bool]$v.audit_pass -or $failed.Count -ne 0) {
+            $failedText = if ($failed.Count -eq 0) { '<unknown>' } else { $failed -join ', ' }
+            throw "Windows-lab prerequisite audit failed required checks: $failedText"
+          }
+          Write-Host 'windows_lab_prereq_audit=PASS fail_closed=true'
+          Write-Host 'external_iso_count_gate=false'
+          Write-Host 'secret_values_logged=false'
