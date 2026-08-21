@@ -281,7 +281,7 @@ jobs:
           PY
           echo "PSMATRIX_REVIEW_KEY_ROOT=$key_root" >> "$GITHUB_ENV"
 
-      - name: Materialize reviewer-controlled private authority, finalize exact review, verify, and remove private key
+      - name: Materialize reviewer-controlled authority after public precommit, finalize exact review, verify, and remove private key
         shell: bash
         env:
           REVIEW_PRIVATE_KEY: ${{ secrets.PSMATRIX_GA_SECURITY_REVIEW_PRIVATE_KEY }}
