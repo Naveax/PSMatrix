@@ -60,9 +60,44 @@ jobs:
           [[ -z "$(git -C control status --porcelain)" ]] || { echo 'trusted final closure control checkout is not clean' >&2; exit 1; }
           [[ -z "$(git -C release-source status --porcelain)" ]] || { echo 'final release source checkout is not clean' >&2; exit 1; }
           [[ -n "${PSMATRIX_FINAL_GA_ROOT:-}" ]] || { echo 'PSMATRIX_FINAL_GA_ROOT environment variable is missing' >&2; exit 1; }
-          root="$(realpath "$PSMATRIX_FINAL_GA_ROOT")"
-          [[ -d "$root" ]] || { echo 'final GA evidence root is missing' >&2; exit 1; }
-          [[ -f "$root/ga-policy.json" ]] || { echo 'final GA policy is missing' >&2; exit 1; }
+          root="$(
+          PSMATRIX_ROOT_CANDIDATE="$PSMATRIX_FINAL_GA_ROOT" python - <<'PY'
+          import os
+          from pathlib import Path
+
+          def lexical_absolute(raw: str) -> Path:
+              text = str(raw or '')
+              if not text or '\x00' in text or len(text) > 4096:
+                  raise SystemExit('final GA evidence root is missing or invalid')
+              return Path(os.path.abspath(os.path.expanduser(text)))
+
+          def reject_symlink_components(path: Path, label: str) -> Path:
+              absolute = lexical_absolute(str(path))
+              cursor = Path(absolute.anchor)
+              for part in absolute.parts[1:]:
+                  cursor = cursor / part
+                  if cursor.is_symlink():
+                      raise SystemExit(f'{label} contains a symlink component')
+              return absolute
+
+          candidate = reject_symlink_components(
+              Path(os.environ['PSMATRIX_ROOT_CANDIDATE']),
+              'final GA evidence root',
+          )
+          root = candidate.resolve()
+          if not root.is_dir():
+              raise SystemExit('final GA evidence root is missing')
+          policy_candidate = reject_symlink_components(candidate / 'ga-policy.json', 'final GA policy')
+          policy = policy_candidate.resolve()
+          if not policy.is_file():
+              raise SystemExit('final GA policy is missing')
+          try:
+              policy.relative_to(root)
+          except ValueError as exc:
+              raise SystemExit('final GA policy escapes evidence root') from exc
+          print(root)
+          PY
+          )"
           output="$RUNNER_TEMP/psmatrix-final-ga-closure"
           keys="$RUNNER_TEMP/psmatrix-final-ga-keys"
           rm -rf "$output" "$keys"
@@ -123,8 +158,29 @@ jobs:
           from psmatrix.release import verify_release_manifest
           from psmatrix.util import sha256_file
 
-          policy_path = Path(os.environ['PSMATRIX_FINAL_GA_POLICY']).resolve()
+          def lexical_absolute(path):
+              return Path(os.path.abspath(os.path.expanduser(str(path))))
+
+          def reject_symlink_components(path, label):
+              absolute = lexical_absolute(path)
+              cursor = Path(absolute.anchor)
+              for part in absolute.parts[1:]:
+                  cursor = cursor / part
+                  if cursor.is_symlink():
+                      raise SystemExit(f'{label} contains a symlink component')
+              return absolute
+
+          policy_candidate = reject_symlink_components(
+              Path(os.environ['PSMATRIX_FINAL_GA_POLICY']),
+              'final GA policy',
+          )
+          policy_path = policy_candidate.resolve()
+          if not policy_path.is_file():
+              raise SystemExit('final GA policy is missing')
           policy, base = load_ga_policy(policy_path)
+          base = reject_symlink_components(base, 'final GA evidence root').resolve()
+          if not base.is_dir():
+              raise SystemExit('final GA evidence root is missing')
           evidence = policy.get('evidence') if isinstance(policy.get('evidence'), dict) else {}
           authorities = policy.get('authorities') if isinstance(policy.get('authorities'), dict) else {}
           release_record = evidence.get('signed-release') if isinstance(evidence.get('signed-release'), dict) else None
@@ -134,19 +190,16 @@ jobs:
 
           def safe_path(value, label, *, directory=False):
               text = str(value or '')
-              if not text or '\x00' in text:
+              if not text or '\x00' in text or len(text) > 4096:
                   raise SystemExit(f'{label} path is missing or invalid')
               supplied = Path(text)
-              path = (supplied if supplied.is_absolute() else base / supplied).resolve()
+              candidate = supplied if supplied.is_absolute() else base / supplied
+              candidate = reject_symlink_components(candidate, label)
+              path = candidate.resolve()
               try:
-                  relative = path.relative_to(base.resolve())
+                  path.relative_to(base)
               except ValueError as exc:
                   raise SystemExit(f'{label} escapes the final GA evidence root') from exc
-              cursor = base.resolve()
-              for part in relative.parts:
-                  cursor = cursor / part
-                  if cursor.is_symlink():
-                      raise SystemExit(f'{label} traverses a symlink')
               if directory:
                   if not path.is_dir():
                       raise SystemExit(f'{label} directory is missing')
@@ -206,17 +259,59 @@ jobs:
           print(f'final_closure_exact_wheel_runtime=PASS version={version}')
           PY
           PSMATRIX_FINAL_GA_POLICY="$PSMATRIX_FINAL_GA_POLICY" PYTHONPATH="$runtime" python - <<'PY'
-          from pathlib import Path
           import os
+          from pathlib import Path
           from psmatrix.ga import load_ga_policy
           from psmatrix.release import verify_release_manifest
 
-          policy, base = load_ga_policy(Path(os.environ['PSMATRIX_FINAL_GA_POLICY']))
+          def lexical_absolute(path):
+              return Path(os.path.abspath(os.path.expanduser(str(path))))
+
+          def reject_symlink_components(path, label):
+              absolute = lexical_absolute(path)
+              cursor = Path(absolute.anchor)
+              for part in absolute.parts[1:]:
+                  cursor = cursor / part
+                  if cursor.is_symlink():
+                      raise SystemExit(f'{label} contains a symlink component')
+              return absolute
+
+          policy_candidate = reject_symlink_components(
+              Path(os.environ['PSMATRIX_FINAL_GA_POLICY']),
+              'final GA policy',
+          )
+          policy_path = policy_candidate.resolve()
+          if not policy_path.is_file():
+              raise SystemExit('final GA policy is missing')
+          policy, base = load_ga_policy(policy_path)
+          base = reject_symlink_components(base, 'final GA evidence root').resolve()
+          if not base.is_dir():
+              raise SystemExit('final GA evidence root is missing')
+
+          def safe_path(value, label, *, directory=False):
+              text = str(value or '')
+              if not text or '\x00' in text or len(text) > 4096:
+                  raise SystemExit(f'{label} path is missing or invalid')
+              supplied = Path(text)
+              candidate = supplied if supplied.is_absolute() else base / supplied
+              candidate = reject_symlink_components(candidate, label)
+              path = candidate.resolve()
+              try:
+                  path.relative_to(base)
+              except ValueError as exc:
+                  raise SystemExit(f'{label} escapes the final GA evidence root') from exc
+              if directory:
+                  if not path.is_dir():
+                      raise SystemExit(f'{label} directory is missing')
+              elif not path.is_file():
+                  raise SystemExit(f'{label} file is missing')
+              return path
+
           record = policy['evidence']['signed-release']
           authority = policy['authorities']['release']
-          manifest = (base / record['manifest']).resolve()
-          artifact_dir = (base / record['artifact_dir']).resolve()
-          public = (base / authority['public_key']).resolve()
+          manifest = safe_path(record.get('manifest'), 'signed release manifest')
+          artifact_dir = safe_path(record.get('artifact_dir'), 'signed release artifact root', directory=True)
+          public = safe_path(authority.get('public_key'), 'release public key')
           verified = verify_release_manifest(manifest, artifact_dir, signing_public_key=public)
           if verified.get('valid') is not True or verified.get('version') != '2.0.0':
               raise SystemExit('exact final wheel runtime could not re-verify the protected release')
@@ -330,10 +425,25 @@ jobs:
           set -euo pipefail
           [[ ! -e "$PSMATRIX_FINAL_GA_KEYS/final-ga.private.pem" ]] || { echo 'private key file remains present' >&2; exit 1; }
           python - "$PSMATRIX_FINAL_GA_OUTPUT" <<'PY'
+          import os
           import sys
           from pathlib import Path
 
-          root = Path(sys.argv[1]).resolve()
+          def lexical_absolute(path):
+              return Path(os.path.abspath(os.path.expanduser(str(path))))
+
+          def reject_symlink_components(path, label):
+              absolute = lexical_absolute(path)
+              cursor = Path(absolute.anchor)
+              for part in absolute.parts[1:]:
+                  cursor = cursor / part
+                  if cursor.is_symlink():
+                      raise SystemExit(f'{label} contains a symlink component')
+              return absolute
+
+          root = reject_symlink_components(Path(sys.argv[1]), 'private-key scan root').resolve()
+          if not root.is_dir():
+              raise SystemExit('private-key scan root is missing')
           markers = (
               b'-----BEGIN PRIVATE KEY-----',
               b'-----BEGIN RSA PRIVATE KEY-----',
@@ -341,6 +451,8 @@ jobs:
               b'-----BEGIN OPENSSH PRIVATE KEY-----',
           )
           for path in root.rglob('*'):
+              if path.is_symlink():
+                  raise SystemExit(f'symlink found in closure artifact: {path.name}')
               if path.is_file() and any(marker in path.read_bytes() for marker in markers):
                   raise SystemExit(f'private-key material found in closure artifact: {path.name}')
           print('private_key_material_absent=PASS')
@@ -353,10 +465,25 @@ jobs:
           python - "$PSMATRIX_FINAL_GA_OUTPUT" "$PSMATRIX_FINAL_GA_COMMIT" "$PSMATRIX_FINAL_GA_RELEASE_WHEEL_SHA256" <<'PY'
           import hashlib
           import json
+          import os
           import sys
           from pathlib import Path
 
-          root = Path(sys.argv[1]).resolve()
+          def lexical_absolute(path):
+              return Path(os.path.abspath(os.path.expanduser(str(path))))
+
+          def reject_symlink_components(path, label):
+              absolute = lexical_absolute(path)
+              cursor = Path(absolute.anchor)
+              for part in absolute.parts[1:]:
+                  cursor = cursor / part
+                  if cursor.is_symlink():
+                      raise SystemExit(f'{label} contains a symlink component')
+              return absolute
+
+          root = reject_symlink_components(Path(sys.argv[1]), 'final evidence root').resolve()
+          if not root.is_dir():
+              raise SystemExit('final evidence root is missing')
           required = (
               'production-ga-evaluation.json',
               'psmatrix-2.0.0-production-ga.dsse.json',
@@ -370,6 +497,8 @@ jobs:
           files = []
           for name in required:
               path = root / name
+              if path.is_symlink():
+                  raise SystemExit(f'required final closure artifact is a symlink: {name}')
               if not path.is_file() or path.stat().st_size <= 0:
                   raise SystemExit(f'required final closure artifact is missing: {name}')
               data = path.read_bytes()
@@ -399,7 +528,10 @@ jobs:
               'ga_eligible': True,
               'files': files,
           }
-          (root / 'final-evidence-inventory.json').write_text(
+          inventory_path = root / 'final-evidence-inventory.json'
+          if inventory_path.is_symlink():
+              raise SystemExit('final evidence inventory destination cannot be a symlink')
+          inventory_path.write_text(
               json.dumps(inventory, indent=2, sort_keys=True) + '\n', encoding='utf-8'
           )
           print(json.dumps(inventory, indent=2, sort_keys=True))
