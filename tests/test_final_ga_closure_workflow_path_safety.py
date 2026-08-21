@@ -13,8 +13,9 @@ class FinalGAClosureWorkflowPathSafetyTests(unittest.TestCase):
 
     def test_evidence_root_is_checked_before_canonicalization(self) -> None:
         self.assertNotIn('root="$(realpath "$PSMATRIX_FINAL_GA_ROOT")"', self.source)
-        self.assertIn("final GA evidence root contains a symlink component", self.source)
-        self.assertIn("final GA policy contains a symlink component", self.source)
+        self.assertIn("raise SystemExit(f'{label} contains a symlink component')", self.source)
+        self.assertIn("'final GA evidence root'", self.source)
+        self.assertIn("'final GA policy'", self.source)
 
     def test_pre_secret_release_bootstrap_rejects_lexical_symlinks(self) -> None:
         self.assertNotIn("policy_path = Path(os.environ['PSMATRIX_FINAL_GA_POLICY']).resolve()", self.source)
@@ -34,9 +35,9 @@ class FinalGAClosureWorkflowPathSafetyTests(unittest.TestCase):
         self.assertIn("final closure runtime escaped exact signed wheel target", self.source)
 
     def test_post_sign_evidence_rejects_symlink_artifacts(self) -> None:
-        self.assertIn("private-key scan root contains a symlink component", self.source)
+        self.assertIn("'private-key scan root'", self.source)
         self.assertIn("symlink found in closure artifact", self.source)
-        self.assertIn("final evidence root contains a symlink component", self.source)
+        self.assertIn("'final evidence root'", self.source)
         self.assertIn("required final closure artifact is a symlink", self.source)
         self.assertIn("final evidence inventory destination cannot be a symlink", self.source)
 
