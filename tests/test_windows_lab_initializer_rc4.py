@@ -77,23 +77,24 @@ class WindowsLabInitializerRc4Tests(unittest.TestCase):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, raw)
 
-    def test_rc4_dispatch_identity_requires_exactly_one_positive_run_candidate(self) -> None:
+    def test_rc4_dispatch_identity_requires_one_fully_current_positive_run_candidate(self) -> None:
         raw = RC4.read_text(encoding="utf-8")
         for fragment in (
             "$operationDirectoryPattern = '^run-([1-9][0-9]*)-attempt-([1-9][0-9]*)$'",
             "Get-OperationCandidateIdentity",
-            "Multiple closure-valid RC4 operation packages make provisioning dispatch ambiguous",
+            "basic_physically_closed_candidates={0}; full_dispatch_identity_selected_by_provisioning_closure",
             "Multiple fully closure-valid RC4 operation packages make provisioning dispatch ambiguous",
-            "RC4 operation candidate differs between operation and provisioning closure checks.",
             "$script:operationCandidate = [string]$identity.name",
             "$script:operationRunId = [string]$identity.run_id",
             "$script:operationRunAttempt = [string]$identity.run_attempt",
             "operation_candidate = $operationCandidate",
             "operation_run_id = $operationRunId",
             "operation_run_attempt = $operationRunAttempt",
+            "Historical non-current candidates may remain.",
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, raw)
+        self.assertNotIn("Multiple closure-valid RC4 operation packages make provisioning dispatch ambiguous", raw)
         self.assertNotIn("^run-[0-9]+-attempt-", raw)
 
     def test_secret_handling_is_value_free(self) -> None:

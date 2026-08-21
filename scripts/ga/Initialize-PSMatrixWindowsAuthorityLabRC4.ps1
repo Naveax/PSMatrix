@@ -277,13 +277,7 @@ $operationRunAttempt = ''
         }
     }
     if ($candidates.Count -eq 0) { throw 'No RC4 operation package has READY_FOR_WINDOWS_HOST + PASS binding + physical ZIP closure for the current release.' }
-    if ($candidates.Count -ne 1) { throw ('Multiple closure-valid RC4 operation packages make provisioning dispatch ambiguous: {0}' -f ($candidates -join ', ')) }
-    $identity = Get-OperationCandidateIdentity -Name ([string]$candidates[0])
-    $script:operationCandidate = [string]$identity.name
-    $script:operationRunId = [string]$identity.run_id
-    $script:operationRunAttempt = [string]$identity.run_attempt
-    $script:operationReady = $true
-    'candidate={0}; operation_run_id={1}; operation_run_attempt={2}' -f $operationCandidate,$operationRunId,$operationRunAttempt
+    'basic_physically_closed_candidates={0}; full_dispatch_identity_selected_by_provisioning_closure' -f $candidates.Count
 })
 
 [void](Invoke-Check 'rc4-provisioning-inputs' $releaseRequired {
@@ -316,10 +310,13 @@ $operationRunAttempt = ''
     }
     if ($closureCandidates.Count -eq 0) { throw 'No RC4 operation package is physically and SHA-bound to the current provisioning manifest and materialization report.' }
     if ($closureCandidates.Count -ne 1) { throw ('Multiple fully closure-valid RC4 operation packages make provisioning dispatch ambiguous: {0}' -f ($closureCandidates -join ', ')) }
-    if ([string]$closureCandidates[0] -ne $operationCandidate) { throw 'RC4 operation candidate differs between operation and provisioning closure checks.' }
-
+    $identity = Get-OperationCandidateIdentity -Name ([string]$closureCandidates[0])
+    $script:operationCandidate = [string]$identity.name
+    $script:operationRunId = [string]$identity.run_id
+    $script:operationRunAttempt = [string]$identity.run_attempt
+    $script:operationReady = $true
     $script:provisioningReady = $true
-    'materialization=PASS; media_operation_sha_closure=PASS; operation_zip_closure=PASS; operation_candidate=unique; hyperv-host-endpoint=present'
+    'materialization=PASS; media_operation_sha_closure=PASS; operation_zip_closure=PASS; operation_candidate={0}; operation_run_id={1}; operation_run_attempt={2}; hyperv-host-endpoint=present' -f $operationCandidate,$operationRunId,$operationRunAttempt
 })
 
 $missingSecrets = @()
@@ -331,8 +328,8 @@ foreach ($name in $requiredSecrets) {
 }
 if (-not $releaseReady) { [void]$remaining.Add('Run protected RC4 release intake and keep the exact signed manifest/public key/wheel under media/release/2.0.0rc4/.') }
 if (-not $mediaReady) { [void]$remaining.Add('Complete reviewed RC4 media readiness and materialize config/windows-lab-media.json.') }
-if (-not $operationReady) { [void]$remaining.Add('Keep exactly one PASS-bound RC4 operation run with its exact metadata-bound ZIP under operation/2.0.0rc4/.') }
-if (-not $provisioningReady) { [void]$remaining.Add('Materialize RC4 provisioning inputs, preserve media/operation SHA closure, and keep exactly one closure-valid operation candidate.') }
+if (-not $operationReady) { [void]$remaining.Add('Keep exactly one fully closure-valid RC4 operation run for the current provisioning state under operation/2.0.0rc4/. Historical non-current candidates may remain.') }
+if (-not $provisioningReady) { [void]$remaining.Add('Materialize RC4 provisioning inputs and preserve a unique current media/operation SHA closure.') }
 [void]$remaining.Add('Set production-ga-windows-lab variable PSMATRIX_WINDOWS_GA_ROOT to this exact absolute root.')
 
 $requiredFailures = @($checks | Where-Object { $_.required -and $_.status -ne 'PASS' })
