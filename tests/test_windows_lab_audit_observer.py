@@ -54,8 +54,9 @@ class WindowsLabAuditObserverTests(unittest.TestCase):
         raw = OBSERVER.read_text(encoding="utf-8")
 
         self.assertIn("branch=$(jq -r '.head_branch // \"\"' <<<\"$run\")", raw)
+        self.assertIn("attempt=$(jq -r '.run_attempt // 0' <<<\"$run\")", raw)
         self.assertIn(
-            "if [[ \"$kind\" == 'audit' && ( \"$event\" != 'push' || \"$branch\" != 'main' ) ]]; then",
+            "if [[ \"$kind\" == 'audit' && ( \"$event\" != 'push' || \"$branch\" != 'main' || \"$attempt\" != '1' ) ]]; then",
             raw,
         )
         self.assertIn("canonical_source=false", raw)
