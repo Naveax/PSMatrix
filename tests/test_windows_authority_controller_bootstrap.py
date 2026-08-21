@@ -65,6 +65,11 @@ class WindowsAuthorityControllerBootstrapTests(unittest.TestCase):
         self.assertTrue(release["signed_wheel_sha256_and_size_must_match_release_manifest"])
 
         operation = value["protected_inputs"]["operation_package"]
+        self.assertTrue(operation["run_id_positive_decimal_required"])
+        self.assertTrue(operation["run_attempt_positive_decimal_required"])
+        self.assertTrue(operation["exactly_one_fully_current_dispatch_candidate_required"])
+        self.assertTrue(operation["historical_noncurrent_candidates_allowed"])
+        self.assertTrue(operation["directory_name_encodes_dispatch_identity"])
         self.assertEqual(operation["metadata_status"], "READY_FOR_WINDOWS_HOST")
         self.assertEqual(operation["binding_status"], "PASS")
         self.assertEqual(
@@ -103,6 +108,11 @@ class WindowsAuthorityControllerBootstrapTests(unittest.TestCase):
         self.assertTrue(closure["operation_profile_sha256_matches_materialization"])
         self.assertTrue(closure["operation_materialization_report_sha256_matches_current_report"])
         self.assertTrue(closure["operation_binding_release_commit_matches_release_intake"])
+        self.assertTrue(closure["exactly_one_fully_current_operation_candidate_required"])
+        self.assertTrue(closure["historical_noncurrent_operation_candidates_allowed"])
+        self.assertTrue(closure["operation_candidate_directory_is_dispatch_identity"])
+        self.assertEqual(closure["operation_run_id_report_field"], "operation_run_id")
+        self.assertEqual(closure["operation_run_attempt_report_field"], "operation_run_attempt")
         self.assertFalse(closure["file_presence_without_sha_closure_is_ready"])
         self.assertEqual(
             value["protected_configuration"]["required_provisioning_secret_names"],
@@ -115,16 +125,22 @@ class WindowsAuthorityControllerBootstrapTests(unittest.TestCase):
         self.assertTrue(
             value["protected_configuration"]["secret_values_must_not_be_persisted"]
         )
+        completion = value["completion"]
+        self.assertEqual(completion["ready_field"], "ready_to_dispatch_rc4_provisioning")
         self.assertEqual(
-            value["completion"]["ready_field"],
-            "ready_to_dispatch_rc4_provisioning",
-        )
-        self.assertEqual(
-            value["completion"]["provisioning_workflow"],
+            completion["provisioning_workflow"],
             ".github/workflows/ga-windows-authority-rc4-provision-selfhosted.yml",
         )
-        self.assertFalse(value["completion"]["authoritative"])
-        self.assertFalse(value["completion"]["ga_eligible"])
+        self.assertEqual(
+            completion["provisioning_operation_run_id_input_from_report"],
+            "operation_run_id",
+        )
+        self.assertEqual(
+            completion["provisioning_operation_run_attempt_input_from_report"],
+            "operation_run_attempt",
+        )
+        self.assertFalse(completion["authoritative"])
+        self.assertFalse(completion["ga_eligible"])
 
     def test_legacy_rc3_contract_is_preserved_as_history(self) -> None:
         value = json.loads(LEGACY_RC3_CONTRACT.read_text(encoding="utf-8"))
