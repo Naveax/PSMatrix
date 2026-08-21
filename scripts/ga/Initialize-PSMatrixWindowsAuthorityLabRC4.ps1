@@ -15,6 +15,7 @@ Set-StrictMode -Version 2.0
 $releaseVersion = '2.0.0rc4'
 $requiredRuntimes = @('windows-powershell-4.0','windows-powershell-5.0','windows-powershell-5.1')
 $requiredRunnerLabels = @('self-hosted','Windows','X64','psmatrix-hyperv')
+$requiredHyperVCommands = @('Get-VM','Get-VMHost','Get-VMSnapshot','Restore-VMSnapshot','Checkpoint-VM')
 $requiredSecrets = @('PSMATRIX_WPS40_ADMIN_PASSWORD','PSMATRIX_WPS50_ADMIN_PASSWORD','PSMATRIX_WPS51_ADMIN_PASSWORD')
 $checks = New-Object System.Collections.ArrayList
 $remaining = New-Object System.Collections.ArrayList
@@ -94,14 +95,47 @@ Bootstrap readiness cannot open the authoritative or Production GA gate.
     if (-not [Environment]::Is64BitOperatingSystem -or -not [Environment]::Is64BitProcess) { throw 'A 64-bit Windows OS and PowerShell process are required.' }
     $env:PROCESSOR_ARCHITECTURE
 })
-[void](Invoke-Check 'hyper-v' $true {
-    Import-Module Hyper-V -ErrorAction Stop
-    foreach ($name in @('Get-VM','Get-VMHost','Get-VMSnapshot','Restore-VMSnapshot','Checkpoint-VM')) {
-        if (-not (Get-Command $name -ErrorAction SilentlyContinue)) { throw ('Missing Hyper-V command: {0}' -f $name) }
+[void](Invoke-Check 'hardware-virtualization' $true {
+    $computer = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+    $processors = @(Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop)
+    $firmwareEnabled = @($processors | Where-Object { $_.VirtualizationFirmwareEnabled -eq $true }).Count -gt 0
+    if (-not $computer.HypervisorPresent -and -not $firmwareEnabled) {
+        throw 'Hardware virtualization is not active. Enable AMD-V/SVM or Intel VT-x in firmware.'
     }
-    $service = Get-Service vmms -ErrorAction Stop
+    'hypervisor_present={0}; firmware_enabled={1}' -f $computer.HypervisorPresent, $firmwareEnabled
+})
+[void](Invoke-Check 'hyper-v-feature' $true {
+    $state = $null
+    if (Get-Command -Name Get-WindowsOptionalFeature -ErrorAction SilentlyContinue) {
+        $feature = Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-All -ErrorAction Stop
+        $state = [string]$feature.State
+    } elseif (Get-Command -Name Get-WindowsFeature -ErrorAction SilentlyContinue) {
+        $feature = Get-WindowsFeature -Name Hyper-V -ErrorAction Stop
+        $state = if ($feature.Installed) { 'Enabled' } else { 'Disabled' }
+    } else {
+        throw 'No supported Windows feature inspection command is available.'
+    }
+    if ($state -notin @('Enabled','EnablePending')) { throw ('Hyper-V is not enabled; detected state {0}' -f $state) }
+    $state
+})
+[void](Invoke-Check 'hyper-v-module' $true {
+    Import-Module Hyper-V -ErrorAction Stop
+    $module = Get-Module -Name Hyper-V
+    if ($null -eq $module) { throw 'Hyper-V module did not load.' }
+    $module.Version.ToString()
+})
+[void](Invoke-Check 'vmms-running' $true {
+    $service = Get-Service -Name vmms -ErrorAction Stop
     if ($service.Status -ne 'Running') { throw ('VMMS is not running; detected {0}' -f $service.Status) }
-    'module=loaded; vmms=Running'
+    $service.Status.ToString()
+})
+[void](Invoke-Check 'hyper-v-commands' $true {
+    $missing = @()
+    foreach ($name in $requiredHyperVCommands) {
+        if (-not (Get-Command -Name $name -ErrorAction SilentlyContinue)) { $missing += $name }
+    }
+    if ($missing.Count -gt 0) { throw ('Missing Hyper-V commands: {0}' -f ($missing -join ', ')) }
+    $requiredHyperVCommands -join ','
 })
 [void](Invoke-Check 'ga-root-layout' $true {
     $requiredPaths = @($releaseRoot,$externalRoot,$operationRoot,$provisioningRoot,$configRoot,$trustRoot)
@@ -224,12 +258,16 @@ $report = [ordered]@{
     operation_package_candidate_present = $operationReady
     provisioning_inputs_present = $provisioningReady
     ready_to_dispatch_rc4_provisioning = $controllerReady -and $runnerReady -and $inputsReady -and $secretsReady
+    authority_level = 'local-controller-bootstrap'
     authoritative = $false
     ga_eligible = $false
     ga_root = $root
     release_version = $releaseVersion
     release_commit = $releaseCommit
+    release_public_key_source = 'verified-protected-release-bundle'
+    release_public_key_secret_required = $false
     required_runner_labels = $requiredRunnerLabels
+    required_hyper_v_commands = $requiredHyperVCommands
     protected_environment = 'production-ga-windows-lab'
     required_runtimes = $requiredRuntimes
     required_provisioning_secret_names = $requiredSecrets

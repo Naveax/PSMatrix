@@ -5,6 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP = ROOT / "scripts" / "ga" / "Initialize-PSMatrixWindowsAuthorityLab.ps1"
+RC4_BOOTSTRAP = ROOT / "scripts" / "ga" / "Initialize-PSMatrixWindowsAuthorityLabRC4.ps1"
 CONTRACT = ROOT / "ga-packs" / "03-authoritative-windows" / "controller-bootstrap-contract.json"
 INFRA_WORKFLOW = ROOT / ".github" / "workflows" / "ga-windows-authority-infrastructure-preflight.yml"
 SOURCE_WORKFLOW = ROOT / ".github" / "workflows" / "ga-pack03-windows-source-preflight.yml"
@@ -55,7 +56,13 @@ class WindowsAuthorityControllerBootstrapTests(unittest.TestCase):
         self.assertFalse(value["completion"]["ga_eligible"])
 
     def test_bootstrap_is_fail_closed_and_never_creates_fake_evidence(self) -> None:
-        text = BOOTSTRAP.read_text(encoding="utf-8")
+        wrapper = BOOTSTRAP.read_text(encoding="utf-8")
+        self.assertIn("Initialize-PSMatrixWindowsAuthorityLabRC4.ps1", wrapper)
+        self.assertIn("@PSBoundParameters", wrapper)
+        self.assertNotIn("2.0.0rc3", wrapper)
+        self.assertNotIn("Invoke-Expression", wrapper)
+
+        text = RC4_BOOTSTRAP.read_text(encoding="utf-8")
         required = (
             "[switch]$CreateLayout",
             "[switch]$RequireRunnerService",
@@ -70,14 +77,15 @@ class WindowsAuthorityControllerBootstrapTests(unittest.TestCase):
             "Restore-VMSnapshot",
             "Checkpoint-VM",
             "actions.runner.*PSMatrix*",
-            "media\\release\\2.0.0rc3",
+            "media\\release\\2.0.0rc4",
             "media\\external",
-            "operation\\2.0.0rc3",
+            "operation\\2.0.0rc4",
+            "provisioning\\2.0.0rc4",
             "RELEASE_CLOSURE_READY",
             "windows-lab-media.json",
             "READY_FOR_WINDOWS_HOST",
             "ready_for_release_artifact_recovery",
-            "ready_to_dispatch_infrastructure_preflight",
+            "ready_to_dispatch_rc4_provisioning",
             "release_public_key_source = 'verified-protected-release-bundle'",
             "release_public_key_secret_required = $false",
             "authority_level = 'local-controller-bootstrap'",
@@ -88,10 +96,9 @@ class WindowsAuthorityControllerBootstrapTests(unittest.TestCase):
         for value in required:
             with self.subTest(value=value):
                 self.assertIn(value, text)
-        self.assertIn("-endpoint.example.json", text)
-        self.assertIn("-image.example.json", text)
-        self.assertIn("templates_must_not_use_validator_filenames", CONTRACT.read_text(encoding="utf-8"))
-        self.assertNotIn("protected secret: PSMATRIX_RELEASE_PUBLIC_KEY", text)
+        self.assertNotIn("2.0.0rc3", text)
+        self.assertNotIn("PSMATRIX_WINDOWS_LAB_PRIVATE_KEY", text)
+        self.assertNotIn("PSMATRIX_WINDOWS_LAB_PUBLIC_KEY", text)
         self.assertNotIn("Join-Path $root 'release'", text)
         self.assertNotIn("Invoke-Expression", text)
 
