@@ -28,7 +28,7 @@ function Read-JsonObject([string]$Path, [string]$Label) {
 function Invoke-PythonChecked([string]$Python, [string[]]$Arguments, [int[]]$AcceptedExitCodes = @(0)) {
     & $Python @Arguments
     $code = $LASTEXITCODE
-    if ($code -notin $AcceptedExitCodes) { throw "python command failed with exit ${code}: $($Arguments -join ' ')" }
+    if ($code -notin $AcceptedExitCodes) { throw "python command failed with exit ${code}; command arguments were intentionally redacted." }
     return $code
 }
 function Get-PathComparison() {

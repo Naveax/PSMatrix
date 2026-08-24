@@ -100,8 +100,10 @@ class ProductionGACommandBoundaryRegressionTests(unittest.TestCase):
             "Assert-NoLinkOrReparsePath $offlineInventory 'Offline inventory'",
             "Trusted gh executable must stay outside the repository",
             "readiness_rerun_candidate=((-not $DryRun.IsPresent) -and ($presentAfter -eq 41))",
+            "command arguments were intentionally redacted",
         ):
             self.assertIn(required, source)
+        self.assertNotIn("$($Arguments -join ' ')", source)
 
     def test_offline_inventory_is_rejected_before_mutating_workspace_creation(self) -> None:
         if self.pwsh is None:
