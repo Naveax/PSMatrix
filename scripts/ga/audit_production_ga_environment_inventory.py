@@ -2,14 +2,60 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 
+EXPECTED_REPOSITORY = "Naveax/PSMatrix"
+
+
 class EnvironmentInventoryError(RuntimeError):
     pass
+
+
+def _reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    seen: set[str] = set()
+    for key, value in pairs:
+        folded = key.casefold()
+        if folded in seen:
+            raise EnvironmentInventoryError("JSON input contains a duplicate object key")
+        seen.add(folded)
+        result[key] = value
+    return result
+
+
+def _strict_json_loads(text: str) -> Any:
+    def reject_constant(value: str) -> Any:
+        raise EnvironmentInventoryError(f"JSON input contains non-standard numeric constant: {value}")
+
+    try:
+        return json.loads(text, object_pairs_hook=_reject_duplicate_pairs, parse_constant=reject_constant)
+    except json.JSONDecodeError as exc:
+        raise EnvironmentInventoryError("JSON input is invalid") from exc
+
+
+def _validate_repository(repository: str) -> None:
+    if repository != EXPECTED_REPOSITORY:
+        raise EnvironmentInventoryError("Production GA inventory repository must be exactly Naveax/PSMatrix")
+
+
+def _resolve_trusted_gh(requested: str) -> str:
+    discovered = shutil.which("gh")
+    if not discovered:
+        raise EnvironmentInventoryError("trusted gh application is unavailable on operator PATH")
+    candidate = shutil.which(requested) if not os.path.isabs(requested) else requested
+    if not candidate or not Path(candidate).is_file():
+        raise EnvironmentInventoryError("requested gh application is unavailable")
+    discovered_real = os.path.normcase(os.path.realpath(discovered))
+    candidate_real = os.path.normcase(os.path.realpath(candidate))
+    if candidate_real != discovered_real:
+        raise EnvironmentInventoryError("--gh must resolve to the gh application selected by operator PATH")
+    return os.path.realpath(discovered)
 
 
 def _required(contract: dict[str, Any]) -> dict[str, dict[str, set[str]]]:
@@ -31,14 +77,12 @@ def _required(contract: dict[str, Any]) -> dict[str, dict[str, set[str]]]:
 
 
 def _gh_names(gh: str, repository: str, environment: str, kind: str) -> set[str]:
-    command = [gh, kind, "list", "--env", environment, "--repo", repository, "--json", "name"]
+    _validate_repository(repository)
+    command = [gh, kind, "list", "--env", environment, "--repo", EXPECTED_REPOSITORY, "--json", "name"]
     completed = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, check=False)
     if completed.returncode != 0:
-        raise EnvironmentInventoryError(f"gh {kind} list failed for {environment}: {completed.stderr.strip()}")
-    try:
-        value = json.loads(completed.stdout)
-    except json.JSONDecodeError as exc:
-        raise EnvironmentInventoryError(f"gh {kind} list returned invalid JSON for {environment}") from exc
+        raise EnvironmentInventoryError(f"gh {kind} list failed for {environment}; command output was intentionally redacted")
+    value = _strict_json_loads(completed.stdout)
     if not isinstance(value, list):
         raise EnvironmentInventoryError(f"gh {kind} list returned non-list JSON for {environment}")
     names: set[str] = set()
@@ -50,12 +94,13 @@ def _gh_names(gh: str, repository: str, environment: str, kind: str) -> set[str]
 
 
 def collect_inventory(contract: dict[str, Any], *, repository: str, gh: str = "gh") -> dict[str, Any]:
+    _validate_repository(repository)
     required = _required(contract)
     environments: dict[str, Any] = {}
     for environment in required:
         environments[environment] = {
-            "secrets": sorted(_gh_names(gh, repository, environment, "secret")),
-            "vars": sorted(_gh_names(gh, repository, environment, "variable")),
+            "secrets": sorted(_gh_names(gh, EXPECTED_REPOSITORY, environment, "secret")),
+            "vars": sorted(_gh_names(gh, EXPECTED_REPOSITORY, environment, "variable")),
         }
     return {"schema": 1, "kind": "psmatrix.production-ga-environment-name-inventory", "version": "2.0.0", "environments": environments}
 
@@ -116,21 +161,26 @@ def audit_inventory(contract: dict[str, Any], inventory: dict[str, Any]) -> dict
 def main() -> int:
     parser = argparse.ArgumentParser(description="Audit Production GA GitHub environment names without reading secret values")
     parser.add_argument("--contract", type=Path, default=Path("ga-packs/03-authoritative-windows/final-production-readiness-contract.json"))
-    parser.add_argument("--repository", default="Naveax/PSMatrix")
+    parser.add_argument("--repository", default=EXPECTED_REPOSITORY)
     parser.add_argument("--gh", default="gh")
     parser.add_argument("--inventory", type=Path, help="Use a names-only offline inventory instead of invoking gh")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
-        contract = json.loads(args.contract.read_text(encoding="utf-8"))
-        inventory = json.loads(args.inventory.read_text(encoding="utf-8")) if args.inventory else collect_inventory(contract, repository=args.repository, gh=args.gh)
+        _validate_repository(args.repository)
+        contract = _strict_json_loads(args.contract.read_text(encoding="utf-8"))
+        if args.inventory:
+            inventory = _strict_json_loads(args.inventory.read_text(encoding="utf-8"))
+        else:
+            gh = _resolve_trusted_gh(args.gh)
+            inventory = collect_inventory(contract, repository=EXPECTED_REPOSITORY, gh=gh)
         result = audit_inventory(contract, inventory)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(f"production_ga_environment_inventory={result['status']} present={result['present_check_count']}/41 missing={result['missing_check_count']}")
         print("secret_values_observed=false")
         return 0 if result["status"] == "PASS" else 2
-    except (OSError, json.JSONDecodeError, EnvironmentInventoryError, subprocess.SubprocessError, TypeError, ValueError) as exc:
+    except (OSError, EnvironmentInventoryError, subprocess.SubprocessError, TypeError, ValueError) as exc:
         print(f"Production GA environment inventory audit failed: {exc}", file=sys.stderr)
         return 1
 

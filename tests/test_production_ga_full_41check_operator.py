@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -34,6 +35,22 @@ class ProductionGAFullFortyOneCheckOperatorTests(unittest.TestCase):
         self.assertIn("final_ga_evaluator_invoked = $false", text)
         self.assertIn("ga_eligible = $false", text)
         self.assertNotIn("--body", text)
+
+    def test_source_pins_repository_and_trusted_command_boundary(self) -> None:
+        text = SCRIPT.read_text(encoding="utf-8")
+        for required in (
+            "$ExpectedRepository = 'Naveax/PSMatrix'",
+            "Full Production GA provisioning repository must be exactly Naveax/PSMatrix",
+            "Resolve-TrustedGh",
+            "Assert-ExistingAncestorsNoLink",
+            "Assert-NoLinkOrReparsePath $repoRoot 'Repository root'",
+            "Repository = $ExpectedRepository",
+            "'--repository', $ExpectedRepository",
+            "$provisionArgs.GhPath = $gh",
+        ):
+            self.assertIn(required, text)
+        self.assertNotIn("Repository = $Repository", text)
+        self.assertNotIn("'--repository', $Repository", text)
 
     def test_repo_local_workspace_is_rejected_before_external_material_access(self) -> None:
         pwsh = shutil.which("pwsh")
@@ -75,6 +92,50 @@ class ProductionGAFullFortyOneCheckOperatorTests(unittest.TestCase):
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("workspace must stay outside the repository", completed.stdout)
         self.assertFalse(local_root.exists())
+
+    def test_repository_override_fails_before_workspace_or_material_access(self) -> None:
+        pwsh = shutil.which("pwsh")
+        if not pwsh:
+            self.skipTest("pwsh required")
+        with tempfile.TemporaryDirectory(prefix="psmatrix-full41-repo-pin-") as temporary:
+            workspace = Path(temporary) / "workspace"
+            completed = subprocess.run(
+                [
+                    pwsh,
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(SCRIPT),
+                    "-Root",
+                    str(workspace),
+                    "-PublicAuthMaterialRoot",
+                    str(Path(temporary) / "missing-public-auth"),
+                    "-OtlpEndpointFile",
+                    str(Path(temporary) / "missing-otlp-endpoint"),
+                    "-OtlpHeadersFile",
+                    str(Path(temporary) / "missing-otlp-headers"),
+                    "-SecurityReviewPacket",
+                    str(Path(temporary) / "missing-review-packet"),
+                    "-SecurityReviewReport",
+                    str(Path(temporary) / "missing-review-report"),
+                    "-Repository",
+                    "attacker/example",
+                    "-DryRun",
+                ],
+                cwd=ROOT,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+                check=False,
+            )
+            self.assertNotEqual(completed.returncode, 0, completed.stdout)
+            self.assertIn("repository must be exactly Naveax/PSMatrix", completed.stdout)
+            self.assertFalse(workspace.exists())
 
 
 if __name__ == "__main__":

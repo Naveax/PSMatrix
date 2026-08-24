@@ -16,6 +16,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$ExpectedRepository = 'Naveax/PSMatrix'
+
 function Read-JsonObject([string]$Path, [string]$Label) {
     $resolved = [IO.Path]::GetFullPath($Path)
     if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) { throw "$Label not found: $resolved" }
@@ -29,14 +31,69 @@ function Invoke-PythonChecked([string]$Python, [string[]]$Arguments, [int[]]$Acc
     if ($code -notin $AcceptedExitCodes) { throw "python command failed with exit ${code}: $($Arguments -join ' ')" }
     return $code
 }
+function Test-PathEqual([string]$Left, [string]$Right) {
+    $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    return [string]::Equals([IO.Path]::GetFullPath($Left), [IO.Path]::GetFullPath($Right), $comparison)
+}
+function Assert-NoLinkOrReparsePath([string]$Path, [string]$Label) {
+    $resolved = [IO.Path]::GetFullPath($Path)
+    if (-not (Test-Path -LiteralPath $resolved)) { throw "$Label path is missing." }
+    $current = Get-Item -LiteralPath $resolved -Force
+    while ($null -ne $current) {
+        $linkProperty = $current.PSObject.Properties['LinkType']
+        $linkType = if ($null -ne $linkProperty) { [string]$linkProperty.Value } else { '' }
+        $isReparsePoint = (($current.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+        if ($isReparsePoint -or -not [string]::IsNullOrWhiteSpace($linkType)) {
+            throw "$Label path must not contain links or reparse points."
+        }
+        if ($current -is [IO.FileInfo]) { $current = $current.Directory }
+        elseif ($current -is [IO.DirectoryInfo]) { $current = $current.Parent }
+        else { break }
+    }
+}
+function Assert-ExistingAncestorsNoLink([string]$Path, [string]$Label) {
+    $cursor = [IO.Path]::GetFullPath($Path)
+    while (-not (Test-Path -LiteralPath $cursor)) {
+        $parent = Split-Path -Parent $cursor
+        if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $cursor) { throw "$Label has no existing trusted ancestor." }
+        $cursor = $parent
+    }
+    Assert-NoLinkOrReparsePath $cursor "$Label ancestor"
+}
+function Assert-OutsideRepository([string]$Path, [string]$RepoRoot, [string]$Label) {
+    $absolute = [IO.Path]::GetFullPath($Path)
+    Assert-ExistingAncestorsNoLink $absolute $Label
+    $repoPrefix = [IO.Path]::GetFullPath($RepoRoot).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
+    $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    if ($absolute.StartsWith($repoPrefix, $comparison) -or (Test-PathEqual $absolute $RepoRoot)) {
+        throw "$Label must stay outside the repository."
+    }
+    return $absolute
+}
+function Resolve-TrustedGh([string]$Requested) {
+    $command = Get-Command gh -CommandType Application -ErrorAction Stop
+    $discovered = [IO.Path]::GetFullPath([string]$command.Source)
+    if (-not (Test-Path -LiteralPath $discovered -PathType Leaf)) { throw 'Trusted gh executable is missing.' }
+    Assert-NoLinkOrReparsePath $discovered 'Trusted gh executable'
+    if (-not [string]::IsNullOrWhiteSpace($Requested)) {
+        $candidate = [IO.Path]::GetFullPath($Requested)
+        if (-not (Test-PathEqual $candidate $discovered)) {
+            throw 'GhPath must match the gh application resolved by the trusted operator PATH.'
+        }
+    }
+    return $discovered
+}
 
+if (-not [string]::Equals($Repository, $ExpectedRepository, [StringComparison]::Ordinal)) {
+    throw 'Full Production GA provisioning repository must be exactly Naveax/PSMatrix.'
+}
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
-$repoPrefix = $repoRoot.TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
-$workspace = [IO.Path]::GetFullPath($Root)
-if ($workspace.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Full Production GA provisioning workspace must stay outside the repository.' }
+Assert-NoLinkOrReparsePath $repoRoot 'Repository root'
+$workspace = Assert-OutsideRepository $Root $repoRoot 'Full Production GA provisioning workspace'
 New-Item -ItemType Directory -Path $workspace -Force | Out-Null
-$python = (Get-Command python -ErrorAction Stop).Source
-$gh = if ([string]::IsNullOrWhiteSpace($GhPath)) { $null } else { [IO.Path]::GetFullPath($GhPath) }
+Assert-NoLinkOrReparsePath $workspace 'Full Production GA provisioning workspace'
+$python = (Get-Command python -CommandType Application -ErrorAction Stop).Source
+$gh = $null
 
 $workspaceSummary = Join-Path $workspace 'local-provisioning-summary.json'
 $publicAuthValueRoot = Join-Path $workspace 'values/public-auth'
@@ -49,8 +106,8 @@ $preAudit = Join-Path $workspace 'pre-provision-inventory-audit.json'
 $selectedMap = Join-Path $workspace 'selected-missing.material-map.json'
 $postAudit = Join-Path $workspace 'post-provision-inventory-audit.json'
 $receipt = Join-Path $workspace 'full-41-provisioning-receipt.json'
-$summaryPath = if ([string]::IsNullOrWhiteSpace($SummaryOutput)) { Join-Path $workspace 'full-41-provisioning-operation.json' } else { [IO.Path]::GetFullPath($SummaryOutput) }
-if ($summaryPath.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Full Production GA provisioning summary must stay outside the repository.' }
+$summaryPath = if ([string]::IsNullOrWhiteSpace($SummaryOutput)) { Join-Path $workspace 'full-41-provisioning-operation.json' } else { Assert-OutsideRepository $SummaryOutput $repoRoot 'Full Production GA provisioning summary' }
+Assert-ExistingAncestorsNoLink $summaryPath 'Full Production GA provisioning summary'
 
 Push-Location $repoRoot
 try {
@@ -101,11 +158,12 @@ try {
         throw 'Merged Production GA material map must be exact 5-fragment / 12-environment / 41-check closure.'
     }
 
-    $auditArgs = @('scripts/ga/audit_production_ga_environment_inventory.py', '--repository', $Repository, '--output', $preAudit)
+    $auditArgs = @('scripts/ga/audit_production_ga_environment_inventory.py', '--repository', $ExpectedRepository, '--output', $preAudit)
     if (-not [string]::IsNullOrWhiteSpace($OfflineInventoryBefore)) {
         $auditArgs += @('--inventory', [IO.Path]::GetFullPath($OfflineInventoryBefore))
     }
-    elseif ($gh) {
+    else {
+        $gh = Resolve-TrustedGh $GhPath
         $auditArgs += @('--gh', $gh)
     }
     Invoke-PythonChecked $python $auditArgs @(0,2) | Out-Null
@@ -136,19 +194,23 @@ try {
 
         $provisionArgs = @{
             MaterialMap = $selectedMap
-            Repository = $Repository
+            Repository = $ExpectedRepository
             Environment = $selectedEnvironments
             AllowPartialEnvironment = $true
         }
-        if ($gh) { $provisionArgs.GhPath = $gh }
-        if ($DryRun) { $provisionArgs.DryRun = $true }
+        if ($DryRun) {
+            $provisionArgs.DryRun = $true
+        }
+        else {
+            if ($null -eq $gh) { $gh = Resolve-TrustedGh $GhPath }
+            $provisionArgs.GhPath = $gh
+        }
         & (Join-Path $repoRoot 'scripts/ga/Invoke-ProductionGAEnvironmentProvisioning.ps1') @provisionArgs
         if ($LASTEXITCODE -ne 0) { throw 'Exact Production GA environment provisioning failed.' }
         $mutationExecuted = -not $DryRun.IsPresent
 
         if ($mutationExecuted) {
-            $postArgs = @('scripts/ga/audit_production_ga_environment_inventory.py', '--repository', $Repository, '--output', $postAudit)
-            if ($gh) { $postArgs += @('--gh', $gh) }
+            $postArgs = @('scripts/ga/audit_production_ga_environment_inventory.py', '--repository', $ExpectedRepository, '--output', $postAudit, '--gh', $gh)
             Invoke-PythonChecked $python $postArgs @(0,2) | Out-Null
             $after = Read-JsonObject $postAudit 'Post-provision Production GA inventory audit'
             Invoke-PythonChecked $python @(
@@ -186,7 +248,7 @@ try {
         kind = 'psmatrix.production-ga-full-41check-provisioning-operation'
         version = '2.0.0'
         status = $operationStatus
-        repository = $Repository
+        repository = $ExpectedRepository
         workspace = $workspace
         local_check_count = 19
         external_or_review_check_count = 22
@@ -220,7 +282,7 @@ try {
         }
     }
     $summaryDirectory = Split-Path -Parent $summaryPath
-    if ($summaryDirectory) { New-Item -ItemType Directory -Path $summaryDirectory -Force | Out-Null }
+    if ($summaryDirectory) { New-Item -ItemType Directory -Path $summaryDirectory -Force | Out-Null; Assert-NoLinkOrReparsePath $summaryDirectory 'Full Production GA provisioning summary directory' }
     [IO.File]::WriteAllText($summaryPath,(($operation | ConvertTo-Json -Depth 20)+[Environment]::NewLine),[Text.UTF8Encoding]::new($false))
 
     Write-Host "production_ga_full_41check_operation=$operationStatus"

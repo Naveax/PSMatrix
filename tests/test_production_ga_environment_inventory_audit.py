@@ -91,15 +91,41 @@ class ProductionGAEnvironmentInventoryAuditTests(unittest.TestCase):
             self.assertIn("--json", command)
             index = command.index("--json")
             self.assertEqual(command[index + 1], "name")
+            self.assertEqual(command[command.index("--repo") + 1], "Naveax/PSMatrix")
             joined = " ".join(command).lower()
             self.assertNotIn("value", joined)
             self.assertNotIn("body", joined)
+
+    def test_wrong_repository_is_rejected_before_subprocess(self) -> None:
+        with mock.patch.object(self.module.subprocess, "run") as run:
+            with self.assertRaisesRegex(self.module.EnvironmentInventoryError, "repository must be exactly Naveax/PSMatrix"):
+                self.module.collect_inventory(self.contract, repository="attacker/example", gh="gh")
+        run.assert_not_called()
+
+    def test_gh_failure_redacts_stderr_content(self) -> None:
+        sentinel = "DO-NOT-REFLECT-THIS-CONTENT"
+        with mock.patch.object(
+            self.module.subprocess,
+            "run",
+            return_value=mock.Mock(returncode=1, stdout="", stderr=sentinel),
+        ):
+            with self.assertRaises(self.module.EnvironmentInventoryError) as raised:
+                self.module._gh_names("gh", "Naveax/PSMatrix", "production-ga-release-signing", "secret")
+        message = str(raised.exception)
+        self.assertIn("intentionally redacted", message)
+        self.assertNotIn(sentinel, message)
+
+    def test_strict_json_rejects_duplicate_object_keys_and_nonfinite_constants(self) -> None:
+        with self.assertRaisesRegex(self.module.EnvironmentInventoryError, "duplicate object key"):
+            self.module._strict_json_loads('{"name":"A","name":"B"}')
+        with self.assertRaisesRegex(self.module.EnvironmentInventoryError, "non-standard numeric constant"):
+            self.module._strict_json_loads('{"value":NaN}')
 
     def test_offline_inventory_roundtrip_never_requires_secret_values(self) -> None:
         with tempfile.TemporaryDirectory(prefix="psmatrix-env-inventory-") as temporary:
             path = Path(temporary) / "inventory.json"
             path.write_text(json.dumps(self._inventory(complete=True)), encoding="utf-8")
-            loaded = json.loads(path.read_text(encoding="utf-8"))
+            loaded = self.module._strict_json_loads(path.read_text(encoding="utf-8"))
             value = self.module.audit_inventory(self.contract, loaded)
             self.assertEqual(value["status"], "PASS")
             self.assertFalse(value["values_observed"])
@@ -119,6 +145,14 @@ class ProductionGAEnvironmentInventoryAuditTests(unittest.TestCase):
                         "extra_vars",
                     },
                 )
+
+    def test_source_pins_repository_and_redacts_command_errors(self) -> None:
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('EXPECTED_REPOSITORY = "Naveax/PSMatrix"', source)
+        self.assertIn("_resolve_trusted_gh", source)
+        self.assertIn("command output was intentionally redacted", source)
+        self.assertIn("object_pairs_hook=_reject_duplicate_pairs", source)
+        self.assertNotIn("completed.stderr.strip()", source)
 
 
 if __name__ == "__main__":
