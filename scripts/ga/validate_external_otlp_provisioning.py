@@ -46,7 +46,10 @@ def _reject_link_or_reparse_components(path: Path, *, label: str) -> Path:
 
 
 def _safe_input_file(path: Path, *, label: str) -> Path:
-    candidate = _reject_link_or_reparse_components(path, label=label)
+    lexical = _lexical_absolute(path, label=label)
+    if _is_link_or_reparse(lexical):
+        raise OTLPProvisioningError(f"{label} is missing or unsafe")
+    candidate = _reject_link_or_reparse_components(lexical, label=label)
     resolved = candidate.resolve()
     if not resolved.is_file():
         raise OTLPProvisioningError(f"{label} is missing or unsafe")

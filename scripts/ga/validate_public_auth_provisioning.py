@@ -81,7 +81,10 @@ def _reject_link_or_reparse_components(path: Path, *, label: str) -> Path:
 
 
 def _safe_directory(path: Path, *, label: str) -> Path:
-    candidate = _reject_link_or_reparse_components(path, label=label)
+    lexical = _lexical_absolute(path, label=label)
+    if _is_link_or_reparse(lexical):
+        raise PublicAuthProvisioningError(f"{label} is missing or unsafe")
+    candidate = _reject_link_or_reparse_components(lexical, label=label)
     resolved = candidate.resolve()
     if not resolved.is_dir():
         raise PublicAuthProvisioningError(f"{label} is missing or unsafe")
@@ -89,7 +92,10 @@ def _safe_directory(path: Path, *, label: str) -> Path:
 
 
 def _safe_path_file(path: Path, *, label: str) -> Path:
-    candidate = _reject_link_or_reparse_components(path, label=label)
+    lexical = _lexical_absolute(path, label=label)
+    if _is_link_or_reparse(lexical):
+        raise PublicAuthProvisioningError(f"missing or unsafe {label}: {lexical.name}")
+    candidate = _reject_link_or_reparse_components(lexical, label=label)
     resolved = candidate.resolve()
     if not resolved.is_file():
         raise PublicAuthProvisioningError(f"missing or unsafe {label}: {candidate.name}")
