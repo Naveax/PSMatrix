@@ -187,6 +187,62 @@ class FinalSecurityReviewPathSafetyTests(unittest.TestCase):
                     output=root / "authority-status.json",
                 )
 
+    def test_reviewer_commitment_rejects_duplicate_object_key(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="psmatrix-reviewer-commitment-duplicate-") as temporary:
+            root = Path(temporary)
+            commitment = root / "commitment.json"
+            first = "sha256:" + "0" * 64
+            second = "sha256:" + "1" * 64
+            value = json.dumps(self._commitment(first), separators=(",", ":"))
+            value = value[:-1] + f',"security_review_key_id":"{second}"' + "}"
+            commitment.write_text(value + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(
+                self.review.FinalSecurityReviewPacketError,
+                "duplicate JSON object key: security_review_key_id",
+            ):
+                self.review._load_reviewer_commitment(
+                    commitment,
+                    expected_commit=self.review._FINAL_COMMIT,
+                )
+
+    def test_packet_json_entry_rejects_nested_duplicate_object_key(self) -> None:
+        entries = {
+            self.review._MANIFEST: (
+                b'{"schema":1,"source_archive":{"sha256":"first","sha256":"second"}}'
+            )
+        }
+        with self.assertRaisesRegex(
+            self.review.FinalSecurityReviewPacketError,
+            "duplicate JSON object key: sha256",
+        ):
+            self.review._json_entry(entries, self.review._MANIFEST)
+
+    def test_completed_report_file_rejects_duplicate_reviewer_key(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="psmatrix-review-report-duplicate-") as temporary:
+            report = Path(temporary) / "report.json"
+            report.write_text(
+                '{"reviewer":{"name":"first","name":"second"}}\n',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                self.review.FinalSecurityReviewPacketError,
+                "duplicate JSON object key: name",
+            ):
+                self.review._strict_json_file(
+                    report,
+                    label="completed security review report",
+                )
+
+    def test_security_review_json_rejects_nonstandard_numeric_constants(self) -> None:
+        with self.assertRaisesRegex(
+            self.review.FinalSecurityReviewPacketError,
+            "non-standard JSON numeric constant: NaN",
+        ):
+            self.review._strict_json_object(
+                b'{"schema":NaN}',
+                label="security reviewer commitment",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

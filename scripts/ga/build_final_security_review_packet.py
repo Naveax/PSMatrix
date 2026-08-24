@@ -23,7 +23,7 @@ from psmatrix.security_review import (
     build_security_review_packet,
 )
 from psmatrix.signing import SigningError, canonical_json_bytes, public_key_der, public_key_id
-from psmatrix.util import atomic_write_json, read_json, sha256_file
+from psmatrix.util import atomic_write_json, sha256_file
 
 
 class FinalSecurityReviewPacketError(RuntimeError):
@@ -94,6 +94,44 @@ def _safe_output_file(path: Path, label: str) -> Path:
     return resolved
 
 
+def _strict_json_object(raw: bytes, *, label: str) -> dict[str, Any]:
+    def reject_constant(value: str) -> None:
+        raise FinalSecurityReviewPacketError(
+            f"{label} contains a non-standard JSON numeric constant: {value}"
+        )
+
+    def unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise FinalSecurityReviewPacketError(
+                    f"{label} contains duplicate JSON object key: {key}"
+                )
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=unique_pairs,
+            parse_constant=reject_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise FinalSecurityReviewPacketError(f"{label} is not valid UTF-8 JSON") from exc
+    if not isinstance(value, dict):
+        raise FinalSecurityReviewPacketError(f"{label} JSON root is not an object")
+    return value
+
+
+def _strict_json_file(path: Path, *, label: str) -> tuple[Path, dict[str, Any]]:
+    resolved = _safe_input_file(path, label)
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise FinalSecurityReviewPacketError(f"unable to read {label}") from exc
+    return resolved, _strict_json_object(raw, label=label)
+
+
 def _exact_commit(root: Path) -> str:
     root = _safe_input_directory(root, "security review source checkout")
     try:
@@ -139,13 +177,7 @@ def _json_entry(entries: dict[str, bytes], name: str) -> dict[str, Any]:
     raw = entries.get(name)
     if raw is None:
         raise FinalSecurityReviewPacketError(f"security review packet entry is missing: {name}")
-    try:
-        value = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise FinalSecurityReviewPacketError(f"security review packet JSON is invalid: {name}") from exc
-    if not isinstance(value, dict):
-        raise FinalSecurityReviewPacketError(f"security review packet JSON root is not an object: {name}")
-    return value
+    return _strict_json_object(raw, label=f"security review packet entry {name}")
 
 
 def _normalize_reviewer(value: Any, *, source: str) -> dict[str, Any]:
@@ -167,9 +199,8 @@ def _normalize_reviewer(value: Any, *, source: str) -> dict[str, Any]:
 
 
 def _load_reviewer_commitment(path: Path, *, expected_commit: str) -> dict[str, Any]:
-    resolved = _safe_input_file(path, "security reviewer commitment")
-    value = read_json(resolved)
-    if not isinstance(value, dict) or set(value) != set(_COMMITMENT_FIELDS):
+    _, value = _strict_json_file(path, label="security reviewer commitment")
+    if set(value) != set(_COMMITMENT_FIELDS):
         raise FinalSecurityReviewPacketError("security reviewer commitment fields are not exact")
     if value.get("schema") != 1 or value.get("kind") != _COMMITMENT_KIND or value.get("version") != _FINAL_VERSION:
         raise FinalSecurityReviewPacketError("security reviewer commitment identity is invalid")
@@ -394,9 +425,7 @@ def validate_submission(
         source_archive=source_archive,
         release_manifest=release_manifest,
     )
-    report = read_json(report_path)
-    if not isinstance(report, dict):
-        raise FinalSecurityReviewPacketError("completed security review report root must be an object")
+    _, report = _strict_json_file(report_path, label="completed security review report")
     try:
         counts, methods = _validate_completed_report(
             report,
