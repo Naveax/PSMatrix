@@ -49,8 +49,11 @@ def _validate_headers(value: Any) -> list[str]:
 
 
 def validate_provisioning(endpoint: str, headers_file: Path) -> dict[str, Any]:
-    resolved = headers_file.resolve()
-    if not resolved.is_file() or resolved.is_symlink():
+    candidate = Path(headers_file).expanduser()
+    if candidate.is_symlink():
+        raise OTLPProvisioningError("OTLP headers file is missing or unsafe")
+    resolved = candidate.resolve()
+    if not resolved.is_file():
         raise OTLPProvisioningError("OTLP headers file is missing or unsafe")
     if resolved.stat().st_size <= 0 or resolved.stat().st_size > 1_000_000:
         raise OTLPProvisioningError("OTLP headers file size is invalid")

@@ -31,8 +31,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_object(path: Path, label: str) -> dict[str, Any]:
-    resolved = path.resolve()
-    if not resolved.is_file() or resolved.is_symlink():
+    candidate = Path(path).expanduser()
+    if candidate.is_symlink():
+        raise EnforcementError(f"{label} is missing or unsafe")
+    resolved = candidate.resolve()
+    if not resolved.is_file():
         raise EnforcementError(f"{label} is missing or unsafe")
     value = json.loads(resolved.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
@@ -41,8 +44,11 @@ def load_object(path: Path, label: str) -> dict[str, Any]:
 
 
 def sha256_file(path: Path) -> str:
+    candidate = Path(path).expanduser()
+    if candidate.is_symlink():
+        raise EnforcementError("hash input path is unsafe")
     digest = hashlib.sha256()
-    with path.resolve().open("rb") as handle:
+    with candidate.resolve().open("rb") as handle:
         while chunk := handle.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
@@ -75,11 +81,11 @@ def main() -> int:
     version = exact_version(args.expected_version)
     manifest_digest = exact_digest(args.release_manifest_sha256, "release_manifest_sha256")
     wheel_digest = exact_digest(args.release_wheel_sha256, "release_wheel_sha256")
-    report_path = args.report.resolve()
+    report_path = Path(args.report).expanduser()
 
     report = load_object(report_path, "live report")
-    oauth = load_object(args.oauth_proof, "OAuth proof")
-    mtls = load_object(args.mtls_proof, "mTLS proof")
+    oauth = load_object(Path(args.oauth_proof).expanduser(), "OAuth proof")
+    mtls = load_object(Path(args.mtls_proof).expanduser(), "mTLS proof")
     live_report_digest = sha256_file(report_path)
 
     if report.get("schema") != 1 or report.get("kind") != "psmatrix.public-auth-live-report":

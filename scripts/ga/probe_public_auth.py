@@ -32,6 +32,46 @@ class ProbeError(RuntimeError):
     pass
 
 
+def _lexical_absolute(path: Path) -> Path:
+    return Path(os.path.abspath(os.path.expanduser(str(path))))
+
+
+def _reject_symlink_components(path: Path, label: str) -> Path:
+    absolute = _lexical_absolute(path)
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current = current / part
+        if current.is_symlink():
+            raise ProbeError(f"{label} contains a symlink component")
+    return absolute
+
+
+def _safe_file(path: Path, label: str) -> Path:
+    candidate = _reject_symlink_components(path, label)
+    resolved = candidate.resolve()
+    if not resolved.is_file():
+        raise ProbeError(f"{label} is missing or unsafe")
+    return resolved
+
+
+def _safe_output_file(path: Path, label: str) -> Path:
+    candidate = _reject_symlink_components(path, label)
+    if candidate.exists() and candidate.is_dir():
+        raise ProbeError(f"{label} must be a file path")
+    return candidate.resolve()
+
+
+def _safe_output_directory(path: Path, label: str) -> Path:
+    candidate = _reject_symlink_components(path, label)
+    resolved = candidate.resolve()
+    if resolved.exists() and not resolved.is_dir():
+        raise ProbeError(f"{label} must be a directory")
+    resolved.mkdir(parents=True, exist_ok=True)
+    if any(resolved.iterdir()):
+        raise ProbeError(f"{label} must be empty")
+    return resolved
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="External fail-closed OAuth and direct mTLS authority probe for PSMatrix."
@@ -115,9 +155,9 @@ def client_context(cert: Path | None = None, key: Path | None = None) -> ssl.SSL
     if bool(cert) != bool(key):
         raise ProbeError("client certificate and private key must be supplied together")
     if cert is not None and key is not None:
-        if not cert.resolve().is_file() or not key.resolve().is_file():
-            raise ProbeError("client certificate or private key is missing")
-        context.load_cert_chain(str(cert.resolve()), str(key.resolve()))
+        safe_cert = _safe_file(cert, "client certificate")
+        safe_key = _safe_file(key, "client private key")
+        context.load_cert_chain(str(safe_cert), str(safe_key))
     return context
 
 
@@ -138,11 +178,12 @@ def tls_identity(endpoint: str, context: ssl.SSLContext, timeout: int) -> dict[s
 
 
 def certificate_sha256(path: Path) -> str:
-    text = path.resolve().read_text(encoding="utf-8")
+    safe_path = _safe_file(path, "client certificate")
+    text = safe_path.read_text(encoding="utf-8")
     try:
         der = ssl.PEM_cert_to_DER_cert(text)
     except ValueError as exc:
-        raise ProbeError(f"invalid PEM certificate: {path.name}") from exc
+        raise ProbeError(f"invalid PEM certificate: {safe_path.name}") from exc
     return hashlib.sha256(der).hexdigest()
 
 
@@ -241,13 +282,15 @@ def expected_rejection(action: Callable[[], HTTPResult], label: str) -> str:
 
 
 def write_json(path: Path, value: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    destination = _safe_output_file(path, "public-auth probe output")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def sha256_file(path: Path) -> str:
+    safe_path = _safe_file(path, "hash input")
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
+    with safe_path.open("rb") as handle:
         while chunk := handle.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
@@ -272,10 +315,7 @@ def main() -> int:
     if oauth_url == mtls_url:
         raise ProbeError("OAuth and direct mTLS endpoints must be separate URLs")
 
-    output_dir = args.output_dir.resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    if any(output_dir.iterdir()):
-        raise ProbeError("output directory must be empty")
+    output_dir = _safe_output_directory(args.output_dir, "public-auth probe output directory")
 
     valid_token = read_token(args.valid_token_env)
     wrong_audience_token = read_token(args.wrong_audience_token_env)
@@ -288,10 +328,10 @@ def main() -> int:
         raise ProbeError("OAuth proof tokens must be five distinct protected values")
 
     cert_paths = {
-        "valid": args.valid_client_cert.resolve(),
-        "rotated": args.rotated_client_cert.resolve(),
-        "revoked": args.revoked_client_cert.resolve(),
-        "untrusted": args.untrusted_client_cert.resolve(),
+        "valid": _safe_file(args.valid_client_cert, "valid client certificate"),
+        "rotated": _safe_file(args.rotated_client_cert, "rotated client certificate"),
+        "revoked": _safe_file(args.revoked_client_cert, "revoked client certificate"),
+        "untrusted": _safe_file(args.untrusted_client_cert, "untrusted client certificate"),
     }
     cert_fingerprints = {name: certificate_sha256(path) for name, path in cert_paths.items()}
     if len(set(cert_fingerprints.values())) != 4:

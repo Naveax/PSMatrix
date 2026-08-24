@@ -36,8 +36,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_object(path: Path, label: str) -> dict[str, Any]:
-    resolved = path.resolve()
-    if not resolved.is_file() or resolved.is_symlink():
+    candidate = Path(path).expanduser()
+    if candidate.is_symlink():
+        raise BindingError(f"{label} is missing or unsafe")
+    resolved = candidate.resolve()
+    if not resolved.is_file():
         raise BindingError(f"{label} is missing or unsafe")
     value = json.loads(resolved.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
@@ -46,7 +49,10 @@ def load_object(path: Path, label: str) -> dict[str, Any]:
 
 
 def atomic_json(path: Path, value: Any) -> None:
-    destination = path.resolve()
+    candidate = Path(path).expanduser()
+    if candidate.is_symlink():
+        raise BindingError("JSON output path is unsafe")
+    destination = candidate.resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     payload = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
     descriptor, temporary = tempfile.mkstemp(
@@ -68,8 +74,11 @@ def atomic_json(path: Path, value: Any) -> None:
 
 
 def sha256_file(path: Path) -> str:
+    candidate = Path(path).expanduser()
+    if candidate.is_symlink():
+        raise BindingError("hash input path is unsafe")
     digest = hashlib.sha256()
-    with path.resolve().open("rb") as handle:
+    with candidate.resolve().open("rb") as handle:
         while chunk := handle.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
@@ -122,9 +131,9 @@ def validate_proof(proof: dict[str, Any], proof_type: str, commit: str, version:
 
 def main() -> int:
     args = parse_args()
-    report_path = args.report.resolve()
-    oauth_path = args.oauth_proof.resolve()
-    mtls_path = args.mtls_proof.resolve()
+    report_path = Path(args.report).expanduser()
+    oauth_path = Path(args.oauth_proof).expanduser()
+    mtls_path = Path(args.mtls_proof).expanduser()
     commit = exact_commit(args.release_commit)
     version = exact_version(args.expected_version)
     manifest_digest = exact_digest(args.release_manifest_sha256, "release_manifest_sha256")
@@ -180,7 +189,7 @@ def main() -> int:
         "ga_eligible": False,
     }
     if args.output is not None:
-        atomic_json(args.output.resolve(), result)
+        atomic_json(Path(args.output).expanduser(), result)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 

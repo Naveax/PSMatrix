@@ -20,19 +20,38 @@ class PublicAuthCrossGateError(RuntimeError):
     pass
 
 
+def _safe_directory(path: Path, label: str) -> Path:
+    candidate = Path(path).expanduser()
+    if candidate.is_symlink():
+        raise PublicAuthCrossGateError(f"{label} is missing or unsafe")
+    resolved = candidate.resolve()
+    if not resolved.is_dir():
+        raise PublicAuthCrossGateError(f"{label} is missing or unsafe")
+    return resolved
+
+
+def _safe_file(path: Path, label: str) -> Path:
+    candidate = Path(path).expanduser()
+    if candidate.is_symlink():
+        raise PublicAuthCrossGateError(f"{label} is missing or unsafe")
+    resolved = candidate.resolve()
+    if not resolved.is_file():
+        raise PublicAuthCrossGateError(f"{label} is missing or unsafe")
+    return resolved
+
+
 def _verify_gate(root: Path, gate: str, contract: dict[str, Any]) -> dict[str, Any]:
     cfg = contract[gate]
     proof_path = root / cfg["proof"]
     result_path = root / cfg["proof_result"]
     public_path = root / cfg["public_key"]
     live_path = root / contract["shared_live_probe"]["report"]
-    status_path = root / f"{gate.replace('public-', 'public-')}-producer-status.json"
     # Contract keys are oauth/mtls while artifact types are public-oauth/public-mtls.
     evidence_type = f"public-{gate}"
     status_path = root / f"public-{gate}-producer-status.json"
     for path in (proof_path, result_path, public_path, live_path, status_path):
-        if not path.is_file():
-            raise PublicAuthCrossGateError(f"{gate}: required file missing: {path.name}")
+        if path.is_symlink() or not path.is_file():
+            raise PublicAuthCrossGateError(f"{gate}: required file missing or unsafe: {path.name}")
     verified = verify_ga_proof(read_json(proof_path), expected_type=evidence_type, public_key=public_path)
     if not isinstance(verified, dict) or verified.get("valid") is not True:
         raise PublicAuthCrossGateError(f"{gate}: proof verification failed")
@@ -87,8 +106,8 @@ def _verify_gate(root: Path, gate: str, contract: dict[str, Any]) -> dict[str, A
 def verify(oauth_root: Path, mtls_root: Path, contract: dict[str, Any]) -> dict[str, Any]:
     if contract.get("schema") != 1 or contract.get("kind") != "psmatrix.final-deployment-evidence-producer-contract" or contract.get("version") != "2.0.0":
         raise PublicAuthCrossGateError("deployment evidence contract identity mismatch")
-    oauth = _verify_gate(oauth_root.resolve(), "oauth", contract)
-    mtls = _verify_gate(mtls_root.resolve(), "mtls", contract)
+    oauth = _verify_gate(_safe_directory(oauth_root, "OAuth evidence root"), "oauth", contract)
+    mtls = _verify_gate(_safe_directory(mtls_root, "mTLS evidence root"), "mtls", contract)
     cross = contract.get("cross_gate") or {}
     if oauth["live_report_sha256"] != mtls["live_report_sha256"]:
         raise PublicAuthCrossGateError("OAuth/mTLS do not bind the same shared live report")
@@ -129,9 +148,14 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
-        value = verify(args.oauth_root, args.mtls_root, json.loads(args.contract.read_text(encoding="utf-8")))
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        contract_path = _safe_file(args.contract, "public-auth contract")
+        value = verify(args.oauth_root, args.mtls_root, json.loads(contract_path.read_text(encoding="utf-8")))
+        output = Path(args.output).expanduser()
+        if output.is_symlink():
+            raise PublicAuthCrossGateError("public-auth verification output is unsafe")
+        output = output.resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print("public_auth_cross_gate_bundle_verification=PASS oauth=true mtls=true")
         print("same_deployment_authority=true")
         print("ga_eligible=false")

@@ -72,8 +72,11 @@ def _https_url(value: Any, *, name: str) -> str:
 
 
 def validate_material(material_root: Path) -> dict[str, Any]:
-    root = material_root.resolve()
-    if not root.is_dir() or root.is_symlink():
+    candidate = Path(material_root).expanduser()
+    if candidate.is_symlink():
+        raise PublicAuthProvisioningError("public-auth material root is missing or unsafe")
+    root = candidate.resolve()
+    if not root.is_dir():
         raise PublicAuthProvisioningError("public-auth material root is missing or unsafe")
     secrets = root / "secrets"
     if not secrets.is_dir() or secrets.is_symlink():

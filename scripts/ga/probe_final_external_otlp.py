@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import ipaddress
 import json
+import os
 import re
 import socket
 import ssl
@@ -39,6 +40,47 @@ _PRIVATE_MARKERS = (
 )
 _ABSOLUTE_PATH_RE = re.compile(r"(?:[A-Za-z]:\\|/(?:home|tmp|Users|var|opt)/)")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _lexical_absolute(path: Path) -> Path:
+    return Path(os.path.abspath(os.path.expanduser(str(path))))
+
+
+def _reject_symlink_components(path: Path, label: str) -> Path:
+    absolute = _lexical_absolute(path)
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current = current / part
+        if current.is_symlink():
+            raise ExternalOTLPProbeError(f"{label} contains a symlink component")
+    return absolute
+
+
+def _safe_file(path: Path, label: str) -> Path:
+    candidate = _reject_symlink_components(path, label)
+    resolved = candidate.resolve()
+    if not resolved.is_file():
+        raise ExternalOTLPProbeError(f"{label} is missing or unsafe")
+    return resolved
+
+
+def _safe_directory(path: Path, label: str, *, create: bool = False) -> Path:
+    candidate = _reject_symlink_components(path, label)
+    resolved = candidate.resolve()
+    if create:
+        if resolved.exists() and not resolved.is_dir():
+            raise ExternalOTLPProbeError(f"{label} must be a directory")
+        resolved.mkdir(parents=True, exist_ok=True)
+    if not resolved.is_dir():
+        raise ExternalOTLPProbeError(f"{label} is missing or unsafe")
+    return resolved
+
+
+def _safe_output(path: Path, label: str) -> Path:
+    candidate = _reject_symlink_components(path, label)
+    if candidate.exists() and candidate.is_dir():
+        raise ExternalOTLPProbeError(f"{label} must be a file path")
+    return candidate.resolve()
 
 
 def _normalized_endpoint(value: str) -> str:
@@ -107,7 +149,7 @@ def _server_certificate_sha256(host: str, port: int, timeout: int) -> str:
 
 
 def _load_headers(path: Path) -> dict[str, str]:
-    value = read_json(path.resolve())
+    value = read_json(_safe_file(path, "external OTLP auth headers JSON"))
     if not isinstance(value, dict) or not value:
         raise ExternalOTLPProbeError("external OTLP auth headers JSON must be a non-empty object")
     result: dict[str, str] = {}
@@ -144,11 +186,11 @@ def _unauthenticated_status(service: ObservabilityService, endpoint: str, timeou
 
 
 def _release_binding(release_dir: Path, release_commit: str) -> dict[str, str]:
-    root = release_dir.resolve()
+    root = _safe_directory(release_dir, "signed final release directory")
     manifest = root / "psmatrix-2.0.0-release.json"
     public_key = root / "psmatrix-2.0.0-release-public.pem"
-    if not manifest.is_file() or not public_key.is_file():
-        raise ExternalOTLPProbeError("signed final release manifest/public key is missing")
+    if manifest.is_symlink() or public_key.is_symlink() or not manifest.is_file() or not public_key.is_file():
+        raise ExternalOTLPProbeError("signed final release manifest/public key is missing or unsafe")
     verified = verify_release_manifest(manifest, root, signing_public_key=public_key)
     if verified.get("valid") is not True or verified.get("version") != "2.0.0":
         raise ExternalOTLPProbeError("signed final release verification failed")
@@ -164,9 +206,11 @@ def _release_binding(release_dir: Path, release_commit: str) -> dict[str, str]:
     if len(wheels) != 1:
         raise ExternalOTLPProbeError(f"expected exactly one final wheel in signed release; found {len(wheels)}")
     wheel = wheels[0]
+    wheel_name = str(wheel.get("name") or "")
+    wheel_path = _safe_file(root / wheel_name, "signed final wheel")
     digest = str(wheel.get("sha256") or "").lower()
-    if _SHA256_RE.fullmatch(digest) is None:
-        raise ExternalOTLPProbeError("signed final wheel digest is invalid")
+    if _SHA256_RE.fullmatch(digest) is None or sha256_file(wheel_path) != digest:
+        raise ExternalOTLPProbeError("signed final wheel digest is invalid or differs from exact bytes")
     commit = release_commit.lower()
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ExternalOTLPProbeError("release commit must be exact 40-character lowercase hex")
@@ -174,14 +218,15 @@ def _release_binding(release_dir: Path, release_commit: str) -> dict[str, str]:
         "version": "2.0.0",
         "commit": commit,
         "manifest_sha256": sha256_file(manifest),
-        "wheel_name": str(wheel.get("name")),
+        "wheel_name": wheel_name,
         "wheel_sha256": digest,
         "release_public_key_sha256": sha256_file(public_key),
     }
 
 
 def _safe_report_scan(report_path: Path, secret_values: list[str]) -> None:
-    raw = report_path.read_bytes()
+    safe_report = _safe_file(report_path, "external OTLP live report")
+    raw = safe_report.read_bytes()
     if any(marker in raw for marker in _PRIVATE_MARKERS):
         raise ExternalOTLPProbeError("external OTLP live report contains private-key PEM material")
     for value in secret_values:
@@ -223,8 +268,7 @@ def run_probe(
     headers = _load_headers(headers_json)
     release = _release_binding(release_dir, release_commit)
 
-    isolated_home = home.resolve()
-    isolated_home.mkdir(parents=True, exist_ok=True)
+    isolated_home = _safe_directory(home, "external OTLP isolated home", create=True)
     service = ObservabilityService(isolated_home)
     exporter = OTLPMetricsExporter(service, normalized, headers=headers, timeout_seconds=int(timeout))
     exports = [exporter.export_once(), exporter.export_once()]
@@ -267,15 +311,16 @@ def run_probe(
         "metrics_payload_in_report": False,
         "absolute_paths_in_report": False,
     }
-    output = output.resolve()
-    output.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_json(output, report)
-    _safe_report_scan(output, list(headers.values()))
+    safe_output = _safe_output(output, "external OTLP live report output")
+    safe_output.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(safe_output, report)
+    _safe_report_scan(safe_output, list(headers.values()))
     return report
 
 
 def build_proof_result(*, report_path: Path, output: Path) -> dict[str, Any]:
-    report = read_json(report_path.resolve())
+    safe_report = _safe_file(report_path, "external OTLP live report")
+    report = read_json(safe_report)
     if not isinstance(report, dict) or report.get("schema") != 1 or report.get("kind") != "psmatrix.external-otlp-live-report":
         raise ExternalOTLPProbeError("external OTLP live report identity is invalid")
     if report.get("status") != "PASS":
@@ -312,7 +357,7 @@ def build_proof_result(*, report_path: Path, output: Path) -> dict[str, Any]:
     )
     if any(otlp.get(name) is not True for name in required):
         raise ExternalOTLPProbeError("external OTLP live report is missing a required PASS observation")
-    live_sha = sha256_file(report_path.resolve())
+    live_sha = sha256_file(safe_report)
     assertions = {
         "endpoint": endpoint,
         "resolved_addresses": addresses,
@@ -346,9 +391,9 @@ def build_proof_result(*, report_path: Path, output: Path) -> dict[str, Any]:
         "assertions": assertions,
         "artifacts": [{"name": "external-otlp-live-report.json", "sha256": live_sha}],
     }
-    output = output.resolve()
-    output.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_json(output, result)
+    safe_output = _safe_output(output, "external OTLP proof-result output")
+    safe_output.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(safe_output, result)
     return result
 
 

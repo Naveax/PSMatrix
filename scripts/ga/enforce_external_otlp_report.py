@@ -44,8 +44,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_object(path: Path, label: str) -> tuple[dict[str, Any], bytes]:
-    resolved = path.resolve()
-    if not resolved.is_file() or resolved.is_symlink():
+    candidate = Path(path).expanduser()
+    if candidate.is_symlink():
+        raise EnforcementError(f"{label} is missing or unsafe")
+    resolved = candidate.resolve()
+    if not resolved.is_file():
         raise EnforcementError(f"{label} is missing or unsafe")
     raw = resolved.read_bytes()
     if len(raw) > 8 * 1024 * 1024:
@@ -105,8 +108,8 @@ def main() -> int:
     manifest_digest = exact_digest(args.release_manifest_sha256, "release_manifest_sha256")
     wheel_digest = exact_digest(args.release_wheel_sha256, "release_wheel_sha256")
 
-    report_path = args.report.resolve()
-    proof_path = args.proof.resolve()
+    report_path = Path(args.report).expanduser()
+    proof_path = Path(args.proof).expanduser()
     report, report_raw = load_object(report_path, "external OTLP live report")
     proof, _ = load_object(proof_path, "external OTLP proof")
 
