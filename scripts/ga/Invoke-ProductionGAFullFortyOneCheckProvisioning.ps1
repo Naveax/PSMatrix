@@ -83,6 +83,14 @@ function Resolve-TrustedGh([string]$Requested, [string]$RepoRoot) {
     }
     return $discovered
 }
+function Resolve-TrustedPython([string]$RepoRoot) {
+    $command = Get-Command python -CommandType Application -ErrorAction Stop
+    $discovered = [IO.Path]::GetFullPath([string]$command.Source)
+    if (-not (Test-Path -LiteralPath $discovered -PathType Leaf)) { throw 'Trusted python executable is missing.' }
+    Assert-NoLinkOrReparsePath $discovered 'Trusted python executable'
+    if ((Test-PathEqual $discovered $RepoRoot) -or (Test-PathInside $discovered $RepoRoot)) { throw 'Trusted python executable must stay outside the repository.' }
+    return $discovered
+}
 
 if (-not [string]::Equals($Repository, $ExpectedRepository, [StringComparison]::Ordinal)) { throw 'Full Production GA provisioning repository must be exactly Naveax/PSMatrix.' }
 if (-not [string]::IsNullOrWhiteSpace($OfflineInventoryBefore) -and -not $DryRun.IsPresent) { throw 'OfflineInventoryBefore is permitted only with DryRun; mutating operations require a live GitHub inventory.' }
@@ -91,8 +99,23 @@ Assert-NoLinkOrReparsePath $repoRoot 'Repository root'
 $workspace = Assert-OutsideRepository $Root $repoRoot 'Full Production GA provisioning workspace'
 New-Item -ItemType Directory -Path $workspace -Force | Out-Null
 Assert-NoLinkOrReparsePath $workspace 'Full Production GA provisioning workspace'
-$python = (Get-Command python -CommandType Application -ErrorAction Stop).Source
+$python = Resolve-TrustedPython $repoRoot
 $gh = $null
+
+$scriptRoot = Join-Path $repoRoot 'scripts/ga'
+$publicAuthBuilder = Join-Path $scriptRoot 'build_public_auth_material_map_fragment.py'
+$otlpBuilder = Join-Path $scriptRoot 'build_otlp_material_map_fragment.py'
+$securityReviewBuilder = Join-Path $scriptRoot 'build_security_review_material_map_fragment.py'
+$fragmentMerger = Join-Path $scriptRoot 'merge_production_ga_material_map_fragments.py'
+$inventoryAuditor = Join-Path $scriptRoot 'audit_production_ga_environment_inventory.py'
+$missingSelector = Join-Path $scriptRoot 'select_missing_production_ga_material.py'
+$receiptVerifier = Join-Path $scriptRoot 'verify_production_ga_provisioning_receipt.py'
+$workspaceInitializer = Join-Path $scriptRoot 'Initialize-ProductionGAProvisioningWorkspace.ps1'
+$environmentProvisioner = Join-Path $scriptRoot 'Invoke-ProductionGAEnvironmentProvisioning.ps1'
+foreach ($source in @($publicAuthBuilder,$otlpBuilder,$securityReviewBuilder,$fragmentMerger,$inventoryAuditor,$missingSelector,$receiptVerifier,$workspaceInitializer,$environmentProvisioner)) {
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw 'Required Production GA operator source is missing.' }
+    Assert-NoLinkOrReparsePath $source 'Production GA operator source'
+}
 
 $workspaceSummary = Join-Path $workspace 'local-provisioning-summary.json'
 $publicAuthValueRoot = Join-Path $workspace 'values/public-auth'
@@ -112,20 +135,20 @@ Push-Location $repoRoot
 try {
     $initializeArgs = @{ Root = $workspace; SummaryOutput = $workspaceSummary }
     if ($ForceAuthorities) { $initializeArgs.ForceAuthorities = $true }
-    & (Join-Path $repoRoot 'scripts/ga/Initialize-ProductionGAProvisioningWorkspace.ps1') @initializeArgs
+    & $workspaceInitializer @initializeArgs
     if ($LASTEXITCODE -ne 0) { throw 'Local 19-check Production GA workspace initialization failed.' }
     $prepared = Read-JsonObject $workspaceSummary 'Local Production GA workspace summary'
     if ([int]$prepared.locally_prepared_check_count -ne 19 -or [int]$prepared.remaining_external_or_review_check_count -ne 22) { throw 'Local Production GA workspace must prove exact 19 local plus 22 external/reviewer checks.' }
 
     $fragments = $prepared.fragments
-    Invoke-PythonChecked $python @('scripts/ga/build_public_auth_material_map_fragment.py','--material-root',[IO.Path]::GetFullPath($PublicAuthMaterialRoot),'--value-root',$publicAuthValueRoot,'--output-map',$publicAuthFragment) | Out-Null
-    Invoke-PythonChecked $python @('scripts/ga/build_otlp_material_map_fragment.py','--endpoint-file',[IO.Path]::GetFullPath($OtlpEndpointFile),'--headers-file',[IO.Path]::GetFullPath($OtlpHeadersFile),'--value-root',$otlpValueRoot,'--output-map',$otlpFragment) | Out-Null
-    Invoke-PythonChecked $python @('scripts/ga/build_security_review_material_map_fragment.py','--packet',[IO.Path]::GetFullPath($SecurityReviewPacket),'--report',[IO.Path]::GetFullPath($SecurityReviewReport),'--output-map',$securityReviewFragment) | Out-Null
-    Invoke-PythonChecked $python @('scripts/ga/merge_production_ga_material_map_fragments.py','--fragment',[string]$fragments.signing_authorities,'--fragment',[string]$fragments.full_matrix,'--fragment',$publicAuthFragment,'--fragment',$otlpFragment,'--fragment',$securityReviewFragment,'--output',$fullMap) | Out-Null
+    Invoke-PythonChecked $python @($publicAuthBuilder,'--material-root',[IO.Path]::GetFullPath($PublicAuthMaterialRoot),'--value-root',$publicAuthValueRoot,'--output-map',$publicAuthFragment) | Out-Null
+    Invoke-PythonChecked $python @($otlpBuilder,'--endpoint-file',[IO.Path]::GetFullPath($OtlpEndpointFile),'--headers-file',[IO.Path]::GetFullPath($OtlpHeadersFile),'--value-root',$otlpValueRoot,'--output-map',$otlpFragment) | Out-Null
+    Invoke-PythonChecked $python @($securityReviewBuilder,'--packet',[IO.Path]::GetFullPath($SecurityReviewPacket),'--report',[IO.Path]::GetFullPath($SecurityReviewReport),'--output-map',$securityReviewFragment) | Out-Null
+    Invoke-PythonChecked $python @($fragmentMerger,'--fragment',[string]$fragments.signing_authorities,'--fragment',[string]$fragments.full_matrix,'--fragment',$publicAuthFragment,'--fragment',$otlpFragment,'--fragment',$securityReviewFragment,'--output',$fullMap) | Out-Null
     $map = Read-JsonObject $fullMap 'Exact Production GA material map'
     if ([int]$map.check_count -ne 41 -or [int]$map.environment_count -ne 12 -or [int]$map.fragment_count -ne 5) { throw 'Merged Production GA material map must be exact 5-fragment / 12-environment / 41-check closure.' }
 
-    $auditArgs = @('scripts/ga/audit_production_ga_environment_inventory.py','--repository',$ExpectedRepository,'--output',$preAudit)
+    $auditArgs = @($inventoryAuditor,'--repository',$ExpectedRepository,'--output',$preAudit)
     if (-not [string]::IsNullOrWhiteSpace($OfflineInventoryBefore)) {
         $offlineInventory = [IO.Path]::GetFullPath($OfflineInventoryBefore)
         if (-not (Test-Path -LiteralPath $offlineInventory -PathType Leaf)) { throw 'Offline inventory is missing.' }
@@ -148,7 +171,7 @@ try {
     $after = $before
 
     if ($missingBefore -gt 0) {
-        Invoke-PythonChecked $python @('scripts/ga/select_missing_production_ga_material.py','--material-map',$fullMap,'--inventory-audit',$preAudit,'--output',$selectedMap) | Out-Null
+        Invoke-PythonChecked $python @($missingSelector,'--material-map',$fullMap,'--inventory-audit',$preAudit,'--output',$selectedMap) | Out-Null
         $selected = Read-JsonObject $selectedMap 'Selected missing Production GA material map'
         $selectedCount = [int]$selected.check_count
         if ($selectedCount -ne $missingBefore) { throw 'Selected check count must equal exact names-only missing count for a complete 41-check map.' }
@@ -161,15 +184,15 @@ try {
             if ($null -eq $gh) { $gh = Resolve-TrustedGh $GhPath $repoRoot }
             $provisionArgs.GhPath = $gh
         }
-        & (Join-Path $repoRoot 'scripts/ga/Invoke-ProductionGAEnvironmentProvisioning.ps1') @provisionArgs
+        & $environmentProvisioner @provisionArgs
         if ($LASTEXITCODE -ne 0) { throw 'Exact Production GA environment provisioning failed.' }
         $mutationExecuted = -not $DryRun.IsPresent
 
         if ($mutationExecuted) {
-            $postArgs = @('scripts/ga/audit_production_ga_environment_inventory.py','--repository',$ExpectedRepository,'--output',$postAudit,'--gh',$gh)
+            $postArgs = @($inventoryAuditor,'--repository',$ExpectedRepository,'--output',$postAudit,'--gh',$gh)
             Invoke-PythonChecked $python $postArgs @(0,2) | Out-Null
             $after = Read-JsonObject $postAudit 'Post-provision Production GA inventory audit'
-            Invoke-PythonChecked $python @('scripts/ga/verify_production_ga_provisioning_receipt.py','--material-map',$selectedMap,'--inventory-audit',$postAudit,'--output',$receipt) | Out-Null
+            Invoke-PythonChecked $python @($receiptVerifier,'--material-map',$selectedMap,'--inventory-audit',$postAudit,'--output',$receipt) | Out-Null
             $receiptValue = Read-JsonObject $receipt 'Full Production GA provisioning receipt'
             if ($receiptValue.status -ne 'PASS' -or [int]$receiptValue.verified_check_count -ne $selectedCount) { throw 'Full Production GA provisioning receipt did not verify every selected identity.' }
             $receiptVerified = $true

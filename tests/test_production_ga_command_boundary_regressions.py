@@ -92,17 +92,28 @@ class ProductionGACommandBoundaryRegressionTests(unittest.TestCase):
         self.assertNotIn("$stagedPlan", source)
         self.assertNotIn("Get-Content -Raw -LiteralPath $stderr", source)
 
-    def test_full41_source_requires_live_inventory_for_mutation(self) -> None:
+    def test_full41_source_requires_live_inventory_and_trusted_commands(self) -> None:
         source = FULL41.read_text(encoding="utf-8")
         for required in (
             "OfflineInventoryBefore is permitted only with DryRun",
             "mutating operations require a live GitHub inventory",
             "Assert-NoLinkOrReparsePath $offlineInventory 'Offline inventory'",
             "Trusted gh executable must stay outside the repository",
+            "Trusted python executable must stay outside the repository",
+            "Resolve-TrustedPython $repoRoot",
+            "Join-Path $scriptRoot 'build_public_auth_material_map_fragment.py'",
+            "Join-Path $scriptRoot 'build_otlp_material_map_fragment.py'",
+            "Join-Path $scriptRoot 'build_security_review_material_map_fragment.py'",
+            "Join-Path $scriptRoot 'merge_production_ga_material_map_fragments.py'",
+            "Join-Path $scriptRoot 'audit_production_ga_environment_inventory.py'",
+            "Join-Path $scriptRoot 'select_missing_production_ga_material.py'",
+            "Join-Path $scriptRoot 'verify_production_ga_provisioning_receipt.py'",
+            "Production GA operator source",
             "readiness_rerun_candidate=((-not $DryRun.IsPresent) -and ($presentAfter -eq 41))",
             "command arguments were intentionally redacted",
         ):
             self.assertIn(required, source)
+        self.assertNotIn("$python = (Get-Command python", source)
         self.assertNotIn("$($Arguments -join ' ')", source)
 
     def test_offline_inventory_is_rejected_before_mutating_workspace_creation(self) -> None:
