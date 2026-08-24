@@ -23,18 +23,23 @@ function Assert-NoLinkOrReparsePath {
         [Parameter(Mandatory)] [string]$Label
     )
 
-    $current = Get-Item -LiteralPath $Path -Force
-    while ($null -ne $current) {
-        $linkProperty = $current.PSObject.Properties['LinkType']
+    $full = [IO.Path]::GetFullPath($Path)
+    $root = [IO.Path]::GetPathRoot($full)
+    if ([string]::IsNullOrWhiteSpace($root)) {
+        throw "$Label path root is invalid."
+    }
+    $relative = $full.Substring($root.Length)
+    $segments = @([Regex]::Split($relative, '[\\/]+') | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $current = $root
+    foreach ($segment in $segments) {
+        $current = Join-Path $current $segment
+        $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+        $linkProperty = $item.PSObject.Properties['LinkType']
         $linkType = if ($null -ne $linkProperty) { [string]$linkProperty.Value } else { '' }
-        $isReparsePoint = (($current.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+        $isReparsePoint = (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
         if ($isReparsePoint -or -not [string]::IsNullOrWhiteSpace($linkType)) {
             throw "$Label path must not contain links or reparse points."
         }
-
-        if ($current -is [IO.FileInfo]) { $current = $current.Directory }
-        elseif ($current -is [IO.DirectoryInfo]) { $current = $current.Parent }
-        else { break }
     }
 }
 
@@ -154,9 +159,25 @@ function Invoke-Captured {
     }
 }
 
-function New-Utf8TempValueFile {
-    param([Parameter(Mandatory)] [string]$Value)
-    $path = [IO.Path]::GetTempFileName()
+function Invoke-PythonValidator {
+    param(
+        [Parameter(Mandatory)] [string]$Python,
+        [Parameter(Mandatory)] [string[]]$Arguments
+    )
+
+    & $Python @Arguments 1>$null 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        throw "External22 semantic validator failed with exit $LASTEXITCODE."
+    }
+}
+
+function New-Utf8ValueFile {
+    param(
+        [Parameter(Mandatory)] [string]$Directory,
+        [Parameter(Mandatory)] [string]$Name,
+        [Parameter(Mandatory)] [string]$Value
+    )
+    $path = Join-Path $Directory $Name
     $utf8 = New-Object Text.UTF8Encoding($false)
     [IO.File]::WriteAllText($path, $Value, $utf8)
     return $path
@@ -186,15 +207,15 @@ if ($PublicAuthEnvironment -cne $canonicalPublicEnvironment -or $ExternalOtlpEnv
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $publicRoot = Assert-ExternalMaterialDirectory -Path $PublicAuthMaterialRoot -RepoRoot $repoRoot -Label 'Public-auth material root'
-$otlpHeaders = Assert-ExternalMaterialFile -Path $ExternalOtlpHeadersFile -RepoRoot $repoRoot -Label 'External OTLP headers JSON'
+$otlpHeadersSource = Assert-ExternalMaterialFile -Path $ExternalOtlpHeadersFile -RepoRoot $repoRoot -Label 'External OTLP headers JSON'
 $otlpEndpointSource = Assert-ExternalMaterialFile -Path $ExternalOtlpEndpointFile -RepoRoot $repoRoot -Label 'External OTLP endpoint value'
 
 $secretsRoot = Join-Path $publicRoot 'secrets'
-$varsPath = Join-Path $publicRoot 'vars.json'
+$varsSource = Join-Path $publicRoot 'vars.json'
 if (-not (Test-Path -LiteralPath $secretsRoot -PathType Container)) { throw 'Public-auth secrets directory is missing.' }
-if (-not (Test-Path -LiteralPath $varsPath -PathType Leaf)) { throw 'Public-auth vars.json is missing.' }
+if (-not (Test-Path -LiteralPath $varsSource -PathType Leaf)) { throw 'Public-auth vars.json is missing.' }
 Assert-NoLinkOrReparsePath -Path $secretsRoot -Label 'Public-auth secrets directory'
-Assert-NoLinkOrReparsePath -Path $varsPath -Label 'Public-auth vars JSON'
+Assert-NoLinkOrReparsePath -Path $varsSource -Label 'Public-auth vars JSON'
 
 $tokenNames = @(
     'PSMATRIX_OAUTH_VALID_TOKEN',
@@ -210,13 +231,13 @@ $pairPrefixes = @(
     'PSMATRIX_MTLS_UNTRUSTED',
     'PSMATRIX_MTLS_REVOKED'
 )
-$publicSecretSources = [ordered]@{}
+$sourceSecretFiles = [ordered]@{}
 foreach ($name in $tokenNames) {
     $path = Join-Path $secretsRoot "$name.txt"
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required public-auth secret source is missing: $name" }
     Assert-NoLinkOrReparsePath -Path $path -Label $name
     if ((Get-Item -LiteralPath $path).Length -le 0) { throw "Required public-auth secret source is empty: $name" }
-    $publicSecretSources[$name] = [IO.Path]::GetFullPath($path)
+    $sourceSecretFiles[$name] = [IO.Path]::GetFullPath($path)
 }
 foreach ($prefix in $pairPrefixes) {
     foreach ($suffix in @('CERT','KEY')) {
@@ -225,48 +246,78 @@ foreach ($prefix in $pairPrefixes) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required public-auth secret source is missing: $name" }
         Assert-NoLinkOrReparsePath -Path $path -Label $name
         if ((Get-Item -LiteralPath $path).Length -le 0) { throw "Required public-auth secret source is empty: $name" }
-        $publicSecretSources[$name] = [IO.Path]::GetFullPath($path)
+        $sourceSecretFiles[$name] = [IO.Path]::GetFullPath($path)
     }
 }
 
-$otlpEndpoint = (Get-Content -Raw -LiteralPath $otlpEndpointSource).Trim()
-if ([string]::IsNullOrWhiteSpace($otlpEndpoint) -or $otlpEndpoint.Contains("`r") -or $otlpEndpoint.Contains("`n")) {
-    throw 'External OTLP endpoint value file must contain exactly one non-empty value.'
-}
-
-$varsObject = Get-Content -Raw -LiteralPath $varsPath | ConvertFrom-Json
-$requiredVars = @(
-    'PSMATRIX_OAUTH_ENDPOINT',
-    'PSMATRIX_OAUTH_DISCOVERY_URL',
-    'PSMATRIX_OAUTH_EXPECTED_ISSUER',
-    'PSMATRIX_MTLS_ENDPOINT',
-    'PSMATRIX_MTLS_FINGERPRINT_HEADER'
-)
-$actualVars = @($varsObject.PSObject.Properties.Name | Sort-Object)
-$expectedVars = @($requiredVars | Sort-Object)
-if (($actualVars -join "`n") -cne ($expectedVars -join "`n")) {
-    throw 'Public-auth vars.json must contain exactly the five canonical variables.'
-}
-
 $python = Resolve-TrustedApplication -Name 'python' -RepoRoot $repoRoot -Label 'Python interpreter'
-$gh = if ($Apply) { Resolve-TrustedApplication -Name 'gh' -RepoRoot $repoRoot -Label 'GitHub CLI' } else { $null }
-
 $temporary = New-Item -ItemType Directory -Path (Join-Path ([IO.Path]::GetTempPath()) ("psmatrix-external22-" + [Guid]::NewGuid().ToString('N'))) -Force
 $tempRoot = [IO.Path]::GetFullPath($temporary.FullName)
+if ((Test-PathWithinRoot -Candidate $tempRoot -Root $repoRoot) -or (Test-PathWithinRoot -Candidate $repoRoot -Root $tempRoot)) {
+    throw 'External22 temporary workspace and repository must be disjoint paths.'
+}
 Assert-NoLinkOrReparsePath -Path $tempRoot -Label 'External22 temporary workspace'
-$tempFiles = New-Object Collections.Generic.List[string]
+
 try {
+    $stagedPublicRoot = Join-Path $tempRoot 'public-auth'
+    $stagedSecretsRoot = Join-Path $stagedPublicRoot 'secrets'
+    New-Item -ItemType Directory -Path $stagedSecretsRoot -Force | Out-Null
+    $stagedVars = Join-Path $stagedPublicRoot 'vars.json'
+    Copy-Item -LiteralPath $varsSource -Destination $stagedVars -Force
+
+    $publicSecretSources = [ordered]@{}
+    foreach ($name in $tokenNames) {
+        $destination = Join-Path $stagedSecretsRoot "$name.txt"
+        Copy-Item -LiteralPath ([string]$sourceSecretFiles[$name]) -Destination $destination -Force
+        $publicSecretSources[$name] = $destination
+    }
+    foreach ($prefix in $pairPrefixes) {
+        foreach ($suffix in @('CERT','KEY')) {
+            $name = "${prefix}_${suffix}"
+            $destination = Join-Path $stagedSecretsRoot "$name.pem"
+            Copy-Item -LiteralPath ([string]$sourceSecretFiles[$name]) -Destination $destination -Force
+            $publicSecretSources[$name] = $destination
+        }
+    }
+
+    $stagedOtlpHeaders = Join-Path $tempRoot 'external-otlp-headers.json'
+    $stagedOtlpEndpointSource = Join-Path $tempRoot 'external-otlp-endpoint.txt'
+    Copy-Item -LiteralPath $otlpHeadersSource -Destination $stagedOtlpHeaders -Force
+    Copy-Item -LiteralPath $otlpEndpointSource -Destination $stagedOtlpEndpointSource -Force
+    Assert-NoLinkOrReparsePath -Path $stagedPublicRoot -Label 'Staged public-auth material'
+    Assert-NoLinkOrReparsePath -Path $stagedOtlpHeaders -Label 'Staged external OTLP headers'
+    Assert-NoLinkOrReparsePath -Path $stagedOtlpEndpointSource -Label 'Staged external OTLP endpoint'
+
+    $otlpEndpoint = (Get-Content -Raw -LiteralPath $stagedOtlpEndpointSource).Trim()
+    if ([string]::IsNullOrWhiteSpace($otlpEndpoint) -or $otlpEndpoint.Contains("`r") -or $otlpEndpoint.Contains("`n")) {
+        throw 'External OTLP endpoint value file must contain exactly one non-empty value.'
+    }
+
+    $varsObject = Get-Content -Raw -LiteralPath $stagedVars | ConvertFrom-Json
+    $requiredVars = @(
+        'PSMATRIX_OAUTH_ENDPOINT',
+        'PSMATRIX_OAUTH_DISCOVERY_URL',
+        'PSMATRIX_OAUTH_EXPECTED_ISSUER',
+        'PSMATRIX_MTLS_ENDPOINT',
+        'PSMATRIX_MTLS_FINGERPRINT_HEADER'
+    )
+    $actualVars = @($varsObject.PSObject.Properties.Name | Sort-Object)
+    $expectedVars = @($requiredVars | Sort-Object)
+    if (($actualVars -join "`n") -cne ($expectedVars -join "`n")) {
+        throw 'Public-auth vars.json must contain exactly the five canonical variables.'
+    }
+
     $publicValidation = Join-Path $tempRoot 'public-auth-validation.json'
     $otlpValidation = Join-Path $tempRoot 'external-otlp-validation.json'
-    Invoke-Captured -Executable $python -Arguments @(
+    Invoke-PythonValidator -Python $python -Arguments @(
         (Join-Path $repoRoot 'scripts\ga\validate_public_auth_provisioning.py'),
-        '--material-root', $publicRoot,
+        '--material-root', $stagedPublicRoot,
         '--output', $publicValidation
     )
-    Invoke-Captured -Executable $python -Arguments @(
+    Invoke-PythonValidator -Python $python -Arguments @(
         (Join-Path $repoRoot 'scripts\ga\validate_external_otlp_provisioning.py'),
         '--endpoint', $otlpEndpoint,
-        '--headers-file', $otlpHeaders,
+        '--headers-file', $stagedOtlpHeaders,
         '--output', $otlpValidation
     )
     if (-not (Test-Path -LiteralPath $publicValidation -PathType Leaf) -or -not (Test-Path -LiteralPath $otlpValidation -PathType Leaf)) {
@@ -277,6 +328,7 @@ try {
     Write-Host "target_repository=$canonicalRepository"
     Write-Host "target_public_auth_environment=$canonicalPublicEnvironment"
     Write-Host "target_external_otlp_environment=$canonicalOtlpEnvironment"
+    Write-Host 'staged_bytes_validated_and_reused=true'
     Write-Host 'network_probe_executed=false'
     Write-Host 'configured_values_logged=false'
     Write-Host 'configured_paths_logged=false'
@@ -286,17 +338,16 @@ try {
 
     if ($DryRun) {
         Write-Host 'external22_operational_environment_provisioning_executed=false dry_run=true'
-        exit 0
+        return
     }
 
+    $gh = Resolve-TrustedApplication -Name 'gh' -RepoRoot $repoRoot -Label 'GitHub CLI'
     Invoke-Captured -Executable $gh -Arguments @('auth', 'status', '--hostname', 'github.com')
     Invoke-Captured -Executable $gh -Arguments @('api', "repos/$Repository/environments/$PublicAuthEnvironment")
     Invoke-Captured -Executable $gh -Arguments @('api', "repos/$Repository/environments/$ExternalOtlpEnvironment")
 
-    $publicIncomplete = New-Utf8TempValueFile -Value '__PSMATRIX_PUBLIC_AUTH_PROVISIONING_INCOMPLETE__'
-    $otlpIncomplete = New-Utf8TempValueFile -Value '__PSMATRIX_EXTERNAL_OTLP_PROVISIONING_INCOMPLETE__'
-    $tempFiles.Add($publicIncomplete)
-    $tempFiles.Add($otlpIncomplete)
+    $publicIncomplete = New-Utf8ValueFile -Directory $tempRoot -Name 'public-auth-incomplete.txt' -Value '__PSMATRIX_PUBLIC_AUTH_PROVISIONING_INCOMPLETE__'
+    $otlpIncomplete = New-Utf8ValueFile -Directory $tempRoot -Name 'external-otlp-incomplete.txt' -Value '__PSMATRIX_EXTERNAL_OTLP_PROVISIONING_INCOMPLETE__'
 
     Invoke-GhSetFromFile -Gh $gh -Kind variable -Name 'PSMATRIX_OAUTH_ENDPOINT' -Environment $PublicAuthEnvironment -Repository $Repository -InputFile $publicIncomplete
     Write-Host 'external22_public_auth_commit_marker_valid=false'
@@ -306,8 +357,7 @@ try {
     foreach ($name in $tokenNames) {
         $value = [IO.File]::ReadAllText([string]$publicSecretSources[$name]).Trim()
         if ([string]::IsNullOrWhiteSpace($value)) { throw "OAuth token source became empty during provisioning: $name" }
-        $sanitized = New-Utf8TempValueFile -Value $value
-        $tempFiles.Add($sanitized)
+        $sanitized = New-Utf8ValueFile -Directory $tempRoot -Name ("sanitized-" + $name + '.txt') -Value $value
         Invoke-GhSetFromFile -Gh $gh -Kind secret -Name $name -Environment $PublicAuthEnvironment -Repository $Repository -InputFile $sanitized
         Write-Host "provisioned=$canonicalPublicEnvironment/secret/$name"
     }
@@ -321,24 +371,21 @@ try {
 
     foreach ($name in @('PSMATRIX_OAUTH_DISCOVERY_URL','PSMATRIX_OAUTH_EXPECTED_ISSUER','PSMATRIX_MTLS_ENDPOINT','PSMATRIX_MTLS_FINGERPRINT_HEADER')) {
         $value = [string]$varsObject.PSObject.Properties[$name].Value
-        $input = New-Utf8TempValueFile -Value $value
-        $tempFiles.Add($input)
+        $input = New-Utf8ValueFile -Directory $tempRoot -Name ("var-" + $name + '.txt') -Value $value
         Invoke-GhSetFromFile -Gh $gh -Kind variable -Name $name -Environment $PublicAuthEnvironment -Repository $Repository -InputFile $input
         Write-Host "provisioned=$canonicalPublicEnvironment/var/$name"
     }
 
-    Invoke-GhSetFromFile -Gh $gh -Kind secret -Name 'PSMATRIX_GA_EXTERNAL_OTLP_HEADERS_JSON' -Environment $ExternalOtlpEnvironment -Repository $Repository -InputFile $otlpHeaders
+    Invoke-GhSetFromFile -Gh $gh -Kind secret -Name 'PSMATRIX_GA_EXTERNAL_OTLP_HEADERS_JSON' -Environment $ExternalOtlpEnvironment -Repository $Repository -InputFile $stagedOtlpHeaders
     Write-Host "provisioned=$canonicalOtlpEnvironment/secret/PSMATRIX_GA_EXTERNAL_OTLP_HEADERS_JSON"
 
-    $otlpEndpointInput = New-Utf8TempValueFile -Value $otlpEndpoint
-    $tempFiles.Add($otlpEndpointInput)
+    $otlpEndpointInput = New-Utf8ValueFile -Directory $tempRoot -Name 'external-otlp-endpoint-commit.txt' -Value $otlpEndpoint
     Invoke-GhSetFromFile -Gh $gh -Kind variable -Name 'PSMATRIX_GA_EXTERNAL_OTLP_ENDPOINT' -Environment $ExternalOtlpEnvironment -Repository $Repository -InputFile $otlpEndpointInput
     Write-Host "provisioned=$canonicalOtlpEnvironment/var/PSMATRIX_GA_EXTERNAL_OTLP_ENDPOINT"
     Write-Host 'external22_otlp_commit_marker_valid=true'
 
     $publicEndpoint = [string]$varsObject.PSObject.Properties['PSMATRIX_OAUTH_ENDPOINT'].Value
-    $publicEndpointInput = New-Utf8TempValueFile -Value $publicEndpoint
-    $tempFiles.Add($publicEndpointInput)
+    $publicEndpointInput = New-Utf8ValueFile -Directory $tempRoot -Name 'public-auth-endpoint-commit.txt' -Value $publicEndpoint
     Invoke-GhSetFromFile -Gh $gh -Kind variable -Name 'PSMATRIX_OAUTH_ENDPOINT' -Environment $PublicAuthEnvironment -Repository $Repository -InputFile $publicEndpointInput
     Write-Host "provisioned=$canonicalPublicEnvironment/var/PSMATRIX_OAUTH_ENDPOINT"
     Write-Host 'external22_public_auth_commit_marker_valid=true'
@@ -348,8 +395,5 @@ try {
     Write-Host 'secret_values_logged=false'
 }
 finally {
-    foreach ($path in $tempFiles) {
-        Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
-    }
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

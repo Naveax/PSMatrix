@@ -30,7 +30,7 @@ class External22OperationalProvisioningTests(unittest.TestCase):
         self.assertIn("$DryRun.IsPresent -eq $Apply.IsPresent", raw)
         self.assertIn("Specify exactly one of -DryRun or -Apply.", raw)
 
-    def test_material_paths_are_absolute_external_and_reparse_safe(self) -> None:
+    def test_material_paths_are_absolute_external_and_lexically_reparse_safe(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
         for fragment in (
             "source file path must be absolute",
@@ -38,6 +38,8 @@ class External22OperationalProvisioningTests(unittest.TestCase):
             "source file must stay outside the repository",
             "and the repository must be disjoint paths",
             "path must not contain links or reparse points",
+            "[Regex]::Split($relative, '[\\\\/]+')",
+            "$current = Join-Path $current $segment",
             "source file is empty",
         ):
             self.assertIn(fragment, raw)
@@ -52,16 +54,35 @@ class External22OperationalProvisioningTests(unittest.TestCase):
         self.assertNotIn("[string]$GhPath", raw)
         self.assertNotIn("[string]$PythonPath", raw)
 
+    def test_exact_staged_bytes_are_validated_and_reused_for_upload(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        for fragment in (
+            "$stagedPublicRoot = Join-Path $tempRoot 'public-auth'",
+            "Copy-Item -LiteralPath $varsSource -Destination $stagedVars -Force",
+            "Copy-Item -LiteralPath $otlpHeadersSource -Destination $stagedOtlpHeaders -Force",
+            "Copy-Item -LiteralPath $otlpEndpointSource -Destination $stagedOtlpEndpointSource -Force",
+            "--material-root', $stagedPublicRoot",
+            "--headers-file', $stagedOtlpHeaders",
+            "-InputFile $stagedOtlpHeaders",
+            "staged_bytes_validated_and_reused=true",
+        ):
+            self.assertIn(fragment, raw)
+        validation = raw.index("Invoke-PythonValidator -Python $python -Arguments @(")
+        first_mutation = raw.index("Invoke-GhSetFromFile -Gh $gh -Kind variable -Name 'PSMATRIX_OAUTH_ENDPOINT'")
+        self.assertLess(validation, first_mutation)
+
     def test_semantic_validators_run_before_dry_run_or_any_github_mutation(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
         public_validation = raw.index("validate_public_auth_provisioning.py")
         otlp_validation = raw.index("validate_external_otlp_provisioning.py")
         dry_run = raw.index("if ($DryRun)")
+        gh_resolution = raw.index("Resolve-TrustedApplication -Name 'gh'")
         auth = raw.index("@('auth', 'status', '--hostname', 'github.com')")
         first_mutation = raw.index("Invoke-GhSetFromFile -Gh $gh -Kind variable -Name 'PSMATRIX_OAUTH_ENDPOINT'")
         self.assertLess(public_validation, dry_run)
         self.assertLess(otlp_validation, dry_run)
-        self.assertLess(dry_run, auth)
+        self.assertLess(dry_run, gh_resolution)
+        self.assertLess(gh_resolution, auth)
         self.assertLess(auth, first_mutation)
 
     def test_github_values_use_stdin_and_never_body_arguments(self) -> None:
@@ -87,19 +108,19 @@ class External22OperationalProvisioningTests(unittest.TestCase):
         first_otlp = raw.index(otlp_set)
         final_otlp = raw.rindex(otlp_set)
         first_secret = raw.index("Invoke-GhSetFromFile -Gh $gh -Kind secret -Name $name")
-        otlp_secret = raw.index("PSMATRIX_GA_EXTERNAL_OTLP_HEADERS_JSON")
+        otlp_secret = raw.index("Invoke-GhSetFromFile -Gh $gh -Kind secret -Name 'PSMATRIX_GA_EXTERNAL_OTLP_HEADERS_JSON'")
         self.assertNotEqual(first_public, final_public)
         self.assertNotEqual(first_otlp, final_otlp)
         self.assertLess(first_public, first_secret)
         self.assertLess(first_otlp, first_secret)
-        self.assertLess(first_secret, final_otlp)
+        self.assertLess(first_secret, otlp_secret)
         self.assertLess(otlp_secret, final_otlp)
         self.assertLess(final_otlp, final_public)
 
-    def test_token_sources_are_trimmed_before_secret_upload(self) -> None:
+    def test_token_sources_are_trimmed_from_staged_copy_before_secret_upload(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
         self.assertIn("[IO.File]::ReadAllText([string]$publicSecretSources[$name]).Trim()", raw)
-        self.assertIn("$sanitized = New-Utf8TempValueFile -Value $value", raw)
+        self.assertIn("$sanitized = New-Utf8ValueFile", raw)
         self.assertIn("-InputFile $sanitized", raw)
 
     def test_helper_logs_names_only_and_never_dispatches_production_workflows(self) -> None:
@@ -118,7 +139,7 @@ class External22OperationalProvisioningTests(unittest.TestCase):
         self.assertNotIn("workflow run", raw.lower())
         self.assertNotRegex(
             raw,
-            re.compile(r"Write-Host.*\$(?:otlpEndpoint|publicEndpoint|publicRoot|otlpHeaders|otlpEndpointSource|value)"),
+            re.compile(r"Write-Host.*\$(?:otlpEndpoint|publicEndpoint|publicRoot|otlpHeadersSource|otlpEndpointSource|value)"),
         )
 
     def test_runbook_documents_canonical_material_and_ci_dedupe_boundary(self) -> None:
