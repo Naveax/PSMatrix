@@ -22,9 +22,29 @@ class ExternalOTLPBundleError(RuntimeError):
     pass
 
 
+def _safe_directory(path: Path, label: str) -> Path:
+    candidate = Path(path).expanduser()
+    if candidate.is_symlink():
+        raise ExternalOTLPBundleError(f"{label} is missing or unsafe")
+    resolved = candidate.resolve()
+    if not resolved.is_dir():
+        raise ExternalOTLPBundleError(f"{label} is missing or unsafe")
+    return resolved
+
+
+def _safe_file(path: Path, label: str) -> Path:
+    candidate = Path(path).expanduser()
+    if candidate.is_symlink():
+        raise ExternalOTLPBundleError(f"{label} is missing or unsafe")
+    resolved = candidate.resolve()
+    if not resolved.is_file():
+        raise ExternalOTLPBundleError(f"{label} is missing or unsafe")
+    return resolved
+
+
 def verify(root: Path, release_public_key: Path, contract: dict[str, Any]) -> dict[str, Any]:
-    root = root.resolve()
-    release_public_key = release_public_key.resolve()
+    root = _safe_directory(root, "external OTLP bundle root")
+    release_public_key = _safe_file(release_public_key, "release public key")
     cfg = contract.get("external_otlp") or {}
     if contract.get("schema") != 1 or contract.get("kind") != "psmatrix.final-operations-release-evidence-producer-contract" or contract.get("version") != "2.0.0" or contract.get("final_release_commit") != FINAL_COMMIT:
         raise ExternalOTLPBundleError("operations/release contract identity mismatch")
@@ -33,9 +53,9 @@ def verify(root: Path, release_public_key: Path, contract: dict[str, Any]) -> di
     live_path = root / cfg["live_report"]
     operations_public = root / cfg["public_key"]
     status_path = root / "external-otlp-producer-status.json"
-    for path in (proof_path, result_path, live_path, operations_public, status_path, release_public_key):
-        if not path.is_file():
-            raise ExternalOTLPBundleError(f"required external OTLP file missing: {path.name}")
+    for path in (proof_path, result_path, live_path, operations_public, status_path):
+        if path.is_symlink() or not path.is_file():
+            raise ExternalOTLPBundleError(f"required external OTLP file missing or unsafe: {path.name}")
     live = read_json(live_path)
     if not isinstance(live, dict) or live.get("kind") != "psmatrix.external-otlp-live-report" or live.get("status") != "PASS":
         raise ExternalOTLPBundleError("external OTLP live report identity/status mismatch")
@@ -111,9 +131,14 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
-        value = verify(args.bundle_root, args.release_public_key, json.loads(args.contract.read_text(encoding="utf-8")))
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        contract_path = _safe_file(args.contract, "external OTLP contract")
+        value = verify(args.bundle_root, args.release_public_key, json.loads(contract_path.read_text(encoding="utf-8")))
+        output = Path(args.output).expanduser()
+        if output.is_symlink():
+            raise ExternalOTLPBundleError("external OTLP bundle verification output is unsafe")
+        output = output.resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print("external_otlp_bundle_verification=PASS exports=2 unauthenticated_rejected=true")
         print("operations_release_authorities_independent=true")
         print("ga_eligible=false")

@@ -18,6 +18,43 @@ class EvidenceArtifactMaterializationError(RuntimeError):
     pass
 
 
+def _lexical_absolute(path: Path) -> Path:
+    return Path(os.path.abspath(os.path.expanduser(str(path))))
+
+
+def _reject_symlink_components(path: Path, label: str) -> Path:
+    absolute = _lexical_absolute(path)
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current = current / part
+        if current.is_symlink():
+            raise EvidenceArtifactMaterializationError(f"{label} contains a symlink component")
+    return absolute
+
+
+def _safe_input_file(path: Path, label: str) -> Path:
+    candidate = _reject_symlink_components(path, label)
+    resolved = candidate.resolve()
+    if not resolved.is_file():
+        raise EvidenceArtifactMaterializationError(f"{label} is missing or unsafe")
+    return resolved
+
+
+def _safe_output_file(path: Path, label: str) -> Path:
+    candidate = _reject_symlink_components(path, label)
+    if candidate.exists() and candidate.is_dir():
+        raise EvidenceArtifactMaterializationError(f"{label} must be a file path")
+    return candidate.resolve()
+
+
+def _safe_output_directory(path: Path, label: str) -> Path:
+    candidate = _reject_symlink_components(path, label)
+    resolved = candidate.resolve()
+    if resolved.exists() and not resolved.is_dir():
+        raise EvidenceArtifactMaterializationError(f"{label} must be a directory")
+    return resolved
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -42,7 +79,7 @@ def _row(api_verification: dict[str, Any], gate: str) -> dict[str, Any]:
 
 
 def safe_extract(archive: Path, destination: Path) -> dict[str, Any]:
-    destination = destination.resolve()
+    destination = _safe_output_directory(destination, "artifact destination")
     if destination.exists():
         if any(destination.iterdir()):
             raise EvidenceArtifactMaterializationError("artifact destination must be absent or empty")
@@ -145,14 +182,16 @@ def main() -> int:
     args = parser.parse_args()
     archive: Path | None = None
     try:
-        api_verification = json.loads(args.api_verification.read_text(encoding="utf-8"))
+        api_verification_path = _safe_input_file(args.api_verification, "API verification input")
+        api_verification = json.loads(api_verification_path.read_text(encoding="utf-8"))
         row = _row(api_verification, args.gate)
         temp_root = Path(tempfile.mkdtemp(prefix="psmatrix-evidence-artifact-"))
         archive = temp_root / f"artifact-{row['artifact_id']}.zip"
         download(args.gh, args.repository, row["artifact_id"], archive)
         value = materialize(api_verification, args.gate, archive, args.destination)
-        args.receipt.parent.mkdir(parents=True, exist_ok=True)
-        args.receipt.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        receipt = _safe_output_file(args.receipt, "materialization receipt")
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(f"evidence_artifact_materialization=PASS gate={args.gate} run={value['run_id']} artifact_id={value['artifact_id']} files={value['file_count']}")
         print("content_semantics_verified=false")
         print("ga_eligible=false")

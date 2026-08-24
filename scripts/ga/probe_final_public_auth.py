@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import ipaddress
 import json
+import os
 import socket
 import ssl
 import sys
@@ -32,10 +33,45 @@ class PublicAuthProbeError(RuntimeError):
     pass
 
 
+def _lexical_absolute(path: Path) -> Path:
+    return Path(os.path.abspath(os.path.expanduser(str(path))))
+
+
+def _reject_symlink_components(path: Path, label: str) -> Path:
+    absolute = _lexical_absolute(path)
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current = current / part
+        if current.is_symlink():
+            raise PublicAuthProbeError(f"{label} contains a symlink component")
+    return absolute
+
+
+def _safe_file(path: Path, label: str) -> Path:
+    candidate = _reject_symlink_components(path, label)
+    resolved = candidate.resolve()
+    if not resolved.is_file():
+        raise PublicAuthProbeError(f"{label} is missing or unsafe")
+    return resolved
+
+
+def _safe_directory(path: Path, label: str) -> Path:
+    candidate = _reject_symlink_components(path, label)
+    resolved = candidate.resolve()
+    if not resolved.is_dir():
+        raise PublicAuthProbeError(f"{label} is missing or unsafe")
+    return resolved
+
+
+def _safe_output(path: Path, label: str) -> Path:
+    candidate = _reject_symlink_components(path, label)
+    if candidate.exists() and candidate.is_dir():
+        raise PublicAuthProbeError(f"{label} must be a file path")
+    return candidate.resolve()
+
+
 def _read_text_secret(path: Path, label: str) -> str:
-    candidate = path.resolve()
-    if not candidate.is_file() or candidate.is_symlink():
-        raise PublicAuthProbeError(f"{label} secret file is missing or unsafe")
+    candidate = _safe_file(path, f"{label} secret file")
     value = candidate.read_text(encoding="utf-8").strip()
     if not value:
         raise PublicAuthProbeError(f"{label} secret is empty")
@@ -85,7 +121,9 @@ def _ssl_context(*, cert: Path | None = None, key: Path | None = None) -> ssl.SS
     if cert is not None or key is not None:
         if cert is None or key is None:
             raise PublicAuthProbeError("Both client certificate and private key are required")
-        context.load_cert_chain(certfile=str(cert.resolve()), keyfile=str(key.resolve()))
+        safe_cert = _safe_file(cert, "client certificate")
+        safe_key = _safe_file(key, "client private key")
+        context.load_cert_chain(certfile=str(safe_cert), keyfile=str(safe_key))
     return context
 
 
@@ -104,9 +142,7 @@ def _server_certificate_sha256(url: str, *, cert: Path | None = None, key: Path 
 
 
 def _client_certificate_sha256(path: Path) -> str:
-    candidate = path.resolve()
-    if not candidate.is_file() or candidate.is_symlink():
-        raise PublicAuthProbeError("Client certificate is missing or unsafe")
+    candidate = _safe_file(path, "Client certificate")
     text = candidate.read_text(encoding="utf-8")
     try:
         der = ssl.PEM_cert_to_DER_cert(text)
@@ -198,12 +234,12 @@ def _discovery(url: str, *, expected_issuer: str, timeout: float) -> dict[str, A
 
 
 def _verify_signed_release(root: Path) -> dict[str, str]:
-    signed = root.resolve()
+    signed = _safe_directory(root, "signed final release root")
     manifest = signed / "psmatrix-2.0.0-release.json"
     public = signed / "psmatrix-2.0.0-release-public.pem"
     status_path = signed / "psmatrix-2.0.0-protected-release-signing-status.json"
     for path in (manifest, public, status_path):
-        if not path.is_file() or path.is_symlink():
+        if path.is_symlink() or not path.is_file():
             raise PublicAuthProbeError(f"Signed final release file is missing or unsafe: {path.name}")
     verified = verify_release_manifest(manifest, signed, signing_public_key=public)
     if verified.get("valid") is not True or verified.get("version") != _VERSION:
@@ -225,8 +261,8 @@ def _verify_signed_release(root: Path) -> dict[str, str]:
         if status.get(field) != expected:
             raise PublicAuthProbeError(f"Protected final release status boundary mismatch: {field}")
     wheels = [signed / name for name in verified.get("artifacts") or [] if str(name).endswith(".whl")]
-    if len(wheels) != 1 or not wheels[0].is_file():
-        raise PublicAuthProbeError("Signed final release must contain exactly one wheel")
+    if len(wheels) != 1 or wheels[0].is_symlink() or not wheels[0].is_file():
+        raise PublicAuthProbeError("Signed final release must contain exactly one safe wheel")
     return {
         "version": _VERSION,
         "commit": _FINAL_COMMIT,
@@ -422,12 +458,15 @@ def build_live_report(args: argparse.Namespace) -> dict[str, Any]:
         "secrets_in_report": False,
         "private_keys_in_report": False,
     }
-    atomic_write_json(args.output.resolve(), report)
+    output = _safe_output(args.output, "public-auth live report output")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(output, report)
     return report
 
 
 def build_proof_result(*, report_path: Path, proof_type: str, output: Path) -> dict[str, Any]:
-    report = read_json(report_path.resolve())
+    safe_report = _safe_file(report_path, "shared public-auth live report")
+    report = read_json(safe_report)
     if not isinstance(report, dict) or report.get("schema") != 1 or report.get("kind") != "psmatrix.public-auth-live-report" or report.get("status") != "PASS":
         raise PublicAuthProbeError("Shared public-auth live report identity/status mismatch")
     release = report.get("release") if isinstance(report.get("release"), dict) else {}
@@ -480,7 +519,7 @@ def build_proof_result(*, report_path: Path, proof_type: str, output: Path) -> d
     assertions = {**common, **{key: section.get(key) for key in keys}}
     if any(assertions.get(key) is not True for key in ("external_probe", "public_dns", "public_tls", *keys)):
         raise PublicAuthProbeError(f"Shared live report does not satisfy every {proof_type} assertion")
-    live_sha = sha256_file(report_path.resolve())
+    live_sha = sha256_file(safe_report)
     result = {
         "schema": 1,
         "kind": "psmatrix.ga-proof-result",
@@ -491,7 +530,9 @@ def build_proof_result(*, report_path: Path, proof_type: str, output: Path) -> d
         "assertions": assertions,
         "artifacts": [{"name": "public-auth-live-report.json", "sha256": live_sha}],
     }
-    atomic_write_json(output.resolve(), result)
+    safe_output = _safe_output(output, "public-auth proof-result output")
+    safe_output.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(safe_output, result)
     return result
 
 

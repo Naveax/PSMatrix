@@ -27,6 +27,35 @@ class DeploymentKitError(RuntimeError):
     pass
 
 
+def _lexical_absolute(path: Path) -> Path:
+    return Path(os.path.abspath(os.path.expanduser(str(path))))
+
+
+def _reject_symlink_components(path: Path, label: str) -> Path:
+    absolute = _lexical_absolute(path)
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current = current / part
+        if current.is_symlink():
+            raise DeploymentKitError(f"{label} contains a symlink component")
+    return absolute
+
+
+def _safe_file(path: Path, label: str) -> Path:
+    candidate = _reject_symlink_components(path, label)
+    resolved = candidate.resolve()
+    if not resolved.is_file():
+        raise DeploymentKitError(f"{label} is missing or unsafe")
+    return resolved
+
+
+def _safe_output(path: Path, label: str) -> Path:
+    candidate = _reject_symlink_components(path, label)
+    if candidate.exists() and candidate.is_dir():
+        raise DeploymentKitError(f"{label} must be a file path")
+    return candidate.resolve()
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description="Build or verify the signed reproducible Pack 04 deployment kit.")
     sub = root.add_subparsers(dest="command", required=True)
@@ -63,8 +92,9 @@ def sha256_bytes(data: bytes) -> str:
 
 
 def sha256_file(path: Path) -> str:
+    resolved = _safe_file(path, "hash input")
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
+    with resolved.open("rb") as handle:
         while chunk := handle.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
@@ -374,25 +404,25 @@ not satisfy the live public OAuth or public mTLS GA gates.
             "manifest_sha256": sha256_bytes(manifest_bytes),
         },
     }
-    envelope = create_dsse_envelope(statement, args.private_key.resolve(), args.public_key.resolve())
+    private_key = _safe_file(args.private_key, "deployment authority private key")
+    public_key = _safe_file(args.public_key, "deployment authority public key")
+    envelope = create_dsse_envelope(statement, private_key, public_key)
     files["deployment-manifest.json"] = manifest_bytes
     files["deployment-attestation.dsse.json"] = canonical_json_bytes(envelope) + b"\n"
     return files, manifest
 
 
 def build(args: argparse.Namespace) -> dict[str, Any]:
-    if not args.private_key.resolve().is_file() or not args.public_key.resolve().is_file():
-        raise DeploymentKitError("deployment authority key material is missing")
+    _safe_file(args.private_key, "deployment authority private key")
+    _safe_file(args.public_key, "deployment authority public key")
     files, manifest = build_files(args)
     buffer = io.BytesIO()
     executable = {"deploy/install-release.sh"}
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for name, data in sorted(files.items()):
             archive.writestr(zip_info(name, executable=name in executable), data)
-    output = args.output.resolve()
+    output = _safe_output(args.output, "deployment kit output")
     output.parent.mkdir(parents=True, exist_ok=True)
-    if output.exists() and output.is_symlink():
-        raise DeploymentKitError("output cannot be a symlink")
     output.write_bytes(buffer.getvalue())
     return {
         "status": "PASS",
@@ -431,10 +461,8 @@ def safe_archive(archive: zipfile.ZipFile) -> dict[str, bytes]:
 
 
 def verify(args: argparse.Namespace) -> dict[str, Any]:
-    kit = args.kit.resolve()
-    public_key = args.public_key.resolve()
-    if not kit.is_file() or kit.is_symlink() or not public_key.is_file():
-        raise DeploymentKitError("deployment kit or public key is missing/unsafe")
+    kit = _safe_file(args.kit, "deployment kit")
+    public_key = _safe_file(args.public_key, "deployment verification public key")
     with zipfile.ZipFile(kit) as archive:
         files = safe_archive(archive)
     required = {
@@ -565,7 +593,9 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         "ga_eligible": False,
     }
     if args.output is not None:
-        args.output.resolve().write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        output = _safe_output(args.output, "deployment verification output")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return result
 
 

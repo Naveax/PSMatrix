@@ -41,6 +41,38 @@ class ProbeError(RuntimeError):
     pass
 
 
+def _lexical_absolute(path: Path) -> Path:
+    return Path(os.path.abspath(os.path.expanduser(str(path))))
+
+
+def _reject_symlink_components(path: Path, label: str) -> Path:
+    absolute = _lexical_absolute(path)
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current = current / part
+        if current.is_symlink():
+            raise ProbeError(f"{label} contains a symlink component")
+    return absolute
+
+
+def _safe_output_file(path: Path, label: str) -> Path:
+    candidate = _reject_symlink_components(path, label)
+    if candidate.exists() and candidate.is_dir():
+        raise ProbeError(f"{label} must be a file path")
+    return candidate.resolve()
+
+
+def _safe_output_directory(path: Path, label: str) -> Path:
+    candidate = _reject_symlink_components(path, label)
+    resolved = candidate.resolve()
+    if resolved.exists() and not resolved.is_dir():
+        raise ProbeError(f"{label} must be a directory")
+    resolved.mkdir(parents=True, exist_ok=True)
+    if any(resolved.iterdir()):
+        raise ProbeError(f"{label} must be empty")
+    return resolved
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Probe an externally operated authenticated OTLP/HTTP metrics collector."
@@ -65,7 +97,7 @@ def utc_now() -> str:
 
 
 def atomic_json(path: Path, value: Any) -> None:
-    destination = path.resolve()
+    destination = _safe_output_file(path, "external OTLP probe output")
     destination.parent.mkdir(parents=True, exist_ok=True)
     payload = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
     descriptor, temporary = tempfile.mkstemp(
@@ -363,10 +395,7 @@ def main() -> int:
     )
     receipt_after = validate_receipt(receipt_after_value, digest_after, instance_after)
 
-    output = args.output_dir.resolve()
-    if output.exists() and any(output.iterdir()):
-        raise ProbeError("output directory must be empty")
-    output.mkdir(parents=True, exist_ok=True)
+    output = _safe_output_directory(args.output_dir, "external OTLP probe output directory")
 
     privacy = {
         key: bool(privacy_before[key] and privacy_after[key])

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -52,9 +53,40 @@ class FinalGAEvidenceError(RuntimeError):
     pass
 
 
-def _json(path: Path) -> dict[str, Any]:
+def _lexical_absolute(path: Path) -> Path:
+    return Path(os.path.abspath(os.path.expanduser(str(path))))
+
+
+def _reject_symlink_components(path: Path, label: str) -> Path:
+    absolute = _lexical_absolute(path)
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current = current / part
+        if current.is_symlink():
+            raise FinalGAEvidenceError(f"{label} contains a symlink component")
+    return absolute
+
+
+def _safe_input_file(path: Path, label: str) -> Path:
+    candidate = _reject_symlink_components(path, label)
+    resolved = candidate.resolve()
+    if not resolved.is_file():
+        raise FinalGAEvidenceError(f"{label} is missing or unsafe")
+    return resolved
+
+
+def _safe_output_directory(path: Path, label: str) -> Path:
+    candidate = _reject_symlink_components(path, label)
+    resolved = candidate.resolve()
+    if resolved.exists() and not resolved.is_dir():
+        raise FinalGAEvidenceError(f"{label} must be a directory")
+    return resolved
+
+
+def _json(path: Path, label: str = "JSON input") -> dict[str, Any]:
+    source = _safe_input_file(path, label)
     try:
-        value = read_json(path.resolve())
+        value = read_json(source)
     except Exception as exc:
         raise FinalGAEvidenceError(f"Could not read JSON object: {path}") from exc
     if not isinstance(value, dict):
@@ -63,7 +95,7 @@ def _json(path: Path) -> dict[str, Any]:
 
 
 def _contract() -> dict[str, Any]:
-    value = _json(_CONTRACT)
+    value = _json(_CONTRACT, "Final GA evaluator contract")
     if value.get("schema") != 1 or value.get("kind") != "psmatrix.final-ga-evaluator-control-contract":
         raise FinalGAEvidenceError("Final GA evaluator contract identity mismatch")
     if value.get("version") != _VERSION or value.get("pack") != "03-authoritative-windows":
@@ -84,7 +116,8 @@ def _contract() -> dict[str, Any]:
 
 
 def _require_root(path: Path, label: str) -> Path:
-    root = path.resolve()
+    candidate = _reject_symlink_components(path, f"{label} evidence root")
+    root = candidate.resolve()
     if not root.is_dir():
         raise FinalGAEvidenceError(f"{label} evidence root does not exist: {root}")
     return root
@@ -92,18 +125,21 @@ def _require_root(path: Path, label: str) -> Path:
 
 def _require_file(root: Path, name: str, label: str) -> Path:
     path = root / name
-    if not path.is_file() or path.is_symlink():
-        raise FinalGAEvidenceError(f"Missing or unsafe {label} evidence file: {name}")
-    return path
+    try:
+        return _safe_input_file(path, f"{label} evidence file")
+    except FinalGAEvidenceError as exc:
+        raise FinalGAEvidenceError(f"Missing or unsafe {label} evidence file: {name}") from exc
 
 
 def _copy(source: Path, target: Path) -> Path:
-    if source.is_symlink() or not source.is_file():
-        raise FinalGAEvidenceError(f"Evidence source is missing or unsafe: {source}")
+    try:
+        safe_source = _safe_input_file(source, "Evidence source")
+    except FinalGAEvidenceError as exc:
+        raise FinalGAEvidenceError(f"Evidence source is missing or unsafe: {source}") from exc
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, target)
-    if source.stat().st_size != target.stat().st_size or sha256_file(source) != sha256_file(target):
-        raise FinalGAEvidenceError(f"Evidence copy verification failed: {source.name}")
+    shutil.copyfile(safe_source, target)
+    if safe_source.stat().st_size != target.stat().st_size or sha256_file(safe_source) != sha256_file(target):
+        raise FinalGAEvidenceError(f"Evidence copy verification failed: {safe_source.name}")
     return target
 
 
@@ -137,7 +173,7 @@ def _scan_private(root: Path) -> tuple[int, int]:
 
 
 def _validate_provenance(path: Path, contract: dict[str, Any]) -> dict[str, Any]:
-    value = _json(path)
+    value = _json(path, "Final GA run provenance")
     if value.get("schema") != 1 or value.get("kind") != "psmatrix.final-ga-run-provenance":
         raise FinalGAEvidenceError("Final GA run provenance identity mismatch")
     head = str(value.get("execution_control_head") or "").lower()
@@ -245,9 +281,7 @@ def assemble(
         "security-review": _require_root(security_review_root, "security-review"),
         "vulnerability-scan": _require_root(vulnerability_scan_root, "vulnerability-scan"),
     }
-    windows_key = windows_public_key.resolve()
-    if not windows_key.is_file() or windows_key.is_symlink():
-        raise FinalGAEvidenceError("Windows lab public key is missing or unsafe")
+    windows_key = _safe_input_file(windows_public_key, "Windows lab public key")
 
     for gate, root in roots.items():
         for name in contract["evidence_sources"][gate]["files"]:
@@ -294,8 +328,8 @@ def assemble(
     if len(set(role_ids.values())) != len(role_ids):
         raise FinalGAEvidenceError("Independent GA authority roles share a signing key")
 
-    provenance = _validate_provenance(provenance_json.resolve(), contract)
-    output = output_root.resolve()
+    provenance = _validate_provenance(provenance_json, contract)
+    output = _safe_output_directory(output_root, "Final GA evidence output")
     output.mkdir(parents=True, exist_ok=True)
     if any(output.iterdir()):
         raise FinalGAEvidenceError(f"Final GA evidence output must be empty: {output}")
@@ -332,7 +366,7 @@ def assemble(
     _copy(roots["authoritative-windows"] / "windows-release-binding.json", audit / "windows-release-binding.json")
     _copy(roots["authoritative-windows"] / "authoritative-matrix-verification.json", audit / "authoritative-matrix-verification.json")
     _copy(roots["authoritative-windows"] / "final-windows-evidence-rebind-status.json", audit / "final-windows-evidence-rebind-status.json")
-    provenance_copy = _copy(provenance_json.resolve(), audit / "final-ga-run-provenance.json")
+    provenance_copy = _copy(provenance_json, audit / "final-ga-run-provenance.json")
 
     policy_path = _build_policy(output, role_keys, contract)
     evaluation = _evaluation_dict(policy_path)
