@@ -84,15 +84,21 @@ class FinalSecurityReviewPathSafetyTests(unittest.TestCase):
                 pass
             link = root / "packet.zip"
             self._symlink_or_skip(link, target)
+            report = root / "report.json"
+            source = root / "source.zip"
+            release = root / "release.json"
+            report.write_text("{}\n", encoding="utf-8")
+            source.write_bytes(b"source\n")
+            release.write_text("{}\n", encoding="utf-8")
             with self.assertRaisesRegex(
                 self.review.FinalSecurityReviewPacketError,
                 "symlink component",
             ):
                 self.review.validate_submission(
-                    report_path=root / "missing-report.json",
+                    report_path=report,
                     packet_path=link,
-                    source_archive=root / "missing-source.zip",
-                    release_manifest=root / "missing-release.json",
+                    source_archive=source,
+                    release_manifest=release,
                     expected_commit=self.review._FINAL_COMMIT,
                     output=root / "status.json",
                 )
