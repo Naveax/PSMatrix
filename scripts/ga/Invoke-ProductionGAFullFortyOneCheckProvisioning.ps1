@@ -31,9 +31,16 @@ function Invoke-PythonChecked([string]$Python, [string[]]$Arguments, [int[]]$Acc
     if ($code -notin $AcceptedExitCodes) { throw "python command failed with exit ${code}: $($Arguments -join ' ')" }
     return $code
 }
+function Get-PathComparison() {
+    if ($IsWindows) { return [StringComparison]::OrdinalIgnoreCase }
+    return [StringComparison]::Ordinal
+}
 function Test-PathEqual([string]$Left, [string]$Right) {
-    $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
-    return [string]::Equals([IO.Path]::GetFullPath($Left), [IO.Path]::GetFullPath($Right), $comparison)
+    return [string]::Equals([IO.Path]::GetFullPath($Left), [IO.Path]::GetFullPath($Right), (Get-PathComparison))
+}
+function Test-PathInside([string]$Path, [string]$Root) {
+    $prefix = [IO.Path]::GetFullPath($Root).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
+    return [IO.Path]::GetFullPath($Path).StartsWith($prefix, (Get-PathComparison))
 }
 function Assert-NoLinkOrReparsePath([string]$Path, [string]$Label) {
     $resolved = [IO.Path]::GetFullPath($Path)
@@ -43,9 +50,7 @@ function Assert-NoLinkOrReparsePath([string]$Path, [string]$Label) {
         $linkProperty = $current.PSObject.Properties['LinkType']
         $linkType = if ($null -ne $linkProperty) { [string]$linkProperty.Value } else { '' }
         $isReparsePoint = (($current.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
-        if ($isReparsePoint -or -not [string]::IsNullOrWhiteSpace($linkType)) {
-            throw "$Label path must not contain links or reparse points."
-        }
+        if ($isReparsePoint -or -not [string]::IsNullOrWhiteSpace($linkType)) { throw "$Label path must not contain links or reparse points." }
         if ($current -is [IO.FileInfo]) { $current = $current.Directory }
         elseif ($current -is [IO.DirectoryInfo]) { $current = $current.Parent }
         else { break }
@@ -63,30 +68,24 @@ function Assert-ExistingAncestorsNoLink([string]$Path, [string]$Label) {
 function Assert-OutsideRepository([string]$Path, [string]$RepoRoot, [string]$Label) {
     $absolute = [IO.Path]::GetFullPath($Path)
     Assert-ExistingAncestorsNoLink $absolute $Label
-    $repoPrefix = [IO.Path]::GetFullPath($RepoRoot).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
-    $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
-    if ($absolute.StartsWith($repoPrefix, $comparison) -or (Test-PathEqual $absolute $RepoRoot)) {
-        throw "$Label must stay outside the repository."
-    }
+    if ((Test-PathEqual $absolute $RepoRoot) -or (Test-PathInside $absolute $RepoRoot)) { throw "$Label must stay outside the repository." }
     return $absolute
 }
-function Resolve-TrustedGh([string]$Requested) {
+function Resolve-TrustedGh([string]$Requested, [string]$RepoRoot) {
     $command = Get-Command gh -CommandType Application -ErrorAction Stop
     $discovered = [IO.Path]::GetFullPath([string]$command.Source)
     if (-not (Test-Path -LiteralPath $discovered -PathType Leaf)) { throw 'Trusted gh executable is missing.' }
     Assert-NoLinkOrReparsePath $discovered 'Trusted gh executable'
+    if ((Test-PathEqual $discovered $RepoRoot) -or (Test-PathInside $discovered $RepoRoot)) { throw 'Trusted gh executable must stay outside the repository.' }
     if (-not [string]::IsNullOrWhiteSpace($Requested)) {
         $candidate = [IO.Path]::GetFullPath($Requested)
-        if (-not (Test-PathEqual $candidate $discovered)) {
-            throw 'GhPath must match the gh application resolved by the trusted operator PATH.'
-        }
+        if (-not (Test-PathEqual $candidate $discovered)) { throw 'GhPath must match the gh application resolved by the trusted operator PATH.' }
     }
     return $discovered
 }
 
-if (-not [string]::Equals($Repository, $ExpectedRepository, [StringComparison]::Ordinal)) {
-    throw 'Full Production GA provisioning repository must be exactly Naveax/PSMatrix.'
-}
+if (-not [string]::Equals($Repository, $ExpectedRepository, [StringComparison]::Ordinal)) { throw 'Full Production GA provisioning repository must be exactly Naveax/PSMatrix.' }
+if (-not [string]::IsNullOrWhiteSpace($OfflineInventoryBefore) -and -not $DryRun.IsPresent) { throw 'OfflineInventoryBefore is permitted only with DryRun; mutating operations require a live GitHub inventory.' }
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 Assert-NoLinkOrReparsePath $repoRoot 'Repository root'
 $workspace = Assert-OutsideRepository $Root $repoRoot 'Full Production GA provisioning workspace'
@@ -111,66 +110,35 @@ Assert-ExistingAncestorsNoLink $summaryPath 'Full Production GA provisioning sum
 
 Push-Location $repoRoot
 try {
-    $initializeArgs = @{
-        Root = $workspace
-        SummaryOutput = $workspaceSummary
-    }
+    $initializeArgs = @{ Root = $workspace; SummaryOutput = $workspaceSummary }
     if ($ForceAuthorities) { $initializeArgs.ForceAuthorities = $true }
     & (Join-Path $repoRoot 'scripts/ga/Initialize-ProductionGAProvisioningWorkspace.ps1') @initializeArgs
     if ($LASTEXITCODE -ne 0) { throw 'Local 19-check Production GA workspace initialization failed.' }
     $prepared = Read-JsonObject $workspaceSummary 'Local Production GA workspace summary'
-    if ([int]$prepared.locally_prepared_check_count -ne 19 -or [int]$prepared.remaining_external_or_review_check_count -ne 22) {
-        throw 'Local Production GA workspace must prove exact 19 local plus 22 external/reviewer checks.'
-    }
+    if ([int]$prepared.locally_prepared_check_count -ne 19 -or [int]$prepared.remaining_external_or_review_check_count -ne 22) { throw 'Local Production GA workspace must prove exact 19 local plus 22 external/reviewer checks.' }
 
     $fragments = $prepared.fragments
-    Invoke-PythonChecked $python @(
-        'scripts/ga/build_public_auth_material_map_fragment.py',
-        '--material-root', [IO.Path]::GetFullPath($PublicAuthMaterialRoot),
-        '--value-root', $publicAuthValueRoot,
-        '--output-map', $publicAuthFragment
-    ) | Out-Null
-    Invoke-PythonChecked $python @(
-        'scripts/ga/build_otlp_material_map_fragment.py',
-        '--endpoint-file', [IO.Path]::GetFullPath($OtlpEndpointFile),
-        '--headers-file', [IO.Path]::GetFullPath($OtlpHeadersFile),
-        '--value-root', $otlpValueRoot,
-        '--output-map', $otlpFragment
-    ) | Out-Null
-    Invoke-PythonChecked $python @(
-        'scripts/ga/build_security_review_material_map_fragment.py',
-        '--packet', [IO.Path]::GetFullPath($SecurityReviewPacket),
-        '--report', [IO.Path]::GetFullPath($SecurityReviewReport),
-        '--output-map', $securityReviewFragment
-    ) | Out-Null
-
-    Invoke-PythonChecked $python @(
-        'scripts/ga/merge_production_ga_material_map_fragments.py',
-        '--fragment', [string]$fragments.signing_authorities,
-        '--fragment', [string]$fragments.full_matrix,
-        '--fragment', $publicAuthFragment,
-        '--fragment', $otlpFragment,
-        '--fragment', $securityReviewFragment,
-        '--output', $fullMap
-    ) | Out-Null
+    Invoke-PythonChecked $python @('scripts/ga/build_public_auth_material_map_fragment.py','--material-root',[IO.Path]::GetFullPath($PublicAuthMaterialRoot),'--value-root',$publicAuthValueRoot,'--output-map',$publicAuthFragment) | Out-Null
+    Invoke-PythonChecked $python @('scripts/ga/build_otlp_material_map_fragment.py','--endpoint-file',[IO.Path]::GetFullPath($OtlpEndpointFile),'--headers-file',[IO.Path]::GetFullPath($OtlpHeadersFile),'--value-root',$otlpValueRoot,'--output-map',$otlpFragment) | Out-Null
+    Invoke-PythonChecked $python @('scripts/ga/build_security_review_material_map_fragment.py','--packet',[IO.Path]::GetFullPath($SecurityReviewPacket),'--report',[IO.Path]::GetFullPath($SecurityReviewReport),'--output-map',$securityReviewFragment) | Out-Null
+    Invoke-PythonChecked $python @('scripts/ga/merge_production_ga_material_map_fragments.py','--fragment',[string]$fragments.signing_authorities,'--fragment',[string]$fragments.full_matrix,'--fragment',$publicAuthFragment,'--fragment',$otlpFragment,'--fragment',$securityReviewFragment,'--output',$fullMap) | Out-Null
     $map = Read-JsonObject $fullMap 'Exact Production GA material map'
-    if ([int]$map.check_count -ne 41 -or [int]$map.environment_count -ne 12 -or [int]$map.fragment_count -ne 5) {
-        throw 'Merged Production GA material map must be exact 5-fragment / 12-environment / 41-check closure.'
-    }
+    if ([int]$map.check_count -ne 41 -or [int]$map.environment_count -ne 12 -or [int]$map.fragment_count -ne 5) { throw 'Merged Production GA material map must be exact 5-fragment / 12-environment / 41-check closure.' }
 
-    $auditArgs = @('scripts/ga/audit_production_ga_environment_inventory.py', '--repository', $ExpectedRepository, '--output', $preAudit)
+    $auditArgs = @('scripts/ga/audit_production_ga_environment_inventory.py','--repository',$ExpectedRepository,'--output',$preAudit)
     if (-not [string]::IsNullOrWhiteSpace($OfflineInventoryBefore)) {
-        $auditArgs += @('--inventory', [IO.Path]::GetFullPath($OfflineInventoryBefore))
+        $offlineInventory = [IO.Path]::GetFullPath($OfflineInventoryBefore)
+        if (-not (Test-Path -LiteralPath $offlineInventory -PathType Leaf)) { throw 'Offline inventory is missing.' }
+        Assert-NoLinkOrReparsePath $offlineInventory 'Offline inventory'
+        $auditArgs += @('--inventory',$offlineInventory)
     }
     else {
-        $gh = Resolve-TrustedGh $GhPath
-        $auditArgs += @('--gh', $gh)
+        $gh = Resolve-TrustedGh $GhPath $repoRoot
+        $auditArgs += @('--gh',$gh)
     }
     Invoke-PythonChecked $python $auditArgs @(0,2) | Out-Null
     $before = Read-JsonObject $preAudit 'Pre-provision Production GA inventory audit'
-    if ([int]$before.required_check_count -ne 41 -or [int]$before.environment_count -ne 12) {
-        throw 'Pre-provision inventory must cover exact 12 environments and 41 checks.'
-    }
+    if ([int]$before.required_check_count -ne 41 -or [int]$before.environment_count -ne 12) { throw 'Pre-provision inventory must cover exact 12 environments and 41 checks.' }
 
     $missingBefore = [int]$before.missing_check_count
     $selectedCount = 0
@@ -180,29 +148,17 @@ try {
     $after = $before
 
     if ($missingBefore -gt 0) {
-        Invoke-PythonChecked $python @(
-            'scripts/ga/select_missing_production_ga_material.py',
-            '--material-map', $fullMap,
-            '--inventory-audit', $preAudit,
-            '--output', $selectedMap
-        ) | Out-Null
+        Invoke-PythonChecked $python @('scripts/ga/select_missing_production_ga_material.py','--material-map',$fullMap,'--inventory-audit',$preAudit,'--output',$selectedMap) | Out-Null
         $selected = Read-JsonObject $selectedMap 'Selected missing Production GA material map'
         $selectedCount = [int]$selected.check_count
         if ($selectedCount -ne $missingBefore) { throw 'Selected check count must equal exact names-only missing count for a complete 41-check map.' }
         $selectedEnvironments = @($selected.environments.Keys | Sort-Object)
         if ($selectedEnvironments.Count -eq 0) { throw 'Selected missing Production GA material map contains zero environments.' }
 
-        $provisionArgs = @{
-            MaterialMap = $selectedMap
-            Repository = $ExpectedRepository
-            Environment = $selectedEnvironments
-            AllowPartialEnvironment = $true
-        }
-        if ($DryRun) {
-            $provisionArgs.DryRun = $true
-        }
+        $provisionArgs = @{ MaterialMap=$selectedMap; Repository=$ExpectedRepository; Environment=$selectedEnvironments; AllowPartialEnvironment=$true }
+        if ($DryRun) { $provisionArgs.DryRun = $true }
         else {
-            if ($null -eq $gh) { $gh = Resolve-TrustedGh $GhPath }
+            if ($null -eq $gh) { $gh = Resolve-TrustedGh $GhPath $repoRoot }
             $provisionArgs.GhPath = $gh
         }
         & (Join-Path $repoRoot 'scripts/ga/Invoke-ProductionGAEnvironmentProvisioning.ps1') @provisionArgs
@@ -210,19 +166,12 @@ try {
         $mutationExecuted = -not $DryRun.IsPresent
 
         if ($mutationExecuted) {
-            $postArgs = @('scripts/ga/audit_production_ga_environment_inventory.py', '--repository', $ExpectedRepository, '--output', $postAudit, '--gh', $gh)
+            $postArgs = @('scripts/ga/audit_production_ga_environment_inventory.py','--repository',$ExpectedRepository,'--output',$postAudit,'--gh',$gh)
             Invoke-PythonChecked $python $postArgs @(0,2) | Out-Null
             $after = Read-JsonObject $postAudit 'Post-provision Production GA inventory audit'
-            Invoke-PythonChecked $python @(
-                'scripts/ga/verify_production_ga_provisioning_receipt.py',
-                '--material-map', $selectedMap,
-                '--inventory-audit', $postAudit,
-                '--output', $receipt
-            ) | Out-Null
+            Invoke-PythonChecked $python @('scripts/ga/verify_production_ga_provisioning_receipt.py','--material-map',$selectedMap,'--inventory-audit',$postAudit,'--output',$receipt) | Out-Null
             $receiptValue = Read-JsonObject $receipt 'Full Production GA provisioning receipt'
-            if ($receiptValue.status -ne 'PASS' -or [int]$receiptValue.verified_check_count -ne $selectedCount) {
-                throw 'Full Production GA provisioning receipt did not verify every selected identity.'
-            }
+            if ($receiptValue.status -ne 'PASS' -or [int]$receiptValue.verified_check_count -ne $selectedCount) { throw 'Full Production GA provisioning receipt did not verify every selected identity.' }
             $receiptVerified = $true
         }
     }
@@ -230,61 +179,24 @@ try {
     $presentAfter = [int]$after.present_check_count
     $missingAfter = [int]$after.missing_check_count
     if (($presentAfter + $missingAfter) -ne 41) { throw 'Post-operation inventory accounting must remain exact 41 checks.' }
-    $operationStatus = if ($DryRun) {
-        'DRY_RUN_PASS'
-    }
-    elseif ($missingBefore -eq 0) {
-        'NO_NAME_MUTATION_REQUIRED'
-    }
-    elseif ($receiptVerified) {
-        'PROVISIONED_AND_RECEIPT_VERIFIED'
-    }
-    else {
-        throw 'Provisioning mutation completed without an exact post-provision receipt.'
-    }
+    $operationStatus = if ($DryRun) { 'DRY_RUN_PASS' } elseif ($missingBefore -eq 0) { 'NO_NAME_MUTATION_REQUIRED' } elseif ($receiptVerified) { 'PROVISIONED_AND_RECEIPT_VERIFIED' } else { throw 'Provisioning mutation completed without an exact post-provision receipt.' }
 
     $operation = [ordered]@{
-        schema = 1
-        kind = 'psmatrix.production-ga-full-41check-provisioning-operation'
-        version = '2.0.0'
-        status = $operationStatus
-        repository = $ExpectedRepository
-        workspace = $workspace
-        local_check_count = 19
-        external_or_review_check_count = 22
-        total_material_check_count = 41
-        fragment_count = 5
-        present_before = [int]$before.present_check_count
-        missing_before = $missingBefore
-        selected_check_count = $selectedCount
-        selected_environments = $selectedEnvironments
-        dry_run = $DryRun.IsPresent
-        github_environment_mutation_executed = $mutationExecuted
-        provisioning_receipt_verified = $receiptVerified
-        present_after = $presentAfter
-        missing_after = $missingAfter
-        names_only_inventory_complete = ($presentAfter -eq 41)
-        readiness_rerun_candidate = ($presentAfter -eq 41)
-        production_readiness_verified = $false
-        production_evidence_complete = $false
-        final_ga_evaluator_invoked = $false
-        ga_eligible = $false
-        artifacts = [ordered]@{
-            local_workspace_summary = $workspaceSummary
-            public_auth_fragment = $publicAuthFragment
-            external_otlp_fragment = $otlpFragment
-            security_review_fragment = $securityReviewFragment
-            full_material_map = $fullMap
-            pre_inventory_audit = $preAudit
-            selected_material_map = if ($selectedCount -gt 0) { $selectedMap } else { $null }
-            post_inventory_audit = if ($mutationExecuted) { $postAudit } else { $null }
-            provisioning_receipt = if ($receiptVerified) { $receipt } else { $null }
+        schema=1; kind='psmatrix.production-ga-full-41check-provisioning-operation'; version='2.0.0'; status=$operationStatus
+        repository=$ExpectedRepository; workspace=$workspace; local_check_count=19; external_or_review_check_count=22; total_material_check_count=41; fragment_count=5
+        present_before=[int]$before.present_check_count; missing_before=$missingBefore; selected_check_count=$selectedCount; selected_environments=$selectedEnvironments
+        dry_run=$DryRun.IsPresent; github_environment_mutation_executed=$mutationExecuted; provisioning_receipt_verified=$receiptVerified
+        present_after=$presentAfter; missing_after=$missingAfter; names_only_inventory_complete=($presentAfter -eq 41)
+        readiness_rerun_candidate=((-not $DryRun.IsPresent) -and ($presentAfter -eq 41))
+        production_readiness_verified=$false; production_evidence_complete=$false; final_ga_evaluator_invoked=$false; ga_eligible=$false
+        artifacts=[ordered]@{
+            local_workspace_summary=$workspaceSummary; public_auth_fragment=$publicAuthFragment; external_otlp_fragment=$otlpFragment; security_review_fragment=$securityReviewFragment; full_material_map=$fullMap
+            pre_inventory_audit=$preAudit; selected_material_map=if($selectedCount -gt 0){$selectedMap}else{$null}; post_inventory_audit=if($mutationExecuted){$postAudit}else{$null}; provisioning_receipt=if($receiptVerified){$receipt}else{$null}
         }
     }
     $summaryDirectory = Split-Path -Parent $summaryPath
     if ($summaryDirectory) { New-Item -ItemType Directory -Path $summaryDirectory -Force | Out-Null; Assert-NoLinkOrReparsePath $summaryDirectory 'Full Production GA provisioning summary directory' }
     [IO.File]::WriteAllText($summaryPath,(($operation | ConvertTo-Json -Depth 20)+[Environment]::NewLine),[Text.UTF8Encoding]::new($false))
-
     Write-Host "production_ga_full_41check_operation=$operationStatus"
     Write-Host 'material_checks=41/41'
     Write-Host "selected_checks=$selectedCount"
@@ -295,6 +207,4 @@ try {
     Write-Host 'ga_eligible=false'
     Write-Host "summary=$summaryPath"
 }
-finally {
-    Pop-Location
-}
+finally { Pop-Location }

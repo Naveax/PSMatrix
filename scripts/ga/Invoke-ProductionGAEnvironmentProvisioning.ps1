@@ -14,9 +14,16 @@ $ErrorActionPreference = 'Stop'
 $ExpectedRepository = 'Naveax/PSMatrix'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 
+function Get-PathComparison() {
+    if ($IsWindows) { return [StringComparison]::OrdinalIgnoreCase }
+    return [StringComparison]::Ordinal
+}
 function Test-PathEqual([string]$Left, [string]$Right) {
-    $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
-    return [string]::Equals([IO.Path]::GetFullPath($Left), [IO.Path]::GetFullPath($Right), $comparison)
+    return [string]::Equals([IO.Path]::GetFullPath($Left), [IO.Path]::GetFullPath($Right), (Get-PathComparison))
+}
+function Test-PathInside([string]$Path, [string]$Root) {
+    $rootPrefix = [IO.Path]::GetFullPath($Root).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
+    return [IO.Path]::GetFullPath($Path).StartsWith($rootPrefix, (Get-PathComparison))
 }
 function Assert-NoLinkOrReparsePath([string]$Path, [string]$Label) {
     $resolved = [IO.Path]::GetFullPath($Path)
@@ -59,9 +66,7 @@ function Read-JsonObject([string]$Path, [string]$Label) {
     $text = [IO.File]::ReadAllText($resolved, [Text.Encoding]::UTF8)
     try { $document = [System.Text.Json.JsonDocument]::Parse($text) }
     catch { throw "$Label is invalid JSON." }
-    try {
-        Assert-UniqueJsonKeys $document.RootElement $Label
-    }
+    try { Assert-UniqueJsonKeys $document.RootElement $Label }
     finally { $document.Dispose() }
     try { $value = $text | ConvertFrom-Json -AsHashtable -Depth 30 }
     catch { throw "$Label is invalid JSON." }
@@ -72,8 +77,7 @@ function Assert-ExternalMaterialFile([string]$Path, [string]$RepoRoot, [string]$
     $resolved = [IO.Path]::GetFullPath($Path)
     if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) { throw "$Label source file is missing." }
     Assert-NoLinkOrReparsePath $resolved "$Label source"
-    $repo = [IO.Path]::GetFullPath($RepoRoot).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
-    if ($resolved.StartsWith($repo, [StringComparison]::OrdinalIgnoreCase)) { throw "$Label source file must stay outside the repository." }
+    if ((Test-PathEqual $resolved $RepoRoot) -or (Test-PathInside $resolved $RepoRoot)) { throw "$Label source file must stay outside the repository." }
     if ((Get-Item -LiteralPath $resolved).Length -le 0) { throw "$Label source file is empty." }
     return $resolved
 }
@@ -82,27 +86,25 @@ function Resolve-TrustedGh([string]$Requested) {
     $discovered = [IO.Path]::GetFullPath([string]$command.Source)
     if (-not (Test-Path -LiteralPath $discovered -PathType Leaf)) { throw 'Trusted gh executable is missing.' }
     Assert-NoLinkOrReparsePath $discovered 'Trusted gh executable'
+    if ((Test-PathEqual $discovered $repoRoot) -or (Test-PathInside $discovered $repoRoot)) { throw 'Trusted gh executable must stay outside the repository.' }
     if (-not [string]::IsNullOrWhiteSpace($Requested)) {
         $candidate = [IO.Path]::GetFullPath($Requested)
-        if (-not (Test-PathEqual $candidate $discovered)) {
-            throw 'GhPath must match the gh application resolved by the trusted operator PATH.'
-        }
+        if (-not (Test-PathEqual $candidate $discovered)) { throw 'GhPath must match the gh application resolved by the trusted operator PATH.' }
     }
     return $discovered
 }
 function Copy-MaterialToStage([string]$Source, [string]$Destination, [string]$Label) {
-    $before = Get-FileHash -LiteralPath $Source -Algorithm SHA256
-    $lengthBefore = (Get-Item -LiteralPath $Source -Force).Length
-    [IO.File]::Copy($Source, $Destination, $false)
+    $validatedSource = Assert-ExternalMaterialFile $Source $repoRoot $Label
+    $before = Get-FileHash -LiteralPath $validatedSource -Algorithm SHA256
+    $lengthBefore = (Get-Item -LiteralPath $validatedSource -Force).Length
+    [IO.File]::Copy($validatedSource, $Destination, $false)
     Protect-TemporaryPath $Destination $false
     if (-not (Test-Path -LiteralPath $Destination -PathType Leaf)) { throw "$Label staging copy is missing." }
     Assert-NoLinkOrReparsePath $Destination "$Label staged input"
     $staged = Get-FileHash -LiteralPath $Destination -Algorithm SHA256
-    $after = Get-FileHash -LiteralPath $Source -Algorithm SHA256
-    $lengthAfter = (Get-Item -LiteralPath $Source -Force).Length
-    if ($before.Hash -ne $staged.Hash -or $before.Hash -ne $after.Hash -or $lengthBefore -ne $lengthAfter) {
-        throw "$Label source changed during immutable staging."
-    }
+    $after = Get-FileHash -LiteralPath $validatedSource -Algorithm SHA256
+    $lengthAfter = (Get-Item -LiteralPath $validatedSource -Force).Length
+    if ($before.Hash -ne $staged.Hash -or $before.Hash -ne $after.Hash -or $lengthBefore -ne $lengthAfter) { throw "$Label source changed during immutable staging." }
     return [IO.Path]::GetFullPath($Destination)
 }
 function Invoke-GhStdin([string]$Executable, [string[]]$Arguments, [string]$InputFile) {
@@ -112,16 +114,12 @@ function Invoke-GhStdin([string]$Executable, [string[]]$Arguments, [string]$Inpu
     try {
         $process = Start-Process -FilePath $Executable -ArgumentList $Arguments -NoNewWindow -Wait -PassThru `
             -RedirectStandardInput $InputFile -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-        if ($process.ExitCode -ne 0) {
-            throw "gh provisioning command failed with exit $($process.ExitCode); command output was intentionally redacted."
-        }
+        if ($process.ExitCode -ne 0) { throw "gh provisioning command failed with exit $($process.ExitCode); command output was intentionally redacted." }
     }
     finally { Remove-Item -LiteralPath $stdout,$stderr -Force -ErrorAction SilentlyContinue }
 }
 
-if (-not [string]::Equals($Repository, $ExpectedRepository, [StringComparison]::Ordinal)) {
-    throw 'Production GA provisioning repository must be exactly Naveax/PSMatrix.'
-}
+if (-not [string]::Equals($Repository, $ExpectedRepository, [StringComparison]::Ordinal)) { throw 'Production GA provisioning repository must be exactly Naveax/PSMatrix.' }
 Assert-NoLinkOrReparsePath $repoRoot 'Repository root'
 $canonicalContract = [IO.Path]::GetFullPath((Join-Path $repoRoot 'ga-packs/03-authoritative-windows/final-production-readiness-contract.json'))
 $requestedContract = if ([IO.Path]::IsPathRooted($Contract)) { [IO.Path]::GetFullPath($Contract) } else { [IO.Path]::GetFullPath((Join-Path $repoRoot $Contract)) }
@@ -131,10 +129,25 @@ $mapValue = Read-JsonObject $MaterialMap 'Production provisioning material map'
 if ($contractValue.schema -ne 1 -or $contractValue.kind -ne 'psmatrix.final-production-readiness-contract' -or $contractValue.version -ne '2.0.0') { throw 'Production readiness contract identity mismatch.' }
 if ($mapValue.schema -ne 1 -or $mapValue.kind -ne 'psmatrix.production-ga-environment-material-map' -or $mapValue.version -ne '2.0.0') { throw 'Production provisioning material-map identity mismatch.' }
 if ($mapValue.Contains('values')) { throw 'Provisioning material map must contain file paths only, never inline values.' }
+if (-not $mapValue.Contains('environments') -or $mapValue.environments -isnot [Collections.IDictionary]) { throw 'Production provisioning material-map environments must be an object.' }
 if ($AllowPartialEnvironment -and -not $Environment) { throw 'AllowPartialEnvironment requires one or more explicit -Environment values.' }
 
-$wanted = @{}; if ($Environment) { foreach ($name in $Environment) { $wanted[$name] = $true } }
-$selected = @($contractValue.environments | Where-Object { -not $Environment -or $wanted.ContainsKey($_.name) })
+$contractNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+foreach ($entry in @($contractValue.environments)) {
+    $contractName = [string]$entry.name
+    if ([string]::IsNullOrWhiteSpace($contractName) -or -not $contractNames.Add($contractName)) { throw 'Production readiness contract contains an invalid or duplicate environment identity.' }
+}
+foreach ($mappedEnvironment in @($mapValue.environments.Keys)) {
+    if (-not $contractNames.Contains([string]$mappedEnvironment)) { throw 'Production provisioning material map contains an undeclared environment identity.' }
+}
+
+$wanted = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+if ($Environment) {
+    foreach ($name in $Environment) {
+        if (-not $wanted.Add([string]$name)) { throw 'Environment selection contains a duplicate identity.' }
+    }
+}
+$selected = @($contractValue.environments | Where-Object { -not $Environment -or $wanted.Contains([string]$_.name) })
 if ($Environment -and $selected.Count -ne $wanted.Count) { throw 'One or more requested Production GA environments are unknown.' }
 if ($selected.Count -eq 0) { throw 'No Production GA environments selected.' }
 
@@ -159,15 +172,15 @@ foreach ($entry in $selected) {
         if ($missingSecrets.Count) { throw "$name is missing secret source: $($missingSecrets -join ',')" }
         if ($missingVars.Count) { throw "$name is missing variable source: $($missingVars -join ',')" }
     }
-    elseif (($mappedSecrets.Count + $mappedVars.Count) -eq 0) {
-        throw "$name partial material map contains no provisionable checks."
-    }
+    elseif (($mappedSecrets.Count + $mappedVars.Count) -eq 0) { throw "$name partial material map contains no provisionable checks." }
 
     foreach ($secret in $mappedSecrets | Sort-Object) {
+        if ($mapped.secrets[$secret] -isnot [string]) { throw "$name/$secret material source path must be a string." }
         $path = Assert-ExternalMaterialFile ([string]$mapped.secrets[$secret]) $repoRoot "$name/$secret"
         $plan += [ordered]@{ environment=$name; source='secret'; name=$secret; path=$path }
     }
     foreach ($variable in $mappedVars | Sort-Object) {
+        if ($mapped.vars[$variable] -isnot [string]) { throw "$name/$variable material source path must be a string." }
         $path = Assert-ExternalMaterialFile ([string]$mapped.vars[$variable]) $repoRoot "$name/$variable"
         $plan += [ordered]@{ environment=$name; source='var'; name=$variable; path=$path }
     }
@@ -185,21 +198,18 @@ New-Item -ItemType Directory -Path $stageRoot -ErrorAction Stop | Out-Null
 Protect-TemporaryPath $stageRoot $true
 try {
     Assert-NoLinkOrReparsePath $stageRoot 'Provisioning staging directory'
-    $stagedPlan = @()
     $index = 0
     foreach ($item in $plan) {
         $index += 1
         $stagePath = Join-Path $stageRoot ("input-{0:D3}.bin" -f $index)
         $staged = Copy-MaterialToStage $item.path $stagePath "$($item.environment)/$($item.name)"
-        $stagedPlan += [ordered]@{ environment=$item.environment; source=$item.source; name=$item.name; path=$staged }
-    }
-    foreach ($item in $stagedPlan) {
-        $kind = if ($item.source -eq 'secret') { 'secret' } else { 'variable' }
-        Invoke-GhStdin $gh @($kind,'set',$item.name,'--env',$item.environment,'--repo',$ExpectedRepository) $item.path
-        Write-Host "provisioned=$($item.environment)/$($item.source)/$($item.name)"
+        try {
+            $kind = if ($item.source -eq 'secret') { 'secret' } else { 'variable' }
+            Invoke-GhStdin $gh @($kind,'set',$item.name,'--env',$item.environment,'--repo',$ExpectedRepository) $staged
+            Write-Host "provisioned=$($item.environment)/$($item.source)/$($item.name)"
+        }
+        finally { Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue }
     }
 }
-finally {
-    Remove-Item -LiteralPath $stageRoot -Recurse -Force -ErrorAction SilentlyContinue
-}
+finally { Remove-Item -LiteralPath $stageRoot -Recurse -Force -ErrorAction SilentlyContinue }
 Write-Host "production_ga_environment_provisioning_executed=true checks=$($plan.Count)"
