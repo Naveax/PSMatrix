@@ -12,6 +12,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "ga" / "build_final_security_review_packet.py"
+CONTRACT = ROOT / "ga-packs" / "03-authoritative-windows" / "final-security-vulnerability-evidence-producer-contract.json"
+PREFLIGHT = ROOT / ".github" / "workflows" / "ga-final-security-vulnerability-evidence-producers-source-preflight.yml"
 
 
 def load(path: Path, name: str):
@@ -161,6 +163,40 @@ class FinalSecurityReviewParentPathSafetyTests(unittest.TestCase):
                     alias_dir / "status.json",
                     "security review submission validation output",
                 )
+
+    def test_reviewer_commitment_contract_and_ten_path_preflight_are_fail_closed(self) -> None:
+        contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+        packet = contract["security_review_packet"]
+        review = contract["security_review"]
+        authority = contract["authority_closure"]
+        control = contract["control_source"]
+        preparation = contract["preparation_state"]
+
+        self.assertEqual(packet["reviewer_commitment"], "security-reviewer-commitment.json")
+        self.assertEqual(packet["reviewer_intake_environment"], "production-ga-security-review-intake")
+        self.assertEqual(packet["reviewer_commitment_variable"], "PSMATRIX_GA_SECURITY_REVIEWER_COMMITMENT_JSON")
+        self.assertTrue(packet["reviewer_identity_precommit_required"])
+        self.assertTrue(packet["reviewer_key_precommit_required"])
+        self.assertFalse(packet["reviewer_private_key_allowed"])
+        self.assertTrue(review["reviewer_commitment_required"])
+        self.assertTrue(review["reviewer_identity_must_match_commitment"])
+        self.assertTrue(review["reviewer_public_key_must_match_commitment"])
+        self.assertTrue(authority["security_review_reviewer_identity_and_key_must_be_precommitted"])
+        self.assertFalse(preparation["security_review_reviewer_commitment_provisioned"])
+
+        allowlist = set(control["changed_path_allowlist"])
+        self.assertEqual(len(allowlist), 10)
+        self.assertIn("tests/test_ga_final_security_review_path_safety.py", allowlist)
+        self.assertIn("tests/test_ga_final_security_review_parent_path_safety.py", allowlist)
+
+        preflight = PREFLIGHT.read_text(encoding="utf-8")
+        self.assertIn("Verify exact ten-path closure", preflight)
+        self.assertIn("$changed.Count -ne 10", preflight)
+        self.assertIn("security_vulnerability_control_changed_paths=10", preflight)
+        self.assertIn("tests/test_ga_final_security_review_path_safety.py", preflight)
+        self.assertIn("tests/test_ga_final_security_review_parent_path_safety.py", preflight)
+        self.assertIn("tests.test_ga_final_security_review_path_safety", preflight)
+        self.assertIn("tests.test_ga_final_security_review_parent_path_safety", preflight)
 
 
 if __name__ == "__main__":
