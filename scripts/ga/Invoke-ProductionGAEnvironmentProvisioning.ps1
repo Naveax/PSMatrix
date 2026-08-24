@@ -34,6 +34,12 @@ function Assert-NoLinkOrReparsePath([string]$Path, [string]$Label) {
         else { break }
     }
 }
+function Protect-TemporaryPath([string]$Path, [bool]$Directory) {
+    if ($IsWindows) { return }
+    $mode = [IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite
+    if ($Directory) { $mode = $mode -bor [IO.UnixFileMode]::UserExecute }
+    [IO.File]::SetUnixFileMode($Path, $mode)
+}
 function Assert-UniqueJsonKeys([System.Text.Json.JsonElement]$Element, [string]$Label) {
     if ($Element.ValueKind -eq [System.Text.Json.JsonValueKind]::Object) {
         $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -88,6 +94,7 @@ function Copy-MaterialToStage([string]$Source, [string]$Destination, [string]$La
     $before = Get-FileHash -LiteralPath $Source -Algorithm SHA256
     $lengthBefore = (Get-Item -LiteralPath $Source -Force).Length
     [IO.File]::Copy($Source, $Destination, $false)
+    Protect-TemporaryPath $Destination $false
     if (-not (Test-Path -LiteralPath $Destination -PathType Leaf)) { throw "$Label staging copy is missing." }
     Assert-NoLinkOrReparsePath $Destination "$Label staged input"
     $staged = Get-FileHash -LiteralPath $Destination -Algorithm SHA256
@@ -100,6 +107,8 @@ function Copy-MaterialToStage([string]$Source, [string]$Destination, [string]$La
 }
 function Invoke-GhStdin([string]$Executable, [string[]]$Arguments, [string]$InputFile) {
     $stdout = [IO.Path]::GetTempFileName(); $stderr = [IO.Path]::GetTempFileName()
+    Protect-TemporaryPath $stdout $false
+    Protect-TemporaryPath $stderr $false
     try {
         $process = Start-Process -FilePath $Executable -ArgumentList $Arguments -NoNewWindow -Wait -PassThru `
             -RedirectStandardInput $InputFile -RedirectStandardOutput $stdout -RedirectStandardError $stderr
@@ -173,6 +182,7 @@ if ($DryRun) { Write-Host 'production_ga_environment_provisioning_executed=false
 $gh = Resolve-TrustedGh $GhPath
 $stageRoot = Join-Path ([IO.Path]::GetTempPath()) ("psmatrix-ga-provisioning-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $stageRoot -ErrorAction Stop | Out-Null
+Protect-TemporaryPath $stageRoot $true
 try {
     Assert-NoLinkOrReparsePath $stageRoot 'Provisioning staging directory'
     $stagedPlan = @()
