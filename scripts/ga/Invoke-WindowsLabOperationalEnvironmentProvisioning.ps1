@@ -18,18 +18,23 @@ function Assert-NoLinkOrReparsePath {
         [Parameter(Mandatory)] [string]$Label
     )
 
-    $current = Get-Item -LiteralPath $Path -Force
-    while ($null -ne $current) {
-        $linkProperty = $current.PSObject.Properties['LinkType']
+    $full = [IO.Path]::GetFullPath($Path)
+    $root = [IO.Path]::GetPathRoot($full)
+    if ([string]::IsNullOrWhiteSpace($root)) {
+        throw "$Label path root is invalid."
+    }
+    $relative = $full.Substring($root.Length)
+    $segments = @([Regex]::Split($relative, '[\\/]+') | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $current = $root
+    foreach ($segment in $segments) {
+        $current = Join-Path $current $segment
+        $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+        $linkProperty = $item.PSObject.Properties['LinkType']
         $linkType = if ($null -ne $linkProperty) { [string]$linkProperty.Value } else { '' }
-        $isReparsePoint = (($current.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+        $isReparsePoint = (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
         if ($isReparsePoint -or -not [string]::IsNullOrWhiteSpace($linkType)) {
             throw "$Label path must not contain links or reparse points."
         }
-
-        if ($current -is [IO.FileInfo]) { $current = $current.Directory }
-        elseif ($current -is [IO.DirectoryInfo]) { $current = $current.Parent }
-        else { break }
     }
 }
 
@@ -112,88 +117,108 @@ if ($Repository -cne $canonicalRepository) {
 }
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
-$rootSource = Assert-ExternalMaterialFile -Path $GaRootValueFile -RepoRoot $repoRoot -Label 'PSMATRIX_WINDOWS_GA_ROOT'
-$wps40Source = Assert-ExternalMaterialFile -Path $Wps40AdminPasswordFile -RepoRoot $repoRoot -Label 'PSMATRIX_WPS40_ADMIN_PASSWORD'
-$wps50Source = Assert-ExternalMaterialFile -Path $Wps50AdminPasswordFile -RepoRoot $repoRoot -Label 'PSMATRIX_WPS50_ADMIN_PASSWORD'
-$wps51Source = Assert-ExternalMaterialFile -Path $Wps51AdminPasswordFile -RepoRoot $repoRoot -Label 'PSMATRIX_WPS51_ADMIN_PASSWORD'
+$rootExternal = Assert-ExternalMaterialFile -Path $GaRootValueFile -RepoRoot $repoRoot -Label 'PSMATRIX_WINDOWS_GA_ROOT'
+$wps40External = Assert-ExternalMaterialFile -Path $Wps40AdminPasswordFile -RepoRoot $repoRoot -Label 'PSMATRIX_WPS40_ADMIN_PASSWORD'
+$wps50External = Assert-ExternalMaterialFile -Path $Wps50AdminPasswordFile -RepoRoot $repoRoot -Label 'PSMATRIX_WPS50_ADMIN_PASSWORD'
+$wps51External = Assert-ExternalMaterialFile -Path $Wps51AdminPasswordFile -RepoRoot $repoRoot -Label 'PSMATRIX_WPS51_ADMIN_PASSWORD'
 
-$rootValue = (Get-Content -Raw -LiteralPath $rootSource).Trim()
-if ([string]::IsNullOrWhiteSpace($rootValue)) {
-    throw 'PSMATRIX_WINDOWS_GA_ROOT value file contains no usable value.'
+$tempWorkspace = New-Item -ItemType Directory -Path (Join-Path ([IO.Path]::GetTempPath()) ("psmatrix-windows-lab-" + [Guid]::NewGuid().ToString('N'))) -Force
+$tempRoot = [IO.Path]::GetFullPath($tempWorkspace.FullName)
+if ((Test-PathWithinRoot -Candidate $tempRoot -Root $repoRoot) -or (Test-PathWithinRoot -Candidate $repoRoot -Root $tempRoot)) {
+    throw 'Windows-lab temporary workspace and repository must be disjoint paths.'
 }
-if ($rootValue.Contains("`r") -or $rootValue.Contains("`n")) {
-    throw 'PSMATRIX_WINDOWS_GA_ROOT value must contain exactly one path value.'
-}
-if (-not [IO.Path]::IsPathRooted($rootValue)) {
-    throw 'PSMATRIX_WINDOWS_GA_ROOT value must be an absolute path.'
-}
+Assert-NoLinkOrReparsePath -Path $tempRoot -Label 'Windows-lab temporary workspace'
 
-$gaRoot = [IO.Path]::GetFullPath($rootValue)
-$gaRootInsideRepository = Test-PathWithinRoot -Candidate $gaRoot -Root $repoRoot
-$repositoryInsideGaRoot = Test-PathWithinRoot -Candidate $repoRoot -Root $gaRoot
-if ($gaRootInsideRepository -or $repositoryInsideGaRoot) {
-    throw 'PSMATRIX_WINDOWS_GA_ROOT and the repository must be disjoint paths.'
-}
-if (-not (Test-Path -LiteralPath $gaRoot -PathType Container)) {
-    throw 'PSMATRIX_WINDOWS_GA_ROOT directory does not exist.'
-}
-Assert-NoLinkOrReparsePath -Path $gaRoot -Label 'PSMATRIX_WINDOWS_GA_ROOT'
-
-$configRoot = Join-Path $gaRoot 'config'
-$externalRoot = Join-Path $gaRoot 'media\external'
-foreach ($requiredPath in @($configRoot, $externalRoot)) {
-    if (-not (Test-Path -LiteralPath $requiredPath -PathType Container)) {
-        throw 'PSMATRIX_WINDOWS_GA_ROOT does not contain the required Windows-lab layout.'
-    }
-    Assert-NoLinkOrReparsePath -Path $requiredPath -Label 'Windows-lab layout'
-}
-
-# Secret files are validated only for existence/non-emptiness. Their values, hashes,
-# lengths and contents are intentionally never materialized into logs or process arguments.
-foreach ($secretPath in @($wps40Source, $wps50Source, $wps51Source)) {
-    if (-not (Test-Path -LiteralPath $secretPath -PathType Leaf)) {
-        throw 'A required Windows-lab secret source file disappeared during validation.'
-    }
-}
-
-Write-Host 'windows_lab_operational_material_validation=PASS checks=4'
-Write-Host 'windows_lab_root_layout_validation=PASS'
-Write-Host "target_repository=$canonicalRepository"
-Write-Host "target_environment=$Environment"
-Write-Host 'configured_paths_logged=false'
-Write-Host 'secret_values_logged=false'
-Write-Host 'secret_hashes_logged=false'
-Write-Host 'secret_lengths_logged=false'
-
-if ($DryRun) {
-    Write-Host 'windows_lab_operational_environment_provisioning_executed=false dry_run=true'
-    exit 0
-}
-
-# Live provisioning resolves only the GitHub CLI application from PATH. There is
-# deliberately no operator-supplied executable override because the three secret
-# files are redirected to this process over stdin.
-$ghCommand = Get-Command gh -CommandType Application -ErrorAction Stop
-$gh = [IO.Path]::GetFullPath([string]$ghCommand.Source)
-if (-not (Test-Path -LiteralPath $gh -PathType Leaf)) {
-    throw 'GitHub CLI application could not be resolved to an existing file.'
-}
-Assert-NoLinkOrReparsePath -Path $gh -Label 'GitHub CLI executable'
-if (Test-PathWithinRoot -Candidate $gh -Root $repoRoot) {
-    throw 'GitHub CLI executable must not be loaded from the repository.'
-}
-
-Invoke-GhCaptured -Executable $gh -Arguments @('auth', 'status', '--hostname', 'github.com')
-Invoke-GhCaptured -Executable $gh -Arguments @('api', "repos/$Repository/environments/$Environment")
-
-# A prior successful provisioning may already have committed a valid root variable.
-# Invalidate that commit marker before touching any secret so every partial rerun remains
-# fail-closed. The sentinel is deliberately relative, so the prerequisite audit must fail
-# ga_root_absolute until the real absolute root is committed last.
-$incompleteMarker = '__PSMATRIX_WINDOWS_GA_ROOT_PROVISIONING_INCOMPLETE__'
-$incompleteMarkerInput = [IO.Path]::GetTempFileName()
-$sanitizedRootInput = [IO.Path]::GetTempFileName()
 try {
+    # Stage exact selected bytes before any semantic read or GitHub mutation. The staged
+    # copies become the only source for validation and upload, closing source-file TOCTOU.
+    $rootSource = Join-Path $tempRoot 'ga-root.txt'
+    $wps40Source = Join-Path $tempRoot 'wps40-admin.txt'
+    $wps50Source = Join-Path $tempRoot 'wps50-admin.txt'
+    $wps51Source = Join-Path $tempRoot 'wps51-admin.txt'
+    Copy-Item -LiteralPath $rootExternal -Destination $rootSource -Force
+    Copy-Item -LiteralPath $wps40External -Destination $wps40Source -Force
+    Copy-Item -LiteralPath $wps50External -Destination $wps50Source -Force
+    Copy-Item -LiteralPath $wps51External -Destination $wps51Source -Force
+    foreach ($staged in @($rootSource, $wps40Source, $wps50Source, $wps51Source)) {
+        Assert-NoLinkOrReparsePath -Path $staged -Label 'Windows-lab staged material'
+        if ((Get-Item -LiteralPath $staged).Length -le 0) {
+            throw 'A staged Windows-lab source file is empty.'
+        }
+    }
+
+    $rootValue = (Get-Content -Raw -LiteralPath $rootSource).Trim()
+    if ([string]::IsNullOrWhiteSpace($rootValue)) {
+        throw 'PSMATRIX_WINDOWS_GA_ROOT value file contains no usable value.'
+    }
+    if ($rootValue.Contains("`r") -or $rootValue.Contains("`n")) {
+        throw 'PSMATRIX_WINDOWS_GA_ROOT value must contain exactly one path value.'
+    }
+    if (-not [IO.Path]::IsPathRooted($rootValue)) {
+        throw 'PSMATRIX_WINDOWS_GA_ROOT value must be an absolute path.'
+    }
+
+    $gaRoot = [IO.Path]::GetFullPath($rootValue)
+    $gaRootInsideRepository = Test-PathWithinRoot -Candidate $gaRoot -Root $repoRoot
+    $repositoryInsideGaRoot = Test-PathWithinRoot -Candidate $repoRoot -Root $gaRoot
+    if ($gaRootInsideRepository -or $repositoryInsideGaRoot) {
+        throw 'PSMATRIX_WINDOWS_GA_ROOT and the repository must be disjoint paths.'
+    }
+    if (-not (Test-Path -LiteralPath $gaRoot -PathType Container)) {
+        throw 'PSMATRIX_WINDOWS_GA_ROOT directory does not exist.'
+    }
+    Assert-NoLinkOrReparsePath -Path $gaRoot -Label 'PSMATRIX_WINDOWS_GA_ROOT'
+
+    $configRoot = Join-Path $gaRoot 'config'
+    $externalRoot = Join-Path $gaRoot 'media\external'
+    foreach ($requiredPath in @($configRoot, $externalRoot)) {
+        if (-not (Test-Path -LiteralPath $requiredPath -PathType Container)) {
+            throw 'PSMATRIX_WINDOWS_GA_ROOT does not contain the required Windows-lab layout.'
+        }
+        Assert-NoLinkOrReparsePath -Path $requiredPath -Label 'Windows-lab layout'
+    }
+
+    Write-Host 'windows_lab_operational_material_validation=PASS checks=4'
+    Write-Host 'windows_lab_root_layout_validation=PASS'
+    Write-Host 'staged_bytes_validated_and_reused=true'
+    Write-Host "target_repository=$canonicalRepository"
+    Write-Host "target_environment=$Environment"
+    Write-Host 'configured_paths_logged=false'
+    Write-Host 'secret_values_logged=false'
+    Write-Host 'secret_hashes_logged=false'
+    Write-Host 'secret_lengths_logged=false'
+
+    if ($DryRun) {
+        Write-Host 'windows_lab_operational_environment_provisioning_executed=false dry_run=true'
+        return
+    }
+
+    # Live provisioning resolves only the GitHub CLI application from PATH. There is
+    # deliberately no operator-supplied executable override because the three secret
+    # files are redirected to this process over stdin.
+    $ghCommands = @(Get-Command gh -CommandType Application -ErrorAction Stop)
+    if ($ghCommands.Count -ne 1) {
+        throw 'GitHub CLI must resolve to exactly one PATH application.'
+    }
+    $gh = [IO.Path]::GetFullPath([string]$ghCommands[0].Source)
+    if (-not (Test-Path -LiteralPath $gh -PathType Leaf)) {
+        throw 'GitHub CLI application could not be resolved to an existing file.'
+    }
+    Assert-NoLinkOrReparsePath -Path $gh -Label 'GitHub CLI executable'
+    if (Test-PathWithinRoot -Candidate $gh -Root $repoRoot) {
+        throw 'GitHub CLI executable must not be loaded from the repository.'
+    }
+
+    Invoke-GhCaptured -Executable $gh -Arguments @('auth', 'status', '--hostname', 'github.com')
+    Invoke-GhCaptured -Executable $gh -Arguments @('api', "repos/$Repository/environments/$Environment")
+
+    # A prior successful provisioning may already have committed a valid root variable.
+    # Invalidate that commit marker before touching any secret so every partial rerun remains
+    # fail-closed. The sentinel is deliberately relative, so the prerequisite audit must fail
+    # ga_root_absolute until the real absolute root is committed last.
+    $incompleteMarker = '__PSMATRIX_WINDOWS_GA_ROOT_PROVISIONING_INCOMPLETE__'
+    $incompleteMarkerInput = Join-Path $tempRoot 'ga-root-incomplete.txt'
+    $sanitizedRootInput = Join-Path $tempRoot 'ga-root-commit.txt'
     $utf8 = New-Object Text.UTF8Encoding($false)
     [IO.File]::WriteAllText($incompleteMarkerInput, $incompleteMarker, $utf8)
     [IO.File]::WriteAllText($sanitizedRootInput, $gaRoot, $utf8)
@@ -213,10 +238,10 @@ try {
     Invoke-GhCaptured -Executable $gh -Arguments @('variable', 'set', 'PSMATRIX_WINDOWS_GA_ROOT', '--env', $Environment, '--repo', $Repository) -InputFile $sanitizedRootInput
     Write-Host 'provisioned=production-ga-windows-lab/var/PSMATRIX_WINDOWS_GA_ROOT'
     Write-Host 'windows_lab_root_commit_marker_valid=true'
+
+    Write-Host 'windows_lab_operational_environment_provisioning_executed=true checks=4'
+    Write-Host 'secret_values_logged=false'
 }
 finally {
-    Remove-Item -LiteralPath $incompleteMarkerInput, $sanitizedRootInput -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
-
-Write-Host 'windows_lab_operational_environment_provisioning_executed=true checks=4'
-Write-Host 'secret_values_logged=false'

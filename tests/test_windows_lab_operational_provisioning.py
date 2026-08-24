@@ -54,6 +54,17 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         self.assertIn("path must not contain links or reparse points", raw)
         self.assertIn("source file is empty", raw)
 
+    def test_reparse_guard_walks_literal_lexical_components(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        for fragment in (
+            "$full = [IO.Path]::GetFullPath($Path)",
+            "$root = [IO.Path]::GetPathRoot($full)",
+            "[Regex]::Split($relative, '[\\\\/]+')",
+            "$current = Join-Path $current $segment",
+            "Get-Item -LiteralPath $current -Force -ErrorAction Stop",
+        ):
+            self.assertIn(fragment, raw)
+
     def test_ga_root_and_repository_must_be_disjoint_in_both_directions(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
 
@@ -68,6 +79,27 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
             raw,
         )
         self.assertIn("PSMATRIX_WINDOWS_GA_ROOT and the repository must be disjoint paths.", raw)
+
+    def test_external_bytes_are_staged_once_then_reused(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        for fragment in (
+            "$rootExternal = Assert-ExternalMaterialFile",
+            "$wps40External = Assert-ExternalMaterialFile",
+            "$rootSource = Join-Path $tempRoot 'ga-root.txt'",
+            "$wps40Source = Join-Path $tempRoot 'wps40-admin.txt'",
+            "Copy-Item -LiteralPath $rootExternal -Destination $rootSource -Force",
+            "Copy-Item -LiteralPath $wps40External -Destination $wps40Source -Force",
+            "staged_bytes_validated_and_reused=true",
+            "-InputFile $wps40Source",
+            "-InputFile $wps50Source",
+            "-InputFile $wps51Source",
+        ):
+            self.assertIn(fragment, raw)
+        stage = raw.index("Copy-Item -LiteralPath $rootExternal")
+        semantic_read = raw.index("Get-Content -Raw -LiteralPath $rootSource")
+        first_mutation = raw.index("@('variable', 'set', 'PSMATRIX_WINDOWS_GA_ROOT'")
+        self.assertLess(stage, semantic_read)
+        self.assertLess(semantic_read, first_mutation)
 
     def test_ga_root_is_validated_before_any_github_mutation(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
