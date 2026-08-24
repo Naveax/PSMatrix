@@ -7,6 +7,19 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+
+function Get-PathComparison() {
+    if ($IsWindows) { return [StringComparison]::OrdinalIgnoreCase }
+    return [StringComparison]::Ordinal
+}
+function Test-PathEqual([string]$Left, [string]$Right) {
+    return [string]::Equals([IO.Path]::GetFullPath($Left), [IO.Path]::GetFullPath($Right), (Get-PathComparison))
+}
+function Test-PathInside([string]$Path, [string]$RootPath) {
+    $prefix = [IO.Path]::GetFullPath($RootPath).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
+    return [IO.Path]::GetFullPath($Path).StartsWith($prefix, (Get-PathComparison))
+}
 function Assert-NoExistingLinkOrReparseComponents([string]$Path, [string]$Label) {
     $full = [IO.Path]::GetFullPath($Path)
     $cursor = $full
@@ -16,9 +29,7 @@ function Assert-NoExistingLinkOrReparseComponents([string]$Path, [string]$Label)
             $linkProperty = $item.PSObject.Properties['LinkType']
             $linkType = if ($null -ne $linkProperty) { [string]$linkProperty.Value } else { '' }
             $isReparsePoint = (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
-            if ($isReparsePoint -or -not [string]::IsNullOrWhiteSpace($linkType)) {
-                throw "$Label must not contain links or reparse points: $($item.FullName)"
-            }
+            if ($isReparsePoint -or -not [string]::IsNullOrWhiteSpace($linkType)) { throw "$Label must not contain links or reparse points." }
         }
         $parent = Split-Path -Parent $cursor
         if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $cursor) { break }
@@ -26,18 +37,55 @@ function Assert-NoExistingLinkOrReparseComponents([string]$Path, [string]$Label)
     }
     return $full
 }
+function Assert-OutsideRepository([string]$Path, [string]$Label) {
+    $full = Assert-NoExistingLinkOrReparseComponents $Path $Label
+    if ((Test-PathEqual $full $repoRoot) -or (Test-PathInside $full $repoRoot)) { throw "$Label must stay outside the repository." }
+    return $full
+}
+function Resolve-TrustedPython() {
+    $command = Get-Command python -CommandType Application -ErrorAction Stop
+    $resolved = [IO.Path]::GetFullPath([string]$command.Source)
+    if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) { throw 'Trusted python executable is missing.' }
+    [void](Assert-NoExistingLinkOrReparseComponents $resolved 'Trusted python executable')
+    if ((Test-PathEqual $resolved $repoRoot) -or (Test-PathInside $resolved $repoRoot)) { throw 'Trusted python executable must stay outside the repository.' }
+    return $resolved
+}
+function Assert-UniqueJsonKeys([System.Text.Json.JsonElement]$Element, [string]$Label) {
+    if ($Element.ValueKind -eq [System.Text.Json.JsonValueKind]::Object) {
+        $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($property in $Element.EnumerateObject()) {
+            if (-not $seen.Add($property.Name)) { throw "$Label contains a duplicate JSON object key." }
+            Assert-UniqueJsonKeys $property.Value $Label
+        }
+    }
+    elseif ($Element.ValueKind -eq [System.Text.Json.JsonValueKind]::Array) {
+        foreach ($item in $Element.EnumerateArray()) { Assert-UniqueJsonKeys $item $Label }
+    }
+}
+function Read-JsonObject([string]$Path, [string]$Label) {
+    $full = [IO.Path]::GetFullPath($Path)
+    if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { throw "$Label is missing." }
+    [void](Assert-NoExistingLinkOrReparseComponents $full $Label)
+    $text = [IO.File]::ReadAllText($full, [Text.Encoding]::UTF8)
+    try { $document = [System.Text.Json.JsonDocument]::Parse($text) }
+    catch { throw "$Label is invalid JSON." }
+    try { Assert-UniqueJsonKeys $document.RootElement $Label }
+    finally { $document.Dispose() }
+    try { $value = $text | ConvertFrom-Json -AsHashtable -Depth 30 }
+    catch { throw "$Label is invalid JSON." }
+    if ($null -eq $value -or $value -isnot [Collections.IDictionary]) { throw "$Label root must be an object." }
+    return $value
+}
 
-$repoRoot = [IO.Path]::GetFullPath((Get-Location).Path).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
-$workspace = Assert-NoExistingLinkOrReparseComponents $Root 'Production GA provisioning workspace path'
-if ($workspace.StartsWith($repoRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Production GA provisioning workspace must stay outside the repository.' }
+[void](Assert-NoExistingLinkOrReparseComponents $repoRoot 'Repository root')
+$workspace = Assert-OutsideRepository $Root 'Production GA provisioning workspace path'
 $summaryPath = if ([string]::IsNullOrWhiteSpace($SummaryOutput)) {
     Join-Path $workspace 'local-provisioning-summary.json'
 }
 else {
-    Assert-NoExistingLinkOrReparseComponents $SummaryOutput 'Production GA provisioning summary path'
+    Assert-OutsideRepository $SummaryOutput 'Production GA provisioning summary path'
 }
-if ($summaryPath.StartsWith($repoRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Production GA provisioning summary must stay outside the repository.' }
-[void](Assert-NoExistingLinkOrReparseComponents $summaryPath 'Production GA provisioning summary path')
+[void](Assert-OutsideRepository $summaryPath 'Production GA provisioning summary path')
 
 New-Item -ItemType Directory -Path $workspace -Force | Out-Null
 [void](Assert-NoExistingLinkOrReparseComponents $workspace 'Production GA provisioning workspace path')
@@ -67,28 +115,37 @@ foreach ($path in @($fragmentRoot,(Split-Path -Parent $fullMatrixReceipt),$fullM
     [void](Assert-NoExistingLinkOrReparseComponents $path 'Production GA provisioning workspace child path')
 }
 
-$python = (Get-Command python -ErrorAction Stop).Source
-$authorityArgs = @('scripts/ga/provision_production_ga_authorities.py','--output-root',$authorityRoot)
+$python = Resolve-TrustedPython
+$authorityProvisioner = Join-Path $repoRoot 'scripts/ga/provision_production_ga_authorities.py'
+$authorityMapBuilder = Join-Path $repoRoot 'scripts/ga/build_authority_material_map_fragment.py'
+$fullMatrixInitializer = Join-Path $repoRoot 'scripts/ga/Initialize-ProductionGAFullMatrixPaths.ps1'
+$fullMatrixMapBuilder = Join-Path $repoRoot 'scripts/ga/build_full_matrix_material_map_fragment.py'
+foreach ($source in @($authorityProvisioner,$authorityMapBuilder,$fullMatrixInitializer,$fullMatrixMapBuilder)) {
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw 'Required Production GA provisioning source is missing.' }
+    [void](Assert-NoExistingLinkOrReparseComponents $source 'Production GA provisioning source')
+}
+
+$authorityArgs = @($authorityProvisioner,'--output-root',$authorityRoot)
 if ($ForceAuthorities) { $authorityArgs += '--force' }
 & $python @authorityArgs
 if ($LASTEXITCODE -ne 0) { throw 'Production GA authority provisioning failed.' }
 
 [void](Assert-NoExistingLinkOrReparseComponents $authorityFragment 'Production GA authority material-map fragment path')
-& $python 'scripts/ga/build_authority_material_map_fragment.py' '--authority-root' $authorityRoot '--output' $authorityFragment
+& $python $authorityMapBuilder '--authority-root' $authorityRoot '--output' $authorityFragment
 if ($LASTEXITCODE -ne 0) { throw 'Production GA authority material-map fragment failed.' }
 
 [void](Assert-NoExistingLinkOrReparseComponents $fullMatrixRoot 'Production GA full-matrix root path')
 [void](Assert-NoExistingLinkOrReparseComponents $fullMatrixReceipt 'Production GA full-matrix receipt path')
-& (Join-Path $repoRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) 'scripts/ga/Initialize-ProductionGAFullMatrixPaths.ps1') -Root $fullMatrixRoot -Output $fullMatrixReceipt
+& $fullMatrixInitializer -Root $fullMatrixRoot -Output $fullMatrixReceipt
 if ($LASTEXITCODE -ne 0) { throw 'Production GA full-matrix local bootstrap failed.' }
 
 [void](Assert-NoExistingLinkOrReparseComponents $fullMatrixValueRoot 'Production GA full-matrix value root')
 [void](Assert-NoExistingLinkOrReparseComponents $fullMatrixFragment 'Production GA full-matrix material-map fragment path')
-& $python 'scripts/ga/build_full_matrix_material_map_fragment.py' '--receipt' $fullMatrixReceipt '--output-root' $fullMatrixValueRoot '--output-map' $fullMatrixFragment
+& $python $fullMatrixMapBuilder '--receipt' $fullMatrixReceipt '--output-root' $fullMatrixValueRoot '--output-map' $fullMatrixFragment
 if ($LASTEXITCODE -ne 0) { throw 'Production GA full-matrix material-map fragment failed.' }
 
-$authorityMap = Get-Content -Raw -LiteralPath $authorityFragment | ConvertFrom-Json
-$matrixMap = Get-Content -Raw -LiteralPath $fullMatrixFragment | ConvertFrom-Json
+$authorityMap = Read-JsonObject $authorityFragment 'Production GA authority material-map fragment'
+$matrixMap = Read-JsonObject $fullMatrixFragment 'Production GA full-matrix material-map fragment'
 if ([int]$authorityMap.check_count -ne 17 -or [int]$matrixMap.check_count -ne 2) { throw 'Local Production GA provisioning workspace check cardinality mismatch.' }
 
 $summary = [ordered]@{
@@ -130,9 +187,6 @@ if ($summaryDirectory) {
 Write-Host 'production_ga_local_provisioning_workspace=PASS'
 Write-Host 'locally_prepared_checks=19/41'
 Write-Host 'remaining_external_or_review_checks=22'
-Write-Host "signing_authority_fragment=$authorityFragment"
-Write-Host "full_matrix_fragment=$fullMatrixFragment"
-Write-Host "summary=$summaryPath"
 Write-Host 'github_environment_mutation_executed=false'
 Write-Host 'production_readiness_claimed=false'
 Write-Host 'ga_eligible=false'
