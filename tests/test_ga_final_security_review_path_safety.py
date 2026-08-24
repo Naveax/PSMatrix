@@ -72,7 +72,7 @@ class FinalSecurityReviewPathSafetyTests(unittest.TestCase):
             self._symlink_or_skip(link, target)
             with self.assertRaisesRegex(
                 self.review.FinalSecurityReviewPacketError,
-                "security review packet is missing or unsafe",
+                "symlink component",
             ):
                 self.review._read_zip(link)
 
@@ -86,7 +86,7 @@ class FinalSecurityReviewPathSafetyTests(unittest.TestCase):
             self._symlink_or_skip(link, target)
             with self.assertRaisesRegex(
                 self.review.FinalSecurityReviewPacketError,
-                "security review packet is missing or unsafe",
+                "symlink component",
             ):
                 self.review.validate_submission(
                     report_path=root / "missing-report.json",
@@ -109,7 +109,7 @@ class FinalSecurityReviewPathSafetyTests(unittest.TestCase):
             self._symlink_or_skip(link, target)
             with self.assertRaisesRegex(
                 self.review.FinalSecurityReviewPacketError,
-                "security reviewer commitment is missing or unsafe",
+                "symlink component",
             ):
                 self.review._load_reviewer_commitment(
                     link,
@@ -130,7 +130,7 @@ class FinalSecurityReviewPathSafetyTests(unittest.TestCase):
             self._symlink_or_skip(key_link, key_target)
             with self.assertRaisesRegex(
                 self.review.FinalSecurityReviewPacketError,
-                "security reviewer public key is missing or unsafe",
+                "symlink component",
             ):
                 self.review.validate_reviewer_authority(
                     commitment_path=commitment,
