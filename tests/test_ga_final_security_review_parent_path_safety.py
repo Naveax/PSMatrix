@@ -164,6 +164,14 @@ class FinalSecurityReviewParentPathSafetyTests(unittest.TestCase):
                     "security review submission validation output",
                 )
 
+    def test_reviewer_path_guard_checks_windows_reparse_attributes(self) -> None:
+        raw = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("import stat", raw)
+        self.assertIn("st_file_attributes", raw)
+        self.assertIn("FILE_ATTRIBUTE_REPARSE_POINT", raw)
+        self.assertIn("_link_or_reparse_state", raw)
+        self.assertIn("contains a reparse component", raw)
+
     def test_reviewer_commitment_contract_and_ten_path_preflight_are_fail_closed(self) -> None:
         contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
         packet = contract["security_review_packet"]

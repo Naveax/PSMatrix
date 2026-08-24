@@ -5,6 +5,7 @@ import copy
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -40,6 +41,7 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 _KEY_ID_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ED25519_SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
+_REPARSE_FLAG = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _REVIEWER_TEXT_FIELDS = ("name", "organization", "role", "contact")
 _REVIEWER_FIELDS = (*_REVIEWER_TEXT_FIELDS, "conflict_of_interest", "key_controlled_by_reviewer")
 _COMMITMENT_FIELDS = (
@@ -60,13 +62,27 @@ def _lexical_absolute(path: Path, label: str) -> Path:
     return Path(os.path.abspath(os.path.expanduser(text)))
 
 
+def _link_or_reparse_state(path: Path) -> tuple[bool, bool]:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return False, False
+    is_symlink = path.is_symlink()
+    attributes = int(getattr(metadata, "st_file_attributes", 0) or 0)
+    is_reparse = bool(attributes & _REPARSE_FLAG)
+    return is_symlink, is_reparse
+
+
 def _reject_symlink_components(path: Path, label: str) -> Path:
     absolute = _lexical_absolute(path, label)
     current = Path(absolute.anchor)
     for part in absolute.parts[1:]:
         current = current / part
-        if current.is_symlink():
+        is_symlink, is_reparse = _link_or_reparse_state(current)
+        if is_symlink:
             raise FinalSecurityReviewPacketError(f"{label} contains a symlink component")
+        if is_reparse:
+            raise FinalSecurityReviewPacketError(f"{label} contains a reparse component")
     return absolute
 
 
