@@ -19,14 +19,27 @@ def audit(missing_secret: list[str], missing_var: list[str]):
 
 
 class PartialProvisioningSelectorTests(unittest.TestCase):
-    def test_selects_only_missing_prepared_material(self):
+    def test_default_rejects_mixed_present_and_missing_material_in_one_environment(self):
         material = {"schema": 1, "kind": "psmatrix.production-ga-environment-material-map", "version": "2.0.0", "environments": {"env-0": {"secrets": {"A": "/tmp/a", "B": "/tmp/b"}, "vars": {"C": "/tmp/c"}}}}
-        value = module.select_missing(material, audit(["B"], ["C"]))
+        with self.assertRaisesRegex(module.ProvisioningSelectionError, "mixed present/missing material"):
+            module.select_missing(material, audit(["B"], ["C"]))
+
+    def test_explicit_mixed_environment_mode_preserves_missing_only_selection(self):
+        material = {"schema": 1, "kind": "psmatrix.production-ga-environment-material-map", "version": "2.0.0", "environments": {"env-0": {"secrets": {"A": "/tmp/a", "B": "/tmp/b"}, "vars": {"C": "/tmp/c"}}}}
+        value = module.select_missing(material, audit(["B"], ["C"]), allow_mixed_environment=True)
         self.assertEqual(value["check_count"], 2)
         self.assertEqual(set(value["environments"]["env-0"]["secrets"]), {"B"})
         self.assertEqual(set(value["environments"]["env-0"]["vars"]), {"C"})
         self.assertEqual(value["selection"]["already_present_checks_skipped"], 1)
+        self.assertTrue(value["selection"]["mixed_environment_selection_allowed"])
         self.assertFalse(value["safety"]["production_readiness_claimed"])
+
+    def test_fully_missing_mapped_environment_remains_selectable_by_default(self):
+        material = {"schema": 1, "kind": "psmatrix.production-ga-environment-material-map", "version": "2.0.0", "environments": {"env-0": {"secrets": {"A": "/tmp/a", "B": "/tmp/b"}, "vars": {"C": "/tmp/c"}}}}
+        value = module.select_missing(material, audit(["A", "B"], ["C"]))
+        self.assertEqual(value["check_count"], 3)
+        self.assertEqual(value["selection"]["already_present_checks_skipped"], 0)
+        self.assertFalse(value["selection"]["mixed_environment_selection_allowed"])
 
     def test_zero_missing_prepared_checks_fails_closed(self):
         material = {"schema": 1, "kind": "psmatrix.production-ga-environment-material-map", "version": "2.0.0", "environments": {"env-0": {"secrets": {"A": "/tmp/a"}, "vars": {}}}}
