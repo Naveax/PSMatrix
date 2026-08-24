@@ -64,6 +64,28 @@ def _safe_output_file(path: Path, *, label: str) -> Path:
     return resolved
 
 
+def _strict_json_object(text: str, *, label: str) -> dict[str, Any]:
+    def reject_constant(value: str) -> None:
+        raise OTLPProvisioningError(f"{label} contains a non-standard JSON numeric constant: {value}")
+
+    def unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise OTLPProvisioningError(f"{label} contains duplicate object key: {key}")
+            result[key] = value
+        return result
+
+    parsed = json.loads(
+        text,
+        object_pairs_hook=unique_pairs,
+        parse_constant=reject_constant,
+    )
+    if not isinstance(parsed, dict):
+        raise OTLPProvisioningError(f"{label} root must be an object")
+    return parsed
+
+
 def _validate_endpoint(value: str) -> str:
     endpoint = value.strip()
     parsed = urlparse(endpoint)
@@ -101,7 +123,10 @@ def validate_provisioning(endpoint: str, headers_file: Path) -> dict[str, Any]:
     if resolved.stat().st_size <= 0 or resolved.stat().st_size > 1_000_000:
         raise OTLPProvisioningError("OTLP headers file size is invalid")
     try:
-        headers = json.loads(resolved.read_text(encoding="utf-8"))
+        headers = _strict_json_object(
+            resolved.read_text(encoding="utf-8"),
+            label="OTLP headers JSON",
+        )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise OTLPProvisioningError("OTLP headers file is not valid UTF-8 JSON") from exc
     validated_endpoint = _validate_endpoint(endpoint)
@@ -123,6 +148,7 @@ def validate_provisioning(endpoint: str, headers_file: Path) -> dict[str, Any]:
             "header_lengths_serialized": False,
             "endpoint_credentials_allowed": False,
             "link_or_reparse_components_allowed": False,
+            "duplicate_json_object_keys_allowed": False,
         },
     }
 
@@ -142,6 +168,7 @@ def main() -> int:
         print("header_values_serialized=false")
         print("network_probe_executed=false")
         print("link_or_reparse_components_allowed=false")
+        print("duplicate_json_object_keys_allowed=false")
         return 0
     except (OTLPProvisioningError, OSError, TypeError, ValueError) as exc:
         print(f"Production GA external OTLP provisioning validation failed: {exc}", file=sys.stderr)

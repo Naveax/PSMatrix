@@ -105,6 +105,70 @@ class External22ProvisioningParentPathSafetyTests(unittest.TestCase):
             self.assertIn("_reject_link_or_reparse_components", raw)
             self.assertIn("link_or_reparse_components_allowed", raw)
 
+    def test_public_auth_strict_json_rejects_duplicate_object_keys(self) -> None:
+        with self.assertRaisesRegex(
+            self.public_auth.PublicAuthProvisioningError,
+            "public-auth vars JSON contains duplicate object key: PSMATRIX_OAUTH_ENDPOINT",
+        ):
+            self.public_auth._strict_json_object(
+                b'{"PSMATRIX_OAUTH_ENDPOINT":"https://one.example.invalid","PSMATRIX_OAUTH_ENDPOINT":"https://two.example.invalid"}',
+                label="public-auth vars JSON",
+            )
+
+    def test_otlp_strict_json_rejects_duplicate_header_keys(self) -> None:
+        with self.assertRaisesRegex(
+            self.otlp.OTLPProvisioningError,
+            "OTLP headers JSON contains duplicate object key: Authorization",
+        ):
+            self.otlp._strict_json_object(
+                '{"Authorization":"Bearer first","Authorization":"Bearer second"}',
+                label="OTLP headers JSON",
+            )
+
+    def test_strict_json_rejects_nonstandard_numeric_constants(self) -> None:
+        with self.assertRaisesRegex(
+            self.public_auth.PublicAuthProvisioningError,
+            "non-standard JSON numeric constant: NaN",
+        ):
+            self.public_auth._strict_json_object(
+                b'{"PSMATRIX_MTLS_FINGERPRINT_HEADER":NaN}',
+                label="public-auth vars JSON",
+            )
+        with self.assertRaisesRegex(
+            self.otlp.OTLPProvisioningError,
+            "non-standard JSON numeric constant: Infinity",
+        ):
+            self.otlp._strict_json_object(
+                '{"Authorization":Infinity}',
+                label="OTLP headers JSON",
+            )
+
+    def test_public_auth_variables_reject_validator_upload_normalization_mismatch(self) -> None:
+        with self.assertRaisesRegex(
+            self.public_auth.PublicAuthProvisioningError,
+            "canonical HTTPS URL string without surrounding whitespace",
+        ):
+            self.public_auth._https_url(
+                " https://issuer.example.invalid ",
+                name="PSMATRIX_OAUTH_EXPECTED_ISSUER",
+            )
+        with self.assertRaisesRegex(
+            self.public_auth.PublicAuthProvisioningError,
+            "invalid or non-canonical",
+        ):
+            self.public_auth._fingerprint_header(" X-Client-Fingerprint ")
+        self.assertEqual(
+            self.public_auth._https_url(
+                "https://issuer.example.invalid",
+                name="PSMATRIX_OAUTH_EXPECTED_ISSUER",
+            ),
+            "https://issuer.example.invalid",
+        )
+        self.assertEqual(
+            self.public_auth._fingerprint_header("X-Client-Fingerprint"),
+            "X-Client-Fingerprint",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
