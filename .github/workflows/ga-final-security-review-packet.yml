@@ -21,12 +21,14 @@ jobs:
     name: Build exact final independent security-review packet
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: production-ga-security-review-intake
     permissions:
       contents: read
       actions: read
     env:
       RELEASE_SIGNING_RUN_ID: ${{ inputs.release_signing_run_id }}
       FINAL_RELEASE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
+      REVIEWER_COMMITMENT_JSON: ${{ vars.PSMATRIX_GA_SECURITY_REVIEWER_COMMITMENT_JSON }}
 
     steps:
       - name: Validate review-packet dispatch identity
@@ -35,6 +37,7 @@ jobs:
           set -euo pipefail
           [[ "$RELEASE_SIGNING_RUN_ID" =~ ^[0-9]+$ ]] || { echo 'release_signing_run_id must contain only decimal digits.' >&2; exit 1; }
           [[ "$RELEASE_SIGNING_RUN_ID" != "$GITHUB_RUN_ID" ]] || { echo 'release-signing and review-packet run IDs must be distinct.' >&2; exit 1; }
+          [[ -n "$REVIEWER_COMMITMENT_JSON" ]] || { echo 'PSMATRIX_GA_SECURITY_REVIEWER_COMMITMENT_JSON is missing from production-ga-security-review-intake.' >&2; exit 1; }
           echo 'security_review_packet_dispatch_identity=PASS'
 
       - name: Check out exact final security/vulnerability controls
@@ -75,6 +78,10 @@ jobs:
           contract=json.loads(Path('control/ga-packs/03-authoritative-windows/final-security-vulnerability-evidence-producer-contract.json').read_text(encoding='utf-8'))
           if contract['security_review_packet']['workflow']!='production-ga-final-security-review-packet':
               raise SystemExit('security review packet workflow contract mismatch')
+          if contract['security_review_packet'].get('reviewer_intake_environment')!='production-ga-security-review-intake':
+              raise SystemExit('security review packet reviewer-intake environment contract mismatch')
+          if contract['security_review_packet'].get('reviewer_commitment_variable')!='PSMATRIX_GA_SECURITY_REVIEWER_COMMITMENT_JSON':
+              raise SystemExit('security review packet reviewer-commitment variable contract mismatch')
           run_id=os.environ['RELEASE_SIGNING_RUN_ID']
           headers={'Accept':'application/vnd.github+json','Authorization':f'Bearer {os.environ["GH_TOKEN"]}','X-GitHub-Api-Version':'2026-03-10','User-Agent':'psmatrix-final-security-review-packet'}
           def fetch(path):
@@ -102,13 +109,21 @@ jobs:
           run-id: ${{ inputs.release_signing_run_id }}
           github-token: ${{ github.token }}
 
-      - name: Verify release and build version-normalized final review packet
+      - name: Verify release, freeze reviewer commitment, and build final review packet
         shell: bash
         run: |
           set -euo pipefail
           output="$RUNNER_TEMP/psmatrix-2.0.0-final-security-review-packet"
+          commitment_input="$RUNNER_TEMP/psmatrix-security-reviewer-commitment-input.json"
           rm -rf "$output"
+          rm -f "$commitment_input"
           mkdir -p "$output"
+          printf '%s' "$REVIEWER_COMMITMENT_JSON" > "$commitment_input"
+          chmod 0600 "$commitment_input"
+          cleanup_commitment_input() {
+            rm -f "$commitment_input"
+          }
+          trap cleanup_commitment_input EXIT
           PYTHONPATH=control/src python - <<'PY'
           from pathlib import Path
           from psmatrix.release import verify_release_manifest
@@ -122,6 +137,10 @@ jobs:
                   raise SystemExit(f'security review packet required release file missing/unsafe: {name}')
           print('security_review_packet_release_verification=PASS')
           PY
+          PYTHONPATH=control/src python control/scripts/ga/build_final_security_review_packet.py commitment \
+            --input "$commitment_input" \
+            --expected-commit "$FINAL_RELEASE_COMMIT" \
+            --output "$output/security-reviewer-commitment.json" >/dev/null
           PYTHONPATH=control/src python control/scripts/ga/build_final_security_review_packet.py packet \
             --root review-source \
             --source-archive signed-release/psmatrix-2.0.0-source.zip \
@@ -131,18 +150,23 @@ jobs:
           PSMATRIX_REVIEW_PACKET_OUTPUT="$output" PYTHONPATH=control/src python - <<'PY'
           import json, os
           from pathlib import Path
-          from psmatrix.util import atomic_write_json, sha256_file
+          from psmatrix.util import atomic_write_json, read_json, sha256_file
           root=Path(os.environ['PSMATRIX_REVIEW_PACKET_OUTPUT'])
           normalization=json.loads((root/'normalization-result.json').read_text(encoding='utf-8'))
+          commitment=read_json(root/'security-reviewer-commitment.json')
           if normalization.get('status')!='PASS' or normalization.get('legacy_packet_version')!='2.0.0rc2' or normalization.get('final_packet_version')!='2.0.0':
               raise SystemExit('security review packet final normalization result is invalid')
           if normalization.get('changed_entries')!=['psmatrix-independent-security-review/review-input-manifest.json']:
               raise SystemExit('security review packet normalized more than one exact entry')
-          status={'schema':1,'kind':'psmatrix.final-security-review-packet-status','status':'PASS','version':'2.0.0','control_head':os.environ['GITHUB_SHA'].lower(),'release_signing_run_id':os.environ['RELEASE_SIGNING_RUN_ID'],'reviewed_commit':os.environ['FINAL_RELEASE_COMMIT'].lower(),'source_sha256':normalization['source_sha256'],'release_sha256':normalization['release_sha256'],'packet_sha256':sha256_file(root/'psmatrix-2.0.0-security-review-packet.zip'),'legacy_runtime_packet_version':'2.0.0rc2','final_packet_version':'2.0.0','semantic_delta':'review-input-manifest.json version field only','reviewer_private_key_read':False,'review_completed':False,'ga_eligible':False}
+          if commitment.get('kind')!='psmatrix.independent-security-reviewer-commitment' or commitment.get('reviewed_commit')!=os.environ['FINAL_RELEASE_COMMIT'].lower():
+              raise SystemExit('security reviewer commitment output identity mismatch')
+          status={'schema':1,'kind':'psmatrix.final-security-review-packet-status','status':'PASS','version':'2.0.0','control_head':os.environ['GITHUB_SHA'].lower(),'release_signing_run_id':os.environ['RELEASE_SIGNING_RUN_ID'],'reviewed_commit':os.environ['FINAL_RELEASE_COMMIT'].lower(),'source_sha256':normalization['source_sha256'],'release_sha256':normalization['release_sha256'],'packet_sha256':sha256_file(root/'psmatrix-2.0.0-security-review-packet.zip'),'reviewer_commitment_sha256':sha256_file(root/'security-reviewer-commitment.json'),'security_review_key_id':commitment['security_review_key_id'],'reviewer_identity_precommitted':True,'reviewer_key_precommitted':True,'legacy_runtime_packet_version':'2.0.0rc2','final_packet_version':'2.0.0','semantic_delta':'review-input-manifest.json version field only','reviewer_private_key_read':False,'review_completed':False,'ga_eligible':False}
           atomic_write_json(root/'security-review-packet-status.json',status)
-          print('final_security_review_packet=PASS version_only_normalization=true')
+          print('final_security_review_packet=PASS version_only_normalization=true reviewer_commitment_bound=true')
           PY
           rm -f "$output/normalization-result.json"
+          cleanup_commitment_input
+          trap - EXIT
           echo "PSMATRIX_REVIEW_PACKET_OUTPUT=$output" >> "$GITHUB_ENV"
 
       - name: Upload exact final independent security-review packet

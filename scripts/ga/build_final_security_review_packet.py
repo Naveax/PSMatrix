@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -21,8 +23,8 @@ from psmatrix.security_review import (
     _validate_completed_report,
     build_security_review_packet,
 )
-from psmatrix.signing import canonical_json_bytes
-from psmatrix.util import atomic_write_json, read_json, sha256_file
+from psmatrix.signing import SigningError, canonical_json_bytes, public_key_der, public_key_id
+from psmatrix.util import atomic_write_json, sha256_file
 
 
 class FinalSecurityReviewPacketError(RuntimeError):
@@ -34,14 +36,123 @@ _LEGACY_PACKET_VERSION = "2.0.0rc2"
 _FINAL_COMMIT = "02cef95d40cf524ce00f9d917188343dc49e6f2c"
 _MANIFEST = "psmatrix-independent-security-review/review-input-manifest.json"
 _TEMPLATE = "psmatrix-independent-security-review/review-report.template.json"
+_COMMITMENT_KIND = "psmatrix.independent-security-reviewer-commitment"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+_KEY_ID_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_ED25519_SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
+_REPARSE_FLAG = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+_REVIEWER_TEXT_FIELDS = ("name", "organization", "role", "contact")
+_REVIEWER_FIELDS = (*_REVIEWER_TEXT_FIELDS, "conflict_of_interest", "key_controlled_by_reviewer")
+_COMMITMENT_FIELDS = (
+    "schema",
+    "kind",
+    "version",
+    "reviewed_commit",
+    "reviewer",
+    "security_review_key_id",
+    "independent_from_release_authority",
+)
+
+
+def _lexical_absolute(path: Path, label: str) -> Path:
+    text = str(path)
+    if not text or "\x00" in text or len(text) > 4096:
+        raise FinalSecurityReviewPacketError(f"{label} path is missing or invalid")
+    return Path(os.path.abspath(os.path.expanduser(text)))
+
+
+def _link_or_reparse_state(path: Path) -> tuple[bool, bool]:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return False, False
+    is_symlink = path.is_symlink()
+    attributes = int(getattr(metadata, "st_file_attributes", 0) or 0)
+    is_reparse = bool(attributes & _REPARSE_FLAG)
+    return is_symlink, is_reparse
+
+
+def _reject_symlink_components(path: Path, label: str) -> Path:
+    absolute = _lexical_absolute(path, label)
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current = current / part
+        is_symlink, is_reparse = _link_or_reparse_state(current)
+        if is_symlink:
+            raise FinalSecurityReviewPacketError(f"{label} contains a symlink component")
+        if is_reparse:
+            raise FinalSecurityReviewPacketError(f"{label} contains a reparse component")
+    return absolute
+
+
+def _safe_input_file(path: Path, label: str) -> Path:
+    candidate = _reject_symlink_components(path, label)
+    resolved = candidate.resolve()
+    if not resolved.is_file():
+        raise FinalSecurityReviewPacketError(f"{label} is missing or unsafe")
+    return resolved
+
+
+def _safe_input_directory(path: Path, label: str) -> Path:
+    candidate = _reject_symlink_components(path, label)
+    resolved = candidate.resolve()
+    if not resolved.is_dir():
+        raise FinalSecurityReviewPacketError(f"{label} is missing or unsafe")
+    return resolved
+
+
+def _safe_output_file(path: Path, label: str) -> Path:
+    candidate = _reject_symlink_components(path, label)
+    resolved = candidate.resolve()
+    if resolved.exists() and resolved.is_dir():
+        raise FinalSecurityReviewPacketError(f"{label} must be a file path")
+    return resolved
+
+
+def _strict_json_object(raw: bytes, *, label: str) -> dict[str, Any]:
+    def reject_constant(value: str) -> None:
+        raise FinalSecurityReviewPacketError(
+            f"{label} contains a non-standard JSON numeric constant: {value}"
+        )
+
+    def unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise FinalSecurityReviewPacketError(
+                    f"{label} contains duplicate JSON object key: {key}"
+                )
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=unique_pairs,
+            parse_constant=reject_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise FinalSecurityReviewPacketError(f"{label} is not valid UTF-8 JSON") from exc
+    if not isinstance(value, dict):
+        raise FinalSecurityReviewPacketError(f"{label} JSON root is not an object")
+    return value
+
+
+def _strict_json_file(path: Path, *, label: str) -> tuple[Path, dict[str, Any]]:
+    resolved = _safe_input_file(path, label)
+    try:
+        raw = resolved.read_bytes()
+    except OSError as exc:
+        raise FinalSecurityReviewPacketError(f"unable to read {label}") from exc
+    return resolved, _strict_json_object(raw, label=label)
 
 
 def _exact_commit(root: Path) -> str:
+    root = _safe_input_directory(root, "security review source checkout")
     try:
         value = subprocess.check_output(
-            ["git", "-C", str(root.resolve()), "rev-parse", "HEAD"],
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
             text=True,
             stderr=subprocess.STDOUT,
             timeout=10,
@@ -61,9 +172,7 @@ def _zip_info(name: str, mode: int = 0o100644) -> zipfile.ZipInfo:
 
 
 def _read_zip(path: Path) -> tuple[dict[str, bytes], dict[str, int]]:
-    path = path.resolve()
-    if not path.is_file() or path.is_symlink():
-        raise FinalSecurityReviewPacketError(f"security review packet is missing or unsafe: {path}")
+    path = _safe_input_file(path, "security review packet")
     entries: dict[str, bytes] = {}
     modes: dict[str, int] = {}
     with zipfile.ZipFile(path, "r") as archive:
@@ -84,13 +193,108 @@ def _json_entry(entries: dict[str, bytes], name: str) -> dict[str, Any]:
     raw = entries.get(name)
     if raw is None:
         raise FinalSecurityReviewPacketError(f"security review packet entry is missing: {name}")
-    try:
-        value = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise FinalSecurityReviewPacketError(f"security review packet JSON is invalid: {name}") from exc
-    if not isinstance(value, dict):
-        raise FinalSecurityReviewPacketError(f"security review packet JSON root is not an object: {name}")
-    return value
+    return _strict_json_object(raw, label=f"security review packet entry {name}")
+
+
+def _normalize_reviewer(value: Any, *, source: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != set(_REVIEWER_FIELDS):
+        raise FinalSecurityReviewPacketError(f"{source} reviewer identity fields are not exact")
+    normalized: dict[str, Any] = {}
+    for field in _REVIEWER_TEXT_FIELDS:
+        text = value.get(field)
+        if not isinstance(text, str) or not text.strip() or len(text) > 256 or "\x00" in text:
+            raise FinalSecurityReviewPacketError(f"{source} reviewer {field} is invalid")
+        normalized[field] = text.strip()
+    if value.get("conflict_of_interest") is not False:
+        raise FinalSecurityReviewPacketError(f"{source} reviewer must attest conflict_of_interest=false")
+    if value.get("key_controlled_by_reviewer") is not True:
+        raise FinalSecurityReviewPacketError(f"{source} reviewer must attest key_controlled_by_reviewer=true")
+    normalized["conflict_of_interest"] = False
+    normalized["key_controlled_by_reviewer"] = True
+    return normalized
+
+
+def _load_reviewer_commitment(path: Path, *, expected_commit: str) -> dict[str, Any]:
+    _, value = _strict_json_file(path, label="security reviewer commitment")
+    if set(value) != set(_COMMITMENT_FIELDS):
+        raise FinalSecurityReviewPacketError("security reviewer commitment fields are not exact")
+    if value.get("schema") != 1 or value.get("kind") != _COMMITMENT_KIND or value.get("version") != _FINAL_VERSION:
+        raise FinalSecurityReviewPacketError("security reviewer commitment identity is invalid")
+    commit = str(value.get("reviewed_commit") or "").lower()
+    if expected_commit.lower() != _FINAL_COMMIT or commit != expected_commit.lower():
+        raise FinalSecurityReviewPacketError("security reviewer commitment does not bind frozen final release commit")
+    key_id = str(value.get("security_review_key_id") or "").lower()
+    if _KEY_ID_RE.fullmatch(key_id) is None:
+        raise FinalSecurityReviewPacketError("security reviewer commitment key ID is invalid")
+    if value.get("independent_from_release_authority") is not True:
+        raise FinalSecurityReviewPacketError("security reviewer commitment must attest release-authority independence")
+    return {
+        "schema": 1,
+        "kind": _COMMITMENT_KIND,
+        "version": _FINAL_VERSION,
+        "reviewed_commit": expected_commit.lower(),
+        "reviewer": _normalize_reviewer(value.get("reviewer"), source="commitment"),
+        "security_review_key_id": key_id,
+        "independent_from_release_authority": True,
+    }
+
+
+def _require_ed25519_public_key(public_key: Path) -> None:
+    der = public_key_der(public_key)
+    if len(der) != 44 or not der.startswith(_ED25519_SPKI_PREFIX):
+        raise FinalSecurityReviewPacketError("security reviewer public key must be Ed25519")
+
+
+def normalize_reviewer_commitment(*, input_path: Path, expected_commit: str, output: Path) -> dict[str, Any]:
+    commitment = _load_reviewer_commitment(input_path, expected_commit=expected_commit)
+    output = _safe_output_file(output, "security reviewer commitment output")
+    if output.exists():
+        raise FinalSecurityReviewPacketError(f"refusing to overwrite security reviewer commitment: {output}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(output, commitment)
+    return {
+        "schema": 1,
+        "kind": "psmatrix.independent-security-reviewer-commitment-validation",
+        "status": "PASS",
+        "version": _FINAL_VERSION,
+        "reviewed_commit": expected_commit.lower(),
+        "security_review_key_id": commitment["security_review_key_id"],
+        "reviewer_commitment_sha256": sha256_file(output),
+        "reviewer_identity_precommitted": True,
+        "reviewer_key_precommitted": True,
+        "ga_eligible": False,
+    }
+
+
+def validate_reviewer_authority(
+    *, commitment_path: Path, public_key: Path, expected_commit: str, output: Path,
+) -> dict[str, Any]:
+    commitment_file = _safe_input_file(commitment_path, "security reviewer commitment")
+    commitment = _load_reviewer_commitment(commitment_file, expected_commit=expected_commit)
+    public_key = _safe_input_file(public_key, "security reviewer public key")
+    _require_ed25519_public_key(public_key)
+    actual_key_id = public_key_id(public_key)
+    if actual_key_id != commitment["security_review_key_id"]:
+        raise FinalSecurityReviewPacketError("security reviewer public key differs from precommitted reviewer authority")
+    status = {
+        "schema": 1,
+        "kind": "psmatrix.independent-security-reviewer-authority-validation",
+        "status": "PASS",
+        "version": _FINAL_VERSION,
+        "reviewed_commit": expected_commit.lower(),
+        "security_review_key_algorithm": "Ed25519",
+        "security_review_key_id": actual_key_id,
+        "reviewer_commitment_sha256": sha256_file(commitment_file),
+        "reviewer_identity_precommitted": True,
+        "reviewer_key_precommitted": True,
+        "reviewer_public_authority_verified": True,
+        "private_key_read": False,
+        "ga_eligible": False,
+    }
+    output = _safe_output_file(output, "security reviewer authority validation output")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(output, status)
+    return status
 
 
 def _validate_packet_bindings(
@@ -106,8 +310,10 @@ def _validate_packet_bindings(
     commit = str(manifest.get("reviewed_commit") or "").lower()
     if commit != expected_commit:
         raise FinalSecurityReviewPacketError("security review packet does not bind exact final release commit")
-    source_sha = sha256_file(source_archive.resolve())
-    release_sha = sha256_file(release_manifest.resolve())
+    source_archive = _safe_input_file(source_archive, "security review source archive")
+    release_manifest = _safe_input_file(release_manifest, "security review release manifest")
+    source_sha = sha256_file(source_archive)
+    release_sha = sha256_file(release_manifest)
     source = manifest.get("source_archive") if isinstance(manifest.get("source_archive"), dict) else {}
     release = manifest.get("release_manifest") if isinstance(manifest.get("release_manifest"), dict) else {}
     if source.get("name") != source_archive.name or str(source.get("sha256") or "").lower() != source_sha:
@@ -129,10 +335,10 @@ def build_final_packet(
     *, root: Path, source_archive: Path, release_manifest: Path,
     expected_commit: str, output: Path,
 ) -> dict[str, Any]:
-    root = root.resolve()
-    source_archive = source_archive.resolve()
-    release_manifest = release_manifest.resolve()
-    output = output.resolve()
+    root = _safe_input_directory(root, "security review source checkout")
+    source_archive = _safe_input_file(source_archive, "security review source archive")
+    release_manifest = _safe_input_file(release_manifest, "security review release manifest")
+    output = _safe_output_file(output, "final security review packet output")
     if expected_commit.lower() != _FINAL_COMMIT:
         raise FinalSecurityReviewPacketError("final security review packet expected commit is not frozen final release commit")
     if _exact_commit(root) != expected_commit.lower():
@@ -216,14 +422,17 @@ def build_final_packet(
 def validate_submission(
     *, report_path: Path, packet_path: Path, source_archive: Path,
     release_manifest: Path, expected_commit: str, output: Path,
+    commitment_path: Path | None = None,
 ) -> dict[str, Any]:
-    report_path = report_path.resolve()
-    packet_path = packet_path.resolve()
-    source_archive = source_archive.resolve()
-    release_manifest = release_manifest.resolve()
+    report_path = _safe_input_file(report_path, "completed security review report")
+    packet_path = Path(packet_path)
+    source_archive = _safe_input_file(source_archive, "security review source archive")
+    release_manifest = _safe_input_file(release_manifest, "security review release manifest")
+    output = _safe_output_file(output, "security review submission validation output")
     if expected_commit.lower() != _FINAL_COMMIT:
         raise FinalSecurityReviewPacketError("security review submission expected commit is not frozen final release commit")
     entries, _ = _read_zip(packet_path)
+    packet_path = _safe_input_file(packet_path, "security review packet")
     source_sha, release_sha = _validate_packet_bindings(
         manifest=_json_entry(entries, _MANIFEST),
         template=_json_entry(entries, _TEMPLATE),
@@ -232,9 +441,7 @@ def validate_submission(
         source_archive=source_archive,
         release_manifest=release_manifest,
     )
-    report = read_json(report_path)
-    if not isinstance(report, dict):
-        raise FinalSecurityReviewPacketError("completed security review report root must be an object")
+    _, report = _strict_json_file(report_path, label="completed security review report")
     try:
         counts, methods = _validate_completed_report(
             report,
@@ -245,7 +452,14 @@ def validate_submission(
         raise FinalSecurityReviewPacketError(str(exc)) from exc
     if str(report.get("reviewed_commit") or "").lower() != expected_commit.lower():
         raise FinalSecurityReviewPacketError("completed security review does not bind frozen final release commit")
-    reviewer = report.get("reviewer") if isinstance(report.get("reviewer"), dict) else {}
+    reviewer = _normalize_reviewer(report.get("reviewer"), source="completed review")
+    commitment: dict[str, Any] | None = None
+    commitment_file: Path | None = None
+    if commitment_path is not None:
+        commitment_file = _safe_input_file(commitment_path, "security reviewer commitment")
+        commitment = _load_reviewer_commitment(commitment_file, expected_commit=expected_commit)
+        if reviewer != commitment["reviewer"]:
+            raise FinalSecurityReviewPacketError("completed review identity differs from precommitted independent reviewer")
     if counts.get("critical") != 0 or counts.get("high") != 0:
         raise FinalSecurityReviewPacketError("completed security review contains blocking critical/high findings")
     status = {
@@ -260,19 +474,15 @@ def validate_submission(
         "review_packet_sha256": sha256_file(packet_path),
         "findings": counts,
         "methodologies": methods,
-        "reviewer": {
-            "name": reviewer.get("name"),
-            "organization": reviewer.get("organization"),
-            "role": reviewer.get("role"),
-            "contact": reviewer.get("contact"),
-            "conflict_of_interest": reviewer.get("conflict_of_interest"),
-            "key_controlled_by_reviewer": reviewer.get("key_controlled_by_reviewer"),
-        },
+        "reviewer": reviewer,
         "independent_review": True,
         "critical_high_blockers_absent": True,
+        "reviewer_commitment_verified": commitment is not None,
+        "reviewer_identity_precommitted": commitment is not None,
+        "security_review_key_id": commitment["security_review_key_id"] if commitment is not None else None,
+        "reviewer_commitment_sha256": sha256_file(commitment_file) if commitment_file is not None else None,
         "private_key_read": False,
     }
-    output = output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_json(output, status)
     return status
@@ -287,13 +497,23 @@ def _parser() -> argparse.ArgumentParser:
     packet.add_argument("--release-manifest", type=Path, required=True)
     packet.add_argument("--expected-commit", required=True)
     packet.add_argument("--output", type=Path, required=True)
+    commitment = sub.add_parser("commitment")
+    commitment.add_argument("--input", type=Path, required=True)
+    commitment.add_argument("--expected-commit", required=True)
+    commitment.add_argument("--output", type=Path, required=True)
     validate = sub.add_parser("validate-submission")
     validate.add_argument("--report", type=Path, required=True)
     validate.add_argument("--packet", type=Path, required=True)
+    validate.add_argument("--commitment", type=Path, required=True)
     validate.add_argument("--source-archive", type=Path, required=True)
     validate.add_argument("--release-manifest", type=Path, required=True)
     validate.add_argument("--expected-commit", required=True)
     validate.add_argument("--output", type=Path, required=True)
+    authority = sub.add_parser("validate-authority")
+    authority.add_argument("--commitment", type=Path, required=True)
+    authority.add_argument("--public-key", type=Path, required=True)
+    authority.add_argument("--expected-commit", required=True)
+    authority.add_argument("--output", type=Path, required=True)
     return parser
 
 
@@ -308,10 +528,24 @@ def main() -> int:
                 expected_commit=args.expected_commit,
                 output=args.output,
             )
+        elif args.command == "commitment":
+            result = normalize_reviewer_commitment(
+                input_path=args.input,
+                expected_commit=args.expected_commit,
+                output=args.output,
+            )
+        elif args.command == "validate-authority":
+            result = validate_reviewer_authority(
+                commitment_path=args.commitment,
+                public_key=args.public_key,
+                expected_commit=args.expected_commit,
+                output=args.output,
+            )
         else:
             result = validate_submission(
                 report_path=args.report,
                 packet_path=args.packet,
+                commitment_path=args.commitment,
                 source_archive=args.source_archive,
                 release_manifest=args.release_manifest,
                 expected_commit=args.expected_commit,
@@ -319,7 +553,15 @@ def main() -> int:
             )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
-    except (FinalSecurityReviewPacketError, SecurityReviewError, OSError, ValueError, TypeError, KeyError) as exc:
+    except (
+        FinalSecurityReviewPacketError,
+        SecurityReviewError,
+        SigningError,
+        OSError,
+        ValueError,
+        TypeError,
+        KeyError,
+    ) as exc:
         print(f"final security review packet failed: {exc}", file=sys.stderr)
         return 1
 
