@@ -13,6 +13,7 @@ SCRIPT = ROOT / "scripts" / "ga" / "Invoke-ProductionGAFullFortyOneCheckProvisio
 class ProductionGAFullFortyOneCheckOperatorTests(unittest.TestCase):
     def test_source_freezes_exact_five_fragment_forty_one_check_flow(self) -> None:
         text = SCRIPT.read_text(encoding="utf-8")
+        compact = "".join(text.split())
         for required in (
             "Initialize-ProductionGAProvisioningWorkspace.ps1",
             "build_public_auth_material_map_fragment.py",
@@ -24,33 +25,40 @@ class ProductionGAFullFortyOneCheckOperatorTests(unittest.TestCase):
             "verify_production_ga_provisioning_receipt.py",
         ):
             self.assertIn(required, text)
-        self.assertIn("local_check_count = 19", text)
-        self.assertIn("external_or_review_check_count = 22", text)
-        self.assertIn("total_material_check_count = 41", text)
-        self.assertIn("fragment_count = 5", text)
+        for required in (
+            "local_check_count=19",
+            "external_or_review_check_count=22",
+            "total_material_check_count=41",
+            "fragment_count=5",
+            "AllowPartialEnvironment=$true",
+            "production_readiness_verified=$false",
+            "final_ga_evaluator_invoked=$false",
+            "ga_eligible=$false",
+        ):
+            self.assertIn(required, compact)
         self.assertIn("@initializeArgs", text)
         self.assertIn("@provisionArgs", text)
-        self.assertIn("AllowPartialEnvironment = $true", text)
-        self.assertIn("production_readiness_verified = $false", text)
-        self.assertIn("final_ga_evaluator_invoked = $false", text)
-        self.assertIn("ga_eligible = $false", text)
         self.assertNotIn("--body", text)
 
     def test_source_pins_repository_and_trusted_command_boundary(self) -> None:
         text = SCRIPT.read_text(encoding="utf-8")
+        compact = "".join(text.split())
         for required in (
             "$ExpectedRepository = 'Naveax/PSMatrix'",
             "Full Production GA provisioning repository must be exactly Naveax/PSMatrix",
             "Resolve-TrustedGh",
             "Assert-ExistingAncestorsNoLink",
             "Assert-NoLinkOrReparsePath $repoRoot 'Repository root'",
-            "Repository = $ExpectedRepository",
-            "'--repository', $ExpectedRepository",
             "$provisionArgs.GhPath = $gh",
         ):
             self.assertIn(required, text)
-        self.assertNotIn("Repository = $Repository", text)
-        self.assertNotIn("'--repository', $Repository", text)
+        for required in (
+            "Repository=$ExpectedRepository",
+            "'--repository',$ExpectedRepository",
+        ):
+            self.assertIn(required, compact)
+        self.assertNotIn("Repository=$Repository", compact)
+        self.assertNotIn("'--repository',$Repository", compact)
 
     def test_repo_local_workspace_is_rejected_before_external_material_access(self) -> None:
         pwsh = shutil.which("pwsh")
