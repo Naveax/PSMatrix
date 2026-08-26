@@ -1,0 +1,3 @@
+# Security-sensitive repository policy surfaces.
+/.github/CODEOWNERS @Naveax
+/.github/workflows/ @Naveax
