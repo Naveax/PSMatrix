@@ -54,7 +54,15 @@ function Assert-TrustedApplicationPath([string]$Path, [string]$Label, [string]$E
         if ([string]::IsNullOrWhiteSpace($localApplicationData)) { throw "$Label Windows application-alias root is unavailable." }
         $windowsAppsRoot = [IO.Path]::GetFullPath((Join-Path $localApplicationData 'Microsoft\WindowsApps'))
         [void](Assert-NoExistingLinkOrReparseComponents $windowsAppsRoot "$Label WindowsApps root")
-        if (-not (Test-PathEqual $parent $windowsAppsRoot)) { throw "$Label reparse leaf is not an OS-managed Windows application alias." }
+        $isDirectWindowsAppsAlias = Test-PathEqual $parent $windowsAppsRoot
+        $isSinglePackageWindowsAppsAlias = $false
+        if (-not $isDirectWindowsAppsAlias -and (Test-PathInside $parent $windowsAppsRoot)) {
+            $packageParent = Split-Path -Parent $parent
+            if (-not [string]::IsNullOrWhiteSpace($packageParent)) {
+                $isSinglePackageWindowsAppsAlias = Test-PathEqual $packageParent $windowsAppsRoot
+            }
+        }
+        if (-not $isDirectWindowsAppsAlias -and -not $isSinglePackageWindowsAppsAlias) { throw "$Label reparse leaf is not a direct or single-package OS-managed Windows application alias." }
         if (-not [string]::Equals([IO.Path]::GetFileName($full), $ExpectedWindowsAliasName, [StringComparison]::OrdinalIgnoreCase)) { throw "$Label Windows application alias name mismatch." }
     }
     return $full
