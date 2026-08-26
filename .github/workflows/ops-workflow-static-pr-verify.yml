@@ -1,0 +1,87 @@
+name: ops-workflow-static-pr-verify
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/*.yml'
+
+concurrency:
+  group: ops-workflow-static-pr-verify-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact pull request revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Extract authoritative static verifier read-only checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_workflow='.github/workflows/ops-workflow-static-verify.yml'
+          mirror_root="$RUNNER_TEMP/ops-workflow-static-pr-mirror"
+          rm -rf "$mirror_root"
+          mkdir -p "$mirror_root"
+          ruby - "$source_workflow" "$mirror_root" <<'RUBY_EXTRACT'
+          require 'yaml'
+
+          source, root = ARGV
+          doc = YAML.load_file(source, aliases: true)
+          abort 'authoritative static verifier is not a YAML mapping' unless doc.is_a?(Hash)
+          steps = doc.dig('jobs', 'verify', 'steps')
+          abort 'authoritative static verifier steps are missing' unless steps.is_a?(Array)
+
+          expected = %w[parse artifact bash]
+          expected.each do |step_id|
+            matches = steps.select { |step| step.is_a?(Hash) && step['id'].to_s == step_id }
+            abort "expected exactly one authoritative static verifier step id=#{step_id}, found #{matches.length}" unless matches.length == 1
+            step = matches.fetch(0)
+            abort "authoritative static verifier step id=#{step_id} is not bash" unless step['shell'].to_s.strip == 'bash'
+            run = step['run']
+            abort "authoritative static verifier step id=#{step_id} has no run block" unless run.is_a?(String) && !run.empty?
+            File.binwrite(File.join(root, "#{step_id}.sh"), run.encode('UTF-8'))
+          end
+          puts "authoritative_static_verifier_extracted=PASS steps=#{expected.join(',')}"
+          RUBY_EXTRACT
+
+          for step_id in parse artifact bash; do
+            bash -n "$mirror_root/$step_id.sh"
+          done
+          echo 'authoritative_static_verifier_shell_parse=PASS'
+
+      - name: Run authoritative static verifier read-only checks
+        shell: bash
+        run: |
+          set -uo pipefail
+          mirror_root="$RUNNER_TEMP/ops-workflow-static-pr-mirror"
+          failed=0
+          for step_id in parse artifact bash; do
+            if bash "$mirror_root/$step_id.sh"; then
+              outcome=success
+            else
+              outcome=failure
+              failed=1
+            fi
+            echo "static_${step_id}_outcome=$outcome"
+          done
+
+          if [[ "$failed" -ne 0 ]]; then
+            root="$RUNNER_TEMP/ops-workflow-verify"
+            echo '--- YAML / workflow contract errors ---'
+            cat "$root/yaml-errors.txt" 2>/dev/null || true
+            echo '--- Artifact contract errors ---'
+            cat "$root/artifact-errors.txt" 2>/dev/null || true
+            echo '--- Bash errors ---'
+            cat "$root/bash-errors.txt" 2>/dev/null || true
+            exit 1
+          fi
+          echo 'pull_request_static_verification=PASS mutation_performed=false'
