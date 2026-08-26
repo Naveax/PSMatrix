@@ -34,6 +34,11 @@ class ProductionGAWorkspaceCommandBoundaryTests(unittest.TestCase):
             "Join-Path $PSScriptRoot '../..'",
             "Get-Command python -CommandType Application -All",
             "$commandPath = [string]$command.Path",
+            "Assert-TrustedApplicationPath $commandPath 'Trusted python executable' 'python.exe'",
+            "[Environment]::GetFolderPath([System.Environment+SpecialFolder]::LocalApplicationData)",
+            "Join-Path $localApplicationData 'Microsoft\\WindowsApps'",
+            "Test-PathEqual $parent $windowsAppsRoot",
+            "Windows application alias name mismatch",
             "Trusted python executable must stay outside the repository",
             "Join-Path $repoRoot 'scripts/ga/provision_production_ga_authorities.py'",
             "Join-Path $repoRoot 'scripts/ga/build_authority_material_map_fragment.py'",
@@ -45,6 +50,7 @@ class ProductionGAWorkspaceCommandBoundaryTests(unittest.TestCase):
         self.assertNotIn("(Get-Location).Path", source)
         self.assertNotIn("$command.Source", source)
         self.assertNotIn("$item.FullName", source)
+        self.assertNotIn("if ($IsWindows) { return }", source)
         self.assertNotIn("signing_authority_fragment=", source)
         self.assertNotIn("full_matrix_fragment=", source)
         self.assertNotIn("summary=$summaryPath", source)

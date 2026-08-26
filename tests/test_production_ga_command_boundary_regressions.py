@@ -82,6 +82,12 @@ class ProductionGACommandBoundaryRegressionTests(unittest.TestCase):
             "Trusted gh executable must stay outside the repository",
             "Get-Command gh -CommandType Application -All",
             "$commandPath = [string]$command.Path",
+            "Assert-TrustedApplicationPath $commandPath 'Trusted gh executable' 'gh.exe'",
+            "[Environment]::GetFolderPath([System.Environment+SpecialFolder]::LocalApplicationData)",
+            "Join-Path $localApplicationData 'Microsoft\\WindowsApps'",
+            "Test-PathEqual $parent $windowsAppsRoot",
+            "reparse leaf is not an OS-managed Windows application alias",
+            "Windows application alias name mismatch",
             "Production provisioning material map contains an undeclared environment identity",
             "material source path must be a string",
             "Assert-ExternalMaterialFile $Source $repoRoot $Label",
@@ -93,6 +99,7 @@ class ProductionGACommandBoundaryRegressionTests(unittest.TestCase):
             self.assertIn(required, source)
         self.assertNotIn("$command.Source", source)
         self.assertNotIn("$stagedPlan", source)
+        self.assertNotIn("if ($IsWindows) { return }", source)
         self.assertNotIn("Get-Content -Raw -LiteralPath $stderr", source)
 
     def test_full41_source_requires_live_inventory_and_trusted_commands(self) -> None:
@@ -106,6 +113,11 @@ class ProductionGACommandBoundaryRegressionTests(unittest.TestCase):
             "Get-Command gh -CommandType Application -All",
             "Get-Command python -CommandType Application -All",
             "$commandPath = [string]$command.Path",
+            "Assert-TrustedApplicationPath $commandPath 'Trusted gh executable' 'gh.exe'",
+            "Assert-TrustedApplicationPath $commandPath 'Trusted python executable' 'python.exe'",
+            "[Environment]::GetFolderPath([System.Environment+SpecialFolder]::LocalApplicationData)",
+            "Join-Path $localApplicationData 'Microsoft\\WindowsApps'",
+            "Test-PathEqual $parent $windowsAppsRoot",
             "Resolve-TrustedPython $repoRoot",
             "Join-Path $scriptRoot 'build_public_auth_material_map_fragment.py'",
             "Join-Path $scriptRoot 'build_otlp_material_map_fragment.py'",
@@ -121,6 +133,7 @@ class ProductionGACommandBoundaryRegressionTests(unittest.TestCase):
             self.assertIn(required, source)
         self.assertNotIn("$command.Source", source)
         self.assertNotIn("$python = (Get-Command python", source)
+        self.assertNotIn("if ($IsWindows) { return }", source)
         self.assertNotIn("$($Arguments -join ' ')", source)
 
     def test_offline_inventory_is_rejected_before_mutating_workspace_creation(self) -> None:

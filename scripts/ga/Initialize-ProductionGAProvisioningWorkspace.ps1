@@ -37,6 +37,28 @@ function Assert-NoExistingLinkOrReparseComponents([string]$Path, [string]$Label)
     }
     return $full
 }
+function Assert-TrustedApplicationPath([string]$Path, [string]$Label, [string]$ExpectedWindowsAliasName) {
+    $full = [IO.Path]::GetFullPath($Path)
+    if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { throw "$Label is missing." }
+    $leaf = Get-Item -LiteralPath $full -Force
+    $parent = Split-Path -Parent $full
+    if ([string]::IsNullOrWhiteSpace($parent)) { throw "$Label parent path is missing." }
+    [void](Assert-NoExistingLinkOrReparseComponents $parent "$Label parent")
+
+    $linkProperty = $leaf.PSObject.Properties['LinkType']
+    $linkType = if ($null -ne $linkProperty) { [string]$linkProperty.Value } else { '' }
+    $isReparsePoint = (($leaf.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+    if ($isReparsePoint -or -not [string]::IsNullOrWhiteSpace($linkType)) {
+        if (-not $IsWindows) { throw "$Label must not be a link or reparse point." }
+        $localApplicationData = [Environment]::GetFolderPath([System.Environment+SpecialFolder]::LocalApplicationData)
+        if ([string]::IsNullOrWhiteSpace($localApplicationData)) { throw "$Label Windows application-alias root is unavailable." }
+        $windowsAppsRoot = [IO.Path]::GetFullPath((Join-Path $localApplicationData 'Microsoft\WindowsApps'))
+        [void](Assert-NoExistingLinkOrReparseComponents $windowsAppsRoot "$Label WindowsApps root")
+        if (-not (Test-PathEqual $parent $windowsAppsRoot)) { throw "$Label reparse leaf is not an OS-managed Windows application alias." }
+        if (-not [string]::Equals([IO.Path]::GetFileName($full), $ExpectedWindowsAliasName, [StringComparison]::OrdinalIgnoreCase)) { throw "$Label Windows application alias name mismatch." }
+    }
+    return $full
+}
 function Assert-OutsideRepository([string]$Path, [string]$Label) {
     $full = Assert-NoExistingLinkOrReparseComponents $Path $Label
     if ((Test-PathEqual $full $repoRoot) -or (Test-PathInside $full $repoRoot)) { throw "$Label must stay outside the repository." }
@@ -48,9 +70,7 @@ function Resolve-TrustedPython() {
     $command = $commands[0]
     $commandPath = [string]$command.Path
     if ([string]::IsNullOrWhiteSpace($commandPath)) { throw 'Trusted python executable is missing.' }
-    $resolved = [IO.Path]::GetFullPath($commandPath)
-    if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) { throw 'Trusted python executable is missing.' }
-    [void](Assert-NoExistingLinkOrReparseComponents $resolved 'Trusted python executable')
+    $resolved = Assert-TrustedApplicationPath $commandPath 'Trusted python executable' 'python.exe'
     if ((Test-PathEqual $resolved $repoRoot) -or (Test-PathInside $resolved $repoRoot)) { throw 'Trusted python executable must stay outside the repository.' }
     return $resolved
 }
