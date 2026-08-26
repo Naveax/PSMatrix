@@ -2,8 +2,7 @@ name: ops-workflow-policy-pr-verify
 
 on:
   pull_request:
-    paths:
-      - '.github/workflows/*.yml'
+    branches: [main]
 
 concurrency:
   group: ops-workflow-policy-pr-verify-${{ github.event.pull_request.number }}
@@ -14,6 +13,7 @@ permissions:
 
 jobs:
   verify:
+    name: Workflow policy PR verification
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

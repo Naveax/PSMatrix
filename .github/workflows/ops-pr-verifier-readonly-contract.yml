@@ -6,11 +6,10 @@ on:
     paths:
       - '.github/workflows/*.yml'
   pull_request:
-    paths:
-      - '.github/workflows/*.yml'
+    branches: [main]
 
 concurrency:
-  group: ops-pr-verifier-readonly-contract-${{ github.ref }}
+  group: ops-pr-verifier-readonly-contract-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -18,6 +17,7 @@ permissions:
 
 jobs:
   verify:
+    name: PR verifier read-only contract
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -35,10 +35,10 @@ jobs:
           require 'yaml'
 
           errors = []
-          required = [
-            '.github/workflows/ops-workflow-policy-pr-verify.yml',
-            '.github/workflows/ops-workflow-static-pr-verify.yml',
-          ].sort
+          required = {
+            '.github/workflows/ops-workflow-policy-pr-verify.yml' => 'Workflow policy PR verification',
+            '.github/workflows/ops-workflow-static-pr-verify.yml' => 'Workflow static PR verification',
+          }
           forbidden_fragments = [
             'GH_TOKEN:',
             '$' + '{{ github.token }}',
@@ -47,7 +47,7 @@ jobs:
           ]
           checked = 0
 
-          required.each do |path|
+          required.sort.each do |path, expected_job_name|
             unless File.file?(path)
               errors << "#{path}: required read-only PR verifier workflow is missing"
               next
@@ -75,8 +75,11 @@ jobs:
             unless pull_request.is_a?(Hash)
               errors << "#{path}: pull_request trigger must be an explicit mapping"
             else
-              paths = Array(pull_request['paths']).map(&:to_s)
-              errors << "#{path}: paths must be exactly .github/workflows/*.yml" unless paths == ['.github/workflows/*.yml']
+              pr_keys = pull_request.keys.map(&:to_s).sort
+              branches = Array(pull_request['branches']).map(&:to_s)
+              unless pr_keys == ['branches'] && branches == ['main']
+                errors << "#{path}: pull_request must target main with no path filter"
+              end
             end
 
             permissions = doc['permissions']
@@ -86,23 +89,30 @@ jobs:
             end
 
             jobs = doc['jobs']
-            unless jobs.is_a?(Hash) && !jobs.empty?
-              errors << "#{path}: jobs mapping is missing or empty"
+            unless jobs.is_a?(Hash) && jobs.keys.map(&:to_s).sort == ['verify']
+              errors << "#{path}: jobs mapping must contain exactly verify"
               next
+            end
+            verify_job = jobs['verify']
+            unless verify_job.is_a?(Hash)
+              errors << "#{path}: verify job must be a mapping"
+              next
+            end
+            unless verify_job['name'].to_s == expected_job_name
+              errors << "#{path}: verify job name must be exactly #{expected_job_name.inspect}"
+            end
+            if verify_job.key?('permissions')
+              errors << "#{path}: verify job must not override permissions"
             end
 
             checkout_count = 0
-            jobs.each do |job_name, job|
-              next unless job.is_a?(Hash)
-              errors << "#{path}: job #{job_name} must not override permissions" if job.key?('permissions')
-              Array(job['steps']).each_with_index do |step, index|
-                next unless step.is_a?(Hash)
-                next unless step['uses'].to_s.start_with?('actions/checkout@')
-                checkout_count += 1
-                with = step['with']
-                unless with.is_a?(Hash) && with['persist-credentials'] == false
-                  errors << "#{path}: checkout step #{index} must set persist-credentials: false"
-                end
+            Array(verify_job['steps']).each_with_index do |step, index|
+              next unless step.is_a?(Hash)
+              next unless step['uses'].to_s.start_with?('actions/checkout@')
+              checkout_count += 1
+              with = step['with']
+              unless with.is_a?(Hash) && with['persist-credentials'] == false
+                errors << "#{path}: checkout step #{index} must set persist-credentials: false"
               end
             end
             errors << "#{path}: expected exactly one checkout step, found #{checkout_count}" unless checkout_count == 1
@@ -120,5 +130,5 @@ jobs:
             exit 1
           end
           abort "expected 2 read-only PR verifier contracts, checked #{checked}" unless checked == 2
-          puts 'pr_readonly_verifier_contract=PASS mutation_performed=false'
+          puts 'pr_readonly_verifier_contract=PASS stable_required_contexts=true mutation_performed=false'
           RUBY
