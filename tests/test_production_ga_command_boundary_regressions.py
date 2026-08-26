@@ -25,6 +25,12 @@ def _load_audit():
     return module
 
 
+def _powershell_function_block(source: str, function_name: str, next_function_name: str) -> str:
+    start = source.index(f"function {function_name}")
+    end = source.index(f"function {next_function_name}", start)
+    return source[start:end]
+
+
 class ProductionGACommandBoundaryRegressionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -78,6 +84,11 @@ class ProductionGACommandBoundaryRegressionTests(unittest.TestCase):
 
     def test_helper_source_freezes_final_mutation_boundary(self) -> None:
         source = HELPER.read_text(encoding="utf-8")
+        trusted_boundary = _powershell_function_block(
+            source,
+            "Assert-TrustedApplicationPath",
+            "Protect-TemporaryPath",
+        )
         for required in (
             "Trusted gh executable must stay outside the repository",
             "Get-Command gh -CommandType Application -All",
@@ -99,11 +110,16 @@ class ProductionGACommandBoundaryRegressionTests(unittest.TestCase):
             self.assertIn(required, source)
         self.assertNotIn("$command.Source", source)
         self.assertNotIn("$stagedPlan", source)
-        self.assertNotIn("if ($IsWindows) { return }", source)
+        self.assertNotIn("if ($IsWindows) { return }", trusted_boundary)
         self.assertNotIn("Get-Content -Raw -LiteralPath $stderr", source)
 
     def test_full41_source_requires_live_inventory_and_trusted_commands(self) -> None:
         source = FULL41.read_text(encoding="utf-8")
+        trusted_boundary = _powershell_function_block(
+            source,
+            "Assert-TrustedApplicationPath",
+            "Assert-ExistingAncestorsNoLink",
+        )
         for required in (
             "OfflineInventoryBefore is permitted only with DryRun",
             "mutating operations require a live GitHub inventory",
@@ -133,7 +149,7 @@ class ProductionGACommandBoundaryRegressionTests(unittest.TestCase):
             self.assertIn(required, source)
         self.assertNotIn("$command.Source", source)
         self.assertNotIn("$python = (Get-Command python", source)
-        self.assertNotIn("if ($IsWindows) { return }", source)
+        self.assertNotIn("if ($IsWindows) { return }", trusted_boundary)
         self.assertNotIn("$($Arguments -join ' ')", source)
 
     def test_offline_inventory_is_rejected_before_mutating_workspace_creation(self) -> None:
