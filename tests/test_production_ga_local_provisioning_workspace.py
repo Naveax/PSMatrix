@@ -188,13 +188,16 @@ class ProductionGALocalProvisioningWorkspaceTests(unittest.TestCase):
 
     def test_source_preflights_workspace_summary_and_child_outputs_before_generation(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
-        workspace_guard = "workspace = Assert-NoExistingLinkOrReparseComponents"
-        summary_guard = "Assert-NoExistingLinkOrReparseComponents $summaryPath"
+        workspace_guard = "$workspace = Assert-OutsideRepository $Root 'Production GA provisioning workspace path'"
+        outside_reparse_guard = "$full = Assert-NoExistingLinkOrReparseComponents $Path $Label"
+        summary_guard = "[void](Assert-OutsideRepository $summaryPath 'Production GA provisioning summary path')"
         first_workspace_create = "New-Item -ItemType Directory -Path $workspace -Force"
         authority_generation = "provision_production_ga_authorities.py"
         self.assertIn(workspace_guard, source)
+        self.assertIn(outside_reparse_guard, source)
         self.assertIn(summary_guard, source)
         self.assertLess(source.index(workspace_guard), source.index(first_workspace_create))
+        self.assertLess(source.index(outside_reparse_guard), source.index(first_workspace_create))
         self.assertLess(source.index(summary_guard), source.index(first_workspace_create))
         for token in (
             "$authorityRoot,",

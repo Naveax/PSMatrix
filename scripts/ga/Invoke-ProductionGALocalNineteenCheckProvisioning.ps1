@@ -11,6 +11,19 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$ExpectedRepository = 'Naveax/PSMatrix'
+
+function Get-PathComparison() {
+    if ($IsWindows) { return [StringComparison]::OrdinalIgnoreCase }
+    return [StringComparison]::Ordinal
+}
+function Test-PathEqual([string]$Left, [string]$Right) {
+    return [string]::Equals([IO.Path]::GetFullPath($Left), [IO.Path]::GetFullPath($Right), (Get-PathComparison))
+}
+function Test-PathInside([string]$Path, [string]$RootPath) {
+    $prefix = [IO.Path]::GetFullPath($RootPath).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
+    return [IO.Path]::GetFullPath($Path).StartsWith($prefix, (Get-PathComparison))
+}
 function Read-JsonObject([string]$Path, [string]$Label) {
     $resolved = [IO.Path]::GetFullPath($Path)
     if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) { throw "$Label not found: $resolved" }
@@ -21,16 +34,27 @@ function Read-JsonObject([string]$Path, [string]$Label) {
 function Invoke-PythonChecked([string]$Python, [string[]]$Arguments, [int[]]$AcceptedExitCodes = @(0)) {
     & $Python @Arguments
     $code = $LASTEXITCODE
-    if ($code -notin $AcceptedExitCodes) { throw "python command failed with exit ${code}: $($Arguments -join ' ')" }
+    if ($code -notin $AcceptedExitCodes) { throw "python command failed with exit ${code}; command arguments were intentionally redacted." }
     return $code
 }
+function Resolve-PreviouslyValidatedPython([string]$RepoRoot) {
+    $commands = @(Get-Command python -CommandType Application -All -ErrorAction Stop)
+    if ($commands.Count -eq 0) { throw 'Trusted python executable is missing after workspace validation.' }
+    $commandPath = [string]$commands[0].Path
+    if ([string]::IsNullOrWhiteSpace($commandPath)) { throw 'Trusted python executable is missing after workspace validation.' }
+    $resolved = [IO.Path]::GetFullPath($commandPath)
+    if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) { throw 'Trusted python executable is missing after workspace validation.' }
+    if ((Test-PathEqual $resolved $RepoRoot) -or (Test-PathInside $resolved $RepoRoot)) { throw 'Trusted python executable must stay outside the repository.' }
+    return $resolved
+}
+
+if (-not [string]::Equals($Repository, $ExpectedRepository, [StringComparison]::Ordinal)) { throw 'Local 19-check provisioning repository must be exactly Naveax/PSMatrix.' }
+if (-not [string]::IsNullOrWhiteSpace($OfflineInventoryBefore) -and -not $DryRun.IsPresent) { throw 'OfflineInventoryBefore is permitted only with DryRun; mutating operations require a live GitHub inventory.' }
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $workspace = [IO.Path]::GetFullPath($Root)
-$repoPrefix = $repoRoot.TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
-if ($workspace.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Local 19-check provisioning workspace must stay outside the repository.' }
+if ((Test-PathEqual $workspace $repoRoot) -or (Test-PathInside $workspace $repoRoot)) { throw 'Local 19-check provisioning workspace must stay outside the repository.' }
 New-Item -ItemType Directory -Path $workspace -Force | Out-Null
-$python = (Get-Command python -ErrorAction Stop).Source
 $gh = if ([string]::IsNullOrWhiteSpace($GhPath)) { $null } else { [IO.Path]::GetFullPath($GhPath) }
 
 $workspaceSummary = Join-Path $workspace 'local-provisioning-summary.json'
@@ -40,7 +64,17 @@ $selectedMap = Join-Path $workspace 'selected-missing-local.material-map.json'
 $postAudit = Join-Path $workspace 'post-provision-inventory-audit.json'
 $receipt = Join-Path $workspace 'local-19-provisioning-receipt.json'
 $summaryPath = if ([string]::IsNullOrWhiteSpace($SummaryOutput)) { Join-Path $workspace 'local-19-provisioning-operation.json' } else { [IO.Path]::GetFullPath($SummaryOutput) }
-if ($summaryPath.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Local 19-check provisioning operation summary must stay outside the repository.' }
+if ((Test-PathEqual $summaryPath $repoRoot) -or (Test-PathInside $summaryPath $repoRoot)) { throw 'Local 19-check provisioning operation summary must stay outside the repository.' }
+
+$initializer = Join-Path $repoRoot 'scripts/ga/Initialize-ProductionGAProvisioningWorkspace.ps1'
+$environmentProvisioner = Join-Path $repoRoot 'scripts/ga/Invoke-ProductionGAEnvironmentProvisioning.ps1'
+$composePartial = Join-Path $repoRoot 'scripts/ga/compose_partial_production_ga_material_map.py'
+$inventoryAuditor = Join-Path $repoRoot 'scripts/ga/audit_production_ga_environment_inventory.py'
+$missingSelector = Join-Path $repoRoot 'scripts/ga/select_missing_production_ga_material.py'
+$receiptVerifier = Join-Path $repoRoot 'scripts/ga/verify_production_ga_provisioning_receipt.py'
+foreach ($source in @($initializer,$environmentProvisioner,$composePartial,$inventoryAuditor,$missingSelector,$receiptVerifier)) {
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw 'Required Local 19-check operator source is missing.' }
+}
 
 Push-Location $repoRoot
 try {
@@ -49,14 +83,19 @@ try {
         SummaryOutput = $workspaceSummary
     }
     if ($ForceAuthorities) { $initializeArgs.ForceAuthorities = $true }
-    & (Join-Path $repoRoot 'scripts/ga/Initialize-ProductionGAProvisioningWorkspace.ps1') @initializeArgs
+    & $initializer @initializeArgs
     if ($LASTEXITCODE -ne 0) { throw 'Local Production GA workspace initialization failed.' }
     $prepared = Read-JsonObject $workspaceSummary 'Local Production GA workspace summary'
     if ([int]$prepared.locally_prepared_check_count -ne 19 -or [int]$prepared.remaining_external_or_review_check_count -ne 22) { throw 'Local Production GA workspace must prepare exact 19/41 checks.' }
 
+    # Initialize-ProductionGAProvisioningWorkspace just validated the first PATH-ordered
+    # Python application boundary. Resolve that same application by Path for subsequent
+    # local helper calls instead of relying on ApplicationInfo.Source on Windows.
+    $python = Resolve-PreviouslyValidatedPython $repoRoot
+
     $fragments = $prepared.fragments
     Invoke-PythonChecked $python @(
-        'scripts/ga/compose_partial_production_ga_material_map.py',
+        $composePartial,
         '--fragment', [string]$fragments.signing_authorities,
         '--fragment', [string]$fragments.full_matrix,
         '--output', $localMap
@@ -64,7 +103,7 @@ try {
     $map = Read-JsonObject $localMap 'Local 19-check material map'
     if ([int]$map.check_count -ne 19 -or $map.partial -ne $true) { throw 'Composed local material map must be exact partial 19/41.' }
 
-    $auditArgs = @('scripts/ga/audit_production_ga_environment_inventory.py', '--repository', $Repository, '--output', $preAudit)
+    $auditArgs = @($inventoryAuditor, '--repository', $ExpectedRepository, '--output', $preAudit)
     if (-not [string]::IsNullOrWhiteSpace($OfflineInventoryBefore)) {
         $auditArgs += @('--inventory', [IO.Path]::GetFullPath($OfflineInventoryBefore))
     } elseif ($gh) {
@@ -92,7 +131,7 @@ try {
 
     if ($localMissingCount -gt 0) {
         Invoke-PythonChecked $python @(
-            'scripts/ga/select_missing_production_ga_material.py',
+            $missingSelector,
             '--material-map', $localMap,
             '--inventory-audit', $preAudit,
             '--output', $selectedMap
@@ -105,23 +144,23 @@ try {
 
         $provisionArgs = @{
             MaterialMap = $selectedMap
-            Repository = $Repository
+            Repository = $ExpectedRepository
             Environment = $selectedEnvironments
             AllowPartialEnvironment = $true
         }
         if ($gh) { $provisionArgs.GhPath = $gh }
         if ($DryRun) { $provisionArgs.DryRun = $true }
-        & (Join-Path $repoRoot 'scripts/ga/Invoke-ProductionGAEnvironmentProvisioning.ps1') @provisionArgs
+        & $environmentProvisioner @provisionArgs
         if ($LASTEXITCODE -ne 0) { throw 'Local 19-check partial Production GA provisioning failed.' }
         $mutationExecuted = -not $DryRun.IsPresent
 
         if ($mutationExecuted) {
-            $postArgs = @('scripts/ga/audit_production_ga_environment_inventory.py', '--repository', $Repository, '--output', $postAudit)
+            $postArgs = @($inventoryAuditor, '--repository', $ExpectedRepository, '--output', $postAudit)
             if ($gh) { $postArgs += @('--gh', $gh) }
             Invoke-PythonChecked $python $postArgs @(0,2) | Out-Null
             $after = Read-JsonObject $postAudit 'Post-provision Production GA inventory audit'
             Invoke-PythonChecked $python @(
-                'scripts/ga/verify_production_ga_provisioning_receipt.py',
+                $receiptVerifier,
                 '--material-map', $selectedMap,
                 '--inventory-audit', $postAudit,
                 '--output', $receipt
@@ -141,7 +180,7 @@ try {
         kind = 'psmatrix.production-ga-local-19check-provisioning-operation'
         version = '2.0.0'
         status = $operationStatus
-        repository = $Repository
+        repository = $ExpectedRepository
         workspace = $workspace
         locally_prepared_check_count = 19
         external_or_review_check_count = 22

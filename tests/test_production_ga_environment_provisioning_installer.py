@@ -86,13 +86,13 @@ class ProductionGAEnvironmentProvisioningInstallerTests(unittest.TestCase):
                 return "junction"
         self.skipTest("directory symlink/junction creation is unavailable on this platform")
 
-    def _run(self, material_map: Path, *extra: str) -> subprocess.CompletedProcess[str]:
+    def _run(self, material_map: Path, *extra: str, cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [
                 str(self.pwsh), "-NoLogo", "-NoProfile", "-File", str(SCRIPT),
                 "-MaterialMap", str(material_map), "-Contract", str(CONTRACT), "-DryRun", *extra,
             ],
-            cwd=ROOT,
+            cwd=cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -114,6 +114,41 @@ class ProductionGAEnvironmentProvisioningInstallerTests(unittest.TestCase):
             completed = self._run(material_map, "-Environment", "production-ga-release-signing")
             self.assertEqual(completed.returncode, 0, completed.stdout)
             self.assertIn("environments=1 checks=1", completed.stdout)
+
+    def test_repository_override_is_rejected_before_material_mutation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="psmatrix-env-repo-pin-") as temporary:
+            completed = self._run(self._material_map(Path(temporary)), "-Repository", "attacker/example")
+            self.assertNotEqual(completed.returncode, 0, completed.stdout)
+            self.assertIn("repository must be exactly Naveax/PSMatrix", completed.stdout)
+            self.assertNotIn("provisioned=", completed.stdout)
+
+    def test_repo_root_is_script_anchored_not_current_working_directory(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="psmatrix-env-nonrepo-cwd-") as temporary:
+            external = Path(temporary)
+            material_map = self._material_map(external)
+            completed = self._run(material_map, cwd=external)
+            self.assertEqual(completed.returncode, 0, completed.stdout)
+            self.assertIn("environments=12 checks=41", completed.stdout)
+
+    def test_duplicate_material_map_key_is_rejected_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="psmatrix-env-duplicate-json-") as temporary:
+            root = Path(temporary)
+            secret = root / "secret.txt"
+            secret.write_text("fixture\n", encoding="utf-8")
+            material_map = root / "material-map.json"
+            material_map.write_text(
+                "{"
+                '"schema":1,"schema":1,'
+                '"kind":"psmatrix.production-ga-environment-material-map",'
+                '"version":"2.0.0",'
+                '"environments":{"production-ga-release-signing":'
+                '{"secrets":{"PSMATRIX_RELEASE_PRIVATE_KEY":' + json.dumps(str(secret)) + '},"vars":{}}}'
+                "}",
+                encoding="utf-8",
+            )
+            completed = self._run(material_map, "-Environment", "production-ga-release-signing")
+            self.assertNotEqual(completed.returncode, 0, completed.stdout)
+            self.assertIn("duplicate JSON object key", completed.stdout)
 
     def test_material_sources_inside_repository_are_rejected(self) -> None:
         inside = ROOT / ".tmp-provisioning-value.txt"
@@ -183,18 +218,32 @@ class ProductionGAEnvironmentProvisioningInstallerTests(unittest.TestCase):
                 alias.unlink(missing_ok=True)
                 target.unlink(missing_ok=True)
 
-    def test_source_uses_stdin_redirection_and_never_body_argument(self) -> None:
+    def test_source_freezes_command_and_staging_boundary(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
-        self.assertIn("-RedirectStandardInput $InputFile", source)
-        self.assertIn("'secret'", source)
-        self.assertIn("'variable'", source)
-        self.assertIn("'--env'", source)
-        self.assertIn("'--repo'", source)
-        self.assertIn("[IO.FileAttributes]::ReparsePoint", source)
-        self.assertIn("Properties['LinkType']", source)
-        self.assertIn("Assert-NoLinkOrReparsePath $resolved $Label", source)
+        for required in (
+            "Join-Path $PSScriptRoot '../..'",
+            "Production GA provisioning repository must be exactly Naveax/PSMatrix",
+            "GhPath must match the gh application resolved by the trusted operator PATH",
+            "command output was intentionally redacted",
+            "Copy-MaterialToStage",
+            "Get-FileHash",
+            "psmatrix-ga-provisioning-",
+            "Assert-UniqueJsonKeys",
+            "-RedirectStandardInput $InputFile",
+            "'secret'",
+            "'variable'",
+            "'--env'",
+            "'--repo'",
+            "$ExpectedRepository",
+            "[IO.FileAttributes]::ReparsePoint",
+            "Properties['LinkType']",
+        ):
+            self.assertIn(required, source)
         self.assertNotIn("'--body'", source)
-        self.assertNotIn('Write-Host $item.path', source)
+        self.assertNotIn("Write-Host $item.path", source)
+        self.assertNotIn("$errorText", source)
+        self.assertNotIn("Get-Content -Raw -LiteralPath $stderr", source)
+        self.assertNotIn("$repoRoot = (Get-Location).Path", source)
 
 
 if __name__ == "__main__":
