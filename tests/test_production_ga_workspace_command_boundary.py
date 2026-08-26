@@ -32,7 +32,8 @@ class ProductionGAWorkspaceCommandBoundaryTests(unittest.TestCase):
         source = SCRIPT.read_text(encoding="utf-8")
         for required in (
             "Join-Path $PSScriptRoot '../..'",
-            "Get-Command python -CommandType Application",
+            "Get-Command python -CommandType Application -All",
+            "$commandPath = [string]$command.Path",
             "Trusted python executable must stay outside the repository",
             "Join-Path $repoRoot 'scripts/ga/provision_production_ga_authorities.py'",
             "Join-Path $repoRoot 'scripts/ga/build_authority_material_map_fragment.py'",
@@ -42,6 +43,7 @@ class ProductionGAWorkspaceCommandBoundaryTests(unittest.TestCase):
         ):
             self.assertIn(required, source)
         self.assertNotIn("(Get-Location).Path", source)
+        self.assertNotIn("$command.Source", source)
         self.assertNotIn("$item.FullName", source)
         self.assertNotIn("signing_authority_fragment=", source)
         self.assertNotIn("full_matrix_fragment=", source)

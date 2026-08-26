@@ -43,8 +43,12 @@ function Assert-OutsideRepository([string]$Path, [string]$Label) {
     return $full
 }
 function Resolve-TrustedPython() {
-    $command = Get-Command python -CommandType Application -ErrorAction Stop
-    $resolved = [IO.Path]::GetFullPath([string]$command.Source)
+    $commands = @(Get-Command python -CommandType Application -All -ErrorAction Stop)
+    if ($commands.Count -eq 0) { throw 'Trusted python executable is missing.' }
+    $command = $commands[0]
+    $commandPath = [string]$command.Path
+    if ([string]::IsNullOrWhiteSpace($commandPath)) { throw 'Trusted python executable is missing.' }
+    $resolved = [IO.Path]::GetFullPath($commandPath)
     if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) { throw 'Trusted python executable is missing.' }
     [void](Assert-NoExistingLinkOrReparseComponents $resolved 'Trusted python executable')
     if ((Test-PathEqual $resolved $repoRoot) -or (Test-PathInside $resolved $repoRoot)) { throw 'Trusted python executable must stay outside the repository.' }

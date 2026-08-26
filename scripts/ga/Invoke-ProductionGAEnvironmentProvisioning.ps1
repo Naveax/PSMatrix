@@ -82,8 +82,12 @@ function Assert-ExternalMaterialFile([string]$Path, [string]$RepoRoot, [string]$
     return $resolved
 }
 function Resolve-TrustedGh([string]$Requested) {
-    $command = Get-Command gh -CommandType Application -ErrorAction Stop
-    $discovered = [IO.Path]::GetFullPath([string]$command.Source)
+    $commands = @(Get-Command gh -CommandType Application -All -ErrorAction Stop)
+    if ($commands.Count -eq 0) { throw 'Trusted gh executable is missing.' }
+    $command = $commands[0]
+    $commandPath = [string]$command.Path
+    if ([string]::IsNullOrWhiteSpace($commandPath)) { throw 'Trusted gh executable is missing.' }
+    $discovered = [IO.Path]::GetFullPath($commandPath)
     if (-not (Test-Path -LiteralPath $discovered -PathType Leaf)) { throw 'Trusted gh executable is missing.' }
     Assert-NoLinkOrReparsePath $discovered 'Trusted gh executable'
     if ((Test-PathEqual $discovered $repoRoot) -or (Test-PathInside $discovered $repoRoot)) { throw 'Trusted gh executable must stay outside the repository.' }

@@ -80,6 +80,8 @@ class ProductionGACommandBoundaryRegressionTests(unittest.TestCase):
         source = HELPER.read_text(encoding="utf-8")
         for required in (
             "Trusted gh executable must stay outside the repository",
+            "Get-Command gh -CommandType Application -All",
+            "$commandPath = [string]$command.Path",
             "Production provisioning material map contains an undeclared environment identity",
             "material source path must be a string",
             "Assert-ExternalMaterialFile $Source $repoRoot $Label",
@@ -89,6 +91,7 @@ class ProductionGACommandBoundaryRegressionTests(unittest.TestCase):
             "'--repo',$ExpectedRepository",
         ):
             self.assertIn(required, source)
+        self.assertNotIn("$command.Source", source)
         self.assertNotIn("$stagedPlan", source)
         self.assertNotIn("Get-Content -Raw -LiteralPath $stderr", source)
 
@@ -100,6 +103,9 @@ class ProductionGACommandBoundaryRegressionTests(unittest.TestCase):
             "Assert-NoLinkOrReparsePath $offlineInventory 'Offline inventory'",
             "Trusted gh executable must stay outside the repository",
             "Trusted python executable must stay outside the repository",
+            "Get-Command gh -CommandType Application -All",
+            "Get-Command python -CommandType Application -All",
+            "$commandPath = [string]$command.Path",
             "Resolve-TrustedPython $repoRoot",
             "Join-Path $scriptRoot 'build_public_auth_material_map_fragment.py'",
             "Join-Path $scriptRoot 'build_otlp_material_map_fragment.py'",
@@ -113,6 +119,7 @@ class ProductionGACommandBoundaryRegressionTests(unittest.TestCase):
             "command arguments were intentionally redacted",
         ):
             self.assertIn(required, source)
+        self.assertNotIn("$command.Source", source)
         self.assertNotIn("$python = (Get-Command python", source)
         self.assertNotIn("$($Arguments -join ' ')", source)
 
