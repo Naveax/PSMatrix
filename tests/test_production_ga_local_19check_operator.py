@@ -48,8 +48,9 @@ class ProductionGALocalNineteenCheckOperatorTests(unittest.TestCase):
             self.assertIn(required, source)
         self.assertNotIn("(Get-Command python -ErrorAction Stop).Source", source)
         self.assertNotIn("$($Arguments -join ' ')", source)
-        self.assertNotIn("'scripts/ga/compose_partial_production_ga_material_map.py'", source)
-        self.assertNotIn("'scripts/ga/audit_production_ga_environment_inventory.py'", source)
+        self.assertNotIn("Invoke-PythonChecked $python @(\n        'scripts/ga/", source)
+        self.assertNotIn("$auditArgs = @('scripts/ga/", source)
+        self.assertNotIn("$postArgs = @('scripts/ga/", source)
 
     def test_dry_run_prepares_and_selects_exact_local_nineteen_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory(prefix="psmatrix-local-19-operator-") as temporary:
