@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import ssl
+import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -49,50 +51,129 @@ _PRIVATE_MARKERS = (
     "-----BEGIN RSA PRIVATE KEY-----",
     "-----BEGIN EC PRIVATE KEY-----",
 )
+_REPARSE_FLAG = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+
+def _lexical_absolute(path: Path, *, label: str) -> Path:
+    text = str(path)
+    if not text or "\x00" in text or len(text) > 4096:
+        raise PublicAuthProvisioningError(f"{label} path is missing or invalid")
+    return Path(os.path.abspath(os.path.expanduser(text)))
+
+
+def _is_link_or_reparse(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return False
+    attributes = int(getattr(metadata, "st_file_attributes", 0) or 0)
+    return path.is_symlink() or bool(attributes & _REPARSE_FLAG)
+
+
+def _reject_link_or_reparse_components(path: Path, *, label: str) -> Path:
+    absolute = _lexical_absolute(path, label=label)
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current = current / part
+        if _is_link_or_reparse(current):
+            raise PublicAuthProvisioningError(f"{label} contains a link or reparse component")
+    return absolute
+
+
+def _safe_directory(path: Path, *, label: str) -> Path:
+    lexical = _lexical_absolute(path, label=label)
+    if _is_link_or_reparse(lexical):
+        raise PublicAuthProvisioningError(f"{label} is missing or unsafe")
+    candidate = _reject_link_or_reparse_components(lexical, label=label)
+    resolved = candidate.resolve()
+    if not resolved.is_dir():
+        raise PublicAuthProvisioningError(f"{label} is missing or unsafe")
+    return resolved
+
+
+def _safe_path_file(path: Path, *, label: str) -> Path:
+    lexical = _lexical_absolute(path, label=label)
+    if _is_link_or_reparse(lexical):
+        raise PublicAuthProvisioningError(f"missing or unsafe {label}: {lexical.name}")
+    candidate = _reject_link_or_reparse_components(lexical, label=label)
+    resolved = candidate.resolve()
+    if not resolved.is_file():
+        raise PublicAuthProvisioningError(f"missing or unsafe {label}: {candidate.name}")
+    return resolved
+
+
+def _safe_output_file(path: Path, *, label: str) -> Path:
+    candidate = _reject_link_or_reparse_components(path, label=label)
+    resolved = candidate.resolve()
+    if resolved.exists() and resolved.is_dir():
+        raise PublicAuthProvisioningError(f"{label} must be a file path")
+    return resolved
 
 
 def _safe_file(path: Path, *, label: str, maximum: int = 1_000_000) -> bytes:
-    if not path.is_file() or path.is_symlink():
-        raise PublicAuthProvisioningError(f"missing or unsafe {label}: {path.name}")
-    size = path.stat().st_size
+    resolved = _safe_path_file(path, label=label)
+    size = resolved.stat().st_size
     if size <= 0 or size > maximum:
-        raise PublicAuthProvisioningError(f"invalid {label} size: {path.name}")
-    data = path.read_bytes()
+        raise PublicAuthProvisioningError(f"invalid {label} size: {resolved.name}")
+    data = resolved.read_bytes()
     if b"\x00" in data:
-        raise PublicAuthProvisioningError(f"NUL byte in {label}: {path.name}")
+        raise PublicAuthProvisioningError(f"NUL byte in {label}: {resolved.name}")
     return data
 
 
+def _strict_json_object(data: bytes, *, label: str) -> dict[str, Any]:
+    def reject_constant(value: str) -> None:
+        raise PublicAuthProvisioningError(f"{label} contains a non-standard JSON numeric constant: {value}")
+
+    def unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise PublicAuthProvisioningError(f"{label} contains duplicate object key: {key}")
+            result[key] = value
+        return result
+
+    parsed = json.loads(
+        data.decode("utf-8"),
+        object_pairs_hook=unique_pairs,
+        parse_constant=reject_constant,
+    )
+    if not isinstance(parsed, dict):
+        raise PublicAuthProvisioningError(f"{label} root must be an object")
+    return parsed
+
+
 def _https_url(value: Any, *, name: str) -> str:
-    text = str(value or "").strip()
-    parsed = urlparse(text)
+    if not isinstance(value, str) or value != value.strip():
+        raise PublicAuthProvisioningError(f"{name} must be a canonical HTTPS URL string without surrounding whitespace")
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in value):
+        raise PublicAuthProvisioningError(f"{name} must not contain control characters")
+    parsed = urlparse(value)
     if parsed.scheme.lower() != "https" or not parsed.netloc or parsed.username or parsed.password:
         raise PublicAuthProvisioningError(f"{name} must be an HTTPS URL without embedded credentials")
-    return text
+    return value
+
+
+def _fingerprint_header(value: Any) -> str:
+    if not isinstance(value, str) or value != value.strip() or _HEADER_RE.fullmatch(value) is None:
+        raise PublicAuthProvisioningError("PSMATRIX_MTLS_FINGERPRINT_HEADER is invalid or non-canonical")
+    return value
 
 
 def validate_material(material_root: Path) -> dict[str, Any]:
-    candidate = Path(material_root).expanduser()
-    if candidate.is_symlink():
-        raise PublicAuthProvisioningError("public-auth material root is missing or unsafe")
-    root = candidate.resolve()
-    if not root.is_dir():
-        raise PublicAuthProvisioningError("public-auth material root is missing or unsafe")
-    secrets = root / "secrets"
-    if not secrets.is_dir() or secrets.is_symlink():
-        raise PublicAuthProvisioningError("public-auth secrets directory is missing or unsafe")
-    vars_path = root / "vars.json"
-    raw_vars = json.loads(_safe_file(vars_path, label="public-auth vars JSON").decode("utf-8"))
-    if not isinstance(raw_vars, dict):
-        raise PublicAuthProvisioningError("public-auth vars JSON root must be an object")
+    root = _safe_directory(material_root, label="public-auth material root")
+    secrets = _safe_directory(root / "secrets", label="public-auth secrets directory")
+    vars_path = _safe_path_file(root / "vars.json", label="public-auth vars JSON")
+    raw_vars = _strict_json_object(
+        _safe_file(vars_path, label="public-auth vars JSON"),
+        label="public-auth vars JSON",
+    )
     if set(raw_vars) != set(VAR_NAMES):
         raise PublicAuthProvisioningError("public-auth vars JSON must contain exactly the five required variables")
 
     for name in VAR_NAMES[:4]:
         _https_url(raw_vars[name], name=name)
-    header = str(raw_vars["PSMATRIX_MTLS_FINGERPRINT_HEADER"] or "").strip()
-    if _HEADER_RE.fullmatch(header) is None:
-        raise PublicAuthProvisioningError("PSMATRIX_MTLS_FINGERPRINT_HEADER is invalid")
+    _fingerprint_header(raw_vars["PSMATRIX_MTLS_FINGERPRINT_HEADER"])
 
     token_digests: set[bytes] = set()
     for name in TOKEN_NAMES:
@@ -106,8 +187,8 @@ def validate_material(material_root: Path) -> dict[str, Any]:
 
     cert_digests: set[bytes] = set()
     for prefix in PAIR_PREFIXES:
-        cert = secrets / f"{prefix}_CERT.pem"
-        key = secrets / f"{prefix}_KEY.pem"
+        cert = _safe_path_file(secrets / f"{prefix}_CERT.pem", label=f"certificate {prefix}")
+        key = _safe_path_file(secrets / f"{prefix}_KEY.pem", label=f"private key {prefix}")
         cert_text = _safe_file(cert, label=f"certificate {prefix}").decode("utf-8")
         key_text = _safe_file(key, label=f"private key {prefix}").decode("utf-8")
         if "-----BEGIN CERTIFICATE-----" not in cert_text:
@@ -148,6 +229,9 @@ def validate_material(material_root: Path) -> dict[str, Any]:
             "secret_hashes_serialized": False,
             "secret_lengths_serialized": False,
             "certificate_hashes_serialized": False,
+            "link_or_reparse_components_allowed": False,
+            "duplicate_json_object_keys_allowed": False,
+            "noncanonical_public_variables_allowed": False,
         },
     }
 
@@ -159,11 +243,14 @@ def main() -> int:
     args = parser.parse_args()
     try:
         result = validate_material(args.material_root)
-        output = args.output.resolve()
+        output = _safe_output_file(args.output, label="public-auth provisioning validation output")
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print("production_ga_public_auth_provisioning=PASS checks=19 tokens=6 mtls_pairs=4 vars=5")
         print("secret_values_serialized=false")
+        print("link_or_reparse_components_allowed=false")
+        print("duplicate_json_object_keys_allowed=false")
+        print("noncanonical_public_variables_allowed=false")
         return 0
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, PublicAuthProvisioningError, TypeError, ValueError) as exc:
         print(f"Production GA public-auth provisioning validation failed: {exc}", file=sys.stderr)

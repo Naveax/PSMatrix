@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -14,6 +16,74 @@ class OTLPProvisioningError(RuntimeError):
 
 
 _HEADER_NAME_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$")
+_REPARSE_FLAG = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+
+def _lexical_absolute(path: Path, *, label: str) -> Path:
+    text = str(path)
+    if not text or "\x00" in text or len(text) > 4096:
+        raise OTLPProvisioningError(f"{label} path is missing or invalid")
+    return Path(os.path.abspath(os.path.expanduser(text)))
+
+
+def _is_link_or_reparse(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return False
+    attributes = int(getattr(metadata, "st_file_attributes", 0) or 0)
+    return path.is_symlink() or bool(attributes & _REPARSE_FLAG)
+
+
+def _reject_link_or_reparse_components(path: Path, *, label: str) -> Path:
+    absolute = _lexical_absolute(path, label=label)
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current = current / part
+        if _is_link_or_reparse(current):
+            raise OTLPProvisioningError(f"{label} contains a link or reparse component")
+    return absolute
+
+
+def _safe_input_file(path: Path, *, label: str) -> Path:
+    lexical = _lexical_absolute(path, label=label)
+    if _is_link_or_reparse(lexical):
+        raise OTLPProvisioningError(f"{label} is missing or unsafe")
+    candidate = _reject_link_or_reparse_components(lexical, label=label)
+    resolved = candidate.resolve()
+    if not resolved.is_file():
+        raise OTLPProvisioningError(f"{label} is missing or unsafe")
+    return resolved
+
+
+def _safe_output_file(path: Path, *, label: str) -> Path:
+    candidate = _reject_link_or_reparse_components(path, label=label)
+    resolved = candidate.resolve()
+    if resolved.exists() and resolved.is_dir():
+        raise OTLPProvisioningError(f"{label} must be a file path")
+    return resolved
+
+
+def _strict_json_object(text: str, *, label: str) -> dict[str, Any]:
+    def reject_constant(value: str) -> None:
+        raise OTLPProvisioningError(f"{label} contains a non-standard JSON numeric constant: {value}")
+
+    def unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise OTLPProvisioningError(f"{label} contains duplicate object key: {key}")
+            result[key] = value
+        return result
+
+    parsed = json.loads(
+        text,
+        object_pairs_hook=unique_pairs,
+        parse_constant=reject_constant,
+    )
+    if not isinstance(parsed, dict):
+        raise OTLPProvisioningError(f"{label} root must be an object")
+    return parsed
 
 
 def _validate_endpoint(value: str) -> str:
@@ -49,16 +119,14 @@ def _validate_headers(value: Any) -> list[str]:
 
 
 def validate_provisioning(endpoint: str, headers_file: Path) -> dict[str, Any]:
-    candidate = Path(headers_file).expanduser()
-    if candidate.is_symlink():
-        raise OTLPProvisioningError("OTLP headers file is missing or unsafe")
-    resolved = candidate.resolve()
-    if not resolved.is_file():
-        raise OTLPProvisioningError("OTLP headers file is missing or unsafe")
+    resolved = _safe_input_file(headers_file, label="OTLP headers file")
     if resolved.stat().st_size <= 0 or resolved.stat().st_size > 1_000_000:
         raise OTLPProvisioningError("OTLP headers file size is invalid")
     try:
-        headers = json.loads(resolved.read_text(encoding="utf-8"))
+        headers = _strict_json_object(
+            resolved.read_text(encoding="utf-8"),
+            label="OTLP headers JSON",
+        )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise OTLPProvisioningError("OTLP headers file is not valid UTF-8 JSON") from exc
     validated_endpoint = _validate_endpoint(endpoint)
@@ -79,6 +147,8 @@ def validate_provisioning(endpoint: str, headers_file: Path) -> dict[str, Any]:
             "header_hashes_serialized": False,
             "header_lengths_serialized": False,
             "endpoint_credentials_allowed": False,
+            "link_or_reparse_components_allowed": False,
+            "duplicate_json_object_keys_allowed": False,
         },
     }
 
@@ -91,12 +161,14 @@ def main() -> int:
     args = parser.parse_args()
     try:
         result = validate_provisioning(args.endpoint, args.headers_file)
-        output = args.output.resolve()
+        output = _safe_output_file(args.output, label="OTLP provisioning validation output")
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(f"production_ga_external_otlp_provisioning=PASS headers={result['header_count']} scheme=https")
         print("header_values_serialized=false")
         print("network_probe_executed=false")
+        print("link_or_reparse_components_allowed=false")
+        print("duplicate_json_object_keys_allowed=false")
         return 0
     except (OTLPProvisioningError, OSError, TypeError, ValueError) as exc:
         print(f"Production GA external OTLP provisioning validation failed: {exc}", file=sys.stderr)
