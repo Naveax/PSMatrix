@@ -190,7 +190,7 @@ class ProductionGALocalProvisioningWorkspaceTests(unittest.TestCase):
         source = SCRIPT.read_text(encoding="utf-8")
         workspace_guard = "$workspace = Assert-OutsideRepository $Root 'Production GA provisioning workspace path'"
         outside_reparse_guard = "$full = Assert-NoExistingLinkOrReparseComponents $Path $Label"
-        summary_guard = "Assert-NoExistingLinkOrReparseComponents $summaryPath"
+        summary_guard = "[void](Assert-OutsideRepository $summaryPath 'Production GA provisioning summary path')"
         first_workspace_create = "New-Item -ItemType Directory -Path $workspace -Force"
         authority_generation = "provision_production_ga_authorities.py"
         self.assertIn(workspace_guard, source)
