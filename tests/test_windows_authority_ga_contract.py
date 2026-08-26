@@ -205,6 +205,31 @@ class WindowsAuthorityGAContractTests(unittest.TestCase):
         self.assertIn("windows-ga-evidence-inventory", text)
         self.assertIn("PRIVATE KEY", text)
 
+    def test_operator_pins_controller_python_and_redacts_command_failures(self) -> None:
+        text = OPERATOR.read_text(encoding="utf-8")
+        for required in (
+            "Get-Command python -CommandType Application -All",
+            "$commandPath = [string]$commands[0].Path",
+            "Test-ExactProcessPathParent",
+            "Assert-NoExistingLinkOrReparseComponents $parent 'Trusted controller python parent'",
+            "Trusted controller python parent must be an exact process PATH entry.",
+            "Trusted controller python must not expose a filesystem link target.",
+            "Trusted controller python must stay outside the repository.",
+            "$script:TrustedPython = Resolve-TrustedPython",
+            "& $script:TrustedPython -m psmatrix @Arguments",
+            "command output was intentionally redacted",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, text)
+        for forbidden in (
+            "& python -m psmatrix",
+            "$command.Source",
+            "PSMatrix command failed with exit code $exitCode`n$text",
+            "PSMatrix command emitted invalid JSON.`n$text",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, text)
+
     def test_runner_contract_and_machine_state_match_workflows(self) -> None:
         contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
         self.assertEqual(contract["authority"]["protected_environment"], "production-ga-windows-lab")

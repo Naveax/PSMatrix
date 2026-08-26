@@ -20,6 +20,107 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
+$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+$script:TrustedPython = ''
+
+function Get-PathComparison() {
+    if ($IsWindows) { return [StringComparison]::OrdinalIgnoreCase }
+    return [StringComparison]::Ordinal
+}
+
+function Test-PathEqual([string]$Left, [string]$Right) {
+    return [string]::Equals(
+        [System.IO.Path]::GetFullPath($Left),
+        [System.IO.Path]::GetFullPath($Right),
+        (Get-PathComparison)
+    )
+}
+
+function Test-PathInside([string]$Path, [string]$Root) {
+    $prefix = [System.IO.Path]::GetFullPath($Root).TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+    return [System.IO.Path]::GetFullPath($Path).StartsWith($prefix, (Get-PathComparison))
+}
+
+function Assert-NoExistingLinkOrReparseComponents([string]$Path, [string]$Label) {
+    $full = [System.IO.Path]::GetFullPath($Path)
+    $cursor = $full
+    while (-not [string]::IsNullOrWhiteSpace($cursor)) {
+        $item = Get-Item -LiteralPath $cursor -Force -ErrorAction SilentlyContinue
+        if ($null -ne $item) {
+            $linkProperty = $item.PSObject.Properties['LinkType']
+            $linkType = if ($null -ne $linkProperty) { [string]$linkProperty.Value } else { '' }
+            $isReparsePoint = (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
+            if ($isReparsePoint -or -not [string]::IsNullOrWhiteSpace($linkType)) {
+                throw "$Label must not contain links or reparse points."
+            }
+        }
+        $parent = Split-Path -Parent $cursor
+        if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $cursor) { break }
+        $cursor = $parent
+    }
+    return $full
+}
+
+function Test-ExactProcessPathParent([string]$Parent, [string]$Label) {
+    $rawPath = [Environment]::GetEnvironmentVariable('PATH', [EnvironmentVariableTarget]::Process)
+    if ([string]::IsNullOrWhiteSpace($rawPath)) { throw "$Label process PATH is unavailable." }
+    $separator = [regex]::Escape([string][System.IO.Path]::PathSeparator)
+    foreach ($entryValue in ($rawPath -split $separator)) {
+        $entry = ([string]$entryValue).Trim()
+        if ([string]::IsNullOrWhiteSpace($entry)) { continue }
+        if ($entry.Length -ge 2 -and $entry[0] -eq [char]34 -and $entry[$entry.Length - 1] -eq [char]34) {
+            $entry = $entry.Substring(1, $entry.Length - 2)
+        }
+        $entry = [Environment]::ExpandEnvironmentVariables($entry)
+        if ([string]::IsNullOrWhiteSpace($entry)) { continue }
+        try { $candidate = [System.IO.Path]::GetFullPath($entry) }
+        catch { continue }
+        if (Test-PathEqual $candidate $Parent) { return $true }
+    }
+    return $false
+}
+
+function Resolve-TrustedPython() {
+    $commands = @(Get-Command python -CommandType Application -All -ErrorAction Stop)
+    if ($commands.Count -eq 0) { throw 'Trusted controller python executable is missing.' }
+    $commandPath = [string]$commands[0].Path
+    if ([string]::IsNullOrWhiteSpace($commandPath)) { throw 'Trusted controller python executable is missing.' }
+
+    $full = [System.IO.Path]::GetFullPath($commandPath)
+    if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { throw 'Trusted controller python executable is missing.' }
+    $leaf = Get-Item -LiteralPath $full -Force
+    $parent = Split-Path -Parent $full
+    if ([string]::IsNullOrWhiteSpace($parent)) { throw 'Trusted controller python parent path is missing.' }
+    [void](Assert-NoExistingLinkOrReparseComponents $parent 'Trusted controller python parent')
+    if (-not (Test-ExactProcessPathParent $parent 'Trusted controller python')) {
+        throw 'Trusted controller python parent must be an exact process PATH entry.'
+    }
+
+    $linkProperty = $leaf.PSObject.Properties['LinkType']
+    $linkType = if ($null -ne $linkProperty) { [string]$linkProperty.Value } else { '' }
+    $linkTargetProperty = $leaf.PSObject.Properties['LinkTarget']
+    $linkTarget = if ($null -ne $linkTargetProperty) { [string]$linkTargetProperty.Value } else { '' }
+    $isReparsePoint = (($leaf.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
+    if ($isReparsePoint -or -not [string]::IsNullOrWhiteSpace($linkType)) {
+        if (-not $IsWindows) { throw 'Trusted controller python must not be a link or reparse point.' }
+        if (-not [string]::IsNullOrWhiteSpace($linkTarget)) {
+            throw 'Trusted controller python must not expose a filesystem link target.'
+        }
+        if (-not [string]::Equals(
+            [System.IO.Path]::GetFileName($full),
+            'python.exe',
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+            throw 'Trusted controller python Windows application alias name mismatch.'
+        }
+    }
+
+    if ((Test-PathEqual $full $repoRoot) -or (Test-PathInside $full $repoRoot)) {
+        throw 'Trusted controller python must stay outside the repository.'
+    }
+    return $full
+}
+
 function Resolve-RequiredFile([string]$Path, [string]$Label) {
     $resolved = [System.IO.Path]::GetFullPath($Path)
     if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) {
@@ -37,11 +138,14 @@ function Resolve-RequiredDirectory([string]$Path, [string]$Label) {
 }
 
 function Invoke-PSMatrixJson([string[]]$Arguments, [string]$OutputPath) {
-    $output = & python -m psmatrix @Arguments 2>&1
+    if ([string]::IsNullOrWhiteSpace($script:TrustedPython)) {
+        throw 'Trusted controller python was not initialized.'
+    }
+    $output = & $script:TrustedPython -m psmatrix @Arguments 2>&1
     $exitCode = $LASTEXITCODE
     $text = ($output | Out-String).Trim()
     if ($exitCode -ne 0) {
-        throw "PSMatrix command failed with exit code $exitCode`n$text"
+        throw "PSMatrix command failed with exit code $exitCode; command output was intentionally redacted."
     }
     if ([string]::IsNullOrWhiteSpace($text)) {
         throw 'PSMatrix command emitted no JSON result.'
@@ -50,7 +154,7 @@ function Invoke-PSMatrixJson([string[]]$Arguments, [string]$OutputPath) {
         $value = $text | ConvertFrom-Json
     }
     catch {
-        throw "PSMatrix command emitted invalid JSON.`n$text"
+        throw 'PSMatrix command emitted invalid JSON; command output was intentionally redacted.'
     }
     $value | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $OutputPath -Encoding UTF8
     return $value
@@ -60,6 +164,8 @@ if ($ReleaseCommit -notmatch '^[0-9a-fA-F]{40}$') {
     throw 'ReleaseCommit must be a full 40-character Git SHA.'
 }
 $ReleaseCommit = $ReleaseCommit.ToLowerInvariant()
+[void](Assert-NoExistingLinkOrReparseComponents $repoRoot 'Repository root')
+$script:TrustedPython = Resolve-TrustedPython
 $source = Resolve-RequiredDirectory $SourceRoot 'Source root'
 $env:PYTHONPATH = (Join-Path $source 'src')
 $releaseManifestPath = Resolve-RequiredFile $ReleaseManifest 'Signed release manifest'
