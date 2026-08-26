@@ -34,6 +34,7 @@ on:
       - "pyproject.toml"
       - "src/psmatrix/__init__.py"
       - "tests/test_windows_authority_ga_contract.py"
+      - "tests/test_windows_authority_workflow_python_boundary.py"
       - "tests/test_windows_authority_controller_bootstrap.py"
       - "tests/test_windows_lab_initializer_rc4.py"
       - "tests/test_windows_authority_input_provisioning.py"
@@ -119,6 +120,7 @@ jobs:
               scripts/ga/import_windows_authority_protected_release.py \
               scripts/ga/build_windows_authority_operation_package.py \
               tests/test_windows_authority_ga_contract.py \
+              tests/test_windows_authority_workflow_python_boundary.py \
               tests/test_windows_authority_controller_bootstrap.py \
               tests/test_windows_lab_initializer_rc4.py \
               tests/test_windows_authority_input_provisioning.py \
@@ -152,7 +154,8 @@ jobs:
               'scripts/ga/Test-PSMatrixWindowsAuthorityReleaseManifestClosure.ps1',
               'scripts/ga/Invoke-PSMatrixWindowsAuthorityProtectedReleaseIntake.ps1',
               'scripts/ga/New-PSMatrixWindowsAuthorityMediaManifest.ps1',
-              'scripts/ga/Test-PSMatrixWindowsAuthorityOperationPackageBinding.ps1'
+              'scripts/ga/Test-PSMatrixWindowsAuthorityOperationPackageBinding.ps1',
+              'scripts/ga/Invoke-PSMatrixAuthoritativeWindowsGA.ps1'
           )
           foreach ($relative in $scripts) {
               $tokens = $null
@@ -176,6 +179,7 @@ jobs:
           set -euo pipefail
           python -m unittest -v \
             tests.test_windows_authority_ga_contract \
+            tests.test_windows_authority_workflow_python_boundary \
             tests.test_windows_authority_controller_bootstrap \
             tests.test_windows_lab_initializer_rc4 \
             tests.test_windows_authority_input_provisioning \
@@ -266,6 +270,8 @@ jobs:
               'operation_package_workflow_contract': 'PASS',
               'infrastructure_workflow_contract': 'PASS',
               'authoritative_workflow_contract': 'PASS',
+              'authoritative_operator_powershell_parse': 'PASS',
+              'authoritative_workflow_python_boundary_contract': 'PASS',
               'real_windows_executed': False,
               'hosted_windows_5_1': 'PENDING',
               'authoritative': False,
