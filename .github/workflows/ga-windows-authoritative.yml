@@ -107,6 +107,102 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+
+          function Get-PathComparison() {
+            if ($IsWindows) { return [StringComparison]::OrdinalIgnoreCase }
+            return [StringComparison]::Ordinal
+          }
+          function Test-PathEqual([string]$Left, [string]$Right) {
+            return [string]::Equals(
+              [System.IO.Path]::GetFullPath($Left),
+              [System.IO.Path]::GetFullPath($Right),
+              (Get-PathComparison)
+            )
+          }
+          function Test-PathInside([string]$Path, [string]$Root) {
+            $prefix = [System.IO.Path]::GetFullPath($Root).TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+            return [System.IO.Path]::GetFullPath($Path).StartsWith($prefix, (Get-PathComparison))
+          }
+          function Assert-NoExistingLinkOrReparseComponents([string]$Path, [string]$Label) {
+            $full = [System.IO.Path]::GetFullPath($Path)
+            $cursor = $full
+            while (-not [string]::IsNullOrWhiteSpace($cursor)) {
+              $item = Get-Item -LiteralPath $cursor -Force -ErrorAction SilentlyContinue
+              if ($null -ne $item) {
+                $linkProperty = $item.PSObject.Properties['LinkType']
+                $linkType = if ($null -ne $linkProperty) { [string]$linkProperty.Value } else { '' }
+                $isReparsePoint = (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
+                if ($isReparsePoint -or -not [string]::IsNullOrWhiteSpace($linkType)) {
+                  throw "$Label must not contain links or reparse points."
+                }
+              }
+              $parent = Split-Path -Parent $cursor
+              if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $cursor) { break }
+              $cursor = $parent
+            }
+            return $full
+          }
+          function Test-ExactProcessPathParent([string]$Parent, [string]$Label) {
+            $rawPath = [Environment]::GetEnvironmentVariable('PATH', [EnvironmentVariableTarget]::Process)
+            if ([string]::IsNullOrWhiteSpace($rawPath)) { throw "$Label process PATH is unavailable." }
+            $separator = [regex]::Escape([string][System.IO.Path]::PathSeparator)
+            foreach ($entryValue in ($rawPath -split $separator)) {
+              $entry = ([string]$entryValue).Trim()
+              if ([string]::IsNullOrWhiteSpace($entry)) { continue }
+              if ($entry.Length -ge 2 -and $entry[0] -eq [char]34 -and $entry[$entry.Length - 1] -eq [char]34) {
+                $entry = $entry.Substring(1, $entry.Length - 2)
+              }
+              $entry = [Environment]::ExpandEnvironmentVariables($entry)
+              if ([string]::IsNullOrWhiteSpace($entry)) { continue }
+              try { $candidate = [System.IO.Path]::GetFullPath($entry) }
+              catch { continue }
+              if (Test-PathEqual $candidate $Parent) { return $true }
+            }
+            return $false
+          }
+          function Resolve-TrustedControllerPython() {
+            $commands = @(Get-Command python -CommandType Application -All -ErrorAction Stop)
+            if ($commands.Count -eq 0) { throw 'Trusted workflow controller python executable is missing.' }
+            $commandPath = [string]$commands[0].Path
+            if ([string]::IsNullOrWhiteSpace($commandPath)) { throw 'Trusted workflow controller python executable is missing.' }
+
+            $full = [System.IO.Path]::GetFullPath($commandPath)
+            if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { throw 'Trusted workflow controller python executable is missing.' }
+            $leaf = Get-Item -LiteralPath $full -Force
+            $parent = Split-Path -Parent $full
+            if ([string]::IsNullOrWhiteSpace($parent)) { throw 'Trusted workflow controller python parent path is missing.' }
+            [void](Assert-NoExistingLinkOrReparseComponents $parent 'Trusted workflow controller python parent')
+            if (-not (Test-ExactProcessPathParent $parent 'Trusted workflow controller python')) {
+              throw 'Trusted workflow controller python parent must be an exact process PATH entry.'
+            }
+
+            $linkProperty = $leaf.PSObject.Properties['LinkType']
+            $linkType = if ($null -ne $linkProperty) { [string]$linkProperty.Value } else { '' }
+            $linkTargetProperty = $leaf.PSObject.Properties['LinkTarget']
+            $linkTarget = if ($null -ne $linkTargetProperty) { [string]$linkTargetProperty.Value } else { '' }
+            $isReparsePoint = (($leaf.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
+            if ($isReparsePoint -or -not [string]::IsNullOrWhiteSpace($linkType)) {
+              if (-not $IsWindows) { throw 'Trusted workflow controller python must not be a link or reparse point.' }
+              if (-not [string]::IsNullOrWhiteSpace($linkTarget)) {
+                throw 'Trusted workflow controller python must not expose a filesystem link target.'
+              }
+              if (-not [string]::Equals(
+                [System.IO.Path]::GetFileName($full),
+                'python.exe',
+                [StringComparison]::OrdinalIgnoreCase
+              )) {
+                throw 'Trusted workflow controller python Windows application alias name mismatch.'
+              }
+            }
+
+            $workspace = [System.IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+            if ((Test-PathEqual $full $workspace) -or (Test-PathInside $full $workspace)) {
+              throw 'Trusted workflow controller python must stay outside the repository.'
+            }
+            return $full
+          }
+
+          $controllerPython = Resolve-TrustedControllerPython
           $keyRoot = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-ga-keys'
           $output = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-ga-evidence'
           if (Test-Path -LiteralPath $output) {
@@ -160,14 +256,14 @@ jobs:
           Push-Location $env:RUNNER_TEMP
           try {
             $env:PYTHONPATH = $checkoutSource
-            & python -m psmatrix `
+            $bootstrapOutput = (& $controllerPython -m psmatrix `
               --home $trustHome `
               lab release-binding `
               --release-manifest $releaseManifest `
               --artifact-dir $releaseDir `
               --release-public-key $releasePublicKey `
               --release-commit '${{ inputs.release_commit }}' `
-              --output $bootstrapBinding
+              --output $bootstrapBinding 2>&1 | Out-String).Trim()
             $bootstrapExit = $LASTEXITCODE
           }
           finally {
@@ -175,8 +271,9 @@ jobs:
             Pop-Location
           }
           if ($bootstrapExit -ne 0) {
-            throw "Checkout bootstrap release verification failed with exit code $bootstrapExit."
+            throw "Checkout bootstrap release verification failed with exit code $bootstrapExit; command output was intentionally redacted."
           }
+          $bootstrapOutput = $null
           if (-not (Test-Path -LiteralPath $bootstrapBinding -PathType Leaf)) {
             throw 'Checkout bootstrap release verification did not produce a release binding.'
           }
@@ -206,27 +303,29 @@ jobs:
           }
           Copy-Item -LiteralPath $checkoutFixtures -Destination (Join-Path $campaignFixtureParent 'windows-authoritative') -Recurse -Force
 
-          & python -m pip install `
+          $pipOutput = (& $controllerPython -m pip install `
             --disable-pip-version-check `
             --no-index `
             --no-deps `
             --target $campaignSrc `
-            $releaseWheel
-          if ($LASTEXITCODE -ne 0) {
-            throw "Offline exact release wheel installation failed with exit code $LASTEXITCODE."
+            $releaseWheel 2>&1 | Out-String).Trim()
+          $pipExit = $LASTEXITCODE
+          if ($pipExit -ne 0) {
+            throw "Offline exact release wheel installation failed with exit code $pipExit; command output was intentionally redacted."
           }
+          $pipOutput = $null
 
           $previousPythonPath = $env:PYTHONPATH
           Push-Location $env:RUNNER_TEMP
           try {
             $env:PYTHONPATH = $campaignSrc
-            $packageOrigin = (& python -c 'import pathlib, psmatrix; print(pathlib.Path(psmatrix.__file__).resolve())' 2>&1 | Out-String).Trim()
+            $packageOrigin = (& $controllerPython -c 'import pathlib, psmatrix; print(pathlib.Path(psmatrix.__file__).resolve())' 2>&1 | Out-String).Trim()
             if ($LASTEXITCODE -ne 0) {
-              throw "Failed to resolve installed PSMatrix package origin.`n$packageOrigin"
+              throw 'Failed to resolve installed PSMatrix package origin; command output was intentionally redacted.'
             }
-            $installedVersion = (& python -c 'import importlib.metadata; print(importlib.metadata.version("psmatrix"))' 2>&1 | Out-String).Trim()
+            $installedVersion = (& $controllerPython -c 'import importlib.metadata; print(importlib.metadata.version("psmatrix"))' 2>&1 | Out-String).Trim()
             if ($LASTEXITCODE -ne 0) {
-              throw "Failed to resolve installed PSMatrix distribution version.`n$installedVersion"
+              throw 'Failed to resolve installed PSMatrix distribution version; command output was intentionally redacted.'
             }
           }
           finally {
