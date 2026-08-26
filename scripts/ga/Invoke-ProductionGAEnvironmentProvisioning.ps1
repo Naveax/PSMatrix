@@ -41,6 +41,24 @@ function Assert-NoLinkOrReparsePath([string]$Path, [string]$Label) {
         else { break }
     }
 }
+function Test-ExactProcessPathParent([string]$Parent, [string]$Label) {
+    $rawPath = [Environment]::GetEnvironmentVariable('PATH', [EnvironmentVariableTarget]::Process)
+    if ([string]::IsNullOrWhiteSpace($rawPath)) { throw "$Label process PATH is unavailable." }
+    $separator = [regex]::Escape([string][IO.Path]::PathSeparator)
+    foreach ($entryValue in ($rawPath -split $separator)) {
+        $entry = ([string]$entryValue).Trim()
+        if ([string]::IsNullOrWhiteSpace($entry)) { continue }
+        if ($entry.Length -ge 2 -and $entry[0] -eq [char]34 -and $entry[$entry.Length - 1] -eq [char]34) {
+            $entry = $entry.Substring(1, $entry.Length - 2)
+        }
+        $entry = [Environment]::ExpandEnvironmentVariables($entry)
+        if ([string]::IsNullOrWhiteSpace($entry)) { continue }
+        try { $candidate = [IO.Path]::GetFullPath($entry) }
+        catch { continue }
+        if (Test-PathEqual $candidate $Parent) { return $true }
+    }
+    return $false
+}
 function Assert-TrustedApplicationPath([string]$Path, [string]$Label, [string]$ExpectedWindowsAliasName) {
     $resolved = [IO.Path]::GetFullPath($Path)
     if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) { throw "$Label is missing." }
@@ -48,25 +66,16 @@ function Assert-TrustedApplicationPath([string]$Path, [string]$Label, [string]$E
     $parent = Split-Path -Parent $resolved
     if ([string]::IsNullOrWhiteSpace($parent)) { throw "$Label parent path is missing." }
     Assert-NoLinkOrReparsePath $parent "$Label parent"
+    if (-not (Test-ExactProcessPathParent $parent $Label)) { throw "$Label parent must be an exact process PATH entry." }
 
     $linkProperty = $leaf.PSObject.Properties['LinkType']
     $linkType = if ($null -ne $linkProperty) { [string]$linkProperty.Value } else { '' }
+    $linkTargetProperty = $leaf.PSObject.Properties['LinkTarget']
+    $linkTarget = if ($null -ne $linkTargetProperty) { [string]$linkTargetProperty.Value } else { '' }
     $isReparsePoint = (($leaf.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
     if ($isReparsePoint -or -not [string]::IsNullOrWhiteSpace($linkType)) {
         if (-not $IsWindows) { throw "$Label must not be a link or reparse point." }
-        $localApplicationData = [Environment]::GetFolderPath([System.Environment+SpecialFolder]::LocalApplicationData)
-        if ([string]::IsNullOrWhiteSpace($localApplicationData)) { throw "$Label Windows application-alias root is unavailable." }
-        $windowsAppsRoot = [IO.Path]::GetFullPath((Join-Path $localApplicationData 'Microsoft\WindowsApps'))
-        Assert-NoLinkOrReparsePath $windowsAppsRoot "$Label WindowsApps root"
-        $isDirectWindowsAppsAlias = Test-PathEqual $parent $windowsAppsRoot
-        $isSinglePackageWindowsAppsAlias = $false
-        if (-not $isDirectWindowsAppsAlias -and (Test-PathInside $parent $windowsAppsRoot)) {
-            $packageParent = Split-Path -Parent $parent
-            if (-not [string]::IsNullOrWhiteSpace($packageParent)) {
-                $isSinglePackageWindowsAppsAlias = Test-PathEqual $packageParent $windowsAppsRoot
-            }
-        }
-        if (-not $isDirectWindowsAppsAlias -and -not $isSinglePackageWindowsAppsAlias) { throw "$Label reparse leaf is not a direct or single-package OS-managed Windows application alias." }
+        if (-not [string]::IsNullOrWhiteSpace($linkTarget)) { throw "$Label must not expose a filesystem link target." }
         if (-not [string]::Equals([IO.Path]::GetFileName($resolved), $ExpectedWindowsAliasName, [StringComparison]::OrdinalIgnoreCase)) { throw "$Label Windows application alias name mismatch." }
     }
     return $resolved

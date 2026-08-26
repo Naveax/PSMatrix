@@ -94,13 +94,13 @@ class ProductionGACommandBoundaryRegressionTests(unittest.TestCase):
             "Get-Command gh -CommandType Application -All",
             "$commandPath = [string]$command.Path",
             "Assert-TrustedApplicationPath $commandPath 'Trusted gh executable' 'gh.exe'",
-            "[Environment]::GetFolderPath([System.Environment+SpecialFolder]::LocalApplicationData)",
-            "Join-Path $localApplicationData 'Microsoft\\WindowsApps'",
-            "$isDirectWindowsAppsAlias = Test-PathEqual $parent $windowsAppsRoot",
-            "Test-PathInside $parent $windowsAppsRoot",
-            "$packageParent = Split-Path -Parent $parent",
-            "$isSinglePackageWindowsAppsAlias = Test-PathEqual $packageParent $windowsAppsRoot",
-            "direct or single-package OS-managed Windows application alias",
+            "[Environment]::GetEnvironmentVariable('PATH', [EnvironmentVariableTarget]::Process)",
+            "[IO.Path]::PathSeparator",
+            "Test-PathEqual $candidate $Parent",
+            "Test-ExactProcessPathParent $parent $Label",
+            "parent must be an exact process PATH entry",
+            "Properties['LinkTarget']",
+            "must not expose a filesystem link target",
             "Windows application alias name mismatch",
             "Production provisioning material map contains an undeclared environment identity",
             "material source path must be a string",
@@ -113,6 +113,9 @@ class ProductionGACommandBoundaryRegressionTests(unittest.TestCase):
             self.assertIn(required, source)
         self.assertNotIn("$command.Source", source)
         self.assertNotIn("$stagedPlan", source)
+        self.assertNotIn("GetFolderPath([System.Environment+SpecialFolder]::LocalApplicationData)", source)
+        self.assertNotIn("Microsoft\\WindowsApps", source)
+        self.assertNotIn("$isSinglePackageWindowsAppsAlias", source)
         self.assertNotIn("if ($IsWindows) { return }", trusted_boundary)
         self.assertNotIn("Get-Content -Raw -LiteralPath $stderr", source)
 
@@ -134,13 +137,13 @@ class ProductionGACommandBoundaryRegressionTests(unittest.TestCase):
             "$commandPath = [string]$command.Path",
             "Assert-TrustedApplicationPath $commandPath 'Trusted gh executable' 'gh.exe'",
             "Assert-TrustedApplicationPath $commandPath 'Trusted python executable' 'python.exe'",
-            "[Environment]::GetFolderPath([System.Environment+SpecialFolder]::LocalApplicationData)",
-            "Join-Path $localApplicationData 'Microsoft\\WindowsApps'",
-            "$isDirectWindowsAppsAlias = Test-PathEqual $parent $windowsAppsRoot",
-            "Test-PathInside $parent $windowsAppsRoot",
-            "$packageParent = Split-Path -Parent $parent",
-            "$isSinglePackageWindowsAppsAlias = Test-PathEqual $packageParent $windowsAppsRoot",
-            "direct or single-package OS-managed Windows application alias",
+            "[Environment]::GetEnvironmentVariable('PATH', [EnvironmentVariableTarget]::Process)",
+            "[IO.Path]::PathSeparator",
+            "Test-PathEqual $candidate $Parent",
+            "Test-ExactProcessPathParent $parent $Label",
+            "parent must be an exact process PATH entry",
+            "Properties['LinkTarget']",
+            "must not expose a filesystem link target",
             "Resolve-TrustedPython $repoRoot",
             "Join-Path $scriptRoot 'build_public_auth_material_map_fragment.py'",
             "Join-Path $scriptRoot 'build_otlp_material_map_fragment.py'",
@@ -156,6 +159,9 @@ class ProductionGACommandBoundaryRegressionTests(unittest.TestCase):
             self.assertIn(required, source)
         self.assertNotIn("$command.Source", source)
         self.assertNotIn("$python = (Get-Command python", source)
+        self.assertNotIn("GetFolderPath([System.Environment+SpecialFolder]::LocalApplicationData)", source)
+        self.assertNotIn("Microsoft\\WindowsApps", source)
+        self.assertNotIn("$isSinglePackageWindowsAppsAlias", source)
         self.assertNotIn("if ($IsWindows) { return }", trusted_boundary)
         self.assertNotIn("$($Arguments -join ' ')", source)
 
