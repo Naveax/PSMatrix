@@ -1,0 +1,55 @@
+name: ops-workflow-policy-pr-verify
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/*.yml'
+
+concurrency:
+  group: ops-workflow-policy-pr-verify-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact pull request revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Extract authoritative policy verifier read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_workflow='.github/workflows/ops-workflow-policy-verify.yml'
+          extracted="$RUNNER_TEMP/ops-workflow-policy-verify.rb"
+          python - "$source_workflow" "$extracted" <<'PY'
+          from pathlib import Path
+          import sys
+
+          source = Path(sys.argv[1])
+          destination = Path(sys.argv[2])
+          lines = source.read_text(encoding='utf-8').splitlines()
+          starts = [index for index, line in enumerate(lines) if line.strip() == "ruby <<'RUBY'"]
+          if len(starts) != 1:
+              raise SystemExit(f'expected exactly one authoritative Ruby verifier block, found {len(starts)}')
+          start = starts[0]
+          ends = [index for index in range(start + 1, len(lines)) if lines[index].strip() == 'RUBY']
+          if len(ends) != 1:
+              raise SystemExit(f'expected exactly one authoritative Ruby verifier terminator, found {len(ends)}')
+          end = ends[0]
+          body = '\n'.join(lines[start + 1:end]) + '\n'
+          if not body.strip():
+              raise SystemExit('authoritative Ruby verifier block is empty')
+          destination.write_text(body, encoding='utf-8')
+          print(f'authoritative_policy_verifier_extracted=PASS lines={end - start - 1}')
+          PY
+          ruby -c "$extracted"
+          ruby "$extracted"
+          echo 'pull_request_policy_verification=PASS mutation_performed=false'
