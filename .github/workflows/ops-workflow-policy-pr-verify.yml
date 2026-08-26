@@ -1,0 +1,48 @@
+name: ops-workflow-policy-pr-verify
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/*.yml'
+
+concurrency:
+  group: ops-workflow-policy-pr-verify-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact pull request revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Extract authoritative policy verifier read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_workflow='.github/workflows/ops-workflow-policy-verify.yml'
+          extracted="$RUNNER_TEMP/ops-workflow-policy-verify.rb"
+          ruby - "$source_workflow" "$extracted" <<'RUBY_EXTRACT'
+          source, destination = ARGV
+          lines = File.readlines(source, chomp: true, encoding: 'UTF-8')
+          starts = lines.each_index.select { |index| lines[index].strip == "ruby <<'RUBY'" }
+          abort "expected exactly one authoritative Ruby verifier block, found #{starts.length}" unless starts.length == 1
+          start = starts.fetch(0)
+          ends = ((start + 1)...lines.length).select { |index| lines[index].strip == 'RUBY' }
+          abort "expected exactly one authoritative Ruby verifier terminator, found #{ends.length}" unless ends.length == 1
+          finish = ends.fetch(0)
+          body = lines[(start + 1)...finish].join("\n") + "\n"
+          abort 'authoritative Ruby verifier block is empty' if body.strip.empty?
+          File.binwrite(destination, body.encode('UTF-8'))
+          puts "authoritative_policy_verifier_extracted=PASS lines=#{finish - start - 1}"
+          RUBY_EXTRACT
+          ruby -c "$extracted"
+          ruby "$extracted"
+          echo 'pull_request_policy_verification=PASS mutation_performed=false'
