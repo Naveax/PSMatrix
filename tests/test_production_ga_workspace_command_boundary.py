@@ -35,13 +35,14 @@ class ProductionGAWorkspaceCommandBoundaryTests(unittest.TestCase):
             "Get-Command python -CommandType Application -All",
             "$commandPath = [string]$command.Path",
             "Assert-TrustedApplicationPath $commandPath 'Trusted python executable' 'python.exe'",
-            "[Environment]::GetFolderPath([System.Environment+SpecialFolder]::LocalApplicationData)",
-            "Join-Path $localApplicationData 'Microsoft\\WindowsApps'",
-            "$isDirectWindowsAppsAlias = Test-PathEqual $parent $windowsAppsRoot",
-            "Test-PathInside $parent $windowsAppsRoot",
-            "$packageParent = Split-Path -Parent $parent",
-            "$isSinglePackageWindowsAppsAlias = Test-PathEqual $packageParent $windowsAppsRoot",
-            "direct or single-package OS-managed Windows application alias",
+            "Resolve-WindowsAppsAliasRoot $full $Label",
+            "[IO.Path]::GetFileName($cursor), 'WindowsApps'",
+            "[IO.Path]::GetFileName($microsoft), 'Microsoft'",
+            "[IO.Path]::GetFileName($local), 'Local'",
+            "[IO.Path]::GetFileName($appData), 'AppData'",
+            "Assert-NoExistingLinkOrReparseComponents $cursor \"$Label WindowsApps root\"",
+            "Test-PathInside $full $windowsAppsRoot",
+            "recognized AppData/Local/Microsoft/WindowsApps root",
             "Windows application alias name mismatch",
             "Trusted python executable must stay outside the repository",
             "Join-Path $repoRoot 'scripts/ga/provision_production_ga_authorities.py'",
@@ -54,6 +55,8 @@ class ProductionGAWorkspaceCommandBoundaryTests(unittest.TestCase):
         self.assertNotIn("(Get-Location).Path", source)
         self.assertNotIn("$command.Source", source)
         self.assertNotIn("$item.FullName", source)
+        self.assertNotIn("GetFolderPath([System.Environment+SpecialFolder]::LocalApplicationData)", source)
+        self.assertNotIn("$isSinglePackageWindowsAppsAlias", source)
         self.assertNotIn("if ($IsWindows) { return }", source)
         self.assertNotIn("signing_authority_fragment=", source)
         self.assertNotIn("full_matrix_fragment=", source)

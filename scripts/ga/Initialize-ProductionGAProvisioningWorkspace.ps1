@@ -37,6 +37,30 @@ function Assert-NoExistingLinkOrReparseComponents([string]$Path, [string]$Label)
     }
     return $full
 }
+function Resolve-WindowsAppsAliasRoot([string]$Path, [string]$Label) {
+    $cursor = Split-Path -Parent ([IO.Path]::GetFullPath($Path))
+    while (-not [string]::IsNullOrWhiteSpace($cursor)) {
+        if ([string]::Equals([IO.Path]::GetFileName($cursor), 'WindowsApps', [StringComparison]::OrdinalIgnoreCase)) {
+            $microsoft = Split-Path -Parent $cursor
+            $local = if ([string]::IsNullOrWhiteSpace($microsoft)) { $null } else { Split-Path -Parent $microsoft }
+            $appData = if ([string]::IsNullOrWhiteSpace($local)) { $null } else { Split-Path -Parent $local }
+            if (
+                -not [string]::IsNullOrWhiteSpace($appData) -and
+                [string]::Equals([IO.Path]::GetFileName($microsoft), 'Microsoft', [StringComparison]::OrdinalIgnoreCase) -and
+                [string]::Equals([IO.Path]::GetFileName($local), 'Local', [StringComparison]::OrdinalIgnoreCase) -and
+                [string]::Equals([IO.Path]::GetFileName($appData), 'AppData', [StringComparison]::OrdinalIgnoreCase)
+            ) {
+                [void](Assert-NoExistingLinkOrReparseComponents $cursor "$Label WindowsApps root")
+                return [IO.Path]::GetFullPath($cursor)
+            }
+            break
+        }
+        $next = Split-Path -Parent $cursor
+        if ([string]::IsNullOrWhiteSpace($next) -or $next -eq $cursor) { break }
+        $cursor = $next
+    }
+    throw "$Label reparse leaf is not under a recognized AppData/Local/Microsoft/WindowsApps root."
+}
 function Assert-TrustedApplicationPath([string]$Path, [string]$Label, [string]$ExpectedWindowsAliasName) {
     $full = [IO.Path]::GetFullPath($Path)
     if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { throw "$Label is missing." }
@@ -50,19 +74,8 @@ function Assert-TrustedApplicationPath([string]$Path, [string]$Label, [string]$E
     $isReparsePoint = (($leaf.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
     if ($isReparsePoint -or -not [string]::IsNullOrWhiteSpace($linkType)) {
         if (-not $IsWindows) { throw "$Label must not be a link or reparse point." }
-        $localApplicationData = [Environment]::GetFolderPath([System.Environment+SpecialFolder]::LocalApplicationData)
-        if ([string]::IsNullOrWhiteSpace($localApplicationData)) { throw "$Label Windows application-alias root is unavailable." }
-        $windowsAppsRoot = [IO.Path]::GetFullPath((Join-Path $localApplicationData 'Microsoft\WindowsApps'))
-        [void](Assert-NoExistingLinkOrReparseComponents $windowsAppsRoot "$Label WindowsApps root")
-        $isDirectWindowsAppsAlias = Test-PathEqual $parent $windowsAppsRoot
-        $isSinglePackageWindowsAppsAlias = $false
-        if (-not $isDirectWindowsAppsAlias -and (Test-PathInside $parent $windowsAppsRoot)) {
-            $packageParent = Split-Path -Parent $parent
-            if (-not [string]::IsNullOrWhiteSpace($packageParent)) {
-                $isSinglePackageWindowsAppsAlias = Test-PathEqual $packageParent $windowsAppsRoot
-            }
-        }
-        if (-not $isDirectWindowsAppsAlias -and -not $isSinglePackageWindowsAppsAlias) { throw "$Label reparse leaf is not a direct or single-package OS-managed Windows application alias." }
+        $windowsAppsRoot = Resolve-WindowsAppsAliasRoot $full $Label
+        if (-not (Test-PathInside $full $windowsAppsRoot)) { throw "$Label reparse leaf escaped the recognized Windows application-alias root." }
         if (-not [string]::Equals([IO.Path]::GetFileName($full), $ExpectedWindowsAliasName, [StringComparison]::OrdinalIgnoreCase)) { throw "$Label Windows application alias name mismatch." }
     }
     return $full
