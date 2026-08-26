@@ -70,7 +70,7 @@ class WindowsAuthorityWorkflowPythonBoundaryTests(unittest.TestCase):
             "Invoke-PSMatrixAuthoritativeWindowsGA.ps1",
             "Upload authoritative Windows evidence",
         ):
-            with self.subTest(required=value):
+            with self.subTest(required=required):
                 self.assertIn(required, text)
         self.assertNotIn("continue-on-error: true", text)
 
