@@ -290,7 +290,7 @@ jobs:
               'production-ga-windows-authority-rc4-release-lock-promotion',
               '.github/workflows/ga-windows-authority-rc4-release-lock-promotion.yml',
               'RC4 HUMAN REVIEW APPROVED:',
-              'Exact RC4 owner approval is missing.',
+              'Exact post-review RC4 owner approval is missing.',
               'RC4 promotion predates owner approval:',
               'rc4_first_human_gate_provenance=PASS',
               'Existing RC4 promotion PR is not the same-repository materializer-bot PR.',
