@@ -1,0 +1,124 @@
+name: ops-pr-verifier-readonly-contract
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/*.yml'
+  pull_request:
+    paths:
+      - '.github/workflows/*.yml'
+
+concurrency:
+  group: ops-pr-verifier-readonly-contract-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify PR workflow read-only contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruby <<'RUBY'
+          require 'yaml'
+
+          errors = []
+          required = [
+            '.github/workflows/ops-workflow-policy-pr-verify.yml',
+            '.github/workflows/ops-workflow-static-pr-verify.yml',
+          ].sort
+          forbidden_fragments = [
+            'GH_TOKEN:',
+            '$' + '{{ github.token }}',
+            'gh issue ',
+            'gh api ',
+          ]
+          checked = 0
+
+          required.each do |path|
+            unless File.file?(path)
+              errors << "#{path}: required read-only PR verifier workflow is missing"
+              next
+            end
+
+            raw = File.read(path, encoding: 'utf-8')
+            begin
+              doc = YAML.safe_load(raw, aliases: true)
+            rescue => e
+              errors << "#{path}: YAML parse failed: #{e.class}: #{e.message}"
+              next
+            end
+            unless doc.is_a?(Hash)
+              errors << "#{path}: workflow must be a YAML mapping"
+              next
+            end
+
+            trigger = doc['on'] || doc[true]
+            trigger_keys = trigger.is_a?(Hash) ? trigger.keys.map(&:to_s).sort : []
+            unless trigger.is_a?(Hash) && trigger_keys == ['pull_request']
+              errors << "#{path}: trigger set must be exactly pull_request"
+            end
+
+            pull_request = trigger.is_a?(Hash) ? trigger['pull_request'] : nil
+            unless pull_request.is_a?(Hash)
+              errors << "#{path}: pull_request trigger must be an explicit mapping"
+            else
+              paths = Array(pull_request['paths']).map(&:to_s)
+              errors << "#{path}: paths must be exactly .github/workflows/*.yml" unless paths == ['.github/workflows/*.yml']
+            end
+
+            permissions = doc['permissions']
+            permission_keys = permissions.is_a?(Hash) ? permissions.keys.map(&:to_s).sort : []
+            unless permissions.is_a?(Hash) && permission_keys == ['contents'] && permissions['contents'].to_s == 'read'
+              errors << "#{path}: permissions must be exactly contents: read"
+            end
+
+            jobs = doc['jobs']
+            unless jobs.is_a?(Hash) && !jobs.empty?
+              errors << "#{path}: jobs mapping is missing or empty"
+              next
+            end
+
+            checkout_count = 0
+            jobs.each do |job_name, job|
+              next unless job.is_a?(Hash)
+              errors << "#{path}: job #{job_name} must not override permissions" if job.key?('permissions')
+              Array(job['steps']).each_with_index do |step, index|
+                next unless step.is_a?(Hash)
+                next unless step['uses'].to_s.start_with?('actions/checkout@')
+                checkout_count += 1
+                with = step['with']
+                unless with.is_a?(Hash) && with['persist-credentials'] == false
+                  errors << "#{path}: checkout step #{index} must set persist-credentials: false"
+                end
+              end
+            end
+            errors << "#{path}: expected exactly one checkout step, found #{checkout_count}" unless checkout_count == 1
+
+            forbidden_fragments.each do |fragment|
+              errors << "#{path}: forbidden mutation/token fragment present: #{fragment}" if raw.include?(fragment)
+            end
+
+            checked += 1
+          end
+
+          puts "pr_readonly_verifier_contracts_checked=#{checked}"
+          unless errors.empty?
+            warn errors.join("\n")
+            exit 1
+          end
+          abort "expected 2 read-only PR verifier contracts, checked #{checked}" unless checked == 2
+          puts 'pr_readonly_verifier_contract=PASS mutation_performed=false'
+          RUBY
