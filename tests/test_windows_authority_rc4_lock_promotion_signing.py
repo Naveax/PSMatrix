@@ -237,6 +237,9 @@ class WindowsAuthorityRC4LockPromotionSigningTests(unittest.TestCase):
                     "release_artifacts_signed": False,
                 },
             )
+            approval_body_sha256 = hashlib.sha256(
+                f"RC4 HUMAN REVIEW APPROVED: {candidate}".encode("utf-8")
+            ).hexdigest()
             result = promoter.promote(
                 review_root=review,
                 output_root=output,
@@ -246,6 +249,12 @@ class WindowsAuthorityRC4LockPromotionSigningTests(unittest.TestCase):
                 review_run_id="1003",
                 reviewed_draft_sha256=_sha256(draft_path),
                 reviewed_public_key_sha256=public_sha,
+                review_run_updated_at="2026-08-21T12:00:00Z",
+                approval_comment_id="2001",
+                approval_created_at="2026-08-21T12:00:01Z",
+                approval_actor="Naveax",
+                approval_author_association="OWNER",
+                approval_body_sha256=approval_body_sha256,
             )
             self.assertEqual(result["status"], "READY_FOR_EXACT_REPOSITORY_COMMIT")
             self.assertFalse(result["repository_mutated"])
@@ -255,6 +264,13 @@ class WindowsAuthorityRC4LockPromotionSigningTests(unittest.TestCase):
             self.assertEqual(active["promotion_evidence"]["review_run_id"], "1003")
             self.assertEqual(active["promotion_evidence"]["promotion_control_head"], control)
             self.assertTrue(active["promotion_evidence"]["human_review_bound"])
+            self.assertEqual(
+                active["promotion_evidence"]["human_review"]["comment_id"], 2001
+            )
+            self.assertEqual(
+                active["promotion_evidence"]["human_review"]["approval_body_sha256"],
+                approval_body_sha256,
+            )
             self.assertTrue(active["promotion_evidence"]["repository_commit_required"])
             self.assertFalse(active["release_artifacts_signed"])
             for path in output.rglob("*"):
@@ -273,6 +289,12 @@ class WindowsAuthorityRC4LockPromotionSigningTests(unittest.TestCase):
                     review_run_id="1003",
                     reviewed_draft_sha256="0" * 64,
                     reviewed_public_key_sha256=public_sha,
+                    review_run_updated_at="2026-08-21T12:00:00Z",
+                    approval_comment_id="2001",
+                    approval_created_at="2026-08-21T12:00:01Z",
+                    approval_actor="Naveax",
+                    approval_author_association="OWNER",
+                    approval_body_sha256=approval_body_sha256,
                 )
 
     def test_generic_signer_runtime_honors_exact_lock_and_key(self) -> None:
