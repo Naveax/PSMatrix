@@ -45,7 +45,8 @@ jobs:
           persist-credentials: false
 
       - name: Set up controller Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.2.0
+        id: setup_controller_python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.13"
 
@@ -105,6 +106,8 @@ jobs:
 
       - name: Run release-bound authoritative Windows campaign
         shell: pwsh
+        env:
+          CONTROLLER_PYTHON: ${{ steps.setup_controller_python.outputs.python-path }}
         run: |
           $ErrorActionPreference = 'Stop'
 
@@ -142,57 +145,39 @@ jobs:
             }
             return $full
           }
-          function Test-ExactProcessPathParent([string]$Parent, [string]$Label) {
-            $rawPath = [Environment]::GetEnvironmentVariable('PATH', [EnvironmentVariableTarget]::Process)
-            if ([string]::IsNullOrWhiteSpace($rawPath)) { throw "$Label process PATH is unavailable." }
-            $separator = [regex]::Escape([string][System.IO.Path]::PathSeparator)
-            foreach ($entryValue in ($rawPath -split $separator)) {
-              $entry = ([string]$entryValue).Trim()
-              if ([string]::IsNullOrWhiteSpace($entry)) { continue }
-              if ($entry.Length -ge 2 -and $entry[0] -eq [char]34 -and $entry[$entry.Length - 1] -eq [char]34) {
-                $entry = $entry.Substring(1, $entry.Length - 2)
-              }
-              $entry = [Environment]::ExpandEnvironmentVariables($entry)
-              if ([string]::IsNullOrWhiteSpace($entry)) { continue }
-              try { $candidate = [System.IO.Path]::GetFullPath($entry) }
-              catch { continue }
-              if (Test-PathEqual $candidate $Parent) { return $true }
+          function Resolve-TrustedControllerPython([string]$Candidate) {
+            if ([string]::IsNullOrWhiteSpace($Candidate)) {
+              throw 'Trusted workflow controller python output is missing.'
             }
-            return $false
-          }
-          function Resolve-TrustedControllerPython() {
-            $commands = @(Get-Command python -CommandType Application -All -ErrorAction Stop)
-            if ($commands.Count -eq 0) { throw 'Trusted workflow controller python executable is missing.' }
-            $commandPath = [string]$commands[0].Path
-            if ([string]::IsNullOrWhiteSpace($commandPath)) { throw 'Trusted workflow controller python executable is missing.' }
+            if (-not [System.IO.Path]::IsPathFullyQualified($Candidate)) {
+              throw 'Trusted workflow controller python output must be an absolute path.'
+            }
 
-            $full = [System.IO.Path]::GetFullPath($commandPath)
-            if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { throw 'Trusted workflow controller python executable is missing.' }
+            $full = [System.IO.Path]::GetFullPath($Candidate)
+            if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
+              throw 'Trusted workflow controller python executable is missing.'
+            }
             $leaf = Get-Item -LiteralPath $full -Force
             $parent = Split-Path -Parent $full
-            if ([string]::IsNullOrWhiteSpace($parent)) { throw 'Trusted workflow controller python parent path is missing.' }
-            [void](Assert-NoExistingLinkOrReparseComponents $parent 'Trusted workflow controller python parent')
-            if (-not (Test-ExactProcessPathParent $parent 'Trusted workflow controller python')) {
-              throw 'Trusted workflow controller python parent must be an exact process PATH entry.'
+            if ([string]::IsNullOrWhiteSpace($parent)) {
+              throw 'Trusted workflow controller python parent path is missing.'
             }
+            [void](Assert-NoExistingLinkOrReparseComponents $parent 'Trusted workflow controller python parent')
 
             $linkProperty = $leaf.PSObject.Properties['LinkType']
             $linkType = if ($null -ne $linkProperty) { [string]$linkProperty.Value } else { '' }
             $linkTargetProperty = $leaf.PSObject.Properties['LinkTarget']
             $linkTarget = if ($null -ne $linkTargetProperty) { [string]$linkTargetProperty.Value } else { '' }
             $isReparsePoint = (($leaf.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
-            if ($isReparsePoint -or -not [string]::IsNullOrWhiteSpace($linkType)) {
-              if (-not $IsWindows) { throw 'Trusted workflow controller python must not be a link or reparse point.' }
-              if (-not [string]::IsNullOrWhiteSpace($linkTarget)) {
-                throw 'Trusted workflow controller python must not expose a filesystem link target.'
-              }
-              if (-not [string]::Equals(
-                [System.IO.Path]::GetFileName($full),
-                'python.exe',
-                [StringComparison]::OrdinalIgnoreCase
-              )) {
-                throw 'Trusted workflow controller python Windows application alias name mismatch.'
-              }
+            if ($isReparsePoint -or -not [string]::IsNullOrWhiteSpace($linkType) -or -not [string]::IsNullOrWhiteSpace($linkTarget)) {
+              throw 'Trusted workflow controller python executable must not be a link or reparse point.'
+            }
+            if (-not [string]::Equals(
+              [System.IO.Path]::GetFileName($full),
+              'python.exe',
+              [StringComparison]::OrdinalIgnoreCase
+            )) {
+              throw 'Trusted workflow controller python executable name mismatch.'
             }
 
             $workspace = [System.IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
@@ -202,7 +187,7 @@ jobs:
             return $full
           }
 
-          $controllerPython = Resolve-TrustedControllerPython
+          $controllerPython = Resolve-TrustedControllerPython $env:CONTROLLER_PYTHON
           $keyRoot = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-ga-keys'
           $output = Join-Path $env:RUNNER_TEMP 'psmatrix-windows-ga-evidence'
           if (Test-Path -LiteralPath $output) {
