@@ -96,17 +96,24 @@ def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
     if os.name == "nt" or not hasattr(os, "killpg"):
         _terminate_windows_process_tree(process)
         return
+    pgid = process.pid
     try:
-        os.killpg(process.pid, signal.SIGTERM)
+        os.killpg(pgid, signal.SIGTERM)
     except ProcessLookupError:
         return
     try:
         process.wait(timeout=2)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        pass
+    # Waiting for the session leader does not prove that its descendants exited.
+    # A child can ignore SIGTERM while the leader terminates immediately. Always
+    # escalate the original process group so output/timeout containment cannot
+    # leave a stubborn descendant running after run_process returns.
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    if process.poll() is None:
         process.wait()
 
 
@@ -271,10 +278,43 @@ def run_process(
                 "workspace limit exceeded "
                 f"({size} bytes, {entries} entries; limit {max_workspace_bytes})"
             )
+
+    # A fast session leader can exit before the drain threads observe its final
+    # pipe buffers. Keep a bounded drain phase, react to a late overflow by
+    # terminating the original process group, and fail closed if EOF never
+    # arrives (for example because a descendant kept an inherited pipe open).
+    drain_deadline = time.monotonic() + 5.0
+    while stdout_thread.is_alive() or stderr_thread.is_alive():
+        if output_exceeded.is_set():
+            if violation is None:
+                violation = (
+                    f"captured output limit exceeded ({max_output_bytes} bytes per stream)"
+                )
+            _kill_process_group(process)
+        remaining = drain_deadline - time.monotonic()
+        if remaining <= 0:
+            if violation is None:
+                violation = "captured output drain did not complete within 5.000s"
+            _kill_process_group(process)
+            break
+        wait_slice = min(0.05, remaining)
+        stdout_thread.join(timeout=wait_slice)
+        stderr_thread.join(timeout=wait_slice)
+
     if violation is None and output_exceeded.is_set():
         violation = f"captured output limit exceeded ({max_output_bytes} bytes per stream)"
-    stdout_thread.join(timeout=5)
-    stderr_thread.join(timeout=5)
+        _kill_process_group(process)
+
+    # Termination above should close inherited pipe handles. Keep the final
+    # waits bounded so a broken platform primitive cannot hang the controller.
+    if stdout_thread.is_alive():
+        stdout_thread.join(timeout=1)
+    if stderr_thread.is_alive():
+        stderr_thread.join(timeout=1)
+    if stdout_thread.is_alive() or stderr_thread.is_alive():
+        if violation is None:
+            violation = "captured output drain remained active after process-tree termination"
+
     if stdin_thread is not None:
         stdin_thread.join(timeout=5)
     duration_ms = int((time.monotonic() - started) * 1000)
