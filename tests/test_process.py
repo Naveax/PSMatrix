@@ -61,6 +61,7 @@ class ProcessTests(unittest.TestCase):
                                 **{argument: value},
                             )
 
+    @unittest.skipUnless(os.name != "nt", "POSIX process-group sampling regression")
     def test_fast_exit_memory_limit_is_checked_after_leader_exit(self):
         class FastExitProcess:
             pid = 42
@@ -101,6 +102,7 @@ class ProcessTests(unittest.TestCase):
         terminate.assert_called_once()
         self.assertIn("process-tree RSS limit exceeded", result.resource_violation or "")
 
+    @unittest.skipUnless(os.name != "nt", "POSIX process-group sampling regression")
     def test_fast_exit_process_count_limit_is_checked_after_leader_exit(self):
         class FastExitProcess:
             pid = 43
@@ -141,6 +143,7 @@ class ProcessTests(unittest.TestCase):
         terminate.assert_called_once()
         self.assertIn("process count limit exceeded", result.resource_violation or "")
 
+    @unittest.skipUnless(os.name != "nt", "POSIX process-group sampling regression")
     def test_posix_resource_accounting_unavailable_fails_closed(self):
         class FastExitProcess:
             pid = 44
@@ -180,6 +183,7 @@ class ProcessTests(unittest.TestCase):
         terminate.assert_called_once()
         self.assertIn("requires /proc", result.resource_violation or "")
 
+    @unittest.skipUnless(os.name != "nt", "POSIX process-group sampling regression")
     def test_live_posix_zero_member_sample_fails_closed(self):
         class LiveThenExitProcess:
             pid = 45
