@@ -11,18 +11,21 @@ PACK03 = ROOT / ".github" / "workflows" / "ga-pack03-windows-source-preflight.ym
 
 
 class WindowsAuthorityWorkflowPythonBoundaryTests(unittest.TestCase):
-    def test_workflow_pins_controller_python_and_redacts_native_failures(self) -> None:
+    def test_workflow_binds_controller_python_to_setup_output_and_redacts_native_failures(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")
         required = (
-            "function Resolve-TrustedControllerPython()",
-            "Get-Command python -CommandType Application -All",
-            "$commandPath = [string]$commands[0].Path",
-            "Test-ExactProcessPathParent",
+            "id: setup_controller_python",
+            "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0",
+            "CONTROLLER_PYTHON: ${{ steps.setup_controller_python.outputs.python-path }}",
+            "function Resolve-TrustedControllerPython([string]$Candidate)",
+            "[System.IO.Path]::IsPathFullyQualified($Candidate)",
+            "$full = [System.IO.Path]::GetFullPath($Candidate)",
             "Assert-NoExistingLinkOrReparseComponents $parent 'Trusted workflow controller python parent'",
-            "Trusted workflow controller python parent must be an exact process PATH entry.",
-            "Trusted workflow controller python must not expose a filesystem link target.",
+            "Trusted workflow controller python output must be an absolute path.",
+            "Trusted workflow controller python executable must not be a link or reparse point.",
+            "Trusted workflow controller python executable name mismatch.",
             "Trusted workflow controller python must stay outside the repository.",
-            "$controllerPython = Resolve-TrustedControllerPython",
+            "$controllerPython = Resolve-TrustedControllerPython $env:CONTROLLER_PYTHON",
             "$bootstrapOutput = (& $controllerPython -m psmatrix",
             "$pipOutput = (& $controllerPython -m pip install",
             "$packageOrigin = (& $controllerPython -c",
@@ -37,9 +40,16 @@ class WindowsAuthorityWorkflowPythonBoundaryTests(unittest.TestCase):
                 self.assertIn(value, text)
 
         self.assertIsNone(
-            re.search(r"(?m)^\s*&\s+python(?:\.exe)?\b", text),
+            re.search(
+                r"(?im)^\s*(?:&\s+)?['\"]?python(?:\.exe)?['\"]?(?:\s|$)",
+                text,
+            ),
             "authoritative workflow must not invoke ambient python directly",
         )
+        self.assertNotIn("Get-Command python", text)
+        self.assertNotIn("Test-ExactProcessPathParent", text)
+        self.assertNotIn("$commands[0].Path", text)
+        self.assertNotIn("# v6.2.0", text)
         self.assertNotIn("$command.Source", text)
         self.assertNotIn("`n$packageOrigin", text)
         self.assertNotIn("`n$installedVersion", text)
