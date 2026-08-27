@@ -1,0 +1,37 @@
+name: ops-human-approval-promotion-dispatch-router
+
+on:
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: ops-human-approval-comment-router-${{ github.event.comment.id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  rc4-human-approval:
+    if: >-
+      github.event.issue.number == 260 &&
+      github.event.comment.user.login == 'Naveax' &&
+      github.event.comment.author_association == 'OWNER' &&
+      github.event.comment.body == 'RC4 HUMAN REVIEW APPROVED: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63'
+    permissions:
+      contents: read
+      actions: write
+      issues: write
+    uses: ./.github/workflows/ops-rc4-human-approval-promotion-dispatch.yml
+
+  final-human-approval:
+    if: >-
+      github.event.issue.number == 263 &&
+      github.event.comment.user.login == 'Naveax' &&
+      github.event.comment.author_association == 'OWNER' &&
+      startsWith(github.event.comment.body, 'FINAL HUMAN REVIEW APPROVED: ')
+    permissions:
+      contents: read
+      actions: write
+      issues: read
+    uses: ./.github/workflows/ops-final-human-approval-promotion-dispatch.yml

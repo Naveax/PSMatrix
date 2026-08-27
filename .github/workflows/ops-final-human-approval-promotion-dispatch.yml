@@ -1,8 +1,7 @@
 name: ops-final-human-approval-promotion-dispatch
 
 on:
-  issue_comment:
-    types: [created]
+  workflow_call:
 
 concurrency:
   group: ops-final-human-approval-promotion-dispatch

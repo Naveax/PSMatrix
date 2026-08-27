@@ -1,8 +1,7 @@
 name: ops-rc4-human-approval-promotion-dispatch
 
 on:
-  issue_comment:
-    types: [created]
+  workflow_call:
 
 concurrency:
   group: ops-rc4-human-approval-promotion-dispatch
