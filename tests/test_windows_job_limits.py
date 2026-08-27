@@ -12,6 +12,7 @@ import psmatrix.process as process_module
 from psmatrix.process import run_process
 from psmatrix.windows_job import (
     JOB_OBJECT_MSG_ACTIVE_PROCESS_LIMIT,
+    JOB_OBJECT_MSG_JOB_MEMORY_LIMIT,
     WindowsJob,
     WindowsJobError,
 )
@@ -28,6 +29,8 @@ class LimitApi:
         self.terminated_count = 0
         self.active_count = 0
         self.process_ids = []
+        self.memory_configured = []
+        self.peak_memory = 0
         self.closed = []
 
     def create_job(self):
@@ -49,6 +52,12 @@ class LimitApi:
 
     def set_active_process_limit(self, job_handle, limit):
         self.configured.append((job_handle, limit))
+
+    def set_job_memory_limit(self, job_handle, limit):
+        self.memory_configured.append((job_handle, limit))
+
+    def peak_job_memory_bytes(self, job_handle):
+        return self.peak_memory
 
     def terminated_process_count(self, job_handle):
         return self.terminated_count
@@ -83,6 +92,18 @@ class WindowsJobLimitTests(unittest.TestCase):
         job.configure_active_process_limit(4)
         self.assertEqual(api.associations, [(101, 202, 101)])
         self.assertEqual(api.configured, [(101, 3), (101, 4)])
+        job.close()
+
+    def test_configure_job_memory_limit_reuses_completion_port(self):
+        api = LimitApi()
+        job = WindowsJob.create(api=api)
+        job.configure_job_memory_limit(32 * 1024 * 1024)
+        job.configure_job_memory_limit(64 * 1024 * 1024)
+        self.assertEqual(api.associations, [(101, 202, 101)])
+        self.assertEqual(
+            api.memory_configured,
+            [(101, 32 * 1024 * 1024), (101, 64 * 1024 * 1024)],
+        )
         job.close()
 
     def test_completion_port_association_failure_closes_port(self):
@@ -124,6 +145,23 @@ class WindowsJobLimitTests(unittest.TestCase):
         self.assertEqual(job.process_limit_violation_count(), 1)
         self.assertEqual(job.process_limit_violation_count(), 1)
         self.assertEqual(api.completion_polls, [(202, 101, 0), (202, 101, 0)])
+        job.close()
+
+    def test_job_memory_limit_notification_is_persistent(self):
+        api = LimitApi()
+        job = WindowsJob.create(api=api)
+        job.configure_job_memory_limit(2)
+        api.messages = [JOB_OBJECT_MSG_JOB_MEMORY_LIMIT]
+        self.assertEqual(job.job_memory_limit_violation_count(), 1)
+        self.assertEqual(job.job_memory_limit_violation_count(), 1)
+        job.close()
+
+    def test_job_memory_peak_is_checked_without_comparing_rss_units(self):
+        api = LimitApi()
+        api.peak_memory = 4096
+        job = WindowsJob.create(api=api)
+        job.configure_job_memory_limit(2048)
+        self.assertEqual(job.job_memory_limit_violation_count(), 1)
         job.close()
 
     def test_unrelated_completion_messages_do_not_claim_limit_violation(self):
@@ -219,6 +257,30 @@ class WindowsJobLimitTests(unittest.TestCase):
         popen.assert_not_called()
         fake_job.close.assert_called_once_with()
 
+    def test_windows_committed_memory_limit_configuration_failure_prevents_spawn(self):
+        cwd = Path.cwd()
+        fake_job = mock.Mock()
+        fake_job.configure_job_memory_limit.side_effect = OSError(
+            "synthetic committed-memory limit failure"
+        )
+        with (
+            mock.patch.object(process_module.os, "name", "nt"),
+            mock.patch.object(process_module.WindowsJob, "create", return_value=fake_job),
+            mock.patch.object(process_module.subprocess, "Popen") as popen,
+        ):
+            with self.assertRaisesRegex(OSError, "synthetic committed-memory limit failure"):
+                process_module._start_process(
+                    [sys.executable, "-c", "pass"],
+                    cwd=cwd,
+                    env=dict(os.environ),
+                    preexec_fn=None,
+                    stdin_data=None,
+                    max_processes=None,
+                    max_committed_memory_bytes=1,
+                )
+        popen.assert_not_called()
+        fake_job.close.assert_called_once_with()
+
     def test_windows_limit_is_configured_before_assignment_and_resume(self):
         cwd = Path.cwd()
         events = []
@@ -256,6 +318,48 @@ class WindowsJobLimitTests(unittest.TestCase):
         self.assertIs(process, fake_process)
         self.assertIs(job, fake_job)
         self.assertEqual(events, [("configure", 2), ("assign", 42), ("resume", 42)])
+
+    def test_windows_committed_memory_limit_is_configured_before_assignment_and_resume(self):
+        cwd = Path.cwd()
+        events = []
+
+        class FakeJob:
+            def configure_job_memory_limit(self, limit):
+                events.append(("configure-committed", limit))
+
+            def assign_process(self, process):
+                events.append(("assign", process.pid))
+
+            def close(self):
+                events.append(("close", None))
+
+        fake_job = FakeJob()
+        fake_process = SimpleNamespace(pid=42, _handle=303)
+
+        def resume(pid):
+            events.append(("resume", pid))
+
+        with (
+            mock.patch.object(process_module.os, "name", "nt"),
+            mock.patch.object(process_module.WindowsJob, "create", return_value=fake_job),
+            mock.patch.object(process_module.subprocess, "Popen", return_value=fake_process),
+            mock.patch.object(process_module, "resume_suspended_process", side_effect=resume),
+        ):
+            process, job = process_module._start_process(
+                [sys.executable, "-c", "pass"],
+                cwd=cwd,
+                env=dict(os.environ),
+                preexec_fn=None,
+                stdin_data=None,
+                max_processes=None,
+                max_committed_memory_bytes=2 * 1024 * 1024,
+            )
+        self.assertIs(process, fake_process)
+        self.assertIs(job, fake_job)
+        self.assertEqual(
+            events,
+            [("configure-committed", 2 * 1024 * 1024), ("assign", 42), ("resume", 42)],
+        )
 
     def test_fast_exit_windows_limit_violation_is_detected_post_exit(self):
         class FakeProcess:
@@ -307,6 +411,106 @@ class WindowsJobLimitTests(unittest.TestCase):
                 max_processes=1,
             )
         self.assertIn("process count limit exceeded", result.resource_violation or "")
+        self.assertEqual(fake_job.terminated, 1)
+        self.assertTrue(fake_job.closed)
+
+    def test_fast_exit_committed_memory_violation_is_detected_post_exit(self):
+        class FakeProcess:
+            pid = 42
+            returncode = 0
+            stdin = None
+            stdout = io.BytesIO(b"")
+            stderr = io.BytesIO(b"")
+
+            def poll(self):
+                return 0
+
+            def wait(self, timeout=None):
+                return 0
+
+        class FakeJob:
+            def __init__(self):
+                self.terminated = 0
+                self.closed = False
+
+            def job_memory_limit_violation_count(self):
+                return 1
+
+            def terminate_and_wait(self, *, exit_code=1, timeout_seconds=5.0):
+                self.terminated += 1
+
+            def close(self):
+                self.closed = True
+
+        fake_job = FakeJob()
+        cwd = Path.cwd()
+        with (
+            mock.patch.object(process_module.os, "name", "nt"),
+            mock.patch.object(
+                process_module,
+                "_start_process",
+                return_value=(FakeProcess(), fake_job),
+            ),
+        ):
+            result = run_process(
+                ["synthetic"],
+                cwd,
+                {},
+                timeout_seconds=1,
+                max_output_bytes=1024,
+                max_committed_memory_bytes=1,
+            )
+        self.assertIn("committed memory limit exceeded", result.resource_violation or "")
+        self.assertEqual(fake_job.terminated, 1)
+        self.assertTrue(fake_job.closed)
+
+    def test_fast_exit_working_set_limit_is_detected_post_exit(self):
+        class FakeProcess:
+            pid = 42
+            returncode = 0
+            stdin = None
+            stdout = io.BytesIO(b"")
+            stderr = io.BytesIO(b"")
+
+            def poll(self):
+                return 0
+
+            def wait(self, timeout=None):
+                return 0
+
+        class FakeJob:
+            def __init__(self):
+                self.terminated = 0
+                self.closed = False
+
+            def resource_usage(self):
+                return 4096, 1
+
+            def terminate_and_wait(self, *, exit_code=1, timeout_seconds=5.0):
+                self.terminated += 1
+
+            def close(self):
+                self.closed = True
+
+        fake_job = FakeJob()
+        cwd = Path.cwd()
+        with (
+            mock.patch.object(process_module.os, "name", "nt"),
+            mock.patch.object(
+                process_module,
+                "_start_process",
+                return_value=(FakeProcess(), fake_job),
+            ),
+        ):
+            result = run_process(
+                ["synthetic"],
+                cwd,
+                {},
+                timeout_seconds=1,
+                max_output_bytes=1024,
+                max_memory_bytes=1024,
+            )
+        self.assertIn("process-tree RSS limit exceeded", result.resource_violation or "")
         self.assertEqual(fake_job.terminated, 1)
         self.assertTrue(fake_job.closed)
 

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Close the bounded process runner's fast-exit resource-sampling gap with
+  post-leader and post-drain samples, fail-closed POSIX `/proc` accounting, and
+  deterministic memory/process regressions. Windows process-count enforcement
+  remains kernel-backed through a verified Job Object limit.
+- Add the opt-in Windows-only `max_committed_memory_bytes` /
+  `--max-committed-memory-mib` Job Object budget. Its committed-byte accounting
+  is documented as distinct from the existing sampled RSS/working-set budget;
+  no unlike metrics are compared.
 - Scope verification-hardening certification triggers to their verification, private-material,
   PowerShell-parse, and repository workflow-policy regression surfaces. Ordinary runtime product
   changes may now carry their own tests without asking the maintenance certifier to cross its

@@ -180,6 +180,7 @@ def _start_process(
     preexec_fn: Callable[[], None] | None,
     stdin_data: bytes | None,
     max_processes: int | None,
+    max_committed_memory_bytes: int | None = None,
 ) -> tuple[subprocess.Popen[bytes], WindowsJob | None]:
     windows_job: WindowsJob | None = None
     creationflags = 0
@@ -188,6 +189,8 @@ def _start_process(
         try:
             if max_processes is not None:
                 windows_job.configure_active_process_limit(max_processes)
+            if max_committed_memory_bytes is not None:
+                windows_job.configure_job_memory_limit(max_committed_memory_bytes)
         except Exception:
             try:
                 windows_job.close()
@@ -257,13 +260,17 @@ def _workspace_usage(root: Path, byte_limit: int, entry_limit: int = 100_000) ->
 
 
 def _process_group_stats(pgid: int) -> tuple[int, int]:
+    if pgid <= 0:
+        raise ValueError("process-group id must be positive")
     rss_kib = 0
     members = 0
     proc = Path("/proc")
+    if not proc.is_dir():
+        raise OSError("POSIX process-group accounting requires /proc")
     try:
         candidates = list(proc.iterdir())
-    except OSError:
-        return 0, 0
+    except OSError as exc:
+        raise OSError(f"unable to enumerate /proc for process accounting: {exc}") from exc
     for candidate in candidates:
         if not candidate.name.isdigit():
             continue
@@ -279,6 +286,10 @@ def _process_group_stats(pgid: int) -> tuple[int, int]:
                 if line.startswith("VmRSS:"):
                     rss_kib += int(line.split()[1])
                     break
+        except PermissionError as exc:
+            raise OSError(
+                f"permission denied while reading {candidate} for process accounting"
+            ) from exc
         except (OSError, ValueError, IndexError):
             continue
     return rss_kib * 1024, members
@@ -296,6 +307,7 @@ def run_process(
     max_workspace_bytes: int | None = None,
     max_memory_bytes: int | None = None,
     max_processes: int | None = None,
+    max_committed_memory_bytes: int | None = None,
     stdin_data: bytes | None = None,
 ) -> ExecutionResult:
     if timeout_seconds <= 0:
@@ -306,6 +318,12 @@ def run_process(
         raise ValueError("max_memory_bytes must be positive")
     if max_processes is not None and max_processes <= 0:
         raise ValueError("max_processes must be positive")
+    if max_committed_memory_bytes is not None and max_committed_memory_bytes <= 0:
+        raise ValueError("max_committed_memory_bytes must be positive")
+    if max_committed_memory_bytes is not None and os.name != "nt":
+        raise ValueError(
+            "max_committed_memory_bytes requires Windows Job Object enforcement"
+        )
     if os.name == "nt" and preexec_fn is not None:
         raise ValueError("preexec_fn is unsupported on Windows")
 
@@ -317,6 +335,7 @@ def run_process(
         preexec_fn=preexec_fn,
         stdin_data=stdin_data,
         max_processes=max_processes,
+        max_committed_memory_bytes=max_committed_memory_bytes,
     )
     assert process.stdout is not None
     assert process.stderr is not None
@@ -357,76 +376,41 @@ def run_process(
     needs_sampled_process_stats = max_memory_bytes is not None or (
         max_processes is not None and os.name != "nt"
     )
-    while process.poll() is None:
-        elapsed = time.monotonic() - started
-        if elapsed >= timeout_seconds:
-            timed_out = True
-            violation = f"wall-time limit exceeded ({timeout_seconds:.3f}s)"
-            terminate_tree_once()
-            break
-        if output_exceeded.is_set():
-            violation = f"captured output limit exceeded ({max_output_bytes} bytes per stream)"
-            terminate_tree_once()
-            break
-        if elapsed >= next_resource_check:
-            next_resource_check = elapsed + 0.20
-            if monitor_workspace is not None and max_workspace_bytes:
-                size, entries, exceeded = _workspace_usage(
-                    monitor_workspace, max_workspace_bytes
-                )
-                if exceeded:
-                    violation = (
-                        "workspace limit exceeded "
-                        f"({size} bytes, {entries} entries; limit {max_workspace_bytes})"
-                    )
-            if violation is None and needs_sampled_process_stats:
-                try:
-                    if os.name == "nt":
-                        if windows_job is None:
-                            raise OSError(
-                                "Windows Job Object is unavailable for resource accounting"
-                            )
-                        rss, members = windows_job.resource_usage()
-                    else:
-                        rss, members = _process_group_stats(process.pid)
-                except (OSError, ValueError) as exc:
-                    violation = f"process-tree resource accounting failed: {exc}"
-                if violation is None:
-                    if max_memory_bytes is not None and rss > max_memory_bytes:
-                        violation = (
-                            f"process-tree RSS limit exceeded "
-                            f"({rss} > {max_memory_bytes} bytes)"
-                        )
-                    elif (
-                        os.name != "nt"
-                        and max_processes is not None
-                        and members > max_processes
-                    ):
-                        violation = (
-                            f"process count limit exceeded ({members} > {max_processes})"
-                        )
-            if violation is not None:
-                terminate_tree_once()
-                break
-        time.sleep(0.02)
 
-    if process.poll() is None:
+    def observe_sampled_process_stats() -> None:
+        """Sample RSS/working-set and POSIX process membership.
+
+        The call is deliberately safe to make after the process leader exits:
+        descendants can retain the process group (or Job Object), and the
+        final sample closes the fast-exit gap without claiming atomic polling.
+        """
+
+        nonlocal violation
+        if violation is not None or not needs_sampled_process_stats:
+            return
         try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            violation = _append_violation(
-                violation, "process leader did not exit within bounded post-termination wait"
-            )
-            terminate_tree_once()
-
-    if violation is None and monitor_workspace is not None and max_workspace_bytes:
-        size, entries, exceeded = _workspace_usage(monitor_workspace, max_workspace_bytes)
-        if exceeded:
+            if os.name == "nt":
+                if windows_job is None:
+                    raise OSError(
+                        "Windows Job Object is unavailable for resource accounting"
+                    )
+                rss, members = windows_job.resource_usage()
+            else:
+                rss, members = _process_group_stats(process.pid)
+        except (OSError, ValueError) as exc:
+            violation = f"process-tree resource accounting failed: {exc}"
+            return
+        if max_memory_bytes is not None and rss > max_memory_bytes:
             violation = (
-                "workspace limit exceeded "
-                f"({size} bytes, {entries} entries; limit {max_workspace_bytes})"
+                f"process-tree RSS limit exceeded "
+                f"({rss} > {max_memory_bytes} bytes)"
             )
-            terminate_tree_once()
+        elif (
+            os.name != "nt"
+            and max_processes is not None
+            and members > max_processes
+        ):
+            violation = f"process count limit exceeded ({members} > {max_processes})"
 
     def observe_windows_process_limit() -> None:
         nonlocal violation
@@ -449,10 +433,93 @@ def run_process(
             )
             terminate_tree_once()
 
+    def observe_windows_job_memory_limit() -> None:
+        nonlocal violation
+        if (
+            os.name != "nt"
+            or max_committed_memory_bytes is None
+            or windows_job is None
+        ):
+            return
+        try:
+            exceeded = windows_job.job_memory_limit_violation_count()
+        except (OSError, ValueError) as exc:
+            violation = _append_violation(
+                violation, f"committed-memory accounting failed: {exc}"
+            )
+            terminate_tree_once()
+            return
+        if exceeded > 0:
+            violation = _append_violation(
+                violation,
+                "committed memory limit exceeded "
+                f"(Windows Job Object committed bytes; limit "
+                f"{max_committed_memory_bytes})",
+            )
+            terminate_tree_once()
+
+    while process.poll() is None:
+        elapsed = time.monotonic() - started
+        if elapsed >= timeout_seconds:
+            timed_out = True
+            violation = f"wall-time limit exceeded ({timeout_seconds:.3f}s)"
+            terminate_tree_once()
+            break
+        if output_exceeded.is_set():
+            violation = f"captured output limit exceeded ({max_output_bytes} bytes per stream)"
+            terminate_tree_once()
+            break
+        if elapsed >= next_resource_check:
+            next_resource_check = elapsed + 0.20
+            if monitor_workspace is not None and max_workspace_bytes:
+                size, entries, exceeded = _workspace_usage(
+                    monitor_workspace, max_workspace_bytes
+                )
+                if exceeded:
+                    violation = (
+                        "workspace limit exceeded "
+                        f"({size} bytes, {entries} entries; limit {max_workspace_bytes})"
+                    )
+            observe_sampled_process_stats()
+            observe_windows_process_limit()
+            observe_windows_job_memory_limit()
+            if violation is not None:
+                terminate_tree_once()
+                break
+        time.sleep(0.02)
+
+    if process.poll() is None:
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            violation = _append_violation(
+                violation, "process leader did not exit within bounded post-termination wait"
+            )
+            terminate_tree_once()
+
+    # The leader may have exited before the live loop reached its first
+    # resource sample.  Take one bounded post-exit sample while containment is
+    # still retained, then terminate any surviving descendants if it fails.
+    observe_sampled_process_stats()
+    if violation is not None:
+        terminate_tree_once()
+
+    if violation is None and monitor_workspace is not None and max_workspace_bytes:
+        size, entries, exceeded = _workspace_usage(monitor_workspace, max_workspace_bytes)
+        if exceeded:
+            violation = (
+                "workspace limit exceeded "
+                f"({size} bytes, {entries} entries; limit {max_workspace_bytes})"
+            )
+            terminate_tree_once()
+
     observe_windows_process_limit()
+    observe_windows_job_memory_limit()
 
     drain_deadline = time.monotonic() + 5.0
     while stdout_thread.is_alive() or stderr_thread.is_alive():
+        observe_windows_process_limit()
+        observe_windows_job_memory_limit()
         if output_exceeded.is_set():
             if violation is None:
                 violation = (
@@ -482,6 +549,10 @@ def run_process(
             violation, "captured output drain remained active after process-tree termination"
         )
 
+    observe_sampled_process_stats()
+    if violation is not None:
+        terminate_tree_once()
+
     if stdin_thread is not None:
         stdin_thread.join(timeout=5)
         if stdin_thread.is_alive():
@@ -491,6 +562,7 @@ def run_process(
             terminate_tree_once()
 
     observe_windows_process_limit()
+    observe_windows_job_memory_limit()
 
     if windows_job is not None:
         try:

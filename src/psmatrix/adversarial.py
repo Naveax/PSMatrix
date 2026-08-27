@@ -162,6 +162,7 @@ def _sandbox_run(root: Path, code: str, *, limits: SandboxLimits, network: str =
         monitor_workspace=root,
         max_workspace_bytes=limits.max_workspace_bytes,
         max_memory_bytes=limits.max_memory_bytes,
+        max_committed_memory_bytes=limits.max_committed_memory_bytes,
         max_processes=limits.max_processes,
     )
     return plan, result
