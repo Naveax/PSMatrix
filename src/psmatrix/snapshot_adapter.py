@@ -3,13 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import signal
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .errors import PSMatrixError
+from .process import run_process
 from .signing import canonical_json_bytes, create_dsse_envelope, verify_dsse_envelope
 from .util import read_json, utc_now_iso
 
@@ -19,6 +18,7 @@ class SnapshotError(PSMatrixError):
 
 
 _ALLOWED_PROVIDERS = {"hyper-v", "vmware", "virtualbox", "command-test"}
+_MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024
 
 
 def _command(value: Any, label: str) -> tuple[str, ...]:
@@ -34,33 +34,23 @@ def _command(value: Any, label: str) -> tuple[str, ...]:
 
 
 def _run(command: list[str], *, cwd: Path, timeout: int) -> dict[str, Any]:
-    kwargs: dict[str, Any] = {
-        "cwd": cwd,
-        "stdout": subprocess.PIPE,
-        "stderr": subprocess.PIPE,
-        "text": True,
-    }
-    if os.name == "nt":
-        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-    else:
-        kwargs["start_new_session"] = True
-    process = subprocess.Popen(command, **kwargs)
-    try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        if os.name == "nt":
-            subprocess.run(["taskkill.exe", "/PID", str(process.pid), "/T", "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=30)
-        else:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        stdout, stderr = process.communicate()
-        raise SnapshotError(f"Snapshot command timed out after {timeout} seconds") from exc
+    execution = run_process(
+        command,
+        cwd,
+        dict(os.environ),
+        timeout_seconds=timeout,
+        max_output_bytes=_MAX_COMMAND_OUTPUT_BYTES,
+    )
+    if execution.timed_out:
+        raise SnapshotError(f"Snapshot command timed out after {timeout} seconds")
+    if execution.resource_violation is not None:
+        raise SnapshotError(
+            f"Snapshot command violated execution bounds: {execution.resource_violation}"
+        )
     return {
-        "exit_code": process.returncode,
-        "stdout": stdout[-32768:],
-        "stderr": stderr[-32768:],
+        "exit_code": execution.exit_code,
+        "stdout": execution.stdout,
+        "stderr": execution.stderr,
     }
 
 
@@ -175,7 +165,10 @@ class SnapshotAdapter:
         command = self.config.expand(self.config.measure_command, phase)
         result = _run(command, cwd=self.config.cwd, timeout=min(self.config.timeout_seconds, 120))
         if result["exit_code"] != 0:
-            raise SnapshotError(f"Snapshot measurement failed: {result['stderr'].strip()}")
+            raise SnapshotError(
+                f"Snapshot measurement failed with exit code {result['exit_code']}; "
+                "command output was withheld"
+            )
         raw = result["stdout"].strip()
         try:
             value = json.loads(raw.splitlines()[-1]) if raw else {}
@@ -198,7 +191,10 @@ class SnapshotAdapter:
         command = self.config.expand(self.config.restore_command, phase)
         result = _run(command, cwd=self.config.cwd, timeout=self.config.timeout_seconds)
         if result["exit_code"] != 0:
-            raise SnapshotError(f"Snapshot restore failed: {result['stderr'].strip()}")
+            raise SnapshotError(
+                f"Snapshot restore failed with exit code {result['exit_code']}; "
+                "command output was withheld"
+            )
         after = self.measure(phase + "-post")
         expected = _expand_expected(self.config)
         for path, wanted in expected.items():

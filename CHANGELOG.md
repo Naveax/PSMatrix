@@ -17,6 +17,8 @@
 - Add bounded OpenSSL PKI timeouts and fail-closed timeout/error handling.
 - Reject OpenSSL subject injection characters in CA and leaf certificate common names.
 - Bound the Windows `taskkill` fallback used by snapshot timeout recovery.
+- Bound snapshot measurement/restore stdout and stderr, terminate the command
+  process tree on overflow, and withhold raw command output from failure errors.
 - Isolate scheduler worker subprocesses with an explicit environment allowlist; CI credentials, platform instrumentation sockets, OAuth secrets, and lab passwords are not inherited.
 - Copy only regular project files into sandbox workspaces; Unix sockets, FIFOs, devices, and other special files are ignored to prevent blocking or host-IPC access.
 

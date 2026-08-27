@@ -82,8 +82,11 @@ fail-closed.
 ## Snapshot and worker recovery
 
 Snapshot restore uses bounded exponential retry and verifies the resulting
-signed reset attestation after every successful attempt. A failed active worker
-is quarantined before a healthy exact-runtime replacement is selected.
+signed reset attestation after every successful attempt. Snapshot measurement
+and restore commands share the bounded process runner: wall time and per-stream
+output are limited, overflow terminates the complete process tree, and raw
+command output is withheld from failure messages. A failed active worker is
+quarantined before a healthy exact-runtime replacement is selected.
 
 ## Evidence boundary
 
