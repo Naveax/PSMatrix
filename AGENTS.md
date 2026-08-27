@@ -13,4 +13,6 @@ Mandatory for all agents and automations in this repository.
 - After a failure, collect complete evidence, determine root cause, make one coherent patch, then start at most one validation run for the new commit.
 - When adding/editing workflows, preserve semantics and add top-level `concurrency` when absent. For ordinary branch-scoped validation prefer workflow + ref grouping with `cancel-in-progress: false` unless replacement behavior is explicitly intended.
 
+Before changing GitHub repository rulesets, branch protection, required status checks, or code-owner review enforcement, read `REPOSITORY_GOVERNANCE.md`. Source-controlled policy describes the intended contract; it does not prove that GitHub-side administration is already enabled.
+
 Goal: bounded CI concurrency, no duplicate validation for one logical target, and continuous useful progress while external jobs run.
