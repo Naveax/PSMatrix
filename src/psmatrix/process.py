@@ -86,7 +86,7 @@ def _terminate_windows_process_tree(process: subprocess.Popen[bytes]) -> str | N
             stderr=subprocess.DEVNULL,
             timeout=5,
         )
-        if completed.returncode not in {0, 128}:  # 128 commonly means already exited.
+        if completed.returncode not in {0, 128}:
             try:
                 process.kill()
             except OSError as exc:
@@ -137,10 +137,6 @@ def _kill_process_group(
         process.wait(timeout=2)
     except subprocess.TimeoutExpired:
         pass
-    # Waiting for the session leader does not prove that its descendants exited.
-    # A child can ignore SIGTERM while the leader terminates immediately. Always
-    # escalate the original process group so output/timeout containment cannot
-    # leave a stubborn descendant running after run_process returns.
     try:
         os.killpg(pgid, signal.SIGKILL)
     except ProcessLookupError:
@@ -161,9 +157,6 @@ def _cleanup_failed_windows_start(
         windows_job.terminate_and_wait(exit_code=1, timeout_seconds=5)
     except (OSError, ValueError):
         pass
-    # Assignment itself may have failed, in which case the suspended process was
-    # never a member of the job. Always kill the still-suspended leader directly
-    # as a bounded fallback before releasing the job handle.
     if process.poll() is None:
         try:
             process.kill()
@@ -186,11 +179,21 @@ def _start_process(
     env: dict[str, str],
     preexec_fn: Callable[[], None] | None,
     stdin_data: bytes | None,
+    max_processes: int | None,
 ) -> tuple[subprocess.Popen[bytes], WindowsJob | None]:
     windows_job: WindowsJob | None = None
     creationflags = 0
     if os.name == "nt":
         windows_job = WindowsJob.create()
+        try:
+            if max_processes is not None:
+                windows_job.configure_active_process_limit(max_processes)
+        except Exception:
+            try:
+                windows_job.close()
+            except OSError:
+                pass
+            raise
         creationflags = CREATE_SUSPENDED
 
     try:
@@ -267,7 +270,6 @@ def _process_group_stats(pgid: int) -> tuple[int, int]:
         try:
             raw = (candidate / "stat").read_text(encoding="utf-8", errors="replace")
             tail = raw[raw.rfind(")") + 2 :].split()
-            # tail[0] = state (field 3), tail[2] = pgrp (field 5)
             if len(tail) < 3 or int(tail[2]) != pgid:
                 continue
             members += 1
@@ -314,6 +316,7 @@ def run_process(
         env=env,
         preexec_fn=preexec_fn,
         stdin_data=stdin_data,
+        max_processes=max_processes,
     )
     assert process.stdout is not None
     assert process.stderr is not None
@@ -351,6 +354,9 @@ def run_process(
         )
 
     next_resource_check = 0.0
+    needs_sampled_process_stats = max_memory_bytes is not None or (
+        max_processes is not None and os.name != "nt"
+    )
     while process.poll() is None:
         elapsed = time.monotonic() - started
         if elapsed >= timeout_seconds:
@@ -373,9 +379,7 @@ def run_process(
                         "workspace limit exceeded "
                         f"({size} bytes, {entries} entries; limit {max_workspace_bytes})"
                     )
-            if violation is None and (
-                max_memory_bytes is not None or max_processes is not None
-            ):
+            if violation is None and needs_sampled_process_stats:
                 try:
                     if os.name == "nt":
                         if windows_job is None:
@@ -388,15 +392,16 @@ def run_process(
                 except (OSError, ValueError) as exc:
                     violation = f"process-tree resource accounting failed: {exc}"
                 if violation is None:
-                    if (
-                        max_memory_bytes is not None
-                        and rss > max_memory_bytes
-                    ):
+                    if max_memory_bytes is not None and rss > max_memory_bytes:
                         violation = (
                             f"process-tree RSS limit exceeded "
                             f"({rss} > {max_memory_bytes} bytes)"
                         )
-                    elif max_processes is not None and members > max_processes:
+                    elif (
+                        os.name != "nt"
+                        and max_processes is not None
+                        and members > max_processes
+                    ):
                         violation = (
                             f"process count limit exceeded ({members} > {max_processes})"
                         )
@@ -423,10 +428,29 @@ def run_process(
             )
             terminate_tree_once()
 
-    # A fast session leader can exit before the drain threads observe its final
-    # pipe buffers. Keep a bounded drain phase, react to a late overflow by
-    # terminating the retained process containment object/group, and fail closed
-    # if EOF never arrives.
+    def observe_windows_process_limit() -> None:
+        nonlocal violation
+        if os.name != "nt" or max_processes is None or windows_job is None:
+            return
+        try:
+            rejected = windows_job.process_limit_violation_count()
+        except (OSError, ValueError) as exc:
+            violation = _append_violation(
+                violation, f"process-count limit accounting failed: {exc}"
+            )
+            terminate_tree_once()
+            return
+        if rejected > 0:
+            violation = _append_violation(
+                violation,
+                "process count limit exceeded "
+                f"(Windows Job Object terminated {rejected} process(es); "
+                f"limit {max_processes})",
+            )
+            terminate_tree_once()
+
+    observe_windows_process_limit()
+
     drain_deadline = time.monotonic() + 5.0
     while stdout_thread.is_alive() or stderr_thread.is_alive():
         if output_exceeded.is_set():
@@ -449,8 +473,6 @@ def run_process(
         violation = f"captured output limit exceeded ({max_output_bytes} bytes per stream)"
         terminate_tree_once()
 
-    # Termination above should close inherited pipe handles. Keep the final
-    # waits bounded so a broken platform primitive cannot hang the controller.
     if stdout_thread.is_alive():
         stdout_thread.join(timeout=1)
     if stderr_thread.is_alive():
@@ -467,6 +489,8 @@ def run_process(
                 violation, "stdin delivery thread remained active after bounded wait"
             )
             terminate_tree_once()
+
+    observe_windows_process_limit()
 
     if windows_job is not None:
         try:
