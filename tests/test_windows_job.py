@@ -11,6 +11,9 @@ class FakeApi:
         self.terminated = []
         self.closed = []
         self.counts = [0]
+        self.pids = [301, 302]
+        self.working_sets = {301: 4096, 302: 8192}
+        self.sampled = []
         self.thread_ids = [202]
         self.resumed = []
         self.resume_result = 1
@@ -28,6 +31,13 @@ class FakeApi:
         if len(self.counts) > 1:
             return self.counts.pop(0)
         return self.counts[0]
+
+    def job_process_ids(self, job_handle):
+        return list(self.pids)
+
+    def process_working_set_bytes(self, job_handle, process_id):
+        self.sampled.append((job_handle, process_id))
+        return self.working_sets[process_id]
 
     def close_handle(self, handle):
         self.closed.append(handle)
@@ -50,6 +60,29 @@ class WindowsJobTests(unittest.TestCase):
         job.assign_process(SimpleNamespace(_handle=303))
         self.assertEqual(api.assigned, [(101, 303)])
         job.close()
+
+    def test_resource_usage_sums_working_sets_and_uses_job_active_count(self):
+        api = FakeApi()
+        api.counts = [3]
+        job = WindowsJob.create(api=api)
+        self.assertEqual(job.resource_usage(), (12_288, 3))
+        self.assertEqual(api.sampled, [(101, 301), (101, 302)])
+        job.close()
+
+    def test_resource_usage_ignores_process_that_exited_during_sampling(self):
+        api = FakeApi()
+        api.counts = [1]
+        api.working_sets[302] = None
+        job = WindowsJob.create(api=api)
+        self.assertEqual(job.resource_usage(), (4096, 1))
+        job.close()
+
+    def test_resource_usage_rejects_closed_job(self):
+        api = FakeApi()
+        job = WindowsJob.create(api=api)
+        job.close()
+        with self.assertRaisesRegex(WindowsJobError, "closed Windows Job Object"):
+            job.resource_usage()
 
     def test_terminate_waits_until_job_is_empty(self):
         api = FakeApi()
