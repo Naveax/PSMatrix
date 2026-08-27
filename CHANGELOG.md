@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Scope verification-hardening certification triggers to their verification, private-material,
+  PowerShell-parse, and repository workflow-policy regression surfaces. Ordinary runtime product
+  changes may now carry their own tests without asking the maintenance certifier to cross its
+  deliberate `src/psmatrix/` trust boundary.
+- Add non-cancelling branch/PR concurrency to the verification-hardening source certification
+  workflow so one ref cannot create overlapping maintenance certifications.
+
 ## 2.0.0rc2 — 2026-08-05
 
 ### Security

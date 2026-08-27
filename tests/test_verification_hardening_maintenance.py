@@ -174,6 +174,27 @@ class VerificationHardeningMaintenanceTests(unittest.TestCase):
             text.index('Certify current-base verification maintenance'),
         )
 
+    def test_workflow_scopes_test_triggers_to_verification_surfaces(self) -> None:
+        text = WORKFLOW.read_text(encoding='utf-8')
+        self.assertNotIn("      - 'tests/**'", text)
+        scoped_test_paths = (
+            'tests/_verification_hardening_source_certification_base.py',
+            'tests/test_final_repository_private_material_scan_certification.py',
+            'tests/test_powershell_source_parse_*.py',
+            'tests/test_repository_private_material_*.py',
+            'tests/test_repository_workflow_action_policy.py',
+            'tests/test_verification_hardening_*.py',
+        )
+        for path in scoped_test_paths:
+            with self.subTest(path=path):
+                self.assertEqual(text.count(f"      - '{path}'"), 2)
+        self.assertIn(
+            'group: verification-hardening-source-certification-${{ '
+            'github.event.pull_request.head.ref || github.ref }}',
+            text,
+        )
+        self.assertIn('  cancel-in-progress: false', text)
+
     def test_event_head_policy_accepts_new_split_boundary(self) -> None:
         result = self.event_policy.verify(ROOT)
         self.assertEqual(result['status'], 'PASS')
