@@ -673,10 +673,11 @@ class WindowsJob:
         if rejected > 0:
             return rejected
 
-        # If the leader exited while a descendant still owns inherited handles,
-        # give the completion port one short bounded wait. The kernel limit is
-        # still the enforcement authority; this notification is only reporting.
-        if active > 0 and self._consume_process_limit_notifications(50) > 0:
+        # The leader may have exited before the completion packet became
+        # observable, even when the job is already empty. Give the queue one
+        # short bounded wait. The kernel limit is still the enforcement
+        # authority; this notification is only reporting.
+        if self._consume_process_limit_notifications(50) > 0:
             return self._active_process_limit_notifications
 
         rejected = self._api.terminated_process_count(self.handle)

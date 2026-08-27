@@ -208,6 +208,20 @@ class WindowsJobLimitTests(unittest.TestCase):
         self.assertGreaterEqual(calls, 2)
         job.close()
 
+    def test_post_exit_reconciliation_waits_when_job_is_empty(self):
+        api = LimitApi()
+        job = WindowsJob.create(api=api)
+        job.configure_active_process_limit(1)
+
+        def messages(port, key, wait):
+            if wait == 50:
+                return [JOB_OBJECT_MSG_ACTIVE_PROCESS_LIMIT]
+            return []
+
+        api.completion_messages = messages
+        self.assertEqual(job.process_limit_violation_count(), 1)
+        job.close()
+
     def test_process_limit_reconciliation_preserves_fail_closed_accounting(self):
         api = LimitApi()
         job = WindowsJob.create(api=api)
