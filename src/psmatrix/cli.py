@@ -1239,7 +1239,11 @@ def cmd_test(args, manager: RuntimeManager, modules: ModuleManager) -> int:
         resume=args.resume is not None,
         jobs_count=args.jobs,
         fail_fast=args.fail_fast,
-        per_worker_memory_bytes=options.max_memory_bytes,
+        per_worker_memory_bytes=(
+            options.max_committed_memory_bytes
+            if options.max_committed_memory_bytes is not None
+            else options.max_memory_bytes
+        ),
         worker_payload_factory=lambda job: {
             "home": str(manager.home),
             "package_root": str(package_root),
