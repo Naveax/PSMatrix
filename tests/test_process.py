@@ -1,3 +1,4 @@
+import ctypes
 import os
 import sys
 import tempfile
@@ -132,6 +133,106 @@ class ProcessTests(unittest.TestCase):
                 time.sleep(0.02)
             self.assertIn(state, {None, "Z"})
 
+    @unittest.skipUnless(os.name == "nt", "Windows Job Object integration")
+    def test_late_output_limit_kills_windows_descendant_after_parent_exit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pid_path = root / "windows-child.pid"
+            original_drain = process_module._drain
+
+            def delayed_drain(stream, capture):
+                time.sleep(0.20)
+                original_drain(stream, capture)
+
+            with mock.patch.object(process_module, "_drain", side_effect=delayed_drain):
+                result = run_process(
+                    [
+                        sys.executable,
+                        "-c",
+                        (
+                            "import subprocess,sys,time\n"
+                            "from pathlib import Path\n"
+                            "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'])\n"
+                            "Path('windows-child.pid').write_text(str(child.pid),encoding='utf-8')\n"
+                            "sys.stdout.write('x' * 200_000)\n"
+                            "sys.stdout.flush()\n"
+                        ),
+                    ],
+                    root,
+                    dict(os.environ),
+                    timeout_seconds=10,
+                    max_output_bytes=1024,
+                )
+
+            self.assertIn("captured output limit exceeded", result.resource_violation or "")
+            child_pid = int(pid_path.read_text(encoding="utf-8"))
+            self.assertFalse(self._windows_process_is_active(child_pid))
+
+    @unittest.skipUnless(os.name == "nt", "Windows suspended-launch integration")
+    def test_windows_assignment_failure_never_runs_suspended_command(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            marker = root / "should-not-exist.txt"
+
+            class FailingJob:
+                def assign_process(self, process):
+                    raise OSError("synthetic assignment failure")
+
+                def terminate_and_wait(self, **kwargs):
+                    raise OSError("synthetic unassigned job")
+
+                def close(self):
+                    return None
+
+            with mock.patch.object(
+                process_module.WindowsJob, "create", return_value=FailingJob()
+            ), mock.patch.object(process_module, "resume_suspended_process") as resume:
+                with self.assertRaisesRegex(OSError, "synthetic assignment failure"):
+                    run_process(
+                        [
+                            sys.executable,
+                            "-c",
+                            "from pathlib import Path; Path('should-not-exist.txt').write_text('ran')",
+                        ],
+                        root,
+                        dict(os.environ),
+                        timeout_seconds=10,
+                        max_output_bytes=1024,
+                    )
+            resume.assert_not_called()
+            self.assertFalse(marker.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job Object integration")
+    def test_windows_job_termination_failure_is_reported(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+
+            def fail_termination(self, **kwargs):
+                raise OSError("synthetic Job Object termination failure")
+
+            with mock.patch.object(
+                process_module.WindowsJob,
+                "terminate_and_wait",
+                autospec=True,
+                side_effect=fail_termination,
+            ):
+                result = run_process(
+                    [
+                        sys.executable,
+                        "-c",
+                        "import sys,time; sys.stdout.write('x'*200000); sys.stdout.flush(); time.sleep(60)",
+                    ],
+                    root,
+                    dict(os.environ),
+                    timeout_seconds=10,
+                    max_output_bytes=1024,
+                )
+            self.assertIn("captured output limit exceeded", result.resource_violation or "")
+            self.assertIn(
+                "Windows Job Object termination failed",
+                result.resource_violation or "",
+            )
+
     def test_workspace_limit_is_checked_after_fast_exit(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -167,6 +268,36 @@ class ProcessTests(unittest.TestCase):
             )
             self.assertEqual(result.exit_code, 0)
             self.assertEqual(result.stdout, "hello-stdin")
+
+    @staticmethod
+    def _windows_process_is_active(pid: int) -> bool:
+        if os.name != "nt":
+            return False
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        process_query_limited_information = 0x1000
+        still_active = 259
+        kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.GetExitCodeProcess.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_ulong),
+        ]
+        kernel32.GetExitCodeProcess.restype = ctypes.c_int
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.restype = ctypes.c_int
+
+        handle = kernel32.OpenProcess(
+            process_query_limited_information, False, pid
+        )
+        if not handle:
+            return False
+        try:
+            exit_code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            return int(exit_code.value) == still_active
+        finally:
+            kernel32.CloseHandle(handle)
 
 
 if __name__ == "__main__":

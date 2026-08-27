@@ -88,10 +88,23 @@ output are limited, overflow terminates the complete process tree, and raw
 command output is withheld from failure messages. A failed active worker is
 quarantined before a healthy exact-runtime replacement is selected.
 
+On Windows, bounded commands are created suspended, assigned to a retained Job
+Object before their primary thread is resumed, and only then allowed to execute.
+This closes the parent-exit race: a late output/drain violation can terminate and
+verify the remaining job membership even after the original command process has
+already exited. Job Object setup, assignment, resume, termination, accounting and
+handle-close failures are fail-closed. The older bounded `taskkill /T /F` path is
+kept only as a degraded cleanup fallback if Job Object termination itself fails.
+The normal-success path does not enable `KILL_ON_JOB_CLOSE`, so closing the
+controller's containment handle does not silently change intentional surviving
+child-process semantics.
+
 ## Evidence boundary
 
 The local campaign validates recovery algorithms and real PowerShell 7.6.4
-controller/worker paths available in the Bash environment. It does not prove
-that a real Hyper-V, VMware or Windows kernel recovered from physical storage,
-hypervisor or network failure. Those claims require the corresponding signed
-Windows lab campaign.
+controller/worker paths available in the Bash environment. Windows Job Object
+unit regressions are portable, while the live suspended-launch/late-parent-exit
+regressions require the trusted Windows CI runner. Neither substitutes for a
+signed authoritative Hyper-V Windows PowerShell 4.0/5.0/5.1 campaign. Physical
+storage, hypervisor, kernel and network recovery claims still require their
+corresponding signed Windows lab evidence.
