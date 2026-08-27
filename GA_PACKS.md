@@ -6,7 +6,7 @@ This document is the canonical execution order for the remaining PSMatrix 2.0.0 
 |---:|---|---|---|
 | 01 | Vulnerability gate | PREFLIGHT_PASS_SIGNING_PENDING | Exact final release vulnerability scan; Critical=0 and High=0; protected release-bound proof verified |
 | 02 | Complete runtime matrix | HOSTED_LINUX_PREFLIGHT_PASS_PARTIAL | Canonical final 25-target campaign has 25/25 READY/PASS, no missing/failed/incomplete target and strict zero-allowance differential |
-| 03 | Authoritative Windows lab | BLOCKED_ON_RELEASE_AUTHORITY_RECOVERY | Restore frozen RC3 authority or complete reviewed RC4 lost-key recovery, then exact Windows PowerShell 4.0/5.0/5.1 repeated clean-snapshot certification |
+| 03 | Authoritative Windows lab | RC4_RELEASE_LOCK_REVIEW_READY_HUMAN_APPROVAL_PENDING | Approve and promote the reviewed RC4 lock, then complete protected signing/intake and exact Windows PowerShell 4.0/5.0/5.1 repeated clean-snapshot certification |
 | 04 | Public OAuth and mTLS | EXTERNAL_DEPLOYMENT_PENDING | Public-domain OAuth and direct mTLS probes pass from an external authority on the exact release |
 | 05 | External OTLP collector | EXTERNAL_DEPLOYMENT_PENDING | Independent collector receives authenticated metrics and produces fresh signed release-bound proof |
 | 06 | Independent security review | SOURCE_PREFLIGHT_READY_FOR_REVIEWER | Independent reviewer signs a complete conflict-free review bound to the exact final release |
@@ -24,7 +24,7 @@ This document is the canonical execution order for the remaining PSMatrix 2.0.0 
 
 - Pack 01's repaired unsigned scanner workflow passed historically with Bandit, pip-audit and CodeQL `security-extended`, including zero Critical and zero High findings. That RC preflight is not final `2.0.0` evidence; the canonical final vulnerability scan depends on a successful protected final release-signing run.
 - Pack 02 has a 10-lane hosted Linux x64 `PASS_PARTIAL`. The canonical final producer is `production-ga-final-full-runtime-matrix`, which requires exact protected release provenance and 25/25 READY targets before execution.
-- Pack 03's protected RC3 possession check was exercised and failed at the missing `PSMATRIX_RELEASE_PRIVATE_KEY` boundary. The repository's frozen RC4 `lost_previous_private_authority` enrollment is the reviewed fail-closed recovery route if the original RC3 authority cannot be restored.
+- Pack 03's frozen RC4 `lost_previous_private_authority` enrollment (run `32136341027`), unsigned staging (run `32136540372`) and release-lock review (run `32137455148`) completed successfully on exact control head `0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63`. Their public artifacts remain private-key-free and internally consistent. The active lock is absent, artifacts remain unsigned, and issue #260 still requires an explicit owner human approval; this evidence is therefore not yet authoritative Windows or GA proof.
 - Pack 06's current-main source preflight passed but explicitly records `external_reviewer_completed=false` and `ga_eligible=false`.
 - Pack 07's current-main source preflight passed but explicitly records `external_evidence_complete=false`, `final_signing_performed=false`, `production_ga=BLOCKED` and `ga_eligible=false`.
 
