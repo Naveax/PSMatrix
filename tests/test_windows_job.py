@@ -7,12 +7,16 @@ from psmatrix.windows_job import WindowsJob, WindowsJobError, resume_suspended_p
 class FakeApi:
     def __init__(self):
         self.created = 101
+        self.completion_port = 202
+        self.completion_messages_seen = []
         self.assigned = []
         self.terminated = []
         self.closed = []
         self.counts = [0]
         self.pids = [301, 302]
         self.working_sets = {301: 4096, 302: 8192}
+        self.peak_memory = 0
+        self.memory_limits = []
         self.sampled = []
         self.thread_ids = [202]
         self.resumed = []
@@ -23,6 +27,17 @@ class FakeApi:
 
     def assign_process(self, job_handle, process_handle):
         self.assigned.append((job_handle, process_handle))
+
+    def create_completion_port(self):
+        return self.completion_port
+
+    def associate_completion_port(self, job_handle, completion_port, completion_key):
+        self.completion_messages_seen.append(
+            (job_handle, completion_port, completion_key)
+        )
+
+    def completion_messages(self, completion_port, completion_key, wait_milliseconds):
+        return []
 
     def terminate_job(self, job_handle, exit_code):
         self.terminated.append((job_handle, exit_code))
@@ -38,6 +53,12 @@ class FakeApi:
     def process_working_set_bytes(self, job_handle, process_id):
         self.sampled.append((job_handle, process_id))
         return self.working_sets[process_id]
+
+    def set_job_memory_limit(self, job_handle, limit):
+        self.memory_limits.append((job_handle, limit))
+
+    def peak_job_memory_bytes(self, job_handle):
+        return self.peak_memory
 
     def close_handle(self, handle):
         self.closed.append(handle)
@@ -83,6 +104,15 @@ class WindowsJobTests(unittest.TestCase):
         job.close()
         with self.assertRaisesRegex(WindowsJobError, "closed Windows Job Object"):
             job.resource_usage()
+
+    def test_job_memory_limit_is_distinct_from_working_set_sampling(self):
+        api = FakeApi()
+        job = WindowsJob.create(api=api)
+        job.configure_job_memory_limit(16 * 1024 * 1024)
+        self.assertEqual(api.memory_limits, [(101, 16 * 1024 * 1024)])
+        self.assertEqual(job.resource_usage(), (12_288, 0))
+        self.assertEqual(job.job_memory_limit_violation_count(), 0)
+        job.close()
 
     def test_terminate_waits_until_job_is_empty(self):
         api = FakeApi()

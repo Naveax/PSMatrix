@@ -362,6 +362,15 @@ def build_parser() -> argparse.ArgumentParser:
     test.add_argument("--max-file-mib", type=int, default=256)
     test.add_argument("--max-workspace-mib", type=int, default=512)
     test.add_argument("--max-memory-mib", type=int, default=1024)
+    test.add_argument(
+        "--max-committed-memory-mib",
+        type=int,
+        default=None,
+        help=(
+            "Optional Windows Job Object committed-memory budget; distinct "
+            "from sampled RSS/working-set max-memory"
+        ),
+    )
     test.add_argument("--max-processes", type=int, default=128)
     test.add_argument("--max-open-files", type=int, default=512)
     test.add_argument(
@@ -1168,6 +1177,11 @@ def cmd_test(args, manager: RuntimeManager, modules: ModuleManager) -> int:
         max_file_bytes=args.max_file_mib * 1024 * 1024,
         max_workspace_bytes=args.max_workspace_mib * 1024 * 1024,
         max_memory_bytes=args.max_memory_mib * 1024 * 1024,
+        max_committed_memory_bytes=(
+            args.max_committed_memory_mib * 1024 * 1024
+            if args.max_committed_memory_mib is not None
+            else None
+        ),
         max_processes=args.max_processes,
         max_open_files=args.max_open_files,
         psscriptanalyzer=args.psscriptanalyzer,
@@ -1225,7 +1239,11 @@ def cmd_test(args, manager: RuntimeManager, modules: ModuleManager) -> int:
         resume=args.resume is not None,
         jobs_count=args.jobs,
         fail_fast=args.fail_fast,
-        per_worker_memory_bytes=options.max_memory_bytes,
+        per_worker_memory_bytes=(
+            options.max_committed_memory_bytes
+            if options.max_committed_memory_bytes is not None
+            else options.max_memory_bytes
+        ),
         worker_payload_factory=lambda job: {
             "home": str(manager.home),
             "package_root": str(package_root),

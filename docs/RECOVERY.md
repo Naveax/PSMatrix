@@ -99,6 +99,35 @@ The normal-success path does not enable `KILL_ON_JOB_CLOSE`, so closing the
 controller's containment handle does not silently change intentional surviving
 child-process semantics.
 
+### Resource-limit boundary
+
+`max_memory_bytes` is a sampled process-tree budget. On POSIX it sums `VmRSS`
+for members of the leader's process group; on Windows it sums current working
+sets for members of the retained Job Object. The runner samples immediately
+when the live loop is eligible, no less often than the bounded 200 ms interval,
+then samples once after the leader exits and once after pipe draining. These
+samples close the fast-exit bookkeeping gap, but they cannot make a polling
+sampler atomic: a short-lived spike between samples remains outside this
+best-effort RSS/working-set contract. POSIX requests fail closed when `/proc`
+cannot be enumerated, and no cgroup-grade guarantee is inferred from `/proc`.
+
+`max_processes` is likewise sampled on POSIX and is subject to that boundary.
+On Windows it is different: `JOB_OBJECT_LIMIT_ACTIVE_PROCESS` is installed and
+verified before the suspended leader is resumed, so the kernel rejects a
+process-count overflow. Completion notifications and a bounded post-exit
+reconciliation preserve evidence for a spike that begins and ends between
+200 ms samples.
+
+Callers that need a kernel committed-memory ceiling on Windows may set
+`max_committed_memory_bytes` (or the CLI's
+`--max-committed-memory-mib`). This uses the Job Object
+`JOB_OBJECT_LIMIT_JOB_MEMORY` flag and committed-byte completion accounting;
+it is intentionally separate from `max_memory_bytes` and must not be compared
+with RSS/working-set samples. The hard budget is Windows-only. OCI execution
+uses its cgroup memory ceiling for this separate option; POSIX native execution
+rejects it rather than pretending that address-space or `/proc` sampling has
+the same semantics.
+
 ## Evidence boundary
 
 The local campaign validates recovery algorithms and real PowerShell 7.6.4

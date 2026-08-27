@@ -10,6 +10,10 @@ from typing import Any, Protocol
 
 CREATE_SUSPENDED = 0x00000004
 JOB_OBJECT_MSG_ACTIVE_PROCESS_LIMIT = 3
+# The kernel emits this completion notification when a configured
+# JOB_OBJECT_LIMIT_JOB_MEMORY budget is reached.  It is intentionally kept
+# separate from the sampled working-set/RSS contract exposed by resource_usage.
+JOB_OBJECT_MSG_JOB_MEMORY_LIMIT = 10
 
 
 class WindowsJobError(OSError):
@@ -30,6 +34,8 @@ class _WindowsJobApi(Protocol):
     def active_process_count(self, job_handle: int) -> int: ...
     def terminated_process_count(self, job_handle: int) -> int: ...
     def set_active_process_limit(self, job_handle: int, limit: int) -> None: ...
+    def set_job_memory_limit(self, job_handle: int, limit: int) -> None: ...
+    def peak_job_memory_bytes(self, job_handle: int) -> int: ...
     def job_process_ids(self, job_handle: int) -> list[int]: ...
     def process_working_set_bytes(
         self, job_handle: int, process_id: int
@@ -79,6 +85,28 @@ class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
     ]
 
 
+class _IO_COUNTERS(ctypes.Structure):
+    _fields_ = [
+        ("ReadOperationCount", ctypes.c_ulonglong),
+        ("WriteOperationCount", ctypes.c_ulonglong),
+        ("OtherOperationCount", ctypes.c_ulonglong),
+        ("ReadTransferCount", ctypes.c_ulonglong),
+        ("WriteTransferCount", ctypes.c_ulonglong),
+        ("OtherTransferCount", ctypes.c_ulonglong),
+    ]
+
+
+class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("BasicLimitInformation", _JOBOBJECT_BASIC_LIMIT_INFORMATION),
+        ("IoInfo", _IO_COUNTERS),
+        ("ProcessMemoryLimit", ctypes.c_size_t),
+        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+        ("JobMemoryLimit", ctypes.c_size_t),
+        ("PeakJobMemoryUsed", ctypes.c_size_t),
+    ]
+
+
 class _JOBOBJECT_ASSOCIATE_COMPLETION_PORT(ctypes.Structure):
     _fields_ = [
         ("CompletionKey", ctypes.c_void_p),
@@ -124,7 +152,9 @@ class _Kernel32JobApi:
     JOB_OBJECT_BASIC_LIMIT_INFORMATION = 2
     JOB_OBJECT_BASIC_PROCESS_ID_LIST = 3
     JOB_OBJECT_ASSOCIATE_COMPLETION_PORT_INFORMATION = 7
+    JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
     JOB_OBJECT_LIMIT_ACTIVE_PROCESS = 0x00000008
+    JOB_OBJECT_LIMIT_JOB_MEMORY = 0x00000200
     RESUME_FAILED = 0xFFFFFFFF
     ERROR_NO_MORE_FILES = 18
     ERROR_MORE_DATA = 234
@@ -318,6 +348,20 @@ class _Kernel32JobApi:
             self._raise_last_error("QueryInformationJobObject(basic limits)")
         return info
 
+    def _extended_limit_info(
+        self, job_handle: int
+    ) -> _JOBOBJECT_EXTENDED_LIMIT_INFORMATION:
+        info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        if not self._kernel32.QueryInformationJobObject(
+            wintypes.HANDLE(job_handle),
+            self.JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+            None,
+        ):
+            self._raise_last_error("QueryInformationJobObject(extended limits)")
+        return info
+
     def active_process_count(self, job_handle: int) -> int:
         return int(self._accounting_info(job_handle).ActiveProcesses)
 
@@ -348,6 +392,39 @@ class _Kernel32JobApi:
                 "Windows Job Object active process limit verification failed: "
                 f"requested {limit}, observed {int(verified.ActiveProcessLimit)}"
             )
+
+    def set_job_memory_limit(self, job_handle: int, limit: int) -> None:
+        if limit <= 0:
+            raise ValueError("job memory limit must be positive")
+        max_size_t = (1 << (ctypes.sizeof(ctypes.c_size_t) * 8)) - 1
+        if limit > max_size_t:
+            raise ValueError("job memory limit exceeds Windows SIZE_T range")
+        info = self._extended_limit_info(job_handle)
+        info.BasicLimitInformation.LimitFlags = (
+            int(info.BasicLimitInformation.LimitFlags)
+            | self.JOB_OBJECT_LIMIT_JOB_MEMORY
+        )
+        info.JobMemoryLimit = limit
+        if not self._kernel32.SetInformationJobObject(
+            wintypes.HANDLE(job_handle),
+            self.JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        ):
+            self._raise_last_error("SetInformationJobObject(job memory limit)")
+
+        verified = self._extended_limit_info(job_handle)
+        flags = int(verified.BasicLimitInformation.LimitFlags)
+        if not (flags & self.JOB_OBJECT_LIMIT_JOB_MEMORY):
+            raise WindowsJobError("Windows Job Object job memory limit flag was not retained")
+        if int(verified.JobMemoryLimit) != limit:
+            raise WindowsJobError(
+                "Windows Job Object job memory limit verification failed: "
+                f"requested {limit}, observed {int(verified.JobMemoryLimit)}"
+            )
+
+    def peak_job_memory_bytes(self, job_handle: int) -> int:
+        return int(self._extended_limit_info(job_handle).PeakJobMemoryUsed)
 
     def job_process_ids(self, job_handle: int) -> list[int]:
         capacity = self.INITIAL_PROCESS_ID_CAPACITY
@@ -482,6 +559,8 @@ class WindowsJob:
     _completion_port: int | None = None
     _completion_key: int | None = None
     _active_process_limit_notifications: int = 0
+    _job_memory_limit: int | None = None
+    _job_memory_limit_notifications: int = 0
 
     @classmethod
     def create(cls, api: _WindowsJobApi | None = None) -> "WindowsJob":
@@ -520,6 +599,19 @@ class WindowsJob:
         self._api.set_active_process_limit(self.handle, limit)
         self._active_process_limit = limit
 
+    def configure_job_memory_limit(self, limit: int) -> None:
+        """Install a kernel committed-memory budget distinct from RSS sampling."""
+
+        self._require_open()
+        if limit <= 0:
+            raise ValueError("job memory limit must be positive")
+        max_size_t = (1 << (ctypes.sizeof(ctypes.c_size_t) * 8)) - 1
+        if limit > max_size_t:
+            raise ValueError("job memory limit exceeds Windows SIZE_T range")
+        self._ensure_completion_port()
+        self._api.set_job_memory_limit(self.handle, limit)
+        self._job_memory_limit = limit
+
     def assign_process(self, process: Any) -> None:
         self._require_open()
         raw = getattr(process, "_handle", None)
@@ -536,10 +628,10 @@ class WindowsJob:
                 rss_bytes += working_set
         return rss_bytes, self._api.active_process_count(self.handle)
 
-    def _consume_process_limit_notifications(self, wait_milliseconds: int = 0) -> int:
+    def _poll_limit_notifications(self, wait_milliseconds: int = 0) -> None:
         if self._completion_port is None or self._completion_key is None:
             raise WindowsJobError(
-                "Windows Job Object completion port is unavailable for process-limit reporting"
+                "Windows Job Object completion port is unavailable for limit reporting"
             )
         messages = self._api.completion_messages(
             self._completion_port, self._completion_key, wait_milliseconds
@@ -547,7 +639,17 @@ class WindowsJob:
         self._active_process_limit_notifications += sum(
             1 for message in messages if message == JOB_OBJECT_MSG_ACTIVE_PROCESS_LIMIT
         )
+        self._job_memory_limit_notifications += sum(
+            1 for message in messages if message == JOB_OBJECT_MSG_JOB_MEMORY_LIMIT
+        )
+
+    def _consume_process_limit_notifications(self, wait_milliseconds: int = 0) -> int:
+        self._poll_limit_notifications(wait_milliseconds)
         return self._active_process_limit_notifications
+
+    def _consume_job_memory_limit_notifications(self, wait_milliseconds: int = 0) -> int:
+        self._poll_limit_notifications(wait_milliseconds)
+        return self._job_memory_limit_notifications
 
     def process_limit_violation_count(self) -> int:
         self._require_open()
@@ -571,15 +673,46 @@ class WindowsJob:
         if rejected > 0:
             return rejected
 
-        # If the leader exited while a descendant still owns inherited handles,
-        # give the completion port one short bounded wait. The kernel limit is
-        # still the enforcement authority; this notification is only reporting.
-        if active > 0 and self._consume_process_limit_notifications(50) > 0:
+        # The leader may have exited before the completion packet became
+        # observable, even when the job is already empty. Give the queue one
+        # short bounded wait. The kernel limit is still the enforcement
+        # authority; this notification is only reporting.
+        if self._consume_process_limit_notifications(50) > 0:
             return self._active_process_limit_notifications
 
         rejected = self._api.terminated_process_count(self.handle)
         if rejected > 0:
             return rejected
+        return 0
+
+    def job_memory_limit_violation_count(self) -> int:
+        """Return persistent committed-memory limit evidence.
+
+        The Job Object limit and its completion notification use committed
+        bytes.  This method never compares that value with resource_usage's
+        working-set/RSS bytes.
+        """
+
+        self._require_open()
+        if self._job_memory_limit is None:
+            return 0
+
+        if self._consume_job_memory_limit_notifications() > 0:
+            return self._job_memory_limit_notifications
+
+        try:
+            peak = self._api.peak_job_memory_bytes(self.handle)
+        except (OSError, ValueError) as exc:
+            raise WindowsJobError(
+                f"committed-memory accounting failed: {exc}"
+            ) from exc
+        if peak > self._job_memory_limit:
+            return 1
+        # A leader can exit immediately after the allocation that crossed the
+        # limit.  Give the completion queue one short bounded opportunity to
+        # publish the notification before declaring the post-exit sample clean.
+        if self._consume_job_memory_limit_notifications(50) > 0:
+            return self._job_memory_limit_notifications
         return 0
 
     def terminate_and_wait(

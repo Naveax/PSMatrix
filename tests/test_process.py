@@ -1,4 +1,5 @@
 import ctypes
+import io
 import os
 import sys
 import tempfile
@@ -41,7 +42,11 @@ class ProcessTests(unittest.TestCase):
 
     def test_resource_limits_must_be_positive(self):
         with tempfile.TemporaryDirectory() as temp:
-            for argument in ("max_memory_bytes", "max_processes"):
+            for argument in (
+                "max_memory_bytes",
+                "max_processes",
+                "max_committed_memory_bytes",
+            ):
                 for value in (0, -1):
                     with self.subTest(argument=argument, value=value):
                         with self.assertRaisesRegex(
@@ -55,6 +60,187 @@ class ProcessTests(unittest.TestCase):
                                 max_output_bytes=1024,
                                 **{argument: value},
                             )
+
+    @unittest.skipUnless(os.name != "nt", "POSIX process-group sampling regression")
+    def test_fast_exit_memory_limit_is_checked_after_leader_exit(self):
+        class FastExitProcess:
+            pid = 42
+            returncode = 0
+            stdin = None
+            stdout = io.BytesIO()
+            stderr = io.BytesIO()
+
+            def poll(self):
+                return 0
+
+            def wait(self, timeout=None):
+                return 0
+
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(
+            process_module,
+            "_start_process",
+            return_value=(FastExitProcess(), None),
+        ), mock.patch.object(
+            process_module,
+            "_process_group_stats",
+            return_value=(64 * 1024, 1),
+        ) as sample, mock.patch.object(
+            process_module,
+            "_kill_process_group",
+            return_value=None,
+        ) as terminate:
+            result = run_process(
+                ["synthetic"],
+                Path(temp),
+                {},
+                timeout_seconds=1,
+                max_output_bytes=1024,
+                max_memory_bytes=1024,
+            )
+
+        sample.assert_called_once_with(42)
+        terminate.assert_called_once()
+        self.assertIn("process-tree RSS limit exceeded", result.resource_violation or "")
+
+    @unittest.skipUnless(os.name != "nt", "POSIX process-group sampling regression")
+    def test_fast_exit_process_count_limit_is_checked_after_leader_exit(self):
+        class FastExitProcess:
+            pid = 43
+            returncode = 0
+            stdin = None
+            stdout = io.BytesIO()
+            stderr = io.BytesIO()
+
+            def poll(self):
+                return 0
+
+            def wait(self, timeout=None):
+                return 0
+
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(
+            process_module,
+            "_start_process",
+            return_value=(FastExitProcess(), None),
+        ), mock.patch.object(
+            process_module,
+            "_process_group_stats",
+            return_value=(0, 2),
+        ) as sample, mock.patch.object(
+            process_module,
+            "_kill_process_group",
+            return_value=None,
+        ) as terminate:
+            result = run_process(
+                ["synthetic"],
+                Path(temp),
+                {},
+                timeout_seconds=1,
+                max_output_bytes=1024,
+                max_processes=1,
+            )
+
+        sample.assert_called_once_with(43)
+        terminate.assert_called_once()
+        self.assertIn("process count limit exceeded", result.resource_violation or "")
+
+    @unittest.skipUnless(os.name != "nt", "POSIX process-group sampling regression")
+    def test_posix_resource_accounting_unavailable_fails_closed(self):
+        class FastExitProcess:
+            pid = 44
+            returncode = 0
+            stdin = None
+            stdout = io.BytesIO()
+            stderr = io.BytesIO()
+
+            def poll(self):
+                return 0
+
+            def wait(self, timeout=None):
+                return 0
+
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(
+            process_module,
+            "_start_process",
+            return_value=(FastExitProcess(), None),
+        ), mock.patch.object(
+            process_module.Path,
+            "is_dir",
+            return_value=False,
+        ), mock.patch.object(
+            process_module,
+            "_kill_process_group",
+            return_value=None,
+        ) as terminate:
+            result = run_process(
+                ["synthetic"],
+                Path(temp),
+                {},
+                timeout_seconds=1,
+                max_output_bytes=1024,
+                max_processes=1,
+            )
+
+        terminate.assert_called_once()
+        self.assertIn("requires /proc", result.resource_violation or "")
+
+    @unittest.skipUnless(os.name != "nt", "POSIX process-group sampling regression")
+    def test_live_posix_zero_member_sample_fails_closed(self):
+        class LiveThenExitProcess:
+            pid = 45
+            returncode = 0
+            stdin = None
+            stdout = io.BytesIO()
+            stderr = io.BytesIO()
+
+            def __init__(self):
+                self.polls = 0
+
+            def poll(self):
+                self.polls += 1
+                return None if self.polls <= 3 else 0
+
+            def wait(self, timeout=None):
+                return 0
+
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(
+            process_module,
+            "_start_process",
+            return_value=(LiveThenExitProcess(), None),
+        ), mock.patch.object(
+            process_module,
+            "_process_group_stats",
+            return_value=(0, 0),
+        ), mock.patch.object(
+            process_module,
+            "_kill_process_group",
+            return_value=None,
+        ) as terminate:
+            result = run_process(
+                ["synthetic"],
+                Path(temp),
+                {},
+                timeout_seconds=1,
+                max_output_bytes=1024,
+                max_processes=1,
+            )
+
+        terminate.assert_called_once()
+        self.assertIn("not visible in /proc", result.resource_violation or "")
+
+    @unittest.skipUnless(os.name != "nt", "POSIX-only unsupported hard-memory contract")
+    def test_committed_memory_budget_is_windows_only(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(
+                ValueError, "requires Windows Job Object enforcement"
+            ):
+                run_process(
+                    [sys.executable, "-c", "pass"],
+                    Path(temp),
+                    dict(os.environ),
+                    timeout_seconds=1,
+                    max_output_bytes=1024,
+                    max_committed_memory_bytes=1024,
+                )
 
     @unittest.skipUnless(Path("/proc").is_dir(), "Linux process-state assertion")
     def test_output_limit_terminates_descendant_processes(self):

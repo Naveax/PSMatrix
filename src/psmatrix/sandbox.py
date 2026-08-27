@@ -111,6 +111,9 @@ class SandboxLimits:
     max_memory_bytes: int = 1024 * 1024 * 1024
     max_processes: int = 128
     max_open_files: int = 512
+    # Optional Windows-only kernel committed-memory budget. This is distinct
+    # from max_memory_bytes, which remains sampled RSS/working-set telemetry.
+    max_committed_memory_bytes: int | None = None
 
 
 @dataclass(frozen=True)

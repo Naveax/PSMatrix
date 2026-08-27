@@ -70,6 +70,9 @@ class RunOptions:
     teardown_scripts: tuple[str, ...] = ()
     dependency_lockfile: str | None = None
     dependency_policy: str = "auto"
+    # Optional Windows-only kernel committed-memory budget. This remains
+    # separate from sampled RSS/working-set max_memory_bytes.
+    max_committed_memory_bytes: int | None = None
 
 
 class ScriptRunner:
@@ -303,6 +306,7 @@ class ScriptRunner:
             max_file_bytes=options.max_file_bytes,
             max_workspace_bytes=options.max_workspace_bytes,
             max_memory_bytes=options.max_memory_bytes,
+            max_committed_memory_bytes=options.max_committed_memory_bytes,
             max_processes=options.max_processes,
             max_open_files=options.max_open_files,
         )
@@ -400,6 +404,13 @@ class ScriptRunner:
                 "max_workspace_bytes": options.max_workspace_bytes,
                 "max_memory_bytes": options.max_memory_bytes,
                 "max_processes": options.max_processes,
+                # OCI cgroups enforce the separate hard budget inside the
+                # container; native Windows uses the Job Object path.
+                "max_committed_memory_bytes": (
+                    None
+                    if active_backend == "oci"
+                    else options.max_committed_memory_bytes
+                ),
             }
             parse_result = redactor.execution(run_process(
                 [
@@ -833,7 +844,13 @@ class ScriptRunner:
 
     @staticmethod
     def _oci_environment(options: RunOptions) -> dict[str, str]:
-        memory_mib = max(16, options.max_memory_bytes // (1024 * 1024))
+        if (
+            options.max_committed_memory_bytes is not None
+            and options.max_committed_memory_bytes <= 0
+        ):
+            raise ValueError("max_committed_memory_bytes must be positive")
+        hard_memory = options.max_committed_memory_bytes or options.max_memory_bytes
+        memory_mib = max(16, hard_memory // (1024 * 1024))
         cpu_count = max(0.10, min(float(os.cpu_count() or 1), 1.0))
         return {
             "PSMATRIX_OCI_NETWORK": options.network,
