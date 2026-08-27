@@ -1,4 +1,8 @@
-## PSMatrix 2.0.0rc2 Production GA gate validation
+## PSMatrix 2.0.0 Production GA gate validation
+
+This document validates the current source contract. It does not declare
+Production GA or replace the fresh release-bound evidence required by
+`GA_PACKS.md`.
 
 - CLI/MCP/HTTP operations snapshot uses one shared data model.
 - Dashboard and JSON APIs are authenticated, rate-limited and read-only.
@@ -29,7 +33,7 @@
 External OAuth provider deployment, public-domain TLS, ChatGPT/Claude account configuration and authoritative Windows execution are not claimed by the local evidence.
 
 
-## GA release-candidate boundary
+## Production GA evidence boundary
 
 The gate implementation is validated with complete synthetic signed fixtures,
 local key rotation/revocation drills, and fail-closed missing/invalid evidence

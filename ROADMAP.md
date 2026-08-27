@@ -67,8 +67,11 @@ authoritative Windows campaigns and Production GA gates.
 - Prometheus text exposition and optional OTLP/HTTP JSON metrics export.
 - Deterministic secret-free support bundle and 49-tool MCP contract.
 
-## M2.0 — Production GA gate — next
+## M2.0 — Production GA gate — active closure
 
+- Reviewed RC4 authority recovery is mechanically ready and remains blocked on
+  the explicit owner approval in issue #260; no active lock or signed RC4
+  release is claimed before that approval.
 - Authoritative Windows 4.0/5.0/5.1 campaign execution on trusted lab media.
 - Public OAuth/mTLS deployment and external collector soak testing.
 - Final critical/high vulnerability closure and signed GA release.
