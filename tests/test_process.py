@@ -39,6 +39,23 @@ class ProcessTests(unittest.TestCase):
             self.assertIsNotNone(result.resource_violation)
             self.assertIn("captured output limit exceeded", result.resource_violation)
 
+    def test_resource_limits_must_be_positive(self):
+        with tempfile.TemporaryDirectory() as temp:
+            for argument in ("max_memory_bytes", "max_processes"):
+                for value in (0, -1):
+                    with self.subTest(argument=argument, value=value):
+                        with self.assertRaisesRegex(
+                            ValueError, f"{argument} must be positive"
+                        ):
+                            run_process(
+                                [sys.executable, "-c", "raise SystemExit(99)"],
+                                Path(temp),
+                                dict(os.environ),
+                                timeout_seconds=10,
+                                max_output_bytes=1024,
+                                **{argument: value},
+                            )
+
     @unittest.skipUnless(Path("/proc").is_dir(), "Linux process-state assertion")
     def test_output_limit_terminates_descendant_processes(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -230,6 +247,74 @@ class ProcessTests(unittest.TestCase):
             self.assertIn("captured output limit exceeded", result.resource_violation or "")
             self.assertIn(
                 "Windows Job Object termination failed",
+                result.resource_violation or "",
+            )
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job Object resource accounting")
+    def test_windows_process_count_limit_terminates_job_descendant(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pid_path = root / "resource-child.pid"
+            result = run_process(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import subprocess,sys,time\n"
+                        "from pathlib import Path\n"
+                        "first=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'])\n"
+                        "Path('resource-child.pid').write_text(str(first.pid),encoding='utf-8')\n"
+                        "second=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'])\n"
+                        "time.sleep(60)\n"
+                    ),
+                ],
+                root,
+                dict(os.environ),
+                timeout_seconds=10,
+                max_output_bytes=1024,
+                max_processes=2,
+            )
+            self.assertIn("process count limit exceeded", result.resource_violation or "")
+            self.assertTrue(pid_path.is_file())
+            child_pid = int(pid_path.read_text(encoding="utf-8"))
+            self.assertFalse(self._windows_process_is_active(child_pid))
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job Object resource accounting")
+    def test_windows_memory_limit_terminates_job(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result = run_process(
+                [
+                    sys.executable,
+                    "-c",
+                    "import time; data=bytearray(64*1024*1024); time.sleep(60)",
+                ],
+                Path(temp),
+                dict(os.environ),
+                timeout_seconds=10,
+                max_output_bytes=1024,
+                max_memory_bytes=8 * 1024 * 1024,
+            )
+            self.assertIn("process-tree RSS limit exceeded", result.resource_violation or "")
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job Object resource accounting")
+    def test_windows_resource_accounting_failure_is_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with mock.patch.object(
+                process_module.WindowsJob,
+                "resource_usage",
+                autospec=True,
+                side_effect=OSError("synthetic accounting failure"),
+            ):
+                result = run_process(
+                    [sys.executable, "-c", "import time; time.sleep(60)"],
+                    Path(temp),
+                    dict(os.environ),
+                    timeout_seconds=10,
+                    max_output_bytes=1024,
+                    max_processes=1,
+                )
+            self.assertIn(
+                "process-tree resource accounting failed: synthetic accounting failure",
                 result.resource_violation or "",
             )
 

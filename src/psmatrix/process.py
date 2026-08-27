@@ -300,6 +300,10 @@ def run_process(
         raise ValueError("timeout_seconds must be positive")
     if max_output_bytes <= 0:
         raise ValueError("max_output_bytes must be positive")
+    if max_memory_bytes is not None and max_memory_bytes <= 0:
+        raise ValueError("max_memory_bytes must be positive")
+    if max_processes is not None and max_processes <= 0:
+        raise ValueError("max_processes must be positive")
     if os.name == "nt" and preexec_fn is not None:
         raise ValueError("preexec_fn is unsupported on Windows")
 
@@ -369,16 +373,33 @@ def run_process(
                         "workspace limit exceeded "
                         f"({size} bytes, {entries} entries; limit {max_workspace_bytes})"
                     )
-            if violation is None and (max_memory_bytes or max_processes):
-                rss, members = _process_group_stats(process.pid)
-                if max_memory_bytes and rss > max_memory_bytes:
-                    violation = (
-                        f"process-tree RSS limit exceeded ({rss} > {max_memory_bytes} bytes)"
-                    )
-                elif max_processes and members > max_processes:
-                    violation = (
-                        f"process count limit exceeded ({members} > {max_processes})"
-                    )
+            if violation is None and (
+                max_memory_bytes is not None or max_processes is not None
+            ):
+                try:
+                    if os.name == "nt":
+                        if windows_job is None:
+                            raise OSError(
+                                "Windows Job Object is unavailable for resource accounting"
+                            )
+                        rss, members = windows_job.resource_usage()
+                    else:
+                        rss, members = _process_group_stats(process.pid)
+                except (OSError, ValueError) as exc:
+                    violation = f"process-tree resource accounting failed: {exc}"
+                if violation is None:
+                    if (
+                        max_memory_bytes is not None
+                        and rss > max_memory_bytes
+                    ):
+                        violation = (
+                            f"process-tree RSS limit exceeded "
+                            f"({rss} > {max_memory_bytes} bytes)"
+                        )
+                    elif max_processes is not None and members > max_processes:
+                        violation = (
+                            f"process count limit exceeded ({members} > {max_processes})"
+                        )
             if violation is not None:
                 terminate_tree_once()
                 break
