@@ -33,9 +33,15 @@ The campaign verifies durable queue recovery, controller restart, exact-once
 worker retries, resumable transfers, snapshot retry, quarantine/replacement and
 signed evidence tamper rejection. See `docs/RECOVERY.md`.
 
-## Current milestone: 2.0.0rc2 Production GA gate
+## Current milestone: 2.0.0 Production GA closure
 
-The 1.8 controller includes:
+The source version is `2.0.0`, but the version string alone is not a Production
+GA declaration. The reviewed RC4 authority-recovery path is awaiting the
+explicit owner approval recorded in issue #260; authoritative Windows,
+complete 25-target, external deployment, independent review, and final signing
+evidence remain mandatory. See `GA_PACKS.md` for the canonical live boundary.
+
+The 2.0 controller includes:
 
 - exact PowerShell Core runtime management and digest-pinned OCI backends;
 - parser/AST, PSScriptAnalyzer, Pester, coverage, six-stream, native-exit,
@@ -115,12 +121,12 @@ python -m pip wheel . --no-deps --no-build-isolation -w dist
 
 ./psmatrix deploy windows-package \
   --source-root . \
-  --wheel dist/psmatrix-2.0.0rc2-py3-none-any.whl \
-  --output dist/psmatrix-2.0.0rc2-windows-workers.zip \
+  --wheel dist/psmatrix-2.0.0-py3-none-any.whl \
+  --output dist/psmatrix-2.0.0-windows-workers.zip \
   --signing-private-key secrets/release-private.pem \
   --signing-public-key secrets/release-public.pem
 
-./psmatrix deploy verify dist/psmatrix-2.0.0rc2-windows-workers.zip \
+./psmatrix deploy verify dist/psmatrix-2.0.0-windows-workers.zip \
   --public-key secrets/release-public.pem
 ```
 
@@ -145,7 +151,7 @@ environment variables on the Hyper-V host.
 SOURCE_DATE_EPOCH=0 ./psmatrix lab build-provisioning-kit \
   --source-root . \
   --plan .psmatrix/windows-hyperv-plan.json \
-  --output dist/psmatrix-2.0.0rc2-windows-provisioning-kit.zip \
+  --output dist/psmatrix-2.0.0-windows-provisioning-kit.zip \
   --signing-private-key secrets/release-private.pem \
   --signing-public-key secrets/release-public.pem
 
@@ -292,12 +298,12 @@ Build a deterministic signed lab kit:
 ```bash
 ./psmatrix lab build-kit \
   --source-root . \
-  --output dist/psmatrix-2.0.0rc2-windows-certification-kit.zip \
+  --output dist/psmatrix-2.0.0-windows-certification-kit.zip \
   --signing-private-key secrets/release-private.pem \
   --signing-public-key secrets/release-public.pem
 
 ./psmatrix lab verify-kit \
-  dist/psmatrix-2.0.0rc2-windows-certification-kit.zip \
+  dist/psmatrix-2.0.0-windows-certification-kit.zip \
   --public-key secrets/release-public.pem
 ```
 
@@ -346,18 +352,18 @@ check passes, and both reset phases are configured and successful.
 
 ```bash
 SOURCE_DATE_EPOCH=0 ./psmatrix release source \
-  --root . --output-dir dist --name psmatrix-2.0.0rc2
+  --root . --output-dir dist --name psmatrix-2.0.0
 
 SOURCE_DATE_EPOCH=0 ./psmatrix release manifest \
-  dist/psmatrix-2.0.0rc2-source.zip \
-  dist/psmatrix-2.0.0rc2-source.tar.gz \
-  dist/psmatrix-2.0.0rc2-py3-none-any.whl \
-  dist/psmatrix-2.0.0rc2-windows-workers.zip \
-  --output dist/psmatrix-2.0.0rc2-release.json \
+  dist/psmatrix-2.0.0-source.zip \
+  dist/psmatrix-2.0.0-source.tar.gz \
+  dist/psmatrix-2.0.0-py3-none-any.whl \
+  dist/psmatrix-2.0.0-windows-workers.zip \
+  --output dist/psmatrix-2.0.0-release.json \
   --signing-private-key secrets/release-private.pem \
   --signing-public-key secrets/release-public.pem
 
-./psmatrix release verify dist/psmatrix-2.0.0rc2-release.json \
+./psmatrix release verify dist/psmatrix-2.0.0-release.json \
   --artifact-dir dist \
   --public-key secrets/release-public.pem
 ```
