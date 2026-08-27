@@ -265,14 +265,63 @@ class WindowsAuthorityGAContractTests(unittest.TestCase):
         )
 
         status = json.loads(STATUS.read_text(encoding="utf-8"))
+        self.assertEqual(status["release_candidate"], "2.0.0rc4")
         pack = next(row for row in status["packs"] if row["id"] == "03-authoritative-windows")
-        self.assertEqual(pack["state"], "INFRASTRUCTURE_PREFLIGHT_READY_HOSTED_WINDOWS_5_1_PENDING")
+        self.assertEqual(pack["state"], "RC4_RELEASE_LOCK_REVIEW_READY_HUMAN_APPROVAL_PENDING")
         self.assertFalse(pack["ga_eligible"])
         self.assertEqual(
             pack["infrastructure_preflight"]["workflow"],
             "production-ga-windows-authority-infrastructure-preflight",
         )
         self.assertFalse(pack["infrastructure_preflight"]["ga_eligible"])
+        recovery = pack["authority_recovery"]
+        self.assertEqual(recovery["status"], "READY_FOR_HUMAN_REVIEW")
+        self.assertEqual(recovery["control_head"], "0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63")
+        self.assertEqual(recovery["enrollment_completed_runs"], 1)
+        self.assertEqual(recovery["staging_completed_runs"], 1)
+        self.assertEqual(recovery["lock_review_completed_runs"], 1)
+        observed = {
+            "enrollment": (
+                32136341027,
+                1,
+                9324124650,
+                "8a74fd09d7e5b7488d21faf7c952dd9427c15c74e0c6740ec376ffaac3424f48",
+            ),
+            "staging": (
+                32136540372,
+                2,
+                9324464084,
+                "03fffb4a4e24c585ea7b6ccd2bf97c43529f90694430926484fee72fc57a3e3d",
+            ),
+            "lock_review": (
+                32137455148,
+                1,
+                9324675173,
+                "8002df656f40ab830c54eafe86915e57faea5654881468307c7180d3f86819aa",
+            ),
+        }
+        for name, (run, attempt, artifact, digest) in observed.items():
+            with self.subTest(observed_stage=name):
+                row = recovery[name]
+                self.assertEqual(row["workflow_run"], run)
+                self.assertEqual(row["run_attempt"], attempt)
+                self.assertEqual(row["head_sha"], recovery["control_head"])
+                self.assertEqual(row["artifact_id"], artifact)
+                self.assertEqual(row["artifact_sha256"], digest)
+        self.assertEqual(
+            recovery["lock_review"]["review_draft_sha256"],
+            "a2a97763f679b18562e19ec99f066374b097a50c44a3bea4d1208328e9b339d9",
+        )
+        self.assertEqual(
+            recovery["lock_review"]["proposed_public_key_sha256"],
+            "ece4d7087449cb42cde9183b0b1e2b82db610d4ffffd726e6737d2ba09578a08",
+        )
+        self.assertEqual(recovery["human_review_issue"], 260)
+        self.assertFalse(recovery["human_approval_created"])
+        self.assertFalse(recovery["active_rc4_lock_present"])
+        self.assertFalse(recovery["release_artifacts_signed"])
+        self.assertFalse(recovery["private_key_published"])
+        self.assertFalse(recovery["ga_eligible"])
 
 
 if __name__ == "__main__":
