@@ -5,7 +5,12 @@ on:
     branches: [main]
     paths:
       - 'scripts/ga/**'
-      - 'tests/**'
+      - 'tests/_verification_hardening_source_certification_base.py'
+      - 'tests/test_final_repository_private_material_scan_certification.py'
+      - 'tests/test_powershell_source_parse_*.py'
+      - 'tests/test_repository_private_material_*.py'
+      - 'tests/test_repository_workflow_action_policy.py'
+      - 'tests/test_verification_hardening_*.py'
       - '.github/workflows/ga-repository-private-material-scan.yml'
       - '.github/workflows/powershell-source-parse-diagnostic.yml'
       - '.github/workflows/verification-hardening-source-certification.yml'
@@ -13,10 +18,19 @@ on:
     branches: [main]
     paths:
       - 'scripts/ga/**'
-      - 'tests/**'
+      - 'tests/_verification_hardening_source_certification_base.py'
+      - 'tests/test_final_repository_private_material_scan_certification.py'
+      - 'tests/test_powershell_source_parse_*.py'
+      - 'tests/test_repository_private_material_*.py'
+      - 'tests/test_repository_workflow_action_policy.py'
+      - 'tests/test_verification_hardening_*.py'
       - '.github/workflows/ga-repository-private-material-scan.yml'
       - '.github/workflows/powershell-source-parse-diagnostic.yml'
       - '.github/workflows/verification-hardening-source-certification.yml'
+
+concurrency:
+  group: verification-hardening-source-certification-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
