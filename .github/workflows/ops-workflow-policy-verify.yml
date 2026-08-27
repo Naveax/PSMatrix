@@ -45,6 +45,7 @@ jobs:
           retired_credential = ['PSMATRIX','TEMP','ADMIN','TOKEN'].join('_')
           retired_credential_refs = 0
           owner_gate_contracts_checked = 0
+          human_approval_router_contracts_checked = 0
           final_review_publisher_contracts_checked = 0
           promotion_pr_human_gate_contracts_checked = 0
           promotion_merge_contracts_checked = 0
@@ -61,8 +62,7 @@ jobs:
           workflow_paths_by_name = Hash.new { |h, k| h[k] = [] }
 
           allowed_issue_comment_workflows = [
-            '.github/workflows/ops-rc4-human-approval-promotion-dispatch.yml',
-            '.github/workflows/ops-final-human-approval-promotion-dispatch.yml',
+            '.github/workflows/ops-human-approval-promotion-dispatch-router.yml',
             '.github/workflows/ops-external22-ready-to-fresh-readiness.yml',
           ].sort
 
@@ -199,8 +199,7 @@ jobs:
 
           owner_gate_requirements = {
             '.github/workflows/ops-rc4-human-approval-promotion-dispatch.yml' => [
-              'issue_comment:',
-              'types: [created]',
+              'workflow_call:',
               'github.event.issue.number == 260',
               "github.event.comment.user.login == 'Naveax'",
               "github.event.comment.author_association == 'OWNER'",
@@ -213,8 +212,7 @@ jobs:
               'rc4_human_review_artifact_binding=PASS',
             ],
             '.github/workflows/ops-final-human-approval-promotion-dispatch.yml' => [
-              'issue_comment:',
-              'types: [created]',
+              'workflow_call:',
               'github.event.issue.number == 263',
               "github.event.comment.user.login == 'Naveax'",
               "github.event.comment.author_association == 'OWNER'",
@@ -257,6 +255,31 @@ jobs:
               errors << "#{path}: owner-only release gate invariant missing: #{fragment}" unless raw.include?(fragment)
             end
             owner_gate_contracts_checked += 1
+          end
+
+          human_approval_router_path = '.github/workflows/ops-human-approval-promotion-dispatch-router.yml'
+          human_approval_router_requirements = [
+            'issue_comment:',
+            'types: [created]',
+            'group: ops-human-approval-comment-router-${{ github.event.comment.id }}',
+            'cancel-in-progress: false',
+            'github.event.issue.number == 260',
+            'github.event.issue.number == 263',
+            "github.event.comment.user.login == 'Naveax'",
+            "github.event.comment.author_association == 'OWNER'",
+            "github.event.comment.body == 'RC4 HUMAN REVIEW APPROVED: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63'",
+            "startsWith(github.event.comment.body, 'FINAL HUMAN REVIEW APPROVED: ')",
+            ['u', 'ses: ./.github/workflows/ops-rc4-human-approval-promotion-dispatch.yml'].join,
+            ['u', 'ses: ./.github/workflows/ops-final-human-approval-promotion-dispatch.yml'].join,
+          ]
+          unless File.file?(human_approval_router_path)
+            errors << "#{human_approval_router_path}: required human-approval comment router is missing"
+          else
+            raw = File.read(human_approval_router_path, encoding: 'utf-8')
+            human_approval_router_requirements.each do |fragment|
+              errors << "#{human_approval_router_path}: human-approval router invariant missing: #{fragment}" unless raw.include?(fragment)
+            end
+            human_approval_router_contracts_checked += 1
           end
 
           final_review_publisher_requirements = {
@@ -458,7 +481,7 @@ jobs:
             end
           end
 
-          puts "release_workflow_policy_scan workflow_files=#{all_workflows.length} critical_workflows=#{files.length} action_refs=#{action_refs} top_permissions=#{permissions_checked} job_permissions=#{job_permissions_checked} retired_credential_refs=#{retired_credential_refs} owner_gate_contracts_checked=#{owner_gate_contracts_checked} final_review_publisher_contracts_checked=#{final_review_publisher_contracts_checked} promotion_pr_human_gate_contracts_checked=#{promotion_pr_human_gate_contracts_checked} promotion_merge_contracts_checked=#{promotion_merge_contracts_checked} second_human_gate_contracts_checked=#{second_human_gate_contracts_checked} issue_comment_triggers=#{issue_comment_triggers_checked} pull_request_target_refs=#{pull_request_target_refs} source_run_bindings_checked=#{source_run_bindings_checked} source_artifact_bindings_checked=#{source_artifact_bindings_checked} privileged_source_event_guards_checked=#{privileged_source_event_guards_checked} mutation_source_guards_checked=#{mutation_source_guards_checked} automated_mutation_source_guards_checked=#{automated_mutation_source_guards_checked}"
+          puts "release_workflow_policy_scan workflow_files=#{all_workflows.length} critical_workflows=#{files.length} action_refs=#{action_refs} top_permissions=#{permissions_checked} job_permissions=#{job_permissions_checked} retired_credential_refs=#{retired_credential_refs} owner_gate_contracts_checked=#{owner_gate_contracts_checked} human_approval_router_contracts_checked=#{human_approval_router_contracts_checked} final_review_publisher_contracts_checked=#{final_review_publisher_contracts_checked} promotion_pr_human_gate_contracts_checked=#{promotion_pr_human_gate_contracts_checked} promotion_merge_contracts_checked=#{promotion_merge_contracts_checked} second_human_gate_contracts_checked=#{second_human_gate_contracts_checked} issue_comment_triggers=#{issue_comment_triggers_checked} pull_request_target_refs=#{pull_request_target_refs} source_run_bindings_checked=#{source_run_bindings_checked} source_artifact_bindings_checked=#{source_artifact_bindings_checked} privileged_source_event_guards_checked=#{privileged_source_event_guards_checked} mutation_source_guards_checked=#{mutation_source_guards_checked} automated_mutation_source_guards_checked=#{automated_mutation_source_guards_checked}"
           unless errors.empty?
             warn errors.join("\n")
             exit 1
@@ -472,7 +495,7 @@ jobs:
           set -euo pipefail
           if [[ "${{ job.status }}" == success ]]; then status=PASS; else status=FAIL; fi
           marker="OPS_WORKFLOW_POLICY_VERIFY head=$GITHUB_SHA "
-          body="${marker}status=$status scope=all-retired-credential+ops+ga-policy retired_temp_admin_refs=0 owner_gate_contracts=3 final_review_publisher_contracts=1 promotion_pr_human_gate_contracts=2 promotion_merge_contracts=2 second_human_gate_contracts=2 issue_comment_gate_set=3 pull_request_target_refs=0 source_artifact_binding=enabled privileged_source_event_guard=enabled mutation_source_guard=enabled automated_mutation_source_guard=enabled human_gate_attempt_binding=enabled first_human_gate_runtime_provenance=enabled final_review_publisher_provenance=enabled reviewed_merge_promotion_provenance=enabled promotion_merge_exact_bytes=enabled promotion_orphan_parent_binding=enabled canonical_dispatch_dedupe=enabled same_repo_bot_promotion_pr=enabled second_human_gate_exact_head_review=enabled external22_prerequisite_provenance=enabled"
+          body="${marker}status=$status scope=all-retired-credential+ops+ga-policy retired_temp_admin_refs=0 owner_gate_contracts=3 human_approval_router_contracts=1 final_review_publisher_contracts=1 promotion_pr_human_gate_contracts=2 promotion_merge_contracts=2 second_human_gate_contracts=2 issue_comment_gate_set=2 pull_request_target_refs=0 source_artifact_binding=enabled privileged_source_event_guard=enabled mutation_source_guard=enabled automated_mutation_source_guard=enabled human_gate_attempt_binding=enabled first_human_gate_runtime_provenance=enabled final_review_publisher_provenance=enabled reviewed_merge_promotion_provenance=enabled promotion_merge_exact_bytes=enabled promotion_orphan_parent_binding=enabled canonical_dispatch_dedupe=enabled same_repo_bot_promotion_pr=enabled second_human_gate_exact_head_review=enabled external22_prerequisite_provenance=enabled"
           comment_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" \
             --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" \
             | tail -n 1)
@@ -480,7 +503,7 @@ jobs:
             gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" -f body="$body" >/dev/null
             echo "workflow_policy_comment=updated head=$GITHUB_SHA comment_id=$comment_id"
           else
-            gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$body"
+            gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body="$body"
             echo "workflow_policy_comment=created head=$GITHUB_SHA"
           fi
           echo "$body"
