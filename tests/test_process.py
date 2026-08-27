@@ -180,6 +180,49 @@ class ProcessTests(unittest.TestCase):
         terminate.assert_called_once()
         self.assertIn("requires /proc", result.resource_violation or "")
 
+    def test_live_posix_zero_member_sample_fails_closed(self):
+        class LiveThenExitProcess:
+            pid = 45
+            returncode = 0
+            stdin = None
+            stdout = io.BytesIO()
+            stderr = io.BytesIO()
+
+            def __init__(self):
+                self.polls = 0
+
+            def poll(self):
+                self.polls += 1
+                return None if self.polls <= 3 else 0
+
+            def wait(self, timeout=None):
+                return 0
+
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(
+            process_module,
+            "_start_process",
+            return_value=(LiveThenExitProcess(), None),
+        ), mock.patch.object(
+            process_module,
+            "_process_group_stats",
+            return_value=(0, 0),
+        ), mock.patch.object(
+            process_module,
+            "_kill_process_group",
+            return_value=None,
+        ) as terminate:
+            result = run_process(
+                ["synthetic"],
+                Path(temp),
+                {},
+                timeout_seconds=1,
+                max_output_bytes=1024,
+                max_processes=1,
+            )
+
+        terminate.assert_called_once()
+        self.assertIn("not visible in /proc", result.resource_violation or "")
+
     @unittest.skipUnless(os.name != "nt", "POSIX-only unsupported hard-memory contract")
     def test_committed_memory_budget_is_windows_only(self):
         with tempfile.TemporaryDirectory() as temp:

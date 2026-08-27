@@ -397,6 +397,13 @@ def run_process(
                 rss, members = windows_job.resource_usage()
             else:
                 rss, members = _process_group_stats(process.pid)
+                # A live leader must be visible in the same /proc namespace as
+                # the controller. An empty sample can otherwise silently turn
+                # a namespace mismatch into a false under-limit result.
+                if process.poll() is None and members == 0:
+                    raise OSError(
+                        "process group is not visible in /proc for resource accounting"
+                    )
         except (OSError, ValueError) as exc:
             violation = f"process-tree resource accounting failed: {exc}"
             return
