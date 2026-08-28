@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -16,6 +17,7 @@ from .util import atomic_write_json, exclusive_lock, read_json, sha256_file, utc
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 _VERSION_RE = re.compile(r"^\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z.-]+)?$")
 _MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+_MODULE_METADATA_SCHEMA = 2
 
 
 class ModuleInstallError(PSMatrixError):
@@ -46,6 +48,44 @@ def _copy_or_link(source: str | Path, destination: str | Path) -> None:
         os.link(source_path, destination_path, follow_symlinks=False)
     except OSError:
         shutil.copy2(source_path, destination_path, follow_symlinks=False)
+
+
+def _module_payload_digest(root: Path) -> str:
+    """Digest an expanded module tree independently of mutable PSMatrix metadata."""
+
+    if not root.is_dir():
+        raise ModuleInstallError(f"Module root is not a directory: {root}")
+    digest = hashlib.sha256()
+    try:
+        entries = sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix())
+        for path in entries:
+            relative = path.relative_to(root).as_posix()
+            if relative == ".psmatrix-module.json":
+                continue
+            encoded = relative.encode("utf-8", errors="strict")
+            metadata = path.lstat()
+            if path.is_symlink():
+                target = os.readlink(path).encode("utf-8", errors="strict")
+                digest.update(b"L\0" + encoded + b"\0" + target + b"\0")
+            elif path.is_dir():
+                digest.update(b"D\0" + encoded + b"\0")
+            elif path.is_file():
+                executable = b"1" if metadata.st_mode & 0o111 else b"0"
+                content_hash = sha256_file(path).encode("ascii")
+                digest.update(
+                    b"F\0"
+                    + encoded
+                    + b"\0"
+                    + executable
+                    + b"\0"
+                    + content_hash
+                    + b"\0"
+                )
+            else:
+                raise ModuleInstallError(f"Unsupported installed module entry: {relative}")
+    except (OSError, UnicodeError) as exc:
+        raise ModuleInstallError(f"Failed to inspect installed module payload {root}: {exc}") from exc
+    return digest.hexdigest()
 
 
 class ModuleManager:
@@ -111,16 +151,21 @@ class ModuleManager:
                     raise ModuleInstallError(
                         f"Module {name} {version} already exists with a different package hash"
                     )
-                package_cache = self.packages_dir / name / version / f"{actual_hash}.nupkg"
-                package_cache.parent.mkdir(parents=True, exist_ok=True)
-                if not package_cache.exists():
-                    cache_temp = package_cache.with_name(package_cache.name + f".tmp-{os.getpid()}")
-                    shutil.copy2(package, cache_temp, follow_symlinks=False)
-                    os.replace(cache_temp, package_cache)
-                if metadata.get("cached_package") != str(package_cache):
-                    metadata["cached_package"] = str(package_cache)
-                    atomic_write_json(metadata_path, metadata)
-                return ModuleInstallation(name, version, destination, actual_hash, bool(metadata.get("verified")))
+                try:
+                    self._verify_installed_module(destination, metadata)
+                except ModuleInstallError:
+                    # Legacy metadata or post-install drift is repaired from the
+                    # supplied package through the same verified extraction path.
+                    pass
+                else:
+                    package_cache = self.packages_dir / name / version / f"{actual_hash}.nupkg"
+                    self._ensure_package_cache(package, package_cache, actual_hash)
+                    if metadata.get("cached_package") != str(package_cache):
+                        metadata["cached_package"] = str(package_cache)
+                        atomic_write_json(metadata_path, metadata)
+                    return ModuleInstallation(
+                        name, version, destination, actual_hash, bool(metadata.get("verified"))
+                    )
 
             staging_parent = self.modules_dir / name
             staging_parent.mkdir(parents=True, exist_ok=True)
@@ -145,13 +190,9 @@ class ModuleManager:
 
                 self._normalize_permissions(staging)
                 package_cache = self.packages_dir / name / version / f"{actual_hash}.nupkg"
-                package_cache.parent.mkdir(parents=True, exist_ok=True)
-                if not package_cache.exists():
-                    cache_temp = package_cache.with_name(package_cache.name + f".tmp-{os.getpid()}")
-                    shutil.copy2(package, cache_temp, follow_symlinks=False)
-                    os.replace(cache_temp, package_cache)
+                self._ensure_package_cache(package, package_cache, actual_hash)
                 metadata = {
-                    "schema": 1,
+                    "schema": _MODULE_METADATA_SCHEMA,
                     "name": name,
                     "version": version,
                     "sha256": actual_hash,
@@ -160,6 +201,7 @@ class ModuleManager:
                     "source": str(package),
                     "cached_package": str(package_cache),
                     "installed_at": utc_now_iso(),
+                    "payload_sha256": _module_payload_digest(staging),
                 }
                 atomic_write_json(staging / ".psmatrix-module.json", metadata)
                 self._normalize_permissions(staging)
@@ -183,7 +225,13 @@ class ModuleManager:
                 try:
                     metadata = read_json(metadata_path)
                     metadata["path"] = str(metadata_path.parent)
-                    metadata["healthy"] = (metadata_path.parent / f"{metadata['name']}.psd1").is_file()
+                    try:
+                        self._verify_installed_module(metadata_path.parent, metadata)
+                    except ModuleInstallError as exc:
+                        metadata["healthy"] = False
+                        metadata["integrity_error"] = str(exc)
+                    else:
+                        metadata["healthy"] = True
                     result.append(metadata)
                 except (OSError, ValueError, KeyError):
                     result.append({"path": str(metadata_path.parent), "healthy": False})
@@ -210,7 +258,6 @@ class ModuleManager:
             self._normalize_permissions(target)
             staged.append({"name": str(item["name"]), "version": str(item["version"]), "path": str(target)})
         return staged
-
 
     def exact(self, name: str, version: str) -> dict[str, object] | None:
         for item in self.list_installed(name):
@@ -328,6 +375,46 @@ class ModuleManager:
                 "require_verified": bool(require_verified),
             })
         return {"schema": 1, "powershell_modules": modules, "native_commands": []}
+
+    @staticmethod
+    def _ensure_package_cache(package: Path, package_cache: Path, actual_hash: str) -> None:
+        package_cache.parent.mkdir(parents=True, exist_ok=True)
+        cache_valid = False
+        if package_cache.is_file():
+            try:
+                cache_valid = sha256_file(package_cache).lower() == actual_hash
+            except OSError:
+                cache_valid = False
+        if cache_valid:
+            return
+        cache_temp = package_cache.with_name(package_cache.name + f".tmp-{os.getpid()}")
+        cache_temp.unlink(missing_ok=True)
+        shutil.copy2(package, cache_temp, follow_symlinks=False)
+        os.replace(cache_temp, package_cache)
+
+    @staticmethod
+    def _verify_installed_module(root: Path, metadata: dict) -> None:
+        if metadata.get("schema") != _MODULE_METADATA_SCHEMA:
+            raise ModuleInstallError(
+                f"Installed module metadata schema is not integrity-aware for {root}; reinstall the module"
+            )
+        name = str(metadata.get("name", ""))
+        version = str(metadata.get("version", ""))
+        if not name or not version or root.name != version or root.parent.name.casefold() != name.casefold():
+            raise ModuleInstallError(f"Installed module metadata identity mismatch for {root}")
+        manifest = root / f"{name}.psd1"
+        if not manifest.is_file():
+            raise ModuleInstallError(f"Installed module manifest is missing for {name} {version}")
+        expected = str(metadata.get("payload_sha256", "")).lower()
+        if not _SHA256_RE.fullmatch(expected):
+            raise ModuleInstallError(
+                f"Installed module payload digest is missing for {name} {version}; reinstall the module"
+            )
+        actual = _module_payload_digest(root)
+        if actual != expected:
+            raise ModuleInstallError(
+                f"Installed module payload integrity check failed for {name} {version}; reinstall the module"
+            )
 
     @staticmethod
     def _read_identity(package: Path) -> tuple[str, str]:
