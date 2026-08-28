@@ -191,10 +191,16 @@ def _safe_destination(value: str) -> Path:
     pure = PurePosixPath(normalized)
     if not pure.parts or pure.is_absolute() or ".." in pure.parts:
         raise RunConfigurationError(f"Unsafe fixture destination: {value!r}")
-    if pure.parts[0] == ".psmatrix-internal":
-        raise RunConfigurationError("Fixtures cannot target .psmatrix-internal")
     if any("\x00" in part for part in pure.parts):
         raise RunConfigurationError(f"Unsafe fixture destination: {value!r}")
+    # Keep fixture destinations portable and prevent Windows path aliases from
+    # reaching PSMatrix's reserved internal workspace. Colons cover drive-like
+    # paths (C:) and NTFS alternate-data-stream syntax; trailing dots/spaces
+    # can alias another component under Win32 normalization.
+    if any(":" in part or part.endswith((".", " ")) for part in pure.parts):
+        raise RunConfigurationError(f"Unsafe fixture destination: {value!r}")
+    if pure.parts[0].casefold() == ".psmatrix-internal":
+        raise RunConfigurationError("Fixtures cannot target .psmatrix-internal")
     return Path(*pure.parts)
 
 
