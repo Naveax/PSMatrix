@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import threading
 import shutil
 import copy
@@ -15,6 +16,7 @@ from .models import RuntimeSpec, TargetReport, target_report_from_dict
 from .util import atomic_write_json, read_json, sha256_file, utc_now_iso
 
 _CACHE_SCHEMA = 2
+_EXECUTION_CONTEXT_EXCLUDED = {".git", ".psmatrix", "node_modules", "target", "__pycache__"}
 
 
 def _json_bytes(value: Any) -> bytes:
@@ -47,11 +49,11 @@ def _file_evidence(path: Path | None) -> dict[str, Any] | None:
         for item in sorted(resolved.rglob("*")):
             relative = item.relative_to(resolved).as_posix()
             if item.is_symlink():
-                entries.append({"path": relative, "kind": "symlink", "target": os.readlink(item)})
+                entries.append({"relative_path": relative, "kind": "symlink", "target": os.readlink(item)})
             elif item.is_file():
-                entries.append({"path": relative, "kind": "file", "size": item.stat().st_size, "sha256": sha256_file(item)})
+                entries.append({"relative_path": relative, "kind": "file", "size": item.stat().st_size, "sha256": sha256_file(item)})
             elif item.is_dir():
-                entries.append({"path": relative, "kind": "directory"})
+                entries.append({"relative_path": relative, "kind": "directory"})
         return {"path": str(resolved), "exists": True, "kind": "directory", "entries": entries}
     return {"path": str(resolved), "exists": True, "kind": "other"}
 
@@ -74,6 +76,56 @@ def _adjacent_inputs(source: Path) -> list[dict[str, Any]]:
             result.append(_file_evidence(resolved))
     return [item for item in result if item is not None]
 
+
+def execution_context_evidence(source: Path) -> dict[str, Any]:
+    """Fingerprint the exact project tree copied into an isolated run workspace.
+
+    ScriptRunner copies ``source.parent`` recursively while excluding a small
+    set of generated/vendor directories and all symlinks/special files. Cache
+    correctness therefore has to bind the result to that same regular-file
+    and directory view, not only to the entry script. Relative paths are kept
+    because PowerShell behavior can depend on file names and ``$PSScriptRoot``;
+    the absolute project location is deliberately omitted for portability.
+    """
+
+    root = source.resolve().parent
+    entries: list[dict[str, Any]] = []
+    for current, dirs, files in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        dirs[:] = [
+            name
+            for name in sorted(dirs)
+            if name not in _EXECUTION_CONTEXT_EXCLUDED
+            and not (current_path / name).is_symlink()
+        ]
+        relative_dir = current_path.relative_to(root)
+        if relative_dir != Path("."):
+            entries.append(
+                {"relative_path": relative_dir.as_posix(), "kind": "directory"}
+            )
+        for name in sorted(files):
+            item = current_path / name
+            try:
+                mode = item.lstat().st_mode
+            except OSError:
+                continue
+            if not stat.S_ISREG(mode):
+                continue
+            relative = item.relative_to(root).as_posix()
+            try:
+                size = item.stat().st_size
+                digest = sha256_file(item)
+            except OSError:
+                continue
+            entries.append(
+                {
+                    "relative_path": relative,
+                    "kind": "file",
+                    "size": size,
+                    "sha256": digest,
+                }
+            )
+    return {"kind": "execution-context", "entries": entries}
 
 
 def engine_fingerprint(root: Path) -> dict[str, Any]:
@@ -104,6 +156,7 @@ def installed_modules_fingerprint(items: list[dict[str, Any]]) -> dict[str, Any]
     modules.sort(key=lambda value: (str(value.get("name")), str(value.get("version"))))
     return {"digest": hashlib.sha256(_json_bytes(modules)).hexdigest(), "modules": modules}
 
+
 def build_cache_material(
     source: Path,
     spec: RuntimeSpec,
@@ -111,6 +164,7 @@ def build_cache_material(
     *,
     tool_version: str,
     runtime_fingerprint: dict[str, Any] | None = None,
+    execution_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     source = source.resolve()
     raw = asdict(options)
@@ -159,6 +213,7 @@ def build_cache_material(
         "schema": _CACHE_SCHEMA,
         "tool_version": tool_version,
         "source": _file_evidence(source),
+        "execution_context": execution_context or execution_context_evidence(source),
         "adjacent_inputs": _adjacent_inputs(source),
         "referenced_inputs": files,
         "runtime": {
