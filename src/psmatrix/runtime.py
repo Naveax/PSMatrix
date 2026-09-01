@@ -258,7 +258,11 @@ class RuntimeManager:
             if archive_override is None and (
                 force or not archive.exists() or sha256_file(archive).lower() != expected_hash
             ):
-                self._download(spec.download_url, archive)
+                self._download(
+                    spec.download_url,
+                    archive,
+                    overwrite=archive.exists(),
+                )
             if not archive.exists():
                 raise RuntimeInstallError(f"Runtime archive not found: {archive}")
 
@@ -334,7 +338,6 @@ class RuntimeManager:
             if not hashes_path.is_file():
                 raise
         return expected_hash_from_manifest(hashes_path, spec.artifact_name)
-
 
     @staticmethod
     def _normalize_runtime_permissions(root: Path) -> None:
