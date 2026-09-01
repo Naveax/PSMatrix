@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 import os
@@ -8,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from psmatrix.errors import RuntimeInstallError
+from psmatrix.models import RuntimeSpec
 from psmatrix.runtime import RuntimeManager, expected_hash_from_manifest, normalize_arch
 
 
@@ -72,36 +74,43 @@ class RuntimeTests(unittest.TestCase):
 
 
 class RuntimeCacheFallbackTests(unittest.TestCase):
-    def test_local_hash_manifest_installs_archive(self):
-        import hashlib
-        from psmatrix.models import RuntimeSpec
+    @staticmethod
+    def _install_fixture(root: Path, manager: RuntimeManager, spec: RuntimeSpec):
+        archive = root / spec.artifact_name
+        script = b'#!/bin/sh\nif [ "$1" = "-NoLogo" ]; then echo 7.6.4; fi\n'
+        module_payload = b"function Get-PSMatrixFixture { 'ok' }\n"
+        with tarfile.open(archive, "w:gz") as tar:
+            info = tarfile.TarInfo("pwsh")
+            info.mode = 0o755
+            info.size = len(script)
+            tar.addfile(info, io.BytesIO(script))
 
+            module = tarfile.TarInfo("Modules/PSMatrixFixture.psm1")
+            module.mode = 0o644
+            module.size = len(module_payload)
+            tar.addfile(module, io.BytesIO(module_payload))
+        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+        manifest = root / "hashes.sha256"
+        manifest.write_bytes(
+            f"{digest} *{spec.artifact_name}\r\n".encode("utf-16")
+        )
+        with patch.object(manager, "_probe_executable", return_value="7.6.4") as probe:
+            installation = manager.install(
+                spec,
+                archive_override=archive,
+                hashes_override=manifest,
+            )
+        probe.assert_called_once()
+        return installation, archive, manifest, digest
+
+    def test_local_hash_manifest_installs_archive(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             manager = RuntimeManager(root / "home")
             spec = RuntimeSpec(version="7.6.4", arch="x64")
-            archive = root / spec.artifact_name
-            script = b'#!/bin/sh\nif [ "$1" = "-NoLogo" ]; then echo 7.6.4; fi\n'
-            with tarfile.open(archive, "w:gz") as tar:
-                info = tarfile.TarInfo("pwsh")
-                info.mode = 0o755
-                info.size = len(script)
-                tar.addfile(info, io.BytesIO(script))
-            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-            manifest = root / "hashes.sha256"
-            manifest.write_bytes(
-                f"{digest} *{spec.artifact_name}\r\n".encode("utf-16")
+            installation, _archive, manifest, digest = self._install_fixture(
+                root, manager, spec
             )
-            # This test owns archive/hash/install semantics. Native runtime
-            # probing is covered separately on actual platform runtimes; the
-            # fixture itself is intentionally a tiny POSIX shell file.
-            with patch.object(manager, "_probe_executable", return_value="7.6.4") as probe:
-                installation = manager.install(
-                    spec,
-                    archive_override=archive,
-                    hashes_override=manifest,
-                )
-            probe.assert_called_once()
             self.assertTrue(installation.executable.is_file())
             if os.name != "nt":
                 self.assertTrue(os.access(installation.executable, os.X_OK))
@@ -110,13 +119,72 @@ class RuntimeCacheFallbackTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
+            self.assertEqual(metadata["schema"], 2)
             self.assertEqual(metadata["hash_source"], str(manifest.resolve()))
             self.assertEqual(metadata["detected_version"], "7.6.4")
             self.assertEqual(metadata["sha256"], digest)
+            self.assertEqual(
+                metadata["executable_sha256"],
+                hashlib.sha256(installation.executable.read_bytes()).hexdigest(),
+            )
+            self.assertRegex(metadata["payload_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_require_rejects_post_install_entrypoint_tampering(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manager = RuntimeManager(root / "home")
+            spec = RuntimeSpec(version="7.6.4", arch="x64")
+            installation, _archive, _manifest, _digest = self._install_fixture(
+                root, manager, spec
+            )
+            installation.executable.write_bytes(b"tampered runtime entrypoint\n")
+            with self.assertRaisesRegex(RuntimeInstallError, "executable integrity"):
+                manager.require(spec)
+
+    def test_probe_rejects_post_install_secondary_payload_tampering(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manager = RuntimeManager(root / "home")
+            spec = RuntimeSpec(version="7.6.4", arch="x64")
+            installation, _archive, _manifest, _digest = self._install_fixture(
+                root, manager, spec
+            )
+            module = installation.root / "Modules" / "PSMatrixFixture.psm1"
+            module.write_text("function Get-PSMatrixFixture { 'tampered' }\n", encoding="utf-8")
+            with patch.object(manager, "_probe_executable", return_value="7.6.4"):
+                with self.assertRaisesRegex(RuntimeInstallError, "payload integrity"):
+                    manager.probe(spec)
+
+    def test_legacy_runtime_metadata_is_reinstalled_through_verified_archive(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manager = RuntimeManager(root / "home")
+            spec = RuntimeSpec(version="7.6.4", arch="x64")
+            installation, archive, manifest, digest = self._install_fixture(
+                root, manager, spec
+            )
+            metadata_path = installation.root / ".psmatrix-runtime.json"
+            legacy = json.loads(metadata_path.read_text(encoding="utf-8"))
+            legacy["schema"] = 1
+            legacy.pop("executable_sha256")
+            legacy.pop("payload_sha256")
+            metadata_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+            with patch.object(manager, "_probe_executable", return_value="7.6.4") as probe:
+                repaired = manager.install(
+                    spec,
+                    archive_override=archive,
+                    hashes_override=manifest,
+                )
+            probe.assert_called_once()
+            repaired_metadata = json.loads(
+                (repaired.root / ".psmatrix-runtime.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(repaired_metadata["schema"], 2)
+            self.assertEqual(repaired_metadata["sha256"], digest)
+            self.assertRegex(repaired_metadata["payload_sha256"], r"^[0-9a-f]{64}$")
 
     def test_hash_parser_uses_cached_file_when_refresh_fails(self):
-        from psmatrix.models import RuntimeSpec
-
         with tempfile.TemporaryDirectory() as temp:
             manager = RuntimeManager(Path(temp))
             spec = RuntimeSpec(version="7.6.4", arch="x64")

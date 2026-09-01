@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import platform
 import re
@@ -18,6 +19,7 @@ from .util import atomic_write_json, exclusive_lock, read_json, sha256_file, utc
 
 _HASH_RE = re.compile(r"^([0-9a-fA-F]{64})\s+[* ]?(.+?)\s*$")
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+_RUNTIME_METADATA_SCHEMA = 2
 
 
 def _decode_hash_manifest(path: Path) -> str:
@@ -121,6 +123,58 @@ def runtime_host_compatibility(spec: RuntimeSpec) -> dict[str, object]:
     }
 
 
+def _runtime_payload_digest(root: Path) -> str:
+    """Return a deterministic digest of an extracted runtime payload.
+
+    The mutable PSMatrix metadata file is deliberately excluded. Regular-file
+    content, relative paths, executable bits, directory entries and symbolic
+    link targets are all committed to the digest so additions, removals and
+    post-install edits are detectable before the runtime is trusted.
+    """
+
+    if not root.is_dir():
+        raise RuntimeInstallError(f"Runtime root is not a directory: {root}")
+    digest = hashlib.sha256()
+    try:
+        entries = sorted(
+            root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()
+        )
+        for path in entries:
+            relative = path.relative_to(root).as_posix()
+            if relative == ".psmatrix-runtime.json":
+                continue
+            encoded_path = relative.encode("utf-8", errors="strict")
+            stat_result = path.lstat()
+            if path.is_symlink():
+                target = os.readlink(path).encode("utf-8", errors="strict")
+                digest.update(b"L\0" + encoded_path + b"\0" + target + b"\0")
+                continue
+            if path.is_dir():
+                digest.update(b"D\0" + encoded_path + b"\0")
+                continue
+            if path.is_file():
+                executable = b"1" if stat_result.st_mode & 0o111 else b"0"
+                content_hash = sha256_file(path).encode("ascii")
+                digest.update(
+                    b"F\0"
+                    + encoded_path
+                    + b"\0"
+                    + executable
+                    + b"\0"
+                    + content_hash
+                    + b"\0"
+                )
+                continue
+            raise RuntimeInstallError(
+                f"Unsupported installed runtime entry: {relative}"
+            )
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeInstallError(
+            f"Failed to inspect installed runtime payload {root}: {exc}"
+        ) from exc
+    return digest.hexdigest()
+
+
 class RuntimeManager:
     def __init__(self, home: Path) -> None:
         self.home = home.resolve()
@@ -166,10 +220,16 @@ class RuntimeManager:
                 f"Run: psmatrix runtime install {spec.version}"
             )
         self._normalize_runtime_permissions(self.runtime_root(spec))
+        if not os.access(executable, os.X_OK):
+            raise RuntimeInstallError(
+                f"Installed runtime entry point is not executable: {executable}"
+            )
+        self._verify_runtime_integrity(spec, full_payload=False)
         return executable
 
     def probe(self, spec: RuntimeSpec) -> dict[str, object]:
         executable = self.require(spec)
+        self._verify_runtime_integrity(spec, full_payload=True)
         detected = self._probe_executable(executable)
         return {
             "runtime_id": spec.runtime_id,
@@ -181,6 +241,7 @@ class RuntimeManager:
             "arch": spec.arch,
             "libc": spec.libc,
             "host_compatibility": runtime_host_compatibility(spec),
+            "integrity": "verified",
         }
 
     def plan(self, spec: RuntimeSpec) -> dict[str, object]:
@@ -222,14 +283,22 @@ class RuntimeManager:
         lock_path = self.locks_dir / f"{spec.runtime_id}.lock"
         with exclusive_lock(lock_path):
             if self.is_installed(spec) and not force:
-                metadata = read_json(self.metadata_path(spec))
-                return RuntimeInstallation(
-                    spec=spec,
-                    root=self.runtime_root(spec),
-                    executable=self.executable_path(spec),
-                    installed_at=metadata["installed_at"],
-                    sha256=metadata["sha256"],
-                )
+                try:
+                    self._verify_runtime_integrity(spec, full_payload=True)
+                except RuntimeInstallError:
+                    # Legacy metadata or drifted payloads are repaired through
+                    # the same digest-verified install path instead of being
+                    # silently trusted forever.
+                    force = True
+                else:
+                    metadata = read_json(self.metadata_path(spec))
+                    return RuntimeInstallation(
+                        spec=spec,
+                        root=self.runtime_root(spec),
+                        executable=self.executable_path(spec),
+                        installed_at=metadata["installed_at"],
+                        sha256=metadata["sha256"],
+                    )
 
             archive = (
                 archive_override.resolve()
@@ -286,8 +355,10 @@ class RuntimeManager:
                         f"executable reported {detected_version}"
                     )
 
+                executable_sha256 = sha256_file(executable).lower()
+                payload_sha256 = _runtime_payload_digest(staging)
                 metadata = {
-                    "schema": 1,
+                    "schema": _RUNTIME_METADATA_SCHEMA,
                     "runtime_id": spec.runtime_id,
                     "version": spec.version,
                     "os": spec.os,
@@ -300,6 +371,8 @@ class RuntimeManager:
                     "hash_source": hash_source,
                     "installed_at": utc_now_iso(),
                     "detected_version": detected_version,
+                    "executable_sha256": executable_sha256,
+                    "payload_sha256": payload_sha256,
                 }
                 atomic_write_json(staging / ".psmatrix-runtime.json", metadata)
 
@@ -335,6 +408,54 @@ class RuntimeManager:
                 raise
         return expected_hash_from_manifest(hashes_path, spec.artifact_name)
 
+    def _verify_runtime_integrity(
+        self, spec: RuntimeSpec, *, full_payload: bool
+    ) -> None:
+        metadata_path = self.metadata_path(spec)
+        try:
+            metadata = read_json(metadata_path)
+        except (OSError, ValueError) as exc:
+            raise RuntimeInstallError(
+                f"Installed runtime metadata is missing or invalid for {spec.runtime_id}; reinstall the runtime"
+            ) from exc
+        if metadata.get("schema") != _RUNTIME_METADATA_SCHEMA:
+            raise RuntimeInstallError(
+                f"Installed runtime metadata schema is not integrity-aware for {spec.runtime_id}; reinstall the runtime"
+            )
+        if metadata.get("runtime_id") != spec.runtime_id or metadata.get("version") != spec.version:
+            raise RuntimeInstallError(
+                f"Installed runtime metadata identity mismatch for {spec.runtime_id}; reinstall the runtime"
+            )
+
+        expected_executable = str(metadata.get("executable_sha256", "")).lower()
+        if not _SHA256_RE.fullmatch(expected_executable):
+            raise RuntimeInstallError(
+                f"Installed runtime executable digest is missing for {spec.runtime_id}; reinstall the runtime"
+            )
+        executable = self.executable_path(spec)
+        try:
+            actual_executable = sha256_file(executable).lower()
+        except OSError as exc:
+            raise RuntimeInstallError(
+                f"Failed to hash installed runtime executable for {spec.runtime_id}: {exc}"
+            ) from exc
+        if actual_executable != expected_executable:
+            raise RuntimeInstallError(
+                f"Installed runtime executable integrity check failed for {spec.runtime_id}; reinstall the runtime"
+            )
+
+        if not full_payload:
+            return
+        expected_payload = str(metadata.get("payload_sha256", "")).lower()
+        if not _SHA256_RE.fullmatch(expected_payload):
+            raise RuntimeInstallError(
+                f"Installed runtime payload digest is missing for {spec.runtime_id}; reinstall the runtime"
+            )
+        actual_payload = _runtime_payload_digest(self.runtime_root(spec))
+        if actual_payload != expected_payload:
+            raise RuntimeInstallError(
+                f"Installed runtime payload integrity check failed for {spec.runtime_id}; reinstall the runtime"
+            )
 
     @staticmethod
     def _normalize_runtime_permissions(root: Path) -> None:
