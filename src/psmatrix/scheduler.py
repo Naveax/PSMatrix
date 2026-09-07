@@ -157,10 +157,15 @@ def build_jobs(
         spec.runtime_id: _runtime_fingerprint(spec, runtime_manager, oci_manager)
         for spec in specs
     }
+    execution_contexts: dict[Path, dict] = {}
     jobs: list[TargetJob] = []
     index = 0
     for source in files:
-        execution_context = execution_context_evidence(source)
+        context_root = source.resolve().parent
+        execution_context = execution_contexts.get(context_root)
+        if execution_context is None:
+            execution_context = execution_context_evidence(source)
+            execution_contexts[context_root] = execution_context
         for spec in specs:
             material = build_cache_material(
                 source,

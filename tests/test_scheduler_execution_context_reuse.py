@@ -11,11 +11,13 @@ from psmatrix.scheduler import build_jobs
 
 
 class SchedulerExecutionContextReuseTests(unittest.TestCase):
-    def test_execution_context_is_fingerprinted_once_per_source(self):
+    def test_execution_context_is_fingerprinted_once_per_project_root(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            source = root / "sample.ps1"
-            source.write_text("'stable'\n", encoding="utf-8")
+            first = root / "first.ps1"
+            second = root / "second.ps1"
+            first.write_text("'first'\n", encoding="utf-8")
+            second.write_text("'second'\n", encoding="utf-8")
             manager = RuntimeManager(root / "home")
             oci = OciRuntimeManager(root / "home")
             specs = [
@@ -24,7 +26,10 @@ class SchedulerExecutionContextReuseTests(unittest.TestCase):
             ]
             evidence = {
                 "kind": "execution-context",
-                "entries": [{"relative_path": "sample.ps1", "kind": "file"}],
+                "entries": [
+                    {"relative_path": "first.ps1", "kind": "file"},
+                    {"relative_path": "second.ps1", "kind": "file"},
+                ],
             }
 
             with patch(
@@ -32,7 +37,7 @@ class SchedulerExecutionContextReuseTests(unittest.TestCase):
                 return_value=evidence,
             ) as context_probe:
                 jobs = build_jobs(
-                    [source],
+                    [first, second],
                     specs,
                     RunOptions(),
                     tool_version="test",
@@ -41,10 +46,11 @@ class SchedulerExecutionContextReuseTests(unittest.TestCase):
                     tool_modules={},
                 )
 
-            self.assertEqual(len(jobs), 2)
-            context_probe.assert_called_once_with(source)
-            self.assertEqual(jobs[0].material["execution_context"], evidence)
-            self.assertEqual(jobs[1].material["execution_context"], evidence)
+            self.assertEqual(len(jobs), 4)
+            context_probe.assert_called_once_with(first)
+            self.assertTrue(
+                all(job.material["execution_context"] == evidence for job in jobs)
+            )
 
 
 if __name__ == "__main__":
