@@ -17,6 +17,7 @@ from .util import atomic_write_json, read_json, sha256_file, utc_now_iso
 
 _CACHE_SCHEMA = 2
 _EXECUTION_CONTEXT_EXCLUDED = {".git", ".psmatrix", "node_modules", "target", "__pycache__"}
+_CACHE_KEY_HEX = frozenset("0123456789abcdef")
 
 
 def _json_bytes(value: Any) -> bytes:
@@ -30,6 +31,11 @@ def _digest_value(value: Any) -> dict[str, Any]:
 
 def _digest_bytes(value: bytes) -> dict[str, Any]:
     return {"sha256": hashlib.sha256(value).hexdigest(), "bytes": len(value)}
+
+
+def _validate_cache_key(key: str) -> None:
+    if len(key) != 64 or any(character not in _CACHE_KEY_HEX for character in key):
+        raise ValueError("cache key must be a 64-character lowercase SHA-256 digest")
 
 
 def _file_evidence(path: Path | None) -> dict[str, Any] | None:
@@ -442,10 +448,14 @@ class ResultCache:
         self._lock = threading.Lock()
 
     def record_path(self, key: str) -> Path:
+        _validate_cache_key(key)
         return self.records / key[:2] / f"{key}.json"
 
     def load(self, key: str) -> TargetReport | None:
-        path = self.record_path(key)
+        try:
+            path = self.record_path(key)
+        except ValueError:
+            return None
         if not path.is_file():
             return None
         try:
