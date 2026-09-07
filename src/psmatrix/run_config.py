@@ -496,18 +496,69 @@ def materialize_fixtures(workspace: Path, fixtures: list[FixtureSpec]) -> list[d
 
 def stage_hooks(workspace: Path, hooks: list[HookSpec], phase: str) -> list[Path]:
     internal_root = workspace / ".psmatrix-internal"
-    if internal_root.exists():
-        _reject_symlink_components(internal_root, kind="Internal hook staging")
-        if not internal_root.is_dir():
-            raise RunConfigurationError(f"Internal staging path is not a directory: {internal_root}")
+    _reject_symlink_components(internal_root, kind="Internal hook staging")
+    if internal_root.exists() and not internal_root.is_dir():
+        raise RunConfigurationError(f"Internal staging path is not a directory: {internal_root}")
+
     destination_root = internal_root / "hooks" / phase
-    if destination_root.exists():
-        _reject_symlink_components(destination_root, kind="Internal hook staging")
+    # Inspect every existing component even when the final phase directory does
+    # not exist yet. Otherwise an indirect `hooks` component can redirect the
+    # subsequent parents=True mkdir outside the workspace.
+    _reject_symlink_components(destination_root, kind="Internal hook staging")
     destination_root.mkdir(parents=True, exist_ok=True)
+    _reject_symlink_components(destination_root, kind="Internal hook staging")
+    if not destination_root.is_dir():
+        raise RunConfigurationError(
+            f"Internal hook staging path is not a directory: {destination_root}"
+        )
+
     result: list[Path] = []
     for index, hook in enumerate(hooks):
+        _reject_symlink_components(hook.source, kind=f"{phase} hook source")
+        try:
+            current_hash = sha256_file(hook.source)
+        except OSError as exc:
+            raise RunConfigurationError(
+                f"Unable to read {phase} hook source {hook.source}: {exc}"
+            ) from exc
+        if current_hash != hook.sha256:
+            raise RunConfigurationError(
+                f"{phase} hook source changed after validation: {hook.source}"
+            )
+
         destination = destination_root / f"{index:03d}-{hook.sha256[:12]}-{hook.source.name}"
-        shutil.copy2(hook.source, destination, follow_symlinks=False)
+        _reject_symlink_components(destination, kind="Internal hook staging")
+        try:
+            shutil.copy2(hook.source, destination, follow_symlinks=False)
+        except OSError as exc:
+            raise RunConfigurationError(
+                f"Unable to stage {phase} hook {hook.source}: {exc}"
+            ) from exc
+
+        try:
+            indirect_destination = _is_link_or_reparse(destination)
+        except OSError as exc:
+            destination.unlink(missing_ok=True)
+            raise RunConfigurationError(
+                f"Unable to inspect staged {phase} hook {destination}: {exc}"
+            ) from exc
+        if indirect_destination:
+            destination.unlink(missing_ok=True)
+            raise RunConfigurationError(
+                f"Staged {phase} hook is a symlink or reparse point: {destination}"
+            )
+        try:
+            staged_hash = sha256_file(destination)
+        except OSError as exc:
+            destination.unlink(missing_ok=True)
+            raise RunConfigurationError(
+                f"Unable to verify staged {phase} hook {destination}: {exc}"
+            ) from exc
+        if staged_hash != hook.sha256:
+            destination.unlink(missing_ok=True)
+            raise RunConfigurationError(
+                f"Staged {phase} hook digest changed during copy: {hook.source}"
+            )
         destination.chmod(0o644)
         result.append(destination)
     return result
