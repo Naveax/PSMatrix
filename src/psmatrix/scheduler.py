@@ -525,7 +525,12 @@ def execute_jobs(
                 results[completed_job.index] = report
                 checkpoint.save(completed_job.key, report)
                 if cache is not None and cache_mode != "off":
-                    if cache.store(completed_job.key, report, completed_job.material):
+                    if cache.store(
+                        completed_job.key,
+                        report,
+                        completed_job.material,
+                        material_digest=completed_job.key,
+                    ):
                         stored += 1
                 if fail_fast and report.status != "PASS":
                     stop.set()
