@@ -1279,24 +1279,41 @@ class ScriptRunner:
     @staticmethod
     def _copy_project(source_dir: Path, workspace: Path) -> None:
         excluded = {".git", ".psmatrix", "node_modules", "target", "__pycache__"}
+        reparse_point = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
         source_dir = source_dir.resolve()
         for current, dirs, files in os.walk(source_dir, followlinks=False):
             current_path = Path(current)
-            dirs[:] = [
-                name
-                for name in sorted(dirs)
-                if name not in excluded and not (current_path / name).is_symlink()
-            ]
+            safe_dirs: list[str] = []
+            for name in sorted(dirs):
+                if name in excluded:
+                    continue
+                candidate = current_path / name
+                try:
+                    info = candidate.lstat()
+                except OSError:
+                    continue
+                if (
+                    stat.S_ISLNK(info.st_mode)
+                    or bool(getattr(info, "st_file_attributes", 0) & reparse_point)
+                    or not stat.S_ISDIR(info.st_mode)
+                ):
+                    continue
+                safe_dirs.append(name)
+            dirs[:] = safe_dirs
             relative_dir = current_path.relative_to(source_dir)
             destination_dir = workspace / relative_dir
             destination_dir.mkdir(parents=True, exist_ok=True)
             for name in sorted(files):
                 source_file = current_path / name
                 try:
-                    mode = source_file.lstat().st_mode
+                    info = source_file.lstat()
                 except OSError:
                     continue
-                if not stat.S_ISREG(mode):
+                if (
+                    stat.S_ISLNK(info.st_mode)
+                    or bool(getattr(info, "st_file_attributes", 0) & reparse_point)
+                    or not stat.S_ISREG(info.st_mode)
+                ):
                     continue
                 shutil.copy2(source_file, destination_dir / name, follow_symlinks=False)
 
