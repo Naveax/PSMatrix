@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import hashlib
 import base64
@@ -153,6 +154,8 @@ def build_jobs(
         raise ValueError("shard_index must satisfy 0 <= index < count")
     files = list(files)
     specs = list(specs)
+    if not specs:
+        return []
     runtime_fingerprints = {
         spec.runtime_id: _runtime_fingerprint(spec, runtime_manager, oci_manager)
         for spec in specs
@@ -166,15 +169,24 @@ def build_jobs(
         if execution_context is None:
             execution_context = execution_context_evidence(source)
             execution_contexts[context_root] = execution_context
+        common_material = build_cache_material(
+            source,
+            specs[0],
+            options,
+            tool_version=tool_version,
+            runtime_fingerprint={},
+            execution_context=execution_context,
+        )
         for spec in specs:
-            material = build_cache_material(
-                source,
-                spec,
-                options,
-                tool_version=tool_version,
-                runtime_fingerprint=runtime_fingerprints[spec.runtime_id],
-                execution_context=execution_context,
-            )
+            material = copy.deepcopy(common_material)
+            material["runtime"] = {
+                "runtime_id": spec.runtime_id,
+                "version": spec.version,
+                "os": spec.os,
+                "arch": spec.arch,
+                "libc": spec.libc,
+                "fingerprint": runtime_fingerprints[spec.runtime_id],
+            }
             material["tool_modules"] = tool_modules or {}
             material["engine"] = engine or {}
             key = cache_key(material)
