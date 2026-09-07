@@ -14,7 +14,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .cache import ResultCache, build_cache_material, cache_and_shard_keys, execution_context_evidence
+from .cache import (
+    ResultCache,
+    build_cache_material,
+    cache_and_shard_keys,
+    execution_context_evidence,
+    source_evidence_from_execution_context,
+)
 from .models import ParseDiagnostic, RuntimeSpec, TargetReport, target_report_from_dict
 from .util import atomic_write_json, exclusive_lock, read_json, sha256_file, utc_now_iso
 
@@ -166,9 +172,11 @@ def build_jobs(
     for source in files:
         context_root = source.resolve().parent
         execution_context = execution_contexts.get(context_root)
+        source_evidence = None
         if execution_context is None:
             execution_context = execution_context_evidence(source)
             execution_contexts[context_root] = execution_context
+            source_evidence = source_evidence_from_execution_context(source, execution_context)
         common_material = build_cache_material(
             source,
             specs[0],
@@ -176,6 +184,7 @@ def build_jobs(
             tool_version=tool_version,
             runtime_fingerprint={},
             execution_context=execution_context,
+            source_evidence=source_evidence,
         )
         for spec in specs:
             material = copy.deepcopy(common_material)
