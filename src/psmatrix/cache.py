@@ -255,13 +255,17 @@ def cache_key(material: dict[str, Any]) -> str:
 
 
 def shard_key(material: dict[str, Any]) -> str:
-    value = copy.deepcopy(material)
-    runtime = value.get("runtime")
-    if isinstance(runtime, dict):
-        runtime.pop("fingerprint", None)
-    value.pop("execution_context", None)
-    value.pop("tool_modules", None)
-    value.pop("engine", None)
+    runtime = material.get("runtime")
+    projected_runtime = (
+        {key: item for key, item in runtime.items() if key != "fingerprint"}
+        if isinstance(runtime, dict)
+        else runtime
+    )
+    value = {
+        key: projected_runtime if key == "runtime" else item
+        for key, item in material.items()
+        if key not in {"execution_context", "tool_modules", "engine"}
+    }
     return hashlib.sha256(_json_bytes(_portable(value))).hexdigest()
 
 
