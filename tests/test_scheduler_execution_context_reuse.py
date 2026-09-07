@@ -71,15 +71,21 @@ class SchedulerExecutionContextReuseTests(unittest.TestCase):
                 RuntimeSpec(version="7.6.4", arch="arm64"),
             ]
             options = RunOptions(
-                setup_scripts=[str(setup)],
-                fixtures=[(str(fixture), "fixture.txt")],
+                setup_scripts=(str(setup),),
+                fixtures=((str(fixture), "fixture.txt"),),
                 dependency_lockfile=str(lockfile),
             )
 
-            with patch(
-                "psmatrix.scheduler.build_cache_material",
-                wraps=build_cache_material,
-            ) as material_builder:
+            with (
+                patch(
+                    "psmatrix.scheduler.build_cache_material",
+                    wraps=build_cache_material,
+                ) as material_builder,
+                patch(
+                    "psmatrix.scheduler._runtime_fingerprint",
+                    side_effect=lambda spec, *_args: {"arch-marker": spec.arch},
+                ),
+            ):
                 jobs = build_jobs(
                     [source],
                     specs,
@@ -99,13 +105,14 @@ class SchedulerExecutionContextReuseTests(unittest.TestCase):
                     spec,
                     options,
                     tool_version="test",
-                    runtime_fingerprint={},
+                    runtime_fingerprint={"arch-marker": spec.arch},
                     execution_context=execution_context,
                 )
                 expected["tool_modules"] = {}
                 expected["engine"] = {}
                 self.assertEqual(job.material, expected)
                 self.assertEqual(job.key, cache_key(expected))
+            self.assertNotEqual(jobs[0].key, jobs[1].key)
             self.assertIsNot(jobs[0].material["options"], jobs[1].material["options"])
 
     def test_empty_runtime_matrix_does_not_probe_source_material(self):
