@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -44,6 +45,56 @@ _MANAGED_ARGS = {
 }
 _SUCCESS = {"PASS", "PASS_WITH_DIFFERENCES"}
 _INCOMPLETE = {"UNTESTED_RUNTIME", "BACKEND_UNAVAILABLE", "INCOMPLETE"}
+_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+
+def _is_link_or_reparse(info: os.stat_result) -> bool:
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0) & _REPARSE_POINT
+    )
+
+
+def _reject_indirect_components(path: Path, *, label: str) -> None:
+    """Reject symlink/reparse indirection before canonicalizing a path."""
+
+    absolute = path.absolute()
+    current = Path(absolute.anchor) if absolute.anchor else Path()
+    parts = absolute.parts[1:] if absolute.anchor else absolute.parts
+    for part in parts:
+        current = current / part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise FullMatrixError(f"Unable to inspect {label} path {current}: {exc}") from exc
+        if _is_link_or_reparse(info):
+            raise FullMatrixError(
+                f"{label} path contains a symlink or reparse point: {current}"
+            )
+
+
+def _resolve_direct_candidate(path: Path, *, label: str) -> Path:
+    candidate = path.absolute()
+    _reject_indirect_components(candidate, label=label)
+    try:
+        return candidate.resolve(strict=False)
+    except OSError as exc:
+        raise FullMatrixError(f"Unable to resolve {label} path {candidate}: {exc}") from exc
+
+
+def _resolve_direct_existing(path: Path, *, label: str, kind: str) -> Path:
+    candidate = path.absolute()
+    _reject_indirect_components(candidate, label=label)
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise FullMatrixError(f"{label} is missing or inaccessible: {candidate}") from exc
+    if kind == "file" and not resolved.is_file():
+        raise FullMatrixError(f"{label} is not a regular file: {resolved}")
+    if kind == "directory" and not resolved.is_dir():
+        raise FullMatrixError(f"{label} is not a directory: {resolved}")
+    return resolved
 
 
 @dataclass(frozen=True)
@@ -113,7 +164,9 @@ class FullMatrixSpec:
 
     @classmethod
     def load(cls, path: Path) -> "FullMatrixSpec":
-        spec_path = path.resolve()
+        spec_path = _resolve_direct_existing(
+            path, label="Full matrix specification", kind="file"
+        )
         value = read_json(spec_path)
         if not isinstance(value, dict) or value.get("schema") != 1:
             raise FullMatrixError("Unsupported full matrix specification schema")
@@ -163,9 +216,12 @@ class FullMatrixSpec:
                 endpoint_raw = str(raw.get("endpoint") or "")
                 if not endpoint_raw or "\x00" in endpoint_raw:
                     raise FullMatrixError(f"Remote target {target_id} requires an endpoint")
-                endpoint = (spec_path.parent / endpoint_raw).resolve()
+                endpoint = _resolve_direct_candidate(
+                    spec_path.parent / endpoint_raw,
+                    label=f"Remote endpoint {target_id}",
+                )
                 try:
-                    endpoint.relative_to(spec_path.parent.resolve())
+                    endpoint.relative_to(spec_path.parent)
                 except ValueError as exc:
                     raise FullMatrixError(f"Remote endpoint escapes specification directory: {endpoint_raw}") from exc
                 options = raw.get("options") if isinstance(raw.get("options"), dict) else {}
@@ -215,13 +271,15 @@ class FullMatrixSpec:
         allowance_manifest: dict[str, Any] | None = None
         allowance_file = str(differential.get("allowance_file") or "")
         if allowance_file:
-            candidate = (spec_path.parent / allowance_file).resolve()
+            candidate = _resolve_direct_existing(
+                spec_path.parent / allowance_file,
+                label="Differential allowance manifest",
+                kind="file",
+            )
             try:
-                candidate.relative_to(spec_path.parent.resolve())
+                candidate.relative_to(spec_path.parent)
             except ValueError as exc:
                 raise FullMatrixError("Differential allowance manifest escapes specification directory") from exc
-            if not candidate.is_file() or candidate.is_symlink():
-                raise FullMatrixError(f"Differential allowance manifest is missing or unsafe: {candidate}")
             manifest_value = read_json(candidate)
             if not isinstance(manifest_value, dict) or manifest_value.get("schema") != 1:
                 raise FullMatrixError("Unsupported differential allowance manifest schema")
@@ -362,8 +420,9 @@ def default_full_matrix_spec() -> dict[str, Any]:
 
 
 def write_full_matrix_template(path: Path) -> dict[str, Any]:
-    output = path.resolve()
+    output = _resolve_direct_candidate(path, label="Full matrix template output")
     allowance = output.with_name("psmatrix.differences.json")
+    _reject_indirect_components(allowance, label="Differential allowance template output")
     if output.exists() or allowance.exists():
         raise FullMatrixError("Refusing to overwrite an existing full matrix or difference manifest")
     matrix = default_full_matrix_spec()
@@ -417,14 +476,24 @@ def plan_full_matrix(*, home: Path, spec_path: Path) -> dict[str, Any]:
             continue
         endpoint_status = "MISSING"
         details: dict[str, Any] = {}
-        if target.endpoint and target.endpoint.is_file() and not target.endpoint.is_symlink():
+        if target.endpoint:
             try:
-                endpoint = RemoteEndpoint.load(target.endpoint, trust_home=home)
-                if endpoint.expected_runtime_id != target.runtime_id:
-                    endpoint_status = "RUNTIME_MISMATCH"
-                else:
-                    endpoint_status = "READY"
-                details = {"worker_id": endpoint.worker_id, "url": endpoint.url}
+                _reject_indirect_components(target.endpoint, label=f"Remote endpoint {target.target_id}")
+                if target.endpoint.exists():
+                    endpoint_path = _resolve_direct_existing(
+                        target.endpoint,
+                        label=f"Remote endpoint {target.target_id}",
+                        kind="file",
+                    )
+                    endpoint = RemoteEndpoint.load(endpoint_path, trust_home=home)
+                    if endpoint.expected_runtime_id != target.runtime_id:
+                        endpoint_status = "RUNTIME_MISMATCH"
+                    else:
+                        endpoint_status = "READY"
+                    details = {"worker_id": endpoint.worker_id, "url": endpoint.url}
+            except FullMatrixError as exc:
+                endpoint_status = "INVALID"
+                details = {"error": str(exc)}
             except PSMatrixError as exc:
                 endpoint_status = "INVALID"
                 details = {"error": str(exc)}
@@ -569,12 +638,23 @@ def _run_remote(
     target: FullMatrixTarget, common_options: dict[str, Any], timeout: int,
 ) -> tuple[list[TargetReport], dict[str, Any]]:
     assert target.endpoint is not None and target.runtime_id is not None
-    if not target.endpoint.is_file() or target.endpoint.is_symlink():
+    try:
+        _reject_indirect_components(target.endpoint, label=f"Remote endpoint {target.target_id}")
+    except FullMatrixError as exc:
+        return [_synthetic_target(target, entrypoint, "FAIL_WORKER", str(exc))], {
+            "endpoint": str(target.endpoint), "status": "FAIL", "error": str(exc)
+        }
+    if not target.endpoint.exists():
         return [_synthetic_target(target, entrypoint, "UNTESTED_RUNTIME", f"Remote endpoint is missing: {target.endpoint}")], {
             "endpoint": str(target.endpoint), "status": "MISSING"
         }
     try:
-        endpoint = RemoteEndpoint.load(target.endpoint, trust_home=home)
+        endpoint_path = _resolve_direct_existing(
+            target.endpoint,
+            label=f"Remote endpoint {target.target_id}",
+            kind="file",
+        )
+        endpoint = RemoteEndpoint.load(endpoint_path, trust_home=home)
         if endpoint.expected_runtime_id != target.runtime_id:
             raise FullMatrixError(
                 f"Endpoint runtime {endpoint.expected_runtime_id} does not match target {target.runtime_id}"
@@ -601,7 +681,7 @@ def _run_remote(
             raise FullMatrixError("Remote worker report must contain exactly one target")
         normalized = _normalize_target(raw_targets[0], target, entrypoint)
         return [normalized], {
-            "endpoint": str(target.endpoint),
+            "endpoint": str(endpoint_path),
             "worker_id": endpoint.worker_id,
             "signature_valid": True,
             "capabilities": capabilities,
@@ -675,19 +755,19 @@ def execute_full_matrix(
     include: list[Path], local_args: list[str], remote_options: dict[str, Any],
     timeout: int, jobs: int = 0, differential_mode: str | None = None,
 ) -> MatrixReport:
-    root = root.resolve()
-    entrypoint = entrypoint.resolve()
-    if not entrypoint.is_file() or entrypoint.is_symlink():
-        raise FullMatrixError(f"Full matrix entrypoint not found or unsafe: {entrypoint}")
+    root = _resolve_direct_existing(root, label="Full matrix project root", kind="directory")
+    entrypoint = _resolve_direct_existing(
+        entrypoint, label="Full matrix entrypoint", kind="file"
+    )
     try:
         entrypoint.relative_to(root)
     except ValueError as exc:
         raise FullMatrixError("Full matrix entrypoint escapes project root") from exc
     safe_include: list[Path] = []
     for supplied in include:
-        path = supplied.resolve()
-        if not path.is_file() or path.is_symlink():
-            raise FullMatrixError(f"Full matrix include file is missing or unsafe: {path}")
+        path = _resolve_direct_existing(
+            supplied, label="Full matrix include file", kind="file"
+        )
         try:
             path.relative_to(root)
         except ValueError as exc:
