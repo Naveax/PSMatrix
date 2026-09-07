@@ -358,7 +358,11 @@ def build_cache_material(
         "schema": _CACHE_SCHEMA,
         "tool_version": tool_version,
         "source": copy.deepcopy(source_evidence) if source_evidence is not None else _file_evidence(source),
-        "execution_context": execution_context or execution_context_evidence(source),
+        "execution_context": (
+            execution_context
+            if execution_context is not None
+            else execution_context_evidence(source)
+        ),
         "adjacent_inputs": (
             copy.deepcopy(adjacent_inputs_evidence)
             if adjacent_inputs_evidence is not None
