@@ -102,18 +102,19 @@ class CheckpointStore:
                             disk_records = payload["records"]
                     except (OSError, ValueError, TypeError):
                         disk_records = {}
-                disk_records.update(self._records)
+                merged_records = dict(self._records)
+                merged_records.update(disk_records)
                 report_value = report.to_dict()
                 report_sha256 = hashlib.sha256(
                     json.dumps(report_value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
                 ).hexdigest()
-                disk_records[key] = {
+                merged_records[key] = {
                     "key": key,
                     "completed_at": utc_now_iso(),
                     "report_sha256": report_sha256,
                     "report": report_value,
                 }
-                self._records = disk_records
+                self._records = merged_records
                 atomic_write_json(
                     self.path,
                     {
