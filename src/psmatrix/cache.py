@@ -215,6 +215,43 @@ def adjacent_inputs_from_execution_context(
     return result
 
 
+def referenced_input_evidence_from_execution_context(
+    options: Any,
+    context_root: Path,
+    execution_context: dict[str, Any],
+) -> dict[Path, dict[str, Any]]:
+    """Collect reusable regular-file evidence for explicit run inputs.
+
+    Only inputs represented by the supplied execution context are returned.
+    Missing, external, directory, special, or malformed inputs are omitted so
+    `build_cache_material` retains its normal per-path direct evidence fallback.
+    """
+
+    path_values = list(getattr(options, "setup_scripts", ()))
+    path_values.extend(getattr(options, "teardown_scripts", ()))
+    path_values.extend(
+        source_value
+        for source_value, _destination in getattr(options, "fixtures", ())
+    )
+    lockfile = getattr(options, "dependency_lockfile", None)
+    if lockfile:
+        path_values.append(lockfile)
+
+    result: dict[Path, dict[str, Any]] = {}
+    for path_value in path_values:
+        resolved = Path(path_value).resolve()
+        if resolved in result:
+            continue
+        item = file_evidence_from_execution_context(
+            resolved,
+            context_root,
+            execution_context,
+        )
+        if item is not None:
+            result[resolved] = item
+    return result
+
+
 def engine_fingerprint(root: Path) -> dict[str, Any]:
     root = root.resolve()
     files = []
@@ -254,11 +291,15 @@ def build_cache_material(
     execution_context: dict[str, Any] | None = None,
     source_evidence: dict[str, Any] | None = None,
     adjacent_inputs_evidence: list[dict[str, Any]] | None = None,
+    precomputed_file_evidence: dict[Path, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     source = source.resolve()
     original = asdict(options)
     raw = copy.deepcopy(original)
-    evidence_cache: dict[Path, dict[str, Any] | None] = {}
+    evidence_cache: dict[Path, dict[str, Any] | None] = {
+        Path(path).resolve(): copy.deepcopy(item)
+        for path, item in (precomputed_file_evidence or {}).items()
+    }
 
     def evidence(path_value: str) -> dict[str, Any] | None:
         resolved = Path(path_value).resolve()
