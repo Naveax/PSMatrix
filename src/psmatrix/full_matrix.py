@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .catalog import CORE_RELEASE_LINES, release_metadata, resolve_runtime
+from .catalog import BUILTIN_CHANNELS, CORE_RELEASE_LINES, release_metadata, resolve_runtime
 from .differential import compare_targets
 from .diagnostics import collect_diagnostics
 from .errors import PSMatrixError
@@ -279,6 +279,7 @@ def _validate_args(value: Any, target_id: str) -> tuple[str, ...]:
 
 
 def default_full_matrix_spec() -> dict[str, Any]:
+    stable_version = BUILTIN_CHANNELS["stable"].version
     targets: list[dict[str, Any]] = [
         {
             "id": f"linux-{line.version}-x64-glibc",
@@ -294,9 +295,9 @@ def default_full_matrix_spec() -> dict[str, Any]:
     ]
     targets.extend([
         {
-            "id": "linux-7.6.4-arm64-glibc",
+            "id": f"linux-{stable_version}-arm64-glibc",
             "kind": "local",
-            "version": "7.6.4",
+            "version": stable_version,
             "arch": "arm64",
             "libc": "glibc",
             "backend": "auto",
@@ -304,9 +305,9 @@ def default_full_matrix_spec() -> dict[str, Any]:
             "required": False
         },
         {
-            "id": "linux-7.6.4-x64-musl",
+            "id": f"linux-{stable_version}-x64-musl",
             "kind": "local",
-            "version": "7.6.4",
+            "version": stable_version,
             "arch": "x64",
             "libc": "musl",
             "backend": "auto",
@@ -352,7 +353,7 @@ def default_full_matrix_spec() -> dict[str, Any]:
         "targets": targets,
         "differential": {
             "mode": "report",
-            "baseline_runtime": "powershell-7.6.4-linux-x64",
+            "baseline_runtime": f"powershell-{stable_version}-linux-x64",
             "allowance_file": "psmatrix.differences.json",
             "allow": [],
         },
