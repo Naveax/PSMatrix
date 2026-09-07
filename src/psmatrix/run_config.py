@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -15,6 +16,7 @@ from .util import read_json, sha256_file
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 _PARAM_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _RESERVED_ENV = {
     "PATH",
     "HOME",
@@ -115,16 +117,25 @@ def _json_hash(value: Any) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _is_link_or_reparse(path: Path) -> bool:
+    info = path.lstat()
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0) & _REPARSE_POINT
+    )
+
+
 def _path_digest(path: Path) -> str:
     if path.is_file():
         return sha256_file(path)
     digest = hashlib.sha256()
     for current, dirs, files in os.walk(path, followlinks=False):
         current_path = Path(current)
-        dirs[:] = sorted(name for name in dirs if not (current_path / name).is_symlink())
+        dirs[:] = sorted(
+            name for name in dirs if not _is_link_or_reparse(current_path / name)
+        )
         for name in sorted(files):
             item = current_path / name
-            if item.is_symlink():
+            if _is_link_or_reparse(item):
                 continue
             relative = item.relative_to(path).as_posix().encode("utf-8")
             digest.update(len(relative).to_bytes(8, "big"))
@@ -204,10 +215,15 @@ def _reject_symlink_components(path: Path, *, kind: str) -> None:
     for part in absolute.parts[1:]:
         current = current / part
         try:
-            if current.is_symlink():
-                raise RunConfigurationError(f"{kind} path contains a symlink: {current}")
+            indirect = _is_link_or_reparse(current)
+        except FileNotFoundError:
+            continue
         except OSError as exc:
             raise RunConfigurationError(f"Unable to inspect {kind} path {current}: {exc}") from exc
+        if indirect:
+            raise RunConfigurationError(
+                f"{kind} path contains a symlink or reparse point: {current}"
+            )
 
 
 def _resolve_existing(base: Path, value: str, *, kind: str) -> Path:
@@ -244,8 +260,16 @@ def _parse_fixture(base: Path, raw: Any) -> FixtureSpec:
             current_path = Path(current)
             for name in list(dirs) + list(files):
                 item = current_path / name
-                if item.is_symlink():
-                    raise RunConfigurationError(f"Fixture tree contains a symlink: {item}")
+                try:
+                    indirect = _is_link_or_reparse(item)
+                except OSError as exc:
+                    raise RunConfigurationError(
+                        f"Unable to inspect fixture tree path {item}: {exc}"
+                    ) from exc
+                if indirect:
+                    raise RunConfigurationError(
+                        f"Fixture tree contains a symlink or reparse point: {item}"
+                    )
     destination = _safe_destination(destination_value)
     if expected_hash is not None:
         if not isinstance(expected_hash, str) or not _SHA256_RE.fullmatch(expected_hash):
@@ -440,8 +464,18 @@ def materialize_fixtures(workspace: Path, fixtures: list[FixtureSpec]) -> list[d
         resolved_parent = destination.parent.resolve()
         if resolved_parent != root and root not in resolved_parent.parents:
             raise RunConfigurationError(f"Fixture destination escaped workspace: {fixture.destination}")
-        if destination.is_symlink():
-            raise RunConfigurationError(f"Fixture destination is a symlink: {fixture.destination}")
+        try:
+            indirect_destination = _is_link_or_reparse(destination)
+        except FileNotFoundError:
+            indirect_destination = False
+        except OSError as exc:
+            raise RunConfigurationError(
+                f"Unable to inspect fixture destination {destination}: {exc}"
+            ) from exc
+        if indirect_destination:
+            raise RunConfigurationError(
+                f"Fixture destination is a symlink or reparse point: {fixture.destination}"
+            )
         if destination.exists():
             if _path_digest(destination) != _path_digest(fixture.source):
                 raise RunConfigurationError(f"Fixture destination collision: {fixture.destination}")
@@ -483,12 +517,22 @@ def _copy_tree_no_links(source: Path, destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=False)
     for current, dirs, files in os.walk(source, followlinks=False):
         current_path = Path(current)
-        dirs[:] = sorted(name for name in dirs if not (current_path / name).is_symlink())
+        for name in list(dirs) + list(files):
+            item = current_path / name
+            try:
+                indirect = _is_link_or_reparse(item)
+            except OSError as exc:
+                raise RunConfigurationError(
+                    f"Unable to inspect fixture tree path {item}: {exc}"
+                ) from exc
+            if indirect:
+                raise RunConfigurationError(
+                    f"Fixture tree contains a symlink or reparse point: {item}"
+                )
+        dirs[:] = sorted(dirs)
         relative = current_path.relative_to(source)
         target_dir = destination / relative
         target_dir.mkdir(parents=True, exist_ok=True)
         for name in sorted(files):
             item = current_path / name
-            if item.is_symlink():
-                raise RunConfigurationError(f"Fixture tree contains a symlink: {item}")
             shutil.copy2(item, target_dir / name, follow_symlinks=False)
