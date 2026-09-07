@@ -304,17 +304,29 @@ class ResultCache:
         except (OSError, ValueError, TypeError, KeyError):
             return None
 
-    def store(self, key: str, report: TargetReport, material: dict[str, Any]) -> bool:
+    def store(
+        self,
+        key: str,
+        report: TargetReport,
+        material: dict[str, Any],
+        *,
+        material_digest: str | None = None,
+    ) -> bool:
         if report.status != "PASS":
             return False
         path = self.record_path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
         report_value = report.to_dict()
+        resolved_material_digest = (
+            material_digest
+            if material_digest is not None
+            else hashlib.sha256(_json_bytes(_portable(material))).hexdigest()
+        )
         payload = {
             "schema": _CACHE_SCHEMA,
             "key": key,
             "created_at": utc_now_iso(),
-            "material_digest": hashlib.sha256(_json_bytes(_portable(material))).hexdigest(),
+            "material_digest": resolved_material_digest,
             "report_sha256": hashlib.sha256(_json_bytes(report_value)).hexdigest(),
             "report": report_value,
         }
