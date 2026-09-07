@@ -167,7 +167,16 @@ def build_cache_material(
     execution_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     source = source.resolve()
-    raw = asdict(options)
+    original = asdict(options)
+    raw = copy.deepcopy(original)
+    evidence_cache: dict[Path, dict[str, Any] | None] = {}
+
+    def evidence(path_value: str) -> dict[str, Any] | None:
+        resolved = Path(path_value).resolve()
+        if resolved not in evidence_cache:
+            evidence_cache[resolved] = _file_evidence(resolved)
+        return evidence_cache[resolved]
+
     # Values affect the key but never appear in plaintext in cache metadata.
     raw["stdin_data"] = _digest_value(raw.get("stdin_data")) if raw.get("stdin_data") is not None else None
     raw["parameters"] = [
@@ -178,9 +187,10 @@ def build_cache_material(
     ]
 
     def token(path_value: str) -> dict[str, Any]:
-        evidence = _file_evidence(Path(path_value)) or {"exists": False}
-        evidence.pop("path", None)
-        return evidence
+        item = evidence(path_value)
+        value = copy.deepcopy(item) if item is not None else {"exists": False}
+        value.pop("path", None)
+        return value
 
     raw["setup_scripts"] = [token(value) for value in raw.get("setup_scripts", [])]
     raw["teardown_scripts"] = [token(value) for value in raw.get("teardown_scripts", [])]
@@ -194,20 +204,19 @@ def build_cache_material(
     raw["stdin_source"] = "provided" if raw.get("stdin_source") else None
 
     files: list[dict[str, Any]] = []
-    original = asdict(options)
     for value in original.get("setup_scripts", []) + original.get("teardown_scripts", []):
-        item = _file_evidence(Path(value))
+        item = evidence(value)
         if item:
-            files.append(item)
+            files.append(copy.deepcopy(item))
     for source_value, _destination in original.get("fixtures", []):
-        item = _file_evidence(Path(source_value))
+        item = evidence(source_value)
         if item:
-            files.append(item)
+            files.append(copy.deepcopy(item))
     lockfile = original.get("dependency_lockfile")
     if lockfile:
-        item = _file_evidence(Path(lockfile))
+        item = evidence(lockfile)
         if item:
-            files.append(item)
+            files.append(copy.deepcopy(item))
 
     material = {
         "schema": _CACHE_SCHEMA,
