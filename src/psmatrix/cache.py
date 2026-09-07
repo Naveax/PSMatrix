@@ -128,6 +128,44 @@ def execution_context_evidence(source: Path) -> dict[str, Any]:
     return {"kind": "execution-context", "entries": entries}
 
 
+def source_evidence_from_execution_context(
+    source: Path,
+    execution_context: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Recover entry-script evidence from a freshly scanned execution context.
+
+    The execution-context scanner already hashes every regular file copied into
+    the isolated workspace. Reusing that digest avoids immediately reading and
+    hashing the entry script a second time when cache material is constructed.
+    Malformed, incomplete, or non-regular context entries return ``None``.
+    Freshness is the caller's responsibility; the scheduler invokes this helper
+    only for an execution context scanned in the current source iteration.
+    """
+
+    resolved = source.resolve()
+    relative = resolved.name
+    entries = execution_context.get("entries")
+    if not isinstance(entries, list):
+        return None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("relative_path") != relative or entry.get("kind") != "file":
+            continue
+        size = entry.get("size")
+        digest = entry.get("sha256")
+        if not isinstance(size, int) or not isinstance(digest, str) or not digest:
+            return None
+        return {
+            "path": str(resolved),
+            "exists": True,
+            "kind": "file",
+            "size": size,
+            "sha256": digest,
+        }
+    return None
+
+
 def engine_fingerprint(root: Path) -> dict[str, Any]:
     root = root.resolve()
     files = []
@@ -165,6 +203,7 @@ def build_cache_material(
     tool_version: str,
     runtime_fingerprint: dict[str, Any] | None = None,
     execution_context: dict[str, Any] | None = None,
+    source_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     source = source.resolve()
     original = asdict(options)
@@ -221,7 +260,7 @@ def build_cache_material(
     material = {
         "schema": _CACHE_SCHEMA,
         "tool_version": tool_version,
-        "source": _file_evidence(source),
+        "source": copy.deepcopy(source_evidence) if source_evidence is not None else _file_evidence(source),
         "execution_context": execution_context or execution_context_evidence(source),
         "adjacent_inputs": _adjacent_inputs(source),
         "referenced_inputs": files,
