@@ -198,8 +198,8 @@ def build_jobs(
             adjacent_inputs_evidence=adjacent_inputs_evidence,
             precomputed_file_evidence=precomputed_file_evidence,
         )
-        for spec in specs:
-            material = copy.deepcopy(common_material)
+        for spec_index, spec in enumerate(specs):
+            material = common_material.copy() if spec_index == 0 else copy.deepcopy(common_material)
             material["runtime"] = {
                 "runtime_id": spec.runtime_id,
                 "version": spec.version,
