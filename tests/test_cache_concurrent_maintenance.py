@@ -18,14 +18,14 @@ class CacheConcurrentMaintenanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             cache = ResultCache(Path(temp) / "cache")
             record = self._record(cache, "a" * 64)
-            original_stat = Path.stat
+            original_lstat = Path.lstat
 
-            def missing_stat(path: Path, *args, **kwargs):
+            def missing_lstat(path: Path, *args, **kwargs):
                 if path == record:
                     raise FileNotFoundError(str(path))
-                return original_stat(path, *args, **kwargs)
+                return original_lstat(path, *args, **kwargs)
 
-            with patch.object(Path, "stat", new=missing_stat):
+            with patch.object(Path, "lstat", new=missing_lstat):
                 stats = cache.stats()
 
             self.assertEqual(stats, {"records": 0, "bytes": 0})
@@ -34,18 +34,18 @@ class CacheConcurrentMaintenanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             cache = ResultCache(Path(temp) / "cache")
             record = self._record(cache, "b" * 64, "{")
-            original_stat = Path.stat
+            original_lstat = Path.lstat
             calls = 0
 
-            def flaky_stat(path: Path, *args, **kwargs):
+            def flaky_lstat(path: Path, *args, **kwargs):
                 nonlocal calls
                 if path == record:
                     calls += 1
                     if calls == 2:
                         raise FileNotFoundError(str(path))
-                return original_stat(path, *args, **kwargs)
+                return original_lstat(path, *args, **kwargs)
 
-            with patch.object(Path, "stat", new=flaky_stat):
+            with patch.object(Path, "lstat", new=flaky_lstat):
                 result = cache.prune(max_age_days=0)
 
             self.assertEqual(result["removed"], 0)
@@ -56,19 +56,19 @@ class CacheConcurrentMaintenanceTests(unittest.TestCase):
             cache = ResultCache(Path(temp) / "cache")
             disappearing = self._record(cache, "c" * 64)
             self._record(cache, "d" * 64)
-            original_stat = Path.stat
+            original_lstat = Path.lstat
             calls = 0
 
-            def disappearing_stat(path: Path, *args, **kwargs):
+            def disappearing_lstat(path: Path, *args, **kwargs):
                 nonlocal calls
                 if path == disappearing:
                     calls += 1
                     if calls == 2:
                         path.unlink(missing_ok=True)
                         raise FileNotFoundError(str(path))
-                return original_stat(path, *args, **kwargs)
+                return original_lstat(path, *args, **kwargs)
 
-            with patch.object(Path, "stat", new=disappearing_stat):
+            with patch.object(Path, "lstat", new=disappearing_lstat):
                 result = cache.prune(max_records=1)
 
             self.assertEqual(result["removed"], 0)
@@ -105,7 +105,9 @@ class CacheConcurrentMaintenanceTests(unittest.TestCase):
                 result = cache.prune()
 
             self.assertEqual(result["removed"], 0)
-            self.assertEqual(result["records"], 1)
+            # An unreadable/disappearing records root is not trustworthy enough
+            # to report records that maintenance cannot enumerate directly.
+            self.assertEqual(result["records"], 0)
 
 
 if __name__ == "__main__":
