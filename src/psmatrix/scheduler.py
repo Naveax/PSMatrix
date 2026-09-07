@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .cache import ResultCache, build_cache_material, cache_key, shard_key
+from .cache import ResultCache, build_cache_material, cache_key, execution_context_evidence, shard_key
 from .models import ParseDiagnostic, RuntimeSpec, TargetReport, target_report_from_dict
 from .util import atomic_write_json, exclusive_lock, read_json, sha256_file, utc_now_iso
 
@@ -160,6 +160,7 @@ def build_jobs(
     jobs: list[TargetJob] = []
     index = 0
     for source in files:
+        execution_context = execution_context_evidence(source)
         for spec in specs:
             material = build_cache_material(
                 source,
@@ -167,6 +168,7 @@ def build_jobs(
                 options,
                 tool_version=tool_version,
                 runtime_fingerprint=runtime_fingerprints[spec.runtime_id],
+                execution_context=execution_context,
             )
             material["tool_modules"] = tool_modules or {}
             material["engine"] = engine or {}
