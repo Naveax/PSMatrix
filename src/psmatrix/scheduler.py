@@ -164,10 +164,14 @@ def build_jobs(
     specs = list(specs)
     if not specs:
         return []
-    runtime_fingerprints = {
-        spec.runtime_id: _runtime_fingerprint(spec, runtime_manager, oci_manager)
-        for spec in specs
-    }
+    runtime_fingerprints: dict[str, dict] = {}
+    for spec in specs:
+        if spec.runtime_id not in runtime_fingerprints:
+            runtime_fingerprints[spec.runtime_id] = _runtime_fingerprint(
+                spec,
+                runtime_manager,
+                oci_manager,
+            )
     execution_contexts: dict[Path, dict] = {}
     jobs: list[TargetJob] = []
     index = 0
@@ -208,7 +212,7 @@ def build_jobs(
                 "os": spec.os,
                 "arch": spec.arch,
                 "libc": spec.libc,
-                "fingerprint": runtime_fingerprints[spec.runtime_id],
+                "fingerprint": copy.deepcopy(runtime_fingerprints[spec.runtime_id]),
             }
             key, distribution_key = cache_and_shard_keys(material)
             if int(distribution_key[:16], 16) % shard_count != shard_index:
