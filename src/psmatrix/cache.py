@@ -450,7 +450,11 @@ class ResultCache:
             return None
         try:
             payload = read_json(path)
-            if payload.get("schema") != _CACHE_SCHEMA or payload.get("key") != key:
+            if (
+                payload.get("schema") != _CACHE_SCHEMA
+                or payload.get("key") != key
+                or payload.get("material_digest") != key
+            ):
                 return None
             report_value = payload["report"]
             expected = payload.get("report_sha256")
