@@ -41,7 +41,7 @@ class FullMatrixGATests(unittest.TestCase):
             "targets": targets, "differential": [], "diagnostics": [],
             "matrix": {
                 "full": True, "name": "full", "differential_mode": "strict",
-                "baseline_runtime": "powershell-7.6.4-linux-x64", "allowances": [],
+                "baseline_runtime": "powershell-7.6.5-linux-x64", "allowances": [],
                 "allowance_manifest": None, "unallowed_differences": 0, "require_complete": True,
                 "coverage": {
                     "declared": 25, "passed": 25, "incomplete": 0, "failed": 0,
@@ -75,7 +75,7 @@ class FullMatrixGATests(unittest.TestCase):
         self.assertEqual(len(targets), 25)
         self.assertEqual(len({item["id"] for item in targets}), 25)
         self.assertEqual(len({item["runtime_id"] for item in targets}), 25)
-        self.assertEqual(canonical_full_matrix_sha256(), "39eae722e73cf131ee7659371a5bc63b23481e13b1617b8f390138169bc34af2")
+        self.assertEqual(canonical_full_matrix_sha256(), "9601b01d7cc8786e2bd45c1e04a8ffc26e2726461f5139c53b0561125654cfb7")
 
     def test_release_binding_and_attestation_roundtrip(self):
         with tempfile.TemporaryDirectory() as temp:
