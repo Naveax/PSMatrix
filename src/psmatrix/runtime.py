@@ -327,7 +327,7 @@ class RuntimeManager:
             if archive_override is None and (
                 force or not archive.exists() or sha256_file(archive).lower() != expected_hash
             ):
-                self._download(spec.download_url, archive)
+                self._download(spec.download_url, archive, overwrite=archive.exists())
             if not archive.exists():
                 raise RuntimeInstallError(f"Runtime archive not found: {archive}")
 
