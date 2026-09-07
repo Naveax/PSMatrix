@@ -8,7 +8,7 @@ from io import StringIO
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from psmatrix.cache import ResultCache
+from psmatrix.cache import ResultCache, cache_key
 from psmatrix.cli import main
 from psmatrix.evidence import write_evidence_bundle
 from psmatrix.exporters import write_html, write_junit, write_sarif
@@ -383,7 +383,8 @@ class CacheCliTests(unittest.TestCase):
                 runtime_id="powershell-7.6.4-linux-x64", runtime_version="7.6.4",
                 source=str(source), source_sha256="c" * 64, status="PASS", parse_ok=True
             )
-            cache.store("a" * 64, report, {"key": "value"})
+            material = {"key": "value"}
+            self.assertTrue(cache.store(cache_key(material), report, material))
             out = StringIO()
             with redirect_stdout(out):
                 code = main(["--home", str(root / "home"), "cache", "stats"])
