@@ -502,13 +502,15 @@ class ResultCache:
         if report.status != "PASS":
             return False
         path = self.record_path(key)
-        path.parent.mkdir(parents=True, exist_ok=True)
         report_value = report.to_dict()
         resolved_material_digest = (
             material_digest
             if material_digest is not None
             else hashlib.sha256(_json_bytes(_portable(material))).hexdigest()
         )
+        if key != resolved_material_digest:
+            return False
+        path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "schema": _CACHE_SCHEMA,
             "key": key,
