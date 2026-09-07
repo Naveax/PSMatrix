@@ -58,16 +58,19 @@ def _file_evidence(path: Path | None) -> dict[str, Any] | None:
     return {"path": str(resolved), "exists": True, "kind": "other"}
 
 
-def _adjacent_inputs(source: Path) -> list[dict[str, Any]]:
-    candidates = [
+def _adjacent_input_candidates(source: Path) -> list[Path]:
+    return [
         Path(str(source) + ".psmatrix.json"),
         source.with_suffix(source.suffix + ".psmatrix.json"),
         source.with_suffix(".lock.json"),
         source.parent / "psmatrix.lock.json",
     ]
+
+
+def _adjacent_inputs(source: Path) -> list[dict[str, Any]]:
     seen: set[Path] = set()
     result = []
-    for candidate in candidates:
+    for candidate in _adjacent_input_candidates(source):
         resolved = candidate.resolve()
         if resolved in seen:
             continue
@@ -128,22 +131,24 @@ def execution_context_evidence(source: Path) -> dict[str, Any]:
     return {"kind": "execution-context", "entries": entries}
 
 
-def source_evidence_from_execution_context(
-    source: Path,
+def file_evidence_from_execution_context(
+    path: Path,
+    context_root: Path,
     execution_context: dict[str, Any],
 ) -> dict[str, Any] | None:
-    """Recover entry-script evidence from a freshly scanned execution context.
+    """Recover regular-file evidence from a compatible execution context.
 
-    The execution-context scanner already hashes every regular file copied into
-    the isolated workspace. Reusing that digest avoids immediately reading and
-    hashing the entry script a second time when cache material is constructed.
-    Malformed, incomplete, or non-regular context entries return ``None``.
-    Freshness is the caller's responsibility; the scheduler invokes this helper
-    only for an execution context scanned in the current source iteration.
+    This helper validates structure and relative-path membership only. Freshness
+    is the caller's responsibility; scheduler fast paths use it only with a
+    context scanned in the current source iteration.
     """
 
-    resolved = source.resolve()
-    relative = resolved.name
+    resolved = path.resolve()
+    root = context_root.resolve()
+    try:
+        relative = resolved.relative_to(root).as_posix()
+    except ValueError:
+        return None
     entries = execution_context.get("entries")
     if not isinstance(entries, list):
         return None
@@ -164,6 +169,50 @@ def source_evidence_from_execution_context(
             "sha256": digest,
         }
     return None
+
+
+def source_evidence_from_execution_context(
+    source: Path,
+    execution_context: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Recover entry-script evidence from a freshly scanned execution context."""
+
+    resolved = source.resolve()
+    return file_evidence_from_execution_context(
+        resolved,
+        resolved.parent,
+        execution_context,
+    )
+
+
+def adjacent_inputs_from_execution_context(
+    source: Path,
+    execution_context: dict[str, Any],
+) -> list[dict[str, Any]] | None:
+    """Recover all existing adjacent-input evidence from a fresh context.
+
+    The fast path is all-or-nothing. If any existing candidate cannot be
+    represented exactly by regular-file execution-context evidence, return
+    ``None`` so the caller can recompute the complete legacy adjacent-input
+    view instead of mixing evidence from different observation points.
+    """
+
+    source = source.resolve()
+    root = source.parent
+    seen: set[Path] = set()
+    result: list[dict[str, Any]] = []
+    for candidate in _adjacent_input_candidates(source):
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if not resolved.exists():
+            continue
+        item = file_evidence_from_execution_context(resolved, root, execution_context)
+        if item is None:
+            return None
+        result.append(item)
+    return result
 
 
 def engine_fingerprint(root: Path) -> dict[str, Any]:
@@ -204,6 +253,7 @@ def build_cache_material(
     runtime_fingerprint: dict[str, Any] | None = None,
     execution_context: dict[str, Any] | None = None,
     source_evidence: dict[str, Any] | None = None,
+    adjacent_inputs_evidence: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     source = source.resolve()
     original = asdict(options)
@@ -262,7 +312,11 @@ def build_cache_material(
         "tool_version": tool_version,
         "source": copy.deepcopy(source_evidence) if source_evidence is not None else _file_evidence(source),
         "execution_context": execution_context or execution_context_evidence(source),
-        "adjacent_inputs": _adjacent_inputs(source),
+        "adjacent_inputs": (
+            copy.deepcopy(adjacent_inputs_evidence)
+            if adjacent_inputs_evidence is not None
+            else _adjacent_inputs(source)
+        ),
         "referenced_inputs": files,
         "runtime": {
             "runtime_id": spec.runtime_id,
