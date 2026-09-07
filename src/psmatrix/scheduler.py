@@ -43,6 +43,9 @@ class SchedulerResult:
     metadata: dict
 
 
+_CHECKPOINT_SCHEMA = 3
+
+
 class CheckpointStore:
     def __init__(self, path: Path | None) -> None:
         self.path = path.resolve() if path else None
@@ -51,14 +54,17 @@ class CheckpointStore:
         if self.path and self.path.is_file():
             try:
                 payload = read_json(self.path)
-                if payload.get("schema") == 2 and isinstance(payload.get("records"), dict):
+                if (
+                    payload.get("schema") == _CHECKPOINT_SCHEMA
+                    and isinstance(payload.get("records"), dict)
+                ):
                     self._records = payload["records"]
             except (OSError, ValueError, TypeError):
                 self._records = {}
 
     def load(self, key: str) -> TargetReport | None:
         value = self._records.get(key)
-        if not isinstance(value, dict):
+        if not isinstance(value, dict) or value.get("key") != key:
             return None
         try:
             report_value = value["report"]
@@ -89,7 +95,10 @@ class CheckpointStore:
                 if self.path.is_file():
                     try:
                         payload = read_json(self.path)
-                        if payload.get("schema") == 2 and isinstance(payload.get("records"), dict):
+                        if (
+                            payload.get("schema") == _CHECKPOINT_SCHEMA
+                            and isinstance(payload.get("records"), dict)
+                        ):
                             disk_records = payload["records"]
                     except (OSError, ValueError, TypeError):
                         disk_records = {}
@@ -99,6 +108,7 @@ class CheckpointStore:
                     json.dumps(report_value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
                 ).hexdigest()
                 disk_records[key] = {
+                    "key": key,
                     "completed_at": utc_now_iso(),
                     "report_sha256": report_sha256,
                     "report": report_value,
@@ -106,7 +116,11 @@ class CheckpointStore:
                 self._records = disk_records
                 atomic_write_json(
                     self.path,
-                    {"schema": 2, "updated_at": utc_now_iso(), "records": self._records},
+                    {
+                        "schema": _CHECKPOINT_SCHEMA,
+                        "updated_at": utc_now_iso(),
+                        "records": self._records,
+                    },
                 )
 
 
