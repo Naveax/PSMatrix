@@ -20,6 +20,7 @@ from .cache import (
     build_cache_material,
     cache_and_shard_keys,
     execution_context_evidence,
+    referenced_input_evidence_from_execution_context,
     source_evidence_from_execution_context,
 )
 from .models import ParseDiagnostic, RuntimeSpec, TargetReport, target_report_from_dict
@@ -175,11 +176,17 @@ def build_jobs(
         execution_context = execution_contexts.get(context_root)
         source_evidence = None
         adjacent_inputs_evidence = None
+        precomputed_file_evidence = None
         if execution_context is None:
             execution_context = execution_context_evidence(source)
             execution_contexts[context_root] = execution_context
             source_evidence = source_evidence_from_execution_context(source, execution_context)
             adjacent_inputs_evidence = adjacent_inputs_from_execution_context(source, execution_context)
+            precomputed_file_evidence = referenced_input_evidence_from_execution_context(
+                options,
+                context_root,
+                execution_context,
+            )
         common_material = build_cache_material(
             source,
             specs[0],
@@ -189,6 +196,7 @@ def build_jobs(
             execution_context=execution_context,
             source_evidence=source_evidence,
             adjacent_inputs_evidence=adjacent_inputs_evidence,
+            precomputed_file_evidence=precomputed_file_evidence,
         )
         for spec in specs:
             material = copy.deepcopy(common_material)
