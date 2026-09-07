@@ -38,6 +38,14 @@ def _validate_cache_key(key: str) -> None:
         raise ValueError("cache key must be a 64-character lowercase SHA-256 digest")
 
 
+def _regular_file_stat(path: Path) -> os.stat_result | None:
+    try:
+        info = path.stat()
+    except OSError:
+        return None
+    return info if stat.S_ISREG(info.st_mode) else None
+
+
 def _file_evidence(path: Path | None) -> dict[str, Any] | None:
     if path is None:
         return None
@@ -515,13 +523,19 @@ class ResultCache:
 
     def clear(self) -> dict[str, int]:
         before = self.stats()
-        if self.records.exists():
+        try:
             shutil.rmtree(self.records)
+        except FileNotFoundError:
+            pass
         self.records.mkdir(parents=True, exist_ok=True)
         return before
 
     def prune(self, *, max_age_days: float | None = None, max_records: int | None = None) -> dict[str, int]:
-        files = [path for path in self.records.glob("*/*.json") if path.is_file()]
+        files = [
+            path
+            for path in self.records.glob("*/*.json")
+            if _regular_file_stat(path) is not None
+        ]
         removed = 0
         now = datetime.now(UTC)
         if max_age_days is not None:
@@ -533,17 +547,41 @@ class ResultCache:
                     if created.tzinfo is None:
                         created = created.replace(tzinfo=UTC)
                 except (OSError, ValueError, TypeError):
-                    created = datetime.fromtimestamp(path.stat().st_mtime, UTC)
+                    info = _regular_file_stat(path)
+                    if info is None:
+                        files.remove(path)
+                        continue
+                    created = datetime.fromtimestamp(info.st_mtime, UTC)
                 if created < cutoff:
-                    path.unlink(missing_ok=True)
+                    try:
+                        path.unlink()
+                    except FileNotFoundError:
+                        files.remove(path)
+                        continue
+                    except OSError:
+                        continue
                     files.remove(path)
                     removed += 1
-        if max_records is not None and len(files) > max_records:
-            files.sort(key=lambda item: item.stat().st_mtime, reverse=True)
-            for path in files[max_records:]:
-                path.unlink(missing_ok=True)
+        if max_records is not None:
+            ranked = []
+            for path in files:
+                info = _regular_file_stat(path)
+                if info is not None:
+                    ranked.append((path, info.st_mtime))
+            ranked.sort(key=lambda item: item[1], reverse=True)
+            for path, _mtime in ranked[max_records:]:
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    continue
                 removed += 1
-        for directory in self.records.iterdir() if self.records.exists() else []:
+        try:
+            directories = list(self.records.iterdir())
+        except OSError:
+            directories = []
+        for directory in directories:
             if directory.is_dir():
                 try:
                     directory.rmdir()
@@ -552,5 +590,12 @@ class ResultCache:
         return {"removed": removed, **self.stats()}
 
     def stats(self) -> dict[str, int]:
-        files = list(self.records.glob("*/*.json"))
-        return {"records": len(files), "bytes": sum(path.stat().st_size for path in files if path.is_file())}
+        records = 0
+        total_bytes = 0
+        for path in self.records.glob("*/*.json"):
+            info = _regular_file_stat(path)
+            if info is None:
+                continue
+            records += 1
+            total_bytes += info.st_size
+        return {"records": records, "bytes": total_bytes}
