@@ -298,8 +298,11 @@ def build_cache_material(
     precomputed_file_evidence: dict[Path, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     source = source.resolve()
-    original = asdict(options)
-    raw = copy.deepcopy(original)
+    raw = asdict(options)
+    setup_scripts = raw.get("setup_scripts", ())
+    teardown_scripts = raw.get("teardown_scripts", ())
+    fixtures = raw.get("fixtures", ())
+    lockfile = raw.get("dependency_lockfile")
     evidence_cache: dict[Path, dict[str, Any] | None] = {
         Path(path).resolve(): copy.deepcopy(item)
         for path, item in (precomputed_file_evidence or {}).items()
@@ -338,15 +341,14 @@ def build_cache_material(
     raw["stdin_source"] = "provided" if raw.get("stdin_source") else None
 
     files: list[dict[str, Any]] = []
-    for value in original.get("setup_scripts", []) + original.get("teardown_scripts", []):
+    for value in setup_scripts + teardown_scripts:
         item = evidence(value)
         if item:
             files.append(copy.deepcopy(item))
-    for source_value, _destination in original.get("fixtures", []):
+    for source_value, _destination in fixtures:
         item = evidence(source_value)
         if item:
             files.append(copy.deepcopy(item))
-    lockfile = original.get("dependency_lockfile")
     if lockfile:
         item = evidence(lockfile)
         if item:
