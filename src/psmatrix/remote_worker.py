@@ -8,6 +8,7 @@ import os
 import shutil
 import signal
 import ssl
+import stat
 import subprocess
 import tempfile
 import time
@@ -44,6 +45,50 @@ class WorkerError(PSMatrixError):
 
 _IDENTITY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$")
 _WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+
+def _is_link_or_reparse(info: os.stat_result) -> bool:
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0) & _REPARSE_POINT
+    )
+
+
+def _reject_indirect_components(path: Path, *, label: str) -> None:
+    absolute = path.absolute()
+    current = Path(absolute.anchor) if absolute.anchor else Path()
+    parts = absolute.parts[1:] if absolute.anchor else absolute.parts
+    for part in parts:
+        current = current / part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise WorkerError(f"Unable to inspect {label} path {current}: {exc}") from exc
+        if _is_link_or_reparse(info):
+            raise WorkerError(f"{label} path contains a symlink or reparse point: {current}")
+
+
+def _direct_existing_file(path: Path, *, label: str) -> Path:
+    candidate = path.absolute()
+    _reject_indirect_components(candidate, label=label)
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise WorkerError(f"{label} file not found: {candidate}") from exc
+    if not resolved.is_file():
+        raise WorkerError(f"{label} is not a regular file: {resolved}")
+    return resolved
+
+
+def _direct_directory_candidate(path: Path, *, label: str) -> Path:
+    candidate = path.absolute()
+    _reject_indirect_components(candidate, label=label)
+    try:
+        return candidate.resolve(strict=False)
+    except OSError as exc:
+        raise WorkerError(f"Unable to resolve {label} path {candidate}: {exc}") from exc
 
 
 def _config_command(value: Any, label: str) -> tuple[str, ...]:
@@ -85,9 +130,12 @@ def _canonical_job_id(value: Any) -> str:
     return text
 
 
-def _config_path(base: Path, value: Any) -> Path:
+def _config_path(base: Path, value: Any, *, label: str, file: bool = True) -> Path:
     raw = Path(str(value or ""))
-    return (raw if raw.is_absolute() else base / raw).resolve()
+    candidate = raw if raw.is_absolute() else base / raw
+    if file:
+        return _direct_existing_file(candidate, label=label)
+    return _direct_directory_candidate(candidate, label=label)
 
 
 def _run_process_tree(command: list[str], *, cwd: Path, timeout: int) -> subprocess.CompletedProcess[str]:
@@ -122,11 +170,12 @@ def _run_process_tree(command: list[str], *, cwd: Path, timeout: int) -> subproc
 
 
 def certificate_sha256(path: Path) -> str:
-    text = path.resolve().read_text(encoding="utf-8")
+    direct = _direct_existing_file(path, label="TLS certificate")
+    text = direct.read_text(encoding="utf-8")
     try:
         der = ssl.PEM_cert_to_DER_cert(text)
     except ValueError as exc:
-        raise WorkerError(f"Invalid PEM certificate: {path}") from exc
+        raise WorkerError(f"Invalid PEM certificate: {direct}") from exc
     return hashlib.sha256(der).hexdigest()
 
 
@@ -240,7 +289,7 @@ class WorkerConfig:
 
     @classmethod
     def load(cls, path: Path) -> "WorkerConfig":
-        config_path = path.resolve()
+        config_path = _direct_existing_file(path, label="Worker configuration")
         base = config_path.parent
         value = read_json(config_path)
         if not isinstance(value, dict) or value.get("schema") != 1:
@@ -254,15 +303,15 @@ class WorkerConfig:
             worker_id=str(value.get("worker_id") or ""),
             host=str(value.get("host") or "127.0.0.1"),
             port=int(value.get("port") or 9443),
-            tls_certificate=_config_path(base, tls.get("certificate")),
-            tls_private_key=_config_path(base, tls.get("private_key")),
-            client_ca=_config_path(base, tls.get("client_ca")),
-            signing_private_key=_config_path(base, signing.get("private_key")),
-            signing_public_key=_config_path(base, signing.get("public_key")),
+            tls_certificate=_config_path(base, tls.get("certificate"), label="Worker TLS certificate"),
+            tls_private_key=_config_path(base, tls.get("private_key"), label="Worker TLS private key"),
+            client_ca=_config_path(base, tls.get("client_ca"), label="Controller client CA"),
+            signing_private_key=_config_path(base, signing.get("private_key"), label="Worker signing private key"),
+            signing_public_key=_config_path(base, signing.get("public_key"), label="Worker signing public key"),
             controller_id=str(controller.get("identity") or ""),
-            controller_public_key=_config_path(base, controller.get("public_key")),
+            controller_public_key=_config_path(base, controller.get("public_key"), label="Controller signing public key"),
             controller_certificate_sha256=str(controller.get("certificate_sha256") or "").lower(),
-            workspace_root=_config_path(base, value.get("workspace_root")),
+            workspace_root=_config_path(base, value.get("workspace_root"), label="Worker workspace", file=False),
             powershell_executable=str(runtime.get("executable") or "powershell.exe"),
             expected_version=str(runtime.get("version") or ""),
             reset_before=_config_command(reset.get("before"), "Before"),
@@ -281,9 +330,15 @@ class WorkerConfig:
             raise WorkerError("Worker and controller identities are invalid")
         if not self.expected_version or len(self.expected_version) > 64 or not self.powershell_executable or len(self.powershell_executable) > 4096:
             raise WorkerError("Worker runtime executable and version are required")
-        for path in (self.tls_certificate, self.tls_private_key, self.client_ca, self.signing_private_key, self.signing_public_key, self.controller_public_key):
-            if not path.is_file():
-                raise WorkerError(f"Worker configuration file not found: {path}")
+        for label, path in (
+            ("Worker TLS certificate", self.tls_certificate),
+            ("Worker TLS private key", self.tls_private_key),
+            ("Controller client CA", self.client_ca),
+            ("Worker signing private key", self.signing_private_key),
+            ("Worker signing public key", self.signing_public_key),
+            ("Controller signing public key", self.controller_public_key),
+        ):
+            _direct_existing_file(path, label=label)
         if len(self.controller_certificate_sha256) != 64 or any(ch not in "0123456789abcdef" for ch in self.controller_certificate_sha256):
             raise WorkerError("Controller TLS certificate SHA-256 must contain 64 hexadecimal characters")
         if not 0 <= self.port <= 65535:
@@ -296,7 +351,15 @@ class WorkerConfig:
             raise WorkerError("Worker inline_artifact_limit is outside the supported range")
         if self.reset_required and (not self.reset_before or not self.reset_after):
             raise WorkerError("Required reset policy needs both before and after commands")
+        _reject_indirect_components(self.workspace_root, label="Worker workspace")
         self.workspace_root.mkdir(parents=True, exist_ok=True)
+        _reject_indirect_components(self.workspace_root, label="Worker workspace")
+        try:
+            info = self.workspace_root.lstat()
+        except OSError as exc:
+            raise WorkerError(f"Unable to inspect worker workspace: {self.workspace_root}") from exc
+        if _is_link_or_reparse(info) or not stat.S_ISDIR(info.st_mode):
+            raise WorkerError(f"Worker workspace is not a direct directory: {self.workspace_root}")
 
 
 def _run_reset(command: tuple[str, ...], workspace: Path, phase: str) -> dict[str, Any]:
@@ -490,7 +553,6 @@ class WorkerService:
         cache_path = self.results / f"{job_id}.json"
         with self.results_lock:
             if cache_path.is_file():
-                # Verify the retried request without consuming its already-used nonce.
                 verify_job_request(
                     request,
                     expected_worker_id=self.config.worker_id,
@@ -649,8 +711,11 @@ def build_worker_server(service: WorkerService) -> ThreadingHTTPServer:
     server.daemon_threads = True
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
-    context.load_cert_chain(str(service.config.tls_certificate), str(service.config.tls_private_key))
-    context.load_verify_locations(cafile=str(service.config.client_ca))
+    tls_certificate = _direct_existing_file(service.config.tls_certificate, label="Worker TLS certificate")
+    tls_private_key = _direct_existing_file(service.config.tls_private_key, label="Worker TLS private key")
+    client_ca = _direct_existing_file(service.config.client_ca, label="Controller client CA")
+    context.load_cert_chain(str(tls_certificate), str(tls_private_key))
+    context.load_verify_locations(cafile=str(client_ca))
     context.verify_mode = ssl.CERT_REQUIRED
     server.socket = context.wrap_socket(server.socket, server_side=True)
     return server
@@ -685,7 +750,7 @@ class RemoteEndpoint:
 
     @classmethod
     def load(cls, path: Path, *, trust_home: Path | None = None) -> "RemoteEndpoint":
-        config_path = path.resolve()
+        config_path = _direct_existing_file(path, label="Remote endpoint configuration")
         base = config_path.parent
         value = read_json(config_path)
         if not isinstance(value, dict) or value.get("schema") != 1:
@@ -702,9 +767,13 @@ class RemoteEndpoint:
             if worker_id and identity != worker_id:
                 raise WorkerError("Worker signing identity must match worker_id")
             trusted = TrustStore(trust_home).get(identity, "worker")
-            worker_public_key = trusted.public_key
+            worker_public_key = _direct_existing_file(
+                trusted.public_key, label="Trusted worker signing public key"
+            )
         else:
-            worker_public_key = _config_path(base, worker_signing.get("public_key"))
+            worker_public_key = _config_path(
+                base, worker_signing.get("public_key"), label="Worker signing public key"
+            )
         expected_cert = str(tls.get("server_certificate_sha256") or "").lower() or None
         if trusted is not None and trusted.certificate_sha256:
             if expected_cert and expected_cert != trusted.certificate_sha256:
@@ -714,11 +783,11 @@ class RemoteEndpoint:
             url=str(value.get("url") or ""),
             worker_id=worker_id,
             controller_id=str(value.get("controller_id") or ""),
-            controller_certificate=_config_path(base, tls.get("certificate")),
-            controller_private_key=_config_path(base, tls.get("private_key")),
-            server_ca=_config_path(base, tls.get("server_ca")),
-            controller_signing_private_key=_config_path(base, controller_signing.get("private_key")),
-            controller_signing_public_key=_config_path(base, controller_signing.get("public_key")),
+            controller_certificate=_config_path(base, tls.get("certificate"), label="Controller TLS certificate"),
+            controller_private_key=_config_path(base, tls.get("private_key"), label="Controller TLS private key"),
+            server_ca=_config_path(base, tls.get("server_ca"), label="Worker server CA"),
+            controller_signing_private_key=_config_path(base, controller_signing.get("private_key"), label="Controller signing private key"),
+            controller_signing_public_key=_config_path(base, controller_signing.get("public_key"), label="Controller signing public key"),
             worker_signing_public_key=worker_public_key,
             expected_server_certificate_sha256=expected_cert,
             expected_runtime_id=str(value.get("runtime_id") or "") or None,
@@ -731,9 +800,15 @@ class RemoteEndpoint:
     def validate(self) -> None:
         if not self.url.startswith("https://") or not self.worker_id or not self.controller_id:
             raise WorkerError("Remote endpoint requires an HTTPS URL and identities")
-        for path in (self.controller_certificate, self.controller_private_key, self.server_ca, self.controller_signing_private_key, self.controller_signing_public_key, self.worker_signing_public_key):
-            if not path.is_file():
-                raise WorkerError(f"Remote endpoint file not found: {path}")
+        for label, path in (
+            ("Controller TLS certificate", self.controller_certificate),
+            ("Controller TLS private key", self.controller_private_key),
+            ("Worker server CA", self.server_ca),
+            ("Controller signing private key", self.controller_signing_private_key),
+            ("Controller signing public key", self.controller_signing_public_key),
+            ("Worker signing public key", self.worker_signing_public_key),
+        ):
+            _direct_existing_file(path, label=label)
         if self.expected_server_certificate_sha256 is not None and (
             len(self.expected_server_certificate_sha256) != 64
             or any(ch not in "0123456789abcdef" for ch in self.expected_server_certificate_sha256.lower())
@@ -748,9 +823,16 @@ class RemoteEndpoint:
 
 
 def _client_context(endpoint: RemoteEndpoint) -> ssl.SSLContext:
-    context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=str(endpoint.server_ca.resolve()))
+    server_ca = _direct_existing_file(endpoint.server_ca, label="Worker server CA")
+    controller_certificate = _direct_existing_file(
+        endpoint.controller_certificate, label="Controller TLS certificate"
+    )
+    controller_private_key = _direct_existing_file(
+        endpoint.controller_private_key, label="Controller TLS private key"
+    )
+    context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=str(server_ca))
     context.minimum_version = ssl.TLSVersion.TLSv1_2
-    context.load_cert_chain(str(endpoint.controller_certificate.resolve()), str(endpoint.controller_private_key.resolve()))
+    context.load_cert_chain(str(controller_certificate), str(controller_private_key))
     return context
 
 
