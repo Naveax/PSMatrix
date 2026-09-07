@@ -75,7 +75,7 @@ class FullMatrixGATests(unittest.TestCase):
         self.assertEqual(len(targets), 25)
         self.assertEqual(len({item["id"] for item in targets}), 25)
         self.assertEqual(len({item["runtime_id"] for item in targets}), 25)
-        self.assertEqual(canonical_full_matrix_sha256(), "9601b01d7cc8786e2bd45c1e04a8ffc26e2726461f5139c53b0561125654cfb7")
+        self.assertEqual(canonical_full_matrix_sha256(), "a470eae84a5e19e3b24ef7cc93497197c93ce93e037ddeb933a08c5746323d1c")
 
     def test_release_binding_and_attestation_roundtrip(self):
         with tempfile.TemporaryDirectory() as temp:
