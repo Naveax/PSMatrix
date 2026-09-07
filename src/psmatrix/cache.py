@@ -123,6 +123,9 @@ def execution_context_evidence(source: Path) -> dict[str, Any]:
                 size = item.stat().st_size
                 digest = sha256_file(item)
             except OSError:
+                entries.append(
+                    {"relative_path": relative, "kind": "unavailable-file"}
+                )
                 continue
             entries.append(
                 {
