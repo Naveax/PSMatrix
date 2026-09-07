@@ -56,7 +56,7 @@ class FullMatrixTests(unittest.TestCase):
             self.assertEqual(len(spec.targets), 25)
             self.assertIsNotNone(spec.allowance_manifest)
             self.assertEqual(sum(t.kind == "remote" for t in spec.targets), 13)
-            self.assertEqual(spec.baseline_runtime, "powershell-7.6.4-linux-x64")
+            self.assertEqual(spec.baseline_runtime, "powershell-7.6.5-linux-x64")
 
 
     def test_expired_difference_manifest_is_rejected(self):
