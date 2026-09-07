@@ -269,6 +269,24 @@ def shard_key(material: dict[str, Any]) -> str:
     return hashlib.sha256(_json_bytes(_portable(value))).hexdigest()
 
 
+def cache_and_shard_keys(material: dict[str, Any]) -> tuple[str, str]:
+    portable = _portable(material)
+    cache_digest = hashlib.sha256(_json_bytes(portable)).hexdigest()
+    runtime = portable.get("runtime")
+    projected_runtime = (
+        {key: item for key, item in runtime.items() if key != "fingerprint"}
+        if isinstance(runtime, dict)
+        else runtime
+    )
+    shard_material = {
+        key: projected_runtime if key == "runtime" else item
+        for key, item in portable.items()
+        if key not in {"execution_context", "tool_modules", "engine"}
+    }
+    shard_digest = hashlib.sha256(_json_bytes(shard_material)).hexdigest()
+    return cache_digest, shard_digest
+
+
 class ResultCache:
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
