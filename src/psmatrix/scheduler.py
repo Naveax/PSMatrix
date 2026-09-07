@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .cache import ResultCache, build_cache_material, cache_key, execution_context_evidence, shard_key
+from .cache import ResultCache, build_cache_material, cache_and_shard_keys, execution_context_evidence
 from .models import ParseDiagnostic, RuntimeSpec, TargetReport, target_report_from_dict
 from .util import atomic_write_json, exclusive_lock, read_json, sha256_file, utc_now_iso
 
@@ -189,8 +189,7 @@ def build_jobs(
             }
             material["tool_modules"] = tool_modules or {}
             material["engine"] = engine or {}
-            key = cache_key(material)
-            distribution_key = shard_key(material)
+            key, distribution_key = cache_and_shard_keys(material)
             if int(distribution_key[:16], 16) % shard_count != shard_index:
                 index += 1
                 continue
