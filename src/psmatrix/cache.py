@@ -28,6 +28,10 @@ def _digest_value(value: Any) -> dict[str, Any]:
     return {"sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw)}
 
 
+def _digest_bytes(value: bytes) -> dict[str, Any]:
+    return {"sha256": hashlib.sha256(value).hexdigest(), "bytes": len(value)}
+
+
 def _file_evidence(path: Path | None) -> dict[str, Any] | None:
     if path is None:
         return None
@@ -308,7 +312,7 @@ def build_cache_material(
         return evidence_cache[resolved]
 
     # Values affect the key but never appear in plaintext in cache metadata.
-    raw["stdin_data"] = _digest_value(raw.get("stdin_data")) if raw.get("stdin_data") is not None else None
+    raw["stdin_data"] = _digest_bytes(raw["stdin_data"]) if raw.get("stdin_data") is not None else None
     raw["parameters"] = [
         {"name": name, "value": _digest_value(value)} for name, value in raw.get("parameters", [])
     ]
