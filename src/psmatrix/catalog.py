@@ -25,11 +25,11 @@ class ReleaseLine:
 # Channel aliases are intentionally separate from the exact historical catalog.
 # Exact versions remain first-class and never depend on a mutable alias.
 BUILTIN_CHANNELS: dict[str, Channel] = {
-    "stable": Channel("stable", "7.6.4", "Current stable PowerShell line"),
-    "lts": Channel("lts", "7.6.4", "Current LTS PowerShell line"),
-    "previous-lts": Channel("previous-lts", "7.4.18", "Previous supported LTS line"),
-    "previous": Channel("previous", "7.5.7", "Previous stable line"),
-    "preview": Channel("preview", "7.7.0-preview.2", "Current preview line"),
+    "stable": Channel("stable", "7.6.5", "Current stable PowerShell line"),
+    "lts": Channel("lts", "7.6.5", "Current LTS PowerShell line"),
+    "previous-lts": Channel("previous-lts", "7.4.19", "Previous supported LTS line"),
+    "previous": Channel("previous", "7.5.10", "Previous stable line"),
+    "preview": Channel("preview", "7.7.0-preview.4", "Current preview line"),
 }
 
 
@@ -44,9 +44,9 @@ CORE_RELEASE_LINES: tuple[ReleaseLine, ...] = (
     ReleaseLine("7.1", "7.1.7", "eol", True, "PowerShell 7.1 final patch"),
     ReleaseLine("7.2", "7.2.24", "eol", False, "PowerShell 7.2 final patch"),
     ReleaseLine("7.3", "7.3.12", "eol", False, "PowerShell 7.3 final patch"),
-    ReleaseLine("7.4", "7.4.18", "supported", False, "PowerShell 7.4 selected patch"),
-    ReleaseLine("7.5", "7.5.7", "supported", False, "PowerShell 7.5 selected patch"),
-    ReleaseLine("7.6", "7.6.4", "supported", False, "PowerShell 7.6 selected patch"),
+    ReleaseLine("7.4", "7.4.19", "supported", False, "PowerShell 7.4 selected patch"),
+    ReleaseLine("7.5", "7.5.10", "supported", False, "PowerShell 7.5 selected patch"),
+    ReleaseLine("7.6", "7.6.5", "supported", False, "PowerShell 7.6 selected patch"),
 )
 
 _RELEASE_BY_VERSION = {release.version: release for release in CORE_RELEASE_LINES}
