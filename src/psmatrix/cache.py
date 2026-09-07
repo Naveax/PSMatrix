@@ -38,12 +38,33 @@ def _validate_cache_key(key: str) -> None:
         raise ValueError("cache key must be a 64-character lowercase SHA-256 digest")
 
 
-def _regular_file_stat(path: Path) -> os.stat_result | None:
+_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+
+def _is_link_or_reparse(info: os.stat_result) -> bool:
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0) & _REPARSE_POINT
+    )
+
+
+def _direct_directory_stat(path: Path) -> os.stat_result | None:
     try:
-        info = path.stat()
+        info = path.lstat()
     except OSError:
         return None
-    return info if stat.S_ISREG(info.st_mode) else None
+    if _is_link_or_reparse(info) or not stat.S_ISDIR(info.st_mode):
+        return None
+    return info
+
+
+def _regular_file_stat(path: Path) -> os.stat_result | None:
+    try:
+        info = path.lstat()
+    except OSError:
+        return None
+    if _is_link_or_reparse(info) or not stat.S_ISREG(info.st_mode):
+        return None
+    return info
 
 
 def _file_evidence(path: Path | None) -> dict[str, Any] | None:
@@ -451,20 +472,52 @@ def cache_and_shard_keys(material: dict[str, Any]) -> tuple[str, str]:
 class ResultCache:
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
+        self.root.mkdir(parents=True, exist_ok=True)
         self.records = self.root / "targets"
-        self.records.mkdir(parents=True, exist_ok=True)
+        try:
+            self.records.mkdir(exist_ok=False)
+        except FileExistsError:
+            pass
+        if _direct_directory_stat(self.records) is None:
+            raise OSError("cache targets path must be a direct directory")
         self._lock = threading.Lock()
 
     def record_path(self, key: str) -> Path:
         _validate_cache_key(key)
         return self.records / key[:2] / f"{key}.json"
 
+    def _record_files(self) -> list[Path]:
+        if _direct_directory_stat(self.records) is None:
+            return []
+        try:
+            shards = list(self.records.iterdir())
+        except OSError:
+            return []
+        result: list[Path] = []
+        for shard in shards:
+            if _direct_directory_stat(shard) is None:
+                continue
+            try:
+                entries = list(shard.iterdir())
+            except OSError:
+                continue
+            result.extend(
+                path
+                for path in entries
+                if path.suffix == ".json" and _regular_file_stat(path) is not None
+            )
+        return result
+
     def load(self, key: str) -> TargetReport | None:
         try:
             path = self.record_path(key)
         except ValueError:
             return None
-        if not path.is_file():
+        if (
+            _direct_directory_stat(self.records) is None
+            or _direct_directory_stat(path.parent) is None
+            or _regular_file_stat(path) is None
+        ):
             return None
         try:
             payload = read_json(path)
@@ -510,7 +563,6 @@ class ResultCache:
         )
         if key != resolved_material_digest:
             return False
-        path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "schema": _CACHE_SCHEMA,
             "key": key,
@@ -520,24 +572,34 @@ class ResultCache:
             "report": report_value,
         }
         with self._lock:
+            if _direct_directory_stat(self.records) is None:
+                return False
+            try:
+                path.parent.mkdir(exist_ok=False)
+            except FileExistsError:
+                pass
+            except OSError:
+                return False
+            if _direct_directory_stat(path.parent) is None:
+                return False
             atomic_write_json(path, payload)
         return True
 
     def clear(self) -> dict[str, int]:
         before = self.stats()
+        if _direct_directory_stat(self.records) is None:
+            raise OSError("refusing to clear an indirect cache targets path")
         try:
             shutil.rmtree(self.records)
         except FileNotFoundError:
             pass
         self.records.mkdir(parents=True, exist_ok=True)
+        if _direct_directory_stat(self.records) is None:
+            raise OSError("cache targets path could not be recreated safely")
         return before
 
     def prune(self, *, max_age_days: float | None = None, max_records: int | None = None) -> dict[str, int]:
-        files = [
-            path
-            for path in self.records.glob("*/*.json")
-            if _regular_file_stat(path) is not None
-        ]
+        files = self._record_files()
         removed = 0
         now = datetime.now(UTC)
         if max_age_days is not None:
@@ -579,12 +641,15 @@ class ResultCache:
                 except OSError:
                     continue
                 removed += 1
-        try:
-            directories = list(self.records.iterdir())
-        except OSError:
+        if _direct_directory_stat(self.records) is None:
             directories = []
+        else:
+            try:
+                directories = list(self.records.iterdir())
+            except OSError:
+                directories = []
         for directory in directories:
-            if directory.is_dir():
+            if _direct_directory_stat(directory) is not None:
                 try:
                     directory.rmdir()
                 except OSError:
@@ -594,7 +659,7 @@ class ResultCache:
     def stats(self) -> dict[str, int]:
         records = 0
         total_bytes = 0
-        for path in self.records.glob("*/*.json"):
+        for path in self._record_files():
             info = _regular_file_stat(path)
             if info is None:
                 continue
