@@ -198,6 +198,8 @@ def build_jobs(
             adjacent_inputs_evidence=adjacent_inputs_evidence,
             precomputed_file_evidence=precomputed_file_evidence,
         )
+        common_material["tool_modules"] = copy.deepcopy(tool_modules) if tool_modules is not None else {}
+        common_material["engine"] = copy.deepcopy(engine) if engine is not None else {}
         for spec_index, spec in enumerate(specs):
             material = common_material.copy() if spec_index == 0 else copy.deepcopy(common_material)
             material["runtime"] = {
@@ -208,8 +210,6 @@ def build_jobs(
                 "libc": spec.libc,
                 "fingerprint": runtime_fingerprints[spec.runtime_id],
             }
-            material["tool_modules"] = tool_modules or {}
-            material["engine"] = engine or {}
             key, distribution_key = cache_and_shard_keys(material)
             if int(distribution_key[:16], 16) % shard_count != shard_index:
                 index += 1
