@@ -123,11 +123,12 @@ def execution_context_evidence(source: Path) -> dict[str, Any]:
     """Fingerprint the exact project tree copied into an isolated run workspace.
 
     ScriptRunner copies ``source.parent`` recursively while excluding a small
-    set of generated/vendor directories and all symlinks/special files. Cache
-    correctness therefore has to bind the result to that same regular-file
-    and directory view, not only to the entry script. Relative paths are kept
-    because PowerShell behavior can depend on file names and ``$PSScriptRoot``;
-    the absolute project location is deliberately omitted for portability.
+    set of generated/vendor directories and all symlinks, Windows reparse
+    points, and special files. Cache correctness therefore has to bind the
+    result to that same direct regular-file and directory view, not only to the
+    entry script. Relative paths are kept because PowerShell behavior can
+    depend on file names and ``$PSScriptRoot``; the absolute project location
+    is deliberately omitted for portability.
     """
 
     root = source.resolve().parent
@@ -138,7 +139,7 @@ def execution_context_evidence(source: Path) -> dict[str, Any]:
             name
             for name in sorted(dirs)
             if name not in _EXECUTION_CONTEXT_EXCLUDED
-            and not (current_path / name).is_symlink()
+            and _direct_directory_stat(current_path / name) is not None
         ]
         relative_dir = current_path.relative_to(root)
         if relative_dir != Path("."):
@@ -147,15 +148,11 @@ def execution_context_evidence(source: Path) -> dict[str, Any]:
             )
         for name in sorted(files):
             item = current_path / name
-            try:
-                mode = item.lstat().st_mode
-            except OSError:
-                continue
-            if not stat.S_ISREG(mode):
+            info = _regular_file_stat(item)
+            if info is None:
                 continue
             relative = item.relative_to(root).as_posix()
             try:
-                size = item.stat().st_size
                 digest = sha256_file(item)
             except OSError:
                 entries.append(
@@ -166,7 +163,7 @@ def execution_context_evidence(source: Path) -> dict[str, Any]:
                 {
                     "relative_path": relative,
                     "kind": "file",
-                    "size": size,
+                    "size": info.st_size,
                     "sha256": digest,
                 }
             )
