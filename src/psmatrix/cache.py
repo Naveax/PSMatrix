@@ -250,6 +250,7 @@ def shard_key(material: dict[str, Any]) -> str:
     runtime = value.get("runtime")
     if isinstance(runtime, dict):
         runtime.pop("fingerprint", None)
+    value.pop("execution_context", None)
     value.pop("tool_modules", None)
     value.pop("engine", None)
     return hashlib.sha256(_json_bytes(_portable(value))).hexdigest()
