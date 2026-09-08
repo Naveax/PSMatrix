@@ -1,6 +1,7 @@
 import hashlib
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -48,6 +49,27 @@ class TransferPathSecurityTests(unittest.TestCase):
             with patch.object(Path, "lstat", _reparse_lstat(original_lstat, {root})):
                 with self.assertRaisesRegex(TransferError, "symlink or reparse point"):
                     TransferStore(root)
+
+    def test_unknown_transfer_preserves_lookup_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = TransferStore(Path(temp))
+            with self.assertRaisesRegex(TransferError, "Unknown transfer ID"):
+                store.status(str(uuid.uuid4()), controller_id="controller-a")
+
+    def test_create_revalidates_lock_file(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = TransferStore(Path(temp))
+            store.lock_path.write_bytes(b"")
+            raw = b"z" * (64 * 1024)
+            original_lstat = Path.lstat
+            with patch.object(Path, "lstat", _reparse_lstat(original_lstat, {store.lock_path})):
+                with self.assertRaisesRegex(TransferError, "symlink or reparse point"):
+                    store.create(
+                        controller_id="controller-a",
+                        artifact_sha256=hashlib.sha256(raw).hexdigest(),
+                        artifact_size=len(raw),
+                        chunk_size=64 * 1024,
+                    )
 
     def test_put_chunk_revalidates_sessions_directory(self):
         with tempfile.TemporaryDirectory() as temp:
