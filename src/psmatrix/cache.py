@@ -47,6 +47,38 @@ def _is_link_or_reparse(info: os.stat_result) -> bool:
     )
 
 
+def _lexical_absolute(path: Path) -> Path:
+    """Return an absolute path without dereferencing filesystem indirection."""
+
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def _path_boundary_state(path: Path) -> tuple[Path, str | None]:
+    """Inspect existing path components before canonicalization.
+
+    ``Path.resolve`` deliberately follows links, which makes it unsuitable for
+    deciding whether cache input identity crossed a symlink or Windows reparse
+    boundary. Missing suffix components are safe to stop at; an inaccessible
+    existing component is represented as unavailable so callers never fall
+    back to following it accidentally.
+    """
+
+    absolute = _lexical_absolute(path)
+    current = Path(absolute.anchor)
+    parts = absolute.parts[1:] if absolute.anchor else absolute.parts
+    for part in parts:
+        current = current / part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            break
+        except OSError:
+            return absolute, "unavailable"
+        if _is_link_or_reparse(info):
+            return absolute, "indirect"
+    return absolute, None
+
+
 def _direct_directory_stat(path: Path) -> os.stat_result | None:
     try:
         info = path.lstat()
@@ -67,34 +99,95 @@ def _regular_file_stat(path: Path) -> os.stat_result | None:
     return info
 
 
+def _directory_evidence(root: Path) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for current, dirs, files in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        safe_dirs: list[str] = []
+        for name in sorted(dirs):
+            item = current_path / name
+            relative = item.relative_to(root).as_posix()
+            try:
+                info = item.lstat()
+            except OSError:
+                entries.append({"relative_path": relative, "kind": "unavailable"})
+                continue
+            if _is_link_or_reparse(info):
+                entries.append({"relative_path": relative, "kind": "indirect"})
+                continue
+            if not stat.S_ISDIR(info.st_mode):
+                entries.append({"relative_path": relative, "kind": "other"})
+                continue
+            entries.append({"relative_path": relative, "kind": "directory"})
+            safe_dirs.append(name)
+        dirs[:] = safe_dirs
+
+        for name in sorted(files):
+            item = current_path / name
+            relative = item.relative_to(root).as_posix()
+            try:
+                info = item.lstat()
+            except OSError:
+                entries.append({"relative_path": relative, "kind": "unavailable"})
+                continue
+            if _is_link_or_reparse(info):
+                entries.append({"relative_path": relative, "kind": "indirect"})
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                entries.append({"relative_path": relative, "kind": "other"})
+                continue
+            try:
+                digest = sha256_file(item)
+            except OSError:
+                entries.append({"relative_path": relative, "kind": "unavailable-file"})
+                continue
+            entries.append(
+                {
+                    "relative_path": relative,
+                    "kind": "file",
+                    "size": info.st_size,
+                    "sha256": digest,
+                }
+            )
+    return entries
+
+
 def _file_evidence(path: Path | None) -> dict[str, Any] | None:
     if path is None:
         return None
-    resolved = path.resolve()
-    if not resolved.exists():
-        return {"path": str(resolved), "exists": False}
-    if resolved.is_symlink():
-        return {"path": str(resolved), "exists": True, "symlink": True, "target": os.readlink(resolved)}
-    if resolved.is_file():
+    absolute, boundary_state = _path_boundary_state(path)
+    if boundary_state == "indirect":
+        return {"path": str(absolute), "exists": True, "kind": "indirect"}
+    if boundary_state == "unavailable":
+        return {"path": str(absolute), "exists": None, "kind": "unavailable"}
+    try:
+        info = absolute.lstat()
+    except FileNotFoundError:
+        return {"path": str(absolute), "exists": False}
+    except OSError:
+        return {"path": str(absolute), "exists": None, "kind": "unavailable"}
+    if _is_link_or_reparse(info):
+        return {"path": str(absolute), "exists": True, "kind": "indirect"}
+    if stat.S_ISREG(info.st_mode):
+        try:
+            digest = sha256_file(absolute)
+        except OSError:
+            return {"path": str(absolute), "exists": True, "kind": "unavailable-file"}
         return {
-            "path": str(resolved),
+            "path": str(absolute),
             "exists": True,
             "kind": "file",
-            "size": resolved.stat().st_size,
-            "sha256": sha256_file(resolved),
+            "size": info.st_size,
+            "sha256": digest,
         }
-    if resolved.is_dir():
-        entries: list[dict[str, Any]] = []
-        for item in sorted(resolved.rglob("*")):
-            relative = item.relative_to(resolved).as_posix()
-            if item.is_symlink():
-                entries.append({"relative_path": relative, "kind": "symlink", "target": os.readlink(item)})
-            elif item.is_file():
-                entries.append({"relative_path": relative, "kind": "file", "size": item.stat().st_size, "sha256": sha256_file(item)})
-            elif item.is_dir():
-                entries.append({"relative_path": relative, "kind": "directory"})
-        return {"path": str(resolved), "exists": True, "kind": "directory", "entries": entries}
-    return {"path": str(resolved), "exists": True, "kind": "other"}
+    if stat.S_ISDIR(info.st_mode):
+        return {
+            "path": str(absolute),
+            "exists": True,
+            "kind": "directory",
+            "entries": _directory_evidence(absolute),
+        }
+    return {"path": str(absolute), "exists": True, "kind": "other"}
 
 
 def _adjacent_input_candidates(source: Path) -> list[Path]:
@@ -108,15 +201,16 @@ def _adjacent_input_candidates(source: Path) -> list[Path]:
 
 def _adjacent_inputs(source: Path) -> list[dict[str, Any]]:
     seen: set[Path] = set()
-    result = []
+    result: list[dict[str, Any]] = []
     for candidate in _adjacent_input_candidates(source):
-        resolved = candidate.resolve()
-        if resolved in seen:
+        identity = _lexical_absolute(candidate)
+        if identity in seen:
             continue
-        seen.add(resolved)
-        if resolved.exists():
-            result.append(_file_evidence(resolved))
-    return [item for item in result if item is not None]
+        seen.add(identity)
+        item = _file_evidence(identity)
+        if item is not None and item.get("exists") is not False:
+            result.append(item)
+    return result
 
 
 def execution_context_evidence(source: Path) -> dict[str, Any]:
@@ -182,7 +276,10 @@ def file_evidence_from_execution_context(
     context scanned in the current source iteration.
     """
 
-    resolved = path.resolve()
+    identity, boundary_state = _path_boundary_state(path)
+    if boundary_state is not None or _regular_file_stat(identity) is None:
+        return None
+    resolved = identity.resolve()
     root = context_root.resolve()
     try:
         relative = resolved.relative_to(root).as_posix()
@@ -201,7 +298,7 @@ def file_evidence_from_execution_context(
         if not isinstance(size, int) or not isinstance(digest, str) or not digest:
             return None
         return {
-            "path": str(resolved),
+            "path": str(identity),
             "exists": True,
             "kind": "file",
             "size": size,
@@ -232,7 +329,7 @@ def adjacent_inputs_from_execution_context(
 
     The fast path is all-or-nothing. If any existing candidate cannot be
     represented exactly by regular-file execution-context evidence, return
-    ``None`` so the caller can recompute the complete legacy adjacent-input
+    ``None`` so the caller can recompute the complete direct-path adjacent-input
     view instead of mixing evidence from different observation points.
     """
 
@@ -241,13 +338,21 @@ def adjacent_inputs_from_execution_context(
     seen: set[Path] = set()
     result: list[dict[str, Any]] = []
     for candidate in _adjacent_input_candidates(source):
-        resolved = candidate.resolve()
-        if resolved in seen:
+        identity, boundary_state = _path_boundary_state(candidate)
+        if identity in seen:
             continue
-        seen.add(resolved)
-        if not resolved.exists():
+        seen.add(identity)
+        if boundary_state is not None:
+            return None
+        try:
+            info = identity.lstat()
+        except FileNotFoundError:
             continue
-        item = file_evidence_from_execution_context(resolved, root, execution_context)
+        except OSError:
+            return None
+        if _is_link_or_reparse(info) or not stat.S_ISREG(info.st_mode):
+            return None
+        item = file_evidence_from_execution_context(identity, root, execution_context)
         if item is None:
             return None
         result.append(item)
@@ -261,9 +366,10 @@ def referenced_input_evidence_from_execution_context(
 ) -> dict[Path, dict[str, Any]]:
     """Collect reusable regular-file evidence for explicit run inputs.
 
-    Only inputs represented by the supplied execution context are returned.
-    Missing, external, directory, special, or malformed inputs are omitted so
-    `build_cache_material` retains its normal per-path direct evidence fallback.
+    Only direct regular files represented by the supplied execution context are
+    returned. Missing, external, directory, special, symlink, reparse, or
+    otherwise indirect inputs are omitted so ``build_cache_material`` retains
+    its direct evidence fallback and cannot collapse them onto a target path.
     """
 
     path_values = list(getattr(options, "setup_scripts", ()))
@@ -278,16 +384,18 @@ def referenced_input_evidence_from_execution_context(
 
     result: dict[Path, dict[str, Any]] = {}
     for path_value in path_values:
-        resolved = Path(path_value).resolve()
-        if resolved in result:
+        identity, boundary_state = _path_boundary_state(Path(path_value))
+        if identity in result or boundary_state is not None:
+            continue
+        if _regular_file_stat(identity) is None:
             continue
         item = file_evidence_from_execution_context(
-            resolved,
+            identity,
             context_root,
             execution_context,
         )
         if item is not None:
-            result[resolved] = item
+            result[identity] = item
     return result
 
 
@@ -339,15 +447,15 @@ def build_cache_material(
     fixtures = raw.get("fixtures", ())
     lockfile = raw.get("dependency_lockfile")
     evidence_cache: dict[Path, dict[str, Any] | None] = {
-        Path(path).resolve(): copy.deepcopy(item)
+        _lexical_absolute(Path(path)): copy.deepcopy(item)
         for path, item in (precomputed_file_evidence or {}).items()
     }
 
     def evidence(path_value: str) -> dict[str, Any] | None:
-        resolved = Path(path_value).resolve()
-        if resolved not in evidence_cache:
-            evidence_cache[resolved] = _file_evidence(resolved)
-        return evidence_cache[resolved]
+        identity = _lexical_absolute(Path(path_value))
+        if identity not in evidence_cache:
+            evidence_cache[identity] = _file_evidence(identity)
+        return evidence_cache[identity]
 
     # Values affect the key but never appear in plaintext in cache metadata.
     raw["stdin_data"] = _digest_bytes(raw["stdin_data"]) if raw.get("stdin_data") is not None else None
