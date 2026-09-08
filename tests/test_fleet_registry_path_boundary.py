@@ -2,6 +2,7 @@ import os
 import stat
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -37,6 +38,12 @@ class FleetRegistryPathBoundaryTests(unittest.TestCase):
                 with self.assertRaises(FleetError):
                     FleetRegistry(home)
 
+    def test_missing_registry_index_does_not_use_following_exists_check(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fleet = FleetRegistry(Path(temp) / "home")
+            with patch("pathlib.Path.exists", side_effect=AssertionError("exists() must not be used")):
+                self.assertEqual(fleet.list(), [])
+
     def test_list_revalidates_registry_index_before_read(self):
         with tempfile.TemporaryDirectory() as temp:
             home = Path(temp) / "home"
@@ -61,6 +68,42 @@ class FleetRegistryPathBoundaryTests(unittest.TestCase):
             with patch("pathlib.Path.lstat", new=_reparse_lstat(fleet.lock)):
                 with self.assertRaises(FleetError):
                     fleet.transition("worker-a", "QUARANTINED", reason="test")
+
+    def test_transition_revalidates_lock_after_acquisition(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp) / "home"
+            fleet = FleetRegistry(home)
+            fleet._save(
+                {
+                    "schema": 1,
+                    "generation": 0,
+                    "workers": [{"worker_id": "worker-a", "state": "ACTIVE"}],
+                }
+            )
+            fleet.lock.touch()
+            original = Path.lstat
+            wanted = Path(os.path.abspath(os.fspath(fleet.lock)))
+            armed = {"value": False}
+
+            def fake_lstat(path: Path):
+                info = original(path)
+                current = Path(os.path.abspath(os.fspath(path)))
+                if armed["value"] and current == wanted:
+                    return SimpleNamespace(
+                        st_mode=info.st_mode,
+                        st_file_attributes=_REPARSE_POINT,
+                    )
+                return info
+
+            @contextmanager
+            def acquired(_path: Path):
+                armed["value"] = True
+                yield
+
+            with patch("psmatrix.fleet.exclusive_lock", new=acquired):
+                with patch("pathlib.Path.lstat", new=fake_lstat):
+                    with self.assertRaises(FleetError):
+                        fleet.transition("worker-a", "QUARANTINED", reason="test")
 
     def test_enroll_rejects_reparse_endpoint_before_loading(self):
         with tempfile.TemporaryDirectory() as temp:
