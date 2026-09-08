@@ -86,6 +86,19 @@ def _direct_file_candidate(path: Path, *, label: str) -> Path:
     return candidate
 
 
+def _direct_optional_file(path: Path, *, label: str) -> Path | None:
+    candidate = _reject_indirect_components(path, label=label)
+    try:
+        info = candidate.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise FleetError(f"Unable to inspect {label}: {candidate}") from exc
+    if _is_link_or_reparse(info) or not stat.S_ISREG(info.st_mode):
+        raise FleetError(f"{label} must be a direct regular file: {candidate}")
+    return candidate
+
+
 def _direct_existing_file(path: Path, *, label: str) -> Path:
     candidate = _direct_file_candidate(path, label=label)
     try:
@@ -166,7 +179,8 @@ class FleetRegistry:
 
     def _load(self) -> dict[str, Any]:
         index, _ = self._state_paths()
-        if not index.exists():
+        index = _direct_optional_file(index, label="Fleet registry index")
+        if index is None:
             return {"schema": 1, "generation": 0, "workers": []}
         index = _direct_existing_file(index, label="Fleet registry index")
         value = read_json(index)
@@ -229,6 +243,7 @@ class FleetRegistry:
             }
         now = utc_now_iso()
         with exclusive_lock(self._lock_path()):
+            _direct_existing_file(self.lock, label="Fleet registry lock")
             state = self._load()
             current = next((item for item in state["workers"] if item.get("worker_id") == endpoint.worker_id), None)
             if current is not None and not replace:
@@ -273,6 +288,7 @@ class FleetRegistry:
         if state_name not in _STATES or not reason or len(reason) > 2048:
             raise FleetError("Fleet transition is invalid")
         with exclusive_lock(self._lock_path()):
+            _direct_existing_file(self.lock, label="Fleet registry lock")
             state = self._load()
             record = next((item for item in state["workers"] if item.get("worker_id") == worker_id), None)
             if record is None:
@@ -304,6 +320,7 @@ class FleetRegistry:
         if not 1 <= int(quarantine_threshold) <= 100:
             raise FleetError("Quarantine threshold is invalid")
         with exclusive_lock(self._lock_path()):
+            _direct_existing_file(self.lock, label="Fleet registry lock")
             state = self._load()
             record = next((item for item in state["workers"] if item.get("worker_id") == worker_id), None)
             if record is None:
