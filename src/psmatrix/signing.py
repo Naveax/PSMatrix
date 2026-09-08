@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import ssl
+import stat
 from datetime import UTC, datetime, timedelta
 import subprocess
 import tempfile
@@ -18,6 +19,7 @@ from .util import atomic_write_bytes, atomic_write_json, read_json
 
 _ALGORITHM = "Ed25519"
 _DSSE_PAYLOAD_TYPE = "application/vnd.in-toto+json"
+_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
 class SigningError(PSMatrixError):
@@ -26,6 +28,57 @@ class SigningError(PSMatrixError):
 
 def canonical_json_bytes(value: Any) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _is_link_or_reparse(info: os.stat_result) -> bool:
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0) & _REPARSE_POINT
+    )
+
+
+def _reject_indirect_components(path: Path, *, label: str) -> None:
+    absolute = path.absolute()
+    current = Path(absolute.anchor) if absolute.anchor else Path()
+    parts = absolute.parts[1:] if absolute.anchor else absolute.parts
+    for part in parts:
+        current = current / part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise SigningError(f"Unable to inspect {label} path {current}: {exc}") from exc
+        if _is_link_or_reparse(info):
+            raise SigningError(f"{label} path contains a symlink or reparse point: {current}")
+
+
+def _direct_existing_file(path: Path, *, label: str) -> Path:
+    candidate = path.absolute()
+    _reject_indirect_components(candidate, label=label)
+    try:
+        resolved = candidate.resolve(strict=True)
+        info = resolved.lstat()
+    except (OSError, RuntimeError) as exc:
+        raise SigningError(f"{label} not found: {candidate}") from exc
+    if _is_link_or_reparse(info) or not stat.S_ISREG(info.st_mode):
+        raise SigningError(f"{label} is not a direct regular file: {candidate}")
+    return resolved
+
+
+def _prepare_output_file(path: Path, *, label: str) -> Path:
+    candidate = path.absolute()
+    _reject_indirect_components(candidate, label=label)
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    _reject_indirect_components(candidate.parent, label=f"{label} parent")
+    _reject_indirect_components(candidate, label=label)
+    if candidate.exists():
+        try:
+            info = candidate.lstat()
+        except OSError as exc:
+            raise SigningError(f"Unable to inspect {label}: {candidate}") from exc
+        if _is_link_or_reparse(info) or not stat.S_ISREG(info.st_mode):
+            raise SigningError(f"{label} is not a direct regular file: {candidate}")
+    return candidate
 
 
 def _openssl() -> str | None:
@@ -76,12 +129,10 @@ def _private_permissions_ok(path: Path) -> bool:
 
 
 def generate_ed25519_keypair(private_key: Path, public_key: Path, *, force: bool = False) -> dict[str, str]:
-    private_key = private_key.resolve()
-    public_key = public_key.resolve()
+    private_key = _prepare_output_file(private_key, label="Private signing key")
+    public_key = _prepare_output_file(public_key, label="Public signing key")
     if not force and (private_key.exists() or public_key.exists()):
         raise SigningError("Refusing to overwrite an existing signing key")
-    private_key.parent.mkdir(parents=True, exist_ok=True)
-    public_key.parent.mkdir(parents=True, exist_ok=True)
 
     if _crypto_available():
         from cryptography.hazmat.primitives import serialization
@@ -106,6 +157,8 @@ def generate_ed25519_keypair(private_key: Path, public_key: Path, *, force: bool
             private_bytes = temp_private.read_bytes()
             public_bytes = temp_public.read_bytes()
 
+    _reject_indirect_components(private_key, label="Private signing key")
+    _reject_indirect_components(public_key, label="Public signing key")
     atomic_write_bytes(private_key, private_bytes)
     atomic_write_bytes(public_key, public_bytes)
     if os.name != "nt":
@@ -127,9 +180,7 @@ def _load_public(path: Path):
 
 
 def public_key_der(public_key: Path) -> bytes:
-    public_key = public_key.resolve()
-    if not public_key.is_file():
-        raise SigningError(f"Public key not found: {public_key}")
+    public_key = _direct_existing_file(public_key, label="Public key")
     if _crypto_available():
         from cryptography.hazmat.primitives import serialization
 
@@ -146,9 +197,7 @@ def public_key_id(public_key: Path) -> str:
 
 
 def sign_bytes(payload: bytes, private_key: Path) -> bytes:
-    private_key = private_key.resolve()
-    if not private_key.is_file():
-        raise SigningError(f"Private key not found: {private_key}")
+    private_key = _direct_existing_file(private_key, label="Private key")
     if not _private_permissions_ok(private_key):
         raise SigningError("Private key permissions are too broad")
     if _crypto_available():
@@ -169,9 +218,7 @@ def sign_bytes(payload: bytes, private_key: Path) -> bytes:
 
 
 def verify_bytes(payload: bytes, signature: bytes, public_key: Path) -> bool:
-    public_key = public_key.resolve()
-    if not public_key.is_file():
-        raise SigningError(f"Public key not found: {public_key}")
+    public_key = _direct_existing_file(public_key, label="Public key")
     if _crypto_available():
         from cryptography.exceptions import InvalidSignature
 
@@ -271,29 +318,45 @@ class TrustedKey:
 
 class TrustStore:
     def __init__(self, home: Path):
-        self.root = home.resolve() / "trust"
+        direct_home = home.absolute()
+        _reject_indirect_components(direct_home, label="Trust home")
+        self.root = direct_home / "trust"
         self.keys = self.root / "keys"
         self.index = self.root / "index.json"
 
     def _load_index(self) -> dict[str, Any]:
-        if not self.index.is_file():
+        _reject_indirect_components(self.index, label="Trust store index")
+        if not self.index.exists():
             return {"schema": 1, "entries": []}
-        value = read_json(self.index)
+        index_path = _direct_existing_file(self.index, label="Trust store index")
+        value = read_json(index_path)
         if not isinstance(value, dict) or value.get("schema") != 1 or not isinstance(value.get("entries"), list):
             raise SigningError("Trust store index is malformed")
         return value
 
+    def _write_index(self, value: dict[str, Any]) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        _reject_indirect_components(self.root, label="Trust store")
+        _reject_indirect_components(self.index, label="Trust store index")
+        atomic_write_json(self.index, value)
+
     def add(self, identity: str, role: str, public_key: Path, *, certificate: Path | None = None, replace: bool = False) -> TrustedKey:
         if not identity or len(identity) > 128 or role not in {"controller", "worker", "release"}:
             raise SigningError("Invalid trust identity or role")
-        key_id = public_key_id(public_key)
+        source_key = _direct_existing_file(public_key, label="Public key")
+        key_id = public_key_id(source_key)
         destination = self.keys / (key_id.replace(":", "-") + ".pem")
         self.keys.mkdir(parents=True, exist_ok=True)
-        atomic_write_bytes(destination, public_key.resolve().read_bytes())
+        _reject_indirect_components(self.keys, label="Trust key directory")
+        _reject_indirect_components(destination, label="Trusted public key")
+        atomic_write_bytes(destination, _direct_existing_file(source_key, label="Public key").read_bytes())
+        if public_key_id(destination) != key_id:
+            raise SigningError("Public key changed while adding trust")
         certificate_sha256 = None
         if certificate is not None:
+            certificate_path = _direct_existing_file(certificate, label="Trust certificate")
             try:
-                der = ssl.PEM_cert_to_DER_cert(certificate.resolve().read_text(encoding="utf-8"))
+                der = ssl.PEM_cert_to_DER_cert(certificate_path.read_text(encoding="utf-8"))
             except (OSError, ValueError, UnicodeDecodeError) as exc:
                 raise SigningError(f"Invalid PEM certificate: {certificate}") from exc
             certificate_sha256 = hashlib.sha256(der).hexdigest()
@@ -323,7 +386,7 @@ class TrustStore:
             "history": history[-16:],
         })
         index["entries"] = sorted(entries, key=lambda item: (item["role"], item["identity"]))
-        atomic_write_json(self.index, index)
+        self._write_index(index)
         return TrustedKey(identity, role, key_id, destination, certificate_sha256)
 
     def get(self, identity: str, role: str) -> TrustedKey:
@@ -331,8 +394,14 @@ class TrustStore:
             if item.get("identity") == identity and item.get("role") == role:
                 if item.get("status", "active") != "active":
                     raise SigningError(f"Trusted identity is revoked: {role}/{identity}")
-                key = (self.root / str(item["public_key"])).resolve()
-                if not key.is_file() or public_key_id(key) != item.get("key_id"):
+                relative = Path(str(item.get("public_key") or ""))
+                if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+                    raise SigningError("Trust store index contains an unsafe public key path")
+                key = _direct_existing_file(
+                    self.root / relative,
+                    label=f"Trusted key {role}/{identity}",
+                )
+                if public_key_id(key) != item.get("key_id"):
                     raise SigningError(f"Trusted key is missing or changed: {role}/{identity}")
                 return TrustedKey(identity, role, str(item["key_id"]), key, item.get("certificate_sha256"))
         raise SigningError(f"Unknown trusted identity: {role}/{identity}")
@@ -347,7 +416,7 @@ class TrustStore:
         record["status"] = "revoked"
         record["revoked_at"] = datetime.now(UTC).isoformat()
         record["revocation_reason"] = reason
-        atomic_write_json(self.index, index)
+        self._write_index(index)
         return dict(record)
 
     def rotate(
