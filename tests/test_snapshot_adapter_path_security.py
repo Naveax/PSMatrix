@@ -52,15 +52,26 @@ def _config_payload(cwd: str = ".") -> dict:
 
 
 class SnapshotAdapterPathSecurityTests(unittest.TestCase):
-    def test_load_rejects_reparse_config_before_json_read(self):
+    def test_load_rejects_reparse_config_before_json_parse(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "snapshot.json"
             path.write_text(json.dumps(_config_payload()), encoding="utf-8")
             with patch("pathlib.Path.lstat", new=_reparse_lstat(path)):
-                with patch.object(snapshot_adapter, "read_json") as read:
+                with patch.object(snapshot_adapter.json, "loads", wraps=json.loads) as loads:
                     with self.assertRaises(SnapshotError):
                         SnapshotAdapterConfig.load(path)
-                    read.assert_not_called()
+                    loads.assert_not_called()
+
+    @unittest.skipIf(os.name == "nt", "POSIX symlink semantics")
+    def test_load_rejects_final_symlink_config(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            target = root / "target.json"
+            target.write_text(json.dumps(_config_payload()), encoding="utf-8")
+            alias = root / "snapshot.json"
+            alias.symlink_to(target)
+            with self.assertRaises(SnapshotError):
+                SnapshotAdapterConfig.load(alias)
 
     def test_load_rejects_reparse_cwd(self):
         with tempfile.TemporaryDirectory() as temp:
