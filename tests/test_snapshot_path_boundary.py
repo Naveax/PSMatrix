@@ -43,6 +43,21 @@ class SnapshotPathBoundaryTests(unittest.TestCase):
             self.assertEqual(snapshot["alias.txt"]["kind"], "indirect")
             self.assertNotIn("sha256", snapshot["alias.txt"])
 
+    def test_symlink_file_is_recorded_without_hashing_target(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            target = root / "target.txt"
+            alias = root / "alias.txt"
+            target.write_text("target", encoding="utf-8")
+            try:
+                alias.symlink_to(target.name)
+            except OSError as exc:
+                self.skipTest(f"Symlink creation is unavailable: {exc}")
+            snapshot = snapshot_tree(root)
+            self.assertEqual(snapshot["alias.txt"]["kind"], "indirect")
+            self.assertNotIn("sha256", snapshot["alias.txt"])
+            self.assertIn("sha256", snapshot["target.txt"])
+
     def test_reparse_directory_is_not_traversed(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
