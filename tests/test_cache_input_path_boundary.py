@@ -75,6 +75,28 @@ class CacheInputPathBoundaryTests(unittest.TestCase):
             self.assertEqual(evidence["kind"], "indirect")
             self.assertNotIn("sha256", evidence)
 
+    def test_directory_evidence_records_nested_symlink_without_following_it(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fixture = root / "fixture"
+            fixture.mkdir()
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "secret.txt").write_text("outside\n", encoding="utf-8")
+            nested = fixture / "nested"
+            self._symlink(nested, outside, directory=True)
+
+            evidence = cache_module._file_evidence(fixture)
+
+            self.assertEqual(evidence["kind"], "directory")
+            self.assertIn(
+                {"relative_path": "nested", "kind": "indirect"},
+                evidence["entries"],
+            )
+            self.assertFalse(
+                any(item.get("relative_path") == "nested/secret.txt" for item in evidence["entries"])
+            )
+
     def test_cache_key_distinguishes_direct_and_indirect_explicit_inputs(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
