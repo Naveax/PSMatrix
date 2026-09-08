@@ -4,6 +4,7 @@ import os
 import stat
 import tempfile
 import unittest
+import warnings
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -110,29 +111,31 @@ class PKIPathByteIntegrityTests(unittest.TestCase):
             signing_private.write_bytes(b"signing-private")
             signing_public.write_bytes(b"signing-public")
             output = root / "rotation.zip"
+            original_read = pki._read_direct_file_bytes
             mutated: set[Path] = set()
 
-            def drifting_sha(path: Path) -> str:
-                path = Path(path)
-                data = path.read_bytes()
-                digest = hashlib.sha256(data).hexdigest()
-                if path in sources and path not in mutated:
-                    mutated.add(path)
-                    path.write_bytes(b"drift-" + data)
-                return digest
+            def drifting_read(path: Path, *, label: str):
+                resolved, data = original_read(path, label=label)
+                supplied = Path(os.path.abspath(os.fspath(path)))
+                for source in sources:
+                    if supplied == Path(os.path.abspath(os.fspath(source))) and source not in mutated:
+                        mutated.add(source)
+                        source.write_bytes(b"drift-" + source.read_bytes())
+                        break
+                return resolved, data
 
             def envelope(statement, *_args, **_kwargs):
                 return {"statement": statement}
 
             with (
-                patch.object(pki, "verify_key_pair", return_value={"valid": True}),
+                patch.object(pki, "_read_direct_file_bytes", side_effect=drifting_read),
+                patch.object(pki, "_verify_key_pair_bytes", return_value=None),
                 patch.object(
                     pki,
-                    "inspect_certificate",
+                    "_inspect_certificate_bytes",
                     return_value={"sha256": "a" * 64, "days_remaining": 30},
                 ),
                 patch.object(pki, "create_dsse_envelope", side_effect=envelope),
-                patch.object(pki, "sha256_file", side_effect=drifting_sha),
             ):
                 pki.create_rotation_bundle(
                     output,
@@ -183,10 +186,17 @@ class PKIPathByteIntegrityTests(unittest.TestCase):
                     archive.writestr(name, data)
                 archive.writestr("attestation.dsse.json", json.dumps({"fixture": True}))
             expected_bundle_sha256 = hashlib.sha256(bundle.read_bytes()).hexdigest()
-            verified = {"value": False}
+            original_read = pki._read_direct_file_bytes
+            bundle_read = {"done": False}
+
+            def drifting_read(path: Path, *, label: str):
+                resolved, data = original_read(path, label=label)
+                if Path(os.path.abspath(os.fspath(path))) == Path(os.path.abspath(os.fspath(bundle))) and not bundle_read["done"]:
+                    bundle_read["done"] = True
+                    bundle.write_bytes(b"replaced-after-read")
+                return resolved, data
 
             def verify_envelope(_envelope, _key):
-                verified["value"] = True
                 return {
                     "statement": {
                         "predicateType": "https://psmatrix.dev/attestation/credential-rotation/v1",
@@ -195,13 +205,8 @@ class PKIPathByteIntegrityTests(unittest.TestCase):
                     "key_ids": ["fixture"],
                 }
 
-            def drifting_sha(path: Path) -> str:
-                path = Path(path)
-                if path == bundle and verified["value"]:
-                    return "f" * 64
-                return hashlib.sha256(path.read_bytes()).hexdigest()
-
             with (
+                patch.object(pki, "_read_direct_file_bytes", side_effect=drifting_read),
                 patch.object(pki, "verify_dsse_envelope", side_effect=verify_envelope),
                 patch.object(pki, "verify_key_pair", return_value={"valid": True}),
                 patch.object(
@@ -209,7 +214,6 @@ class PKIPathByteIntegrityTests(unittest.TestCase):
                     "inspect_certificate",
                     return_value={"sha256": "a" * 64, "days_remaining": 30},
                 ),
-                patch.object(pki, "sha256_file", side_effect=drifting_sha),
             ):
                 result = pki.apply_rotation_bundle(
                     bundle,
@@ -220,6 +224,29 @@ class PKIPathByteIntegrityTests(unittest.TestCase):
                 )
 
             self.assertEqual(result["bundle_sha256"], expected_bundle_sha256)
+
+    def test_apply_rotation_rejects_duplicate_archive_entries_before_verification(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            bundle = root / "rotation.zip"
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                    archive.writestr("certificate.pem", b"first")
+                    archive.writestr("certificate.pem", b"second")
+                    archive.writestr("private-key.pem", b"private")
+                    archive.writestr("ca-certificate.pem", b"ca")
+                    archive.writestr("attestation.dsse.json", b"{}")
+            with patch.object(pki, "verify_dsse_envelope") as verify:
+                with self.assertRaises(PKIError):
+                    pki.apply_rotation_bundle(
+                        bundle,
+                        root / "active",
+                        signing_public_key=root / "signing.pub",
+                        expected_identity="worker-a",
+                        expected_role="worker-server",
+                    )
+                verify.assert_not_called()
 
 
 if __name__ == "__main__":
