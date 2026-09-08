@@ -203,12 +203,19 @@ def _adjacent_inputs(source: Path) -> list[dict[str, Any]]:
     seen: set[Path] = set()
     result: list[dict[str, Any]] = []
     for candidate in _adjacent_input_candidates(source):
-        identity = _lexical_absolute(candidate)
+        identity, boundary_state = _path_boundary_state(candidate)
         if identity in seen:
             continue
         seen.add(identity)
+        if boundary_state is None:
+            try:
+                identity.lstat()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                pass
         item = _file_evidence(identity)
-        if item is not None and item.get("exists") is not False:
+        if item is not None:
             result.append(item)
     return result
 
