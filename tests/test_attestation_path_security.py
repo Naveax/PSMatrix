@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import stat
@@ -49,6 +50,33 @@ class AttestationPathSecurityTests(unittest.TestCase):
                             builder_id="builder-a",
                         )
                     opened.assert_not_called()
+
+    def test_build_digest_uses_bytes_from_single_verified_read(self):
+        with tempfile.TemporaryDirectory() as temp:
+            artifact = Path(temp) / "artifact.bin"
+            original_bytes = b"artifact-v1"
+            artifact.write_bytes(original_bytes)
+            original_read = attestation._read_direct_file_bytes
+            changed = {"done": False}
+
+            def drifting_read(path: Path, *, label: str):
+                candidate, data = original_read(path, label=label)
+                if Path(os.path.abspath(os.fspath(path))) == Path(os.path.abspath(os.fspath(artifact))) and not changed["done"]:
+                    changed["done"] = True
+                    artifact.write_bytes(b"artifact-v2")
+                return candidate, data
+
+            with patch.object(attestation, "_read_direct_file_bytes", side_effect=drifting_read):
+                statement = attestation.build_slsa_provenance(
+                    artifact=artifact,
+                    report={"targets": []},
+                    builder_id="builder-a",
+                )
+
+            self.assertEqual(
+                statement["subject"][0]["digest"]["sha256"],
+                hashlib.sha256(original_bytes).hexdigest(),
+            )
 
     def test_verify_rejects_reparse_artifact_before_hashing(self):
         with tempfile.TemporaryDirectory() as temp:
