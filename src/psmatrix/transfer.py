@@ -92,7 +92,7 @@ def _direct_optional_file(path: Path, *, label: str) -> Path | None:
     if _is_link_or_reparse(info):
         raise TransferError(f"{label} path contains a symlink or reparse point: {candidate}")
     if not stat.S_ISREG(info.st_mode):
-        raise TransferError(f"{label} is not a regular file: {candidate}")
+        return None
     return candidate
 
 
@@ -122,7 +122,7 @@ def _direct_optional_directory(path: Path, *, label: str) -> Path | None:
     if _is_link_or_reparse(info):
         raise TransferError(f"{label} path contains a symlink or reparse point: {candidate}")
     if not stat.S_ISDIR(info.st_mode):
-        raise TransferError(f"{label} is not a directory: {candidate}")
+        return None
     return candidate
 
 
@@ -234,8 +234,6 @@ class TransferStore:
                         and datetime.now(UTC) <= _parse_time(str(value.get("expires_at") or ""))
                     ):
                         return self.status(str(value["transfer_id"]), controller_id=controller_id)
-                except TransferError:
-                    raise
                 except Exception:
                     continue
         manifest = TransferManifest(
@@ -421,10 +419,6 @@ class TransferStore:
                         raise TransferError("Transfer manifest is missing")
                     value = read_json(manifest_path)
                     expires = _parse_time(str(value.get("expires_at") or ""))
-                except TransferError as exc:
-                    if "symlink or reparse point" in str(exc):
-                        raise
-                    expires = datetime.min.replace(tzinfo=UTC)
                 except Exception:
                     expires = datetime.min.replace(tzinfo=UTC)
                 if now > expires:
