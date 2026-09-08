@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import stat
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -21,6 +22,7 @@ _MIN_CHUNK = 64 * 1024
 _MAX_CHUNK = 8 * 1024 * 1024
 _MAX_SIZE = 128 * 1024 * 1024
 _MAX_CHUNKS = 2048
+_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -39,6 +41,89 @@ def _parse_time(value: str) -> datetime:
     if parsed.tzinfo is None:
         raise TransferError("Transfer timestamp must include a timezone")
     return parsed.astimezone(UTC)
+
+
+def _is_link_or_reparse(info: os.stat_result) -> bool:
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0) & _REPARSE_POINT
+    )
+
+
+def _reject_indirect_components(path: Path, *, label: str) -> Path:
+    candidate = path.absolute()
+    current = Path(candidate.anchor) if candidate.anchor else Path()
+    parts = candidate.parts[1:] if candidate.anchor else candidate.parts
+    for part in parts:
+        current = current / part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise TransferError(f"Unable to inspect {label} path {current}: {exc}") from exc
+        if _is_link_or_reparse(info):
+            raise TransferError(f"{label} path contains a symlink or reparse point: {current}")
+    return candidate
+
+
+def _direct_existing_file(path: Path, *, label: str) -> Path:
+    candidate = _reject_indirect_components(path, label=label)
+    try:
+        info = candidate.lstat()
+    except FileNotFoundError as exc:
+        raise TransferError(f"{label} file not found: {candidate}") from exc
+    except OSError as exc:
+        raise TransferError(f"Unable to inspect {label} file {candidate}: {exc}") from exc
+    if _is_link_or_reparse(info):
+        raise TransferError(f"{label} path contains a symlink or reparse point: {candidate}")
+    if not stat.S_ISREG(info.st_mode):
+        raise TransferError(f"{label} is not a regular file: {candidate}")
+    return candidate
+
+
+def _direct_optional_file(path: Path, *, label: str) -> Path | None:
+    candidate = _reject_indirect_components(path, label=label)
+    try:
+        info = candidate.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise TransferError(f"Unable to inspect {label} file {candidate}: {exc}") from exc
+    if _is_link_or_reparse(info):
+        raise TransferError(f"{label} path contains a symlink or reparse point: {candidate}")
+    if not stat.S_ISREG(info.st_mode):
+        raise TransferError(f"{label} is not a regular file: {candidate}")
+    return candidate
+
+
+def _direct_existing_directory(path: Path, *, label: str) -> Path:
+    candidate = _reject_indirect_components(path, label=label)
+    try:
+        info = candidate.lstat()
+    except FileNotFoundError as exc:
+        raise TransferError(f"{label} directory not found: {candidate}") from exc
+    except OSError as exc:
+        raise TransferError(f"Unable to inspect {label} directory {candidate}: {exc}") from exc
+    if _is_link_or_reparse(info):
+        raise TransferError(f"{label} path contains a symlink or reparse point: {candidate}")
+    if not stat.S_ISDIR(info.st_mode):
+        raise TransferError(f"{label} is not a directory: {candidate}")
+    return candidate
+
+
+def _direct_optional_directory(path: Path, *, label: str) -> Path | None:
+    candidate = _reject_indirect_components(path, label=label)
+    try:
+        info = candidate.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise TransferError(f"Unable to inspect {label} directory {candidate}: {exc}") from exc
+    if _is_link_or_reparse(info):
+        raise TransferError(f"{label} path contains a symlink or reparse point: {candidate}")
+    if not stat.S_ISDIR(info.st_mode):
+        raise TransferError(f"{label} is not a directory: {candidate}")
+    return candidate
 
 
 @dataclass(frozen=True)
@@ -70,12 +155,30 @@ class TransferStore:
     """Content-addressed, resumable upload store for mTLS worker artifacts."""
 
     def __init__(self, root: Path):
-        self.root = root.resolve()
+        root_candidate = _reject_indirect_components(root, label="Transfer store root")
+        root_candidate.mkdir(parents=True, exist_ok=True)
+        self.root = _direct_existing_directory(root_candidate, label="Transfer store root")
         self.sessions = self.root / "sessions"
         self.objects = self.root / "objects"
         self.lock_path = self.root / ".lock"
-        self.sessions.mkdir(parents=True, exist_ok=True)
-        self.objects.mkdir(parents=True, exist_ok=True)
+        for path, label in (
+            (self.sessions, "Transfer sessions directory"),
+            (self.objects, "Transfer objects directory"),
+        ):
+            _reject_indirect_components(path, label=label)
+            path.mkdir(parents=True, exist_ok=True)
+            _direct_existing_directory(path, label=label)
+        _reject_indirect_components(self.lock_path, label="Transfer store lock")
+
+    def _validate_layout(self) -> None:
+        _direct_existing_directory(self.root, label="Transfer store root")
+        _direct_existing_directory(self.sessions, label="Transfer sessions directory")
+        _direct_existing_directory(self.objects, label="Transfer objects directory")
+        _direct_optional_file(self.lock_path, label="Transfer store lock")
+
+    def _lock_file(self) -> Path:
+        self._validate_layout()
+        return _reject_indirect_components(self.lock_path, label="Transfer store lock")
 
     def _session(self, transfer_id: str) -> Path:
         try:
@@ -85,6 +188,10 @@ class TransferStore:
         if str(parsed) != str(transfer_id).lower():
             raise TransferError("Transfer ID must be a canonical UUID")
         return self.sessions / str(parsed)
+
+    def _existing_session(self, transfer_id: str) -> Path:
+        self._validate_layout()
+        return _direct_existing_directory(self._session(transfer_id), label="Transfer session")
 
     def create(
         self,
@@ -108,10 +215,14 @@ class TransferStore:
         if count > _MAX_CHUNKS:
             raise TransferError("Transfer requires too many chunks")
         now = datetime.now(UTC)
-        with exclusive_lock(self.lock_path):
-            for existing in sorted(self.sessions.iterdir()) if self.sessions.exists() else []:
-                manifest_path = existing / "manifest.json"
-                if not manifest_path.is_file():
+        with exclusive_lock(self._lock_file()):
+            self._validate_layout()
+            for existing in sorted(self.sessions.iterdir()):
+                session = _direct_optional_directory(existing, label="Transfer session")
+                if session is None:
+                    continue
+                manifest_path = _direct_optional_file(session / "manifest.json", label="Transfer manifest")
+                if manifest_path is None:
                     continue
                 try:
                     value = read_json(manifest_path)
@@ -123,6 +234,8 @@ class TransferStore:
                         and datetime.now(UTC) <= _parse_time(str(value.get("expires_at") or ""))
                     ):
                         return self.status(str(value["transfer_id"]), controller_id=controller_id)
+                except TransferError:
+                    raise
                 except Exception:
                     continue
         manifest = TransferManifest(
@@ -136,17 +249,23 @@ class TransferStore:
             expires_at=(now + timedelta(seconds=int(ttl_seconds))).isoformat(),
         )
         session = self._session(manifest.transfer_id)
-        with exclusive_lock(self.lock_path):
+        with exclusive_lock(self._lock_file()):
+            self._validate_layout()
+            _reject_indirect_components(session, label="Transfer session")
             session.mkdir(parents=True, exist_ok=False)
-            (session / "chunks").mkdir()
-            atomic_write_json(session / "manifest.json", manifest.to_dict())
+            session = _direct_existing_directory(session, label="Transfer session")
+            chunks = session / "chunks"
+            _reject_indirect_components(chunks, label="Transfer chunks directory")
+            chunks.mkdir()
+            _direct_existing_directory(chunks, label="Transfer chunks directory")
+            manifest_path = _reject_indirect_components(session / "manifest.json", label="Transfer manifest")
+            atomic_write_json(manifest_path, manifest.to_dict())
+            _direct_existing_file(manifest_path, label="Transfer manifest")
         return {**manifest.to_dict(), "missing": list(range(count)), "complete": False}
 
     def _load_manifest(self, transfer_id: str, *, controller_id: str | None = None) -> dict[str, Any]:
-        session = self._session(transfer_id)
-        path = session / "manifest.json"
-        if not path.is_file():
-            raise TransferError("Unknown transfer ID")
+        session = self._existing_session(transfer_id)
+        path = _direct_existing_file(session / "manifest.json", label="Transfer manifest")
         value = read_json(path)
         if not isinstance(value, dict) or value.get("schema") != 1:
             raise TransferError("Transfer manifest is malformed")
@@ -178,30 +297,43 @@ class TransferStore:
         digest = _validate_digest(chunk_sha256, "Chunk SHA-256")
         if _sha256_bytes(data) != digest:
             raise TransferError("Transfer chunk integrity check failed")
-        target = self._session(transfer_id) / "chunks" / f"{int(index):08d}.bin"
-        with exclusive_lock(self.lock_path):
-            if target.is_file():
-                current = target.read_bytes()
+        session = self._existing_session(transfer_id)
+        chunks = _direct_existing_directory(session / "chunks", label="Transfer chunks directory")
+        target = chunks / f"{int(index):08d}.bin"
+        with exclusive_lock(self._lock_file()):
+            session = self._existing_session(transfer_id)
+            chunks = _direct_existing_directory(session / "chunks", label="Transfer chunks directory")
+            target = chunks / f"{int(index):08d}.bin"
+            current_path = _direct_optional_file(target, label="Transfer chunk")
+            if current_path is not None:
+                current = current_path.read_bytes()
                 if current != data:
                     raise TransferError("Transfer chunk index already contains different data")
             else:
+                target = _reject_indirect_components(target, label="Transfer chunk")
                 atomic_write_bytes(target, data)
+                _direct_existing_file(target, label="Transfer chunk")
         return self.status(transfer_id, controller_id=controller_id)
 
     def status(self, transfer_id: str, *, controller_id: str) -> dict[str, Any]:
         manifest = self._load_manifest(transfer_id, controller_id=controller_id)
-        chunks = self._session(transfer_id) / "chunks"
+        session = self._existing_session(transfer_id)
+        chunks = _direct_existing_directory(session / "chunks", label="Transfer chunks directory")
         present = []
         for index in range(int(manifest["chunk_count"])):
-            if (chunks / f"{index:08d}.bin").is_file():
+            if _direct_optional_file(chunks / f"{index:08d}.bin", label="Transfer chunk") is not None:
                 present.append(index)
-        missing = [index for index in range(int(manifest["chunk_count"])) if index not in set(present)]
-        object_path = self.objects / str(manifest["artifact_sha256"])
+        present_set = set(present)
+        missing = [index for index in range(int(manifest["chunk_count"])) if index not in present_set]
+        object_path = _direct_optional_file(
+            self.objects / str(manifest["artifact_sha256"]),
+            label="Transfer object",
+        )
         return {
             **manifest,
             "present": present,
             "missing": missing,
-            "complete": not missing and object_path.is_file(),
+            "complete": not missing and object_path is not None,
         }
 
     def finalize(self, transfer_id: str, *, controller_id: str) -> dict[str, Any]:
@@ -209,34 +341,51 @@ class TransferStore:
         status = self.status(transfer_id, controller_id=controller_id)
         if status["missing"]:
             raise TransferError("Transfer is incomplete")
+        self._validate_layout()
         object_path = self.objects / str(manifest["artifact_sha256"])
+        _direct_optional_file(object_path, label="Transfer object")
         temporary = object_path.with_name(f".{object_path.name}.{uuid.uuid4().hex}.tmp")
+        _reject_indirect_components(temporary, label="Transfer temporary object")
         digest = hashlib.sha256()
         total = 0
         try:
             with temporary.open("xb") as output:
                 for index in range(int(manifest["chunk_count"])):
-                    chunk = (self._session(transfer_id) / "chunks" / f"{index:08d}.bin").read_bytes()
+                    session = self._existing_session(transfer_id)
+                    chunks = _direct_existing_directory(session / "chunks", label="Transfer chunks directory")
+                    chunk_path = _direct_existing_file(
+                        chunks / f"{index:08d}.bin",
+                        label="Transfer chunk",
+                    )
+                    chunk = chunk_path.read_bytes()
                     total += len(chunk)
                     digest.update(chunk)
                     output.write(chunk)
                 output.flush()
                 os.fsync(output.fileno())
+            _direct_existing_file(temporary, label="Transfer temporary object")
             if total != int(manifest["artifact_size"]) or digest.hexdigest() != manifest["artifact_sha256"]:
                 raise TransferError("Final transfer artifact integrity check failed")
-            with exclusive_lock(self.lock_path):
-                if object_path.is_file():
-                    if object_path.stat().st_size != total or _sha256_bytes(object_path.read_bytes()) != manifest["artifact_sha256"]:
+            with exclusive_lock(self._lock_file()):
+                self._validate_layout()
+                current_object = _direct_optional_file(object_path, label="Transfer object")
+                if current_object is not None:
+                    if current_object.stat().st_size != total or _sha256_bytes(current_object.read_bytes()) != manifest["artifact_sha256"]:
                         raise TransferError("Content-addressed transfer object is corrupted")
                 else:
+                    _reject_indirect_components(object_path, label="Transfer object")
                     os.replace(temporary, object_path)
-                atomic_write_json(self._session(transfer_id) / "complete.json", {
+                    _direct_existing_file(object_path, label="Transfer object")
+                session = self._existing_session(transfer_id)
+                complete_path = _reject_indirect_components(session / "complete.json", label="Transfer completion marker")
+                atomic_write_json(complete_path, {
                     "schema": 1,
                     "completed_at": utc_now_iso(),
                     "object": object_path.name,
                     "sha256": manifest["artifact_sha256"],
                     "size": total,
                 })
+                _direct_existing_file(complete_path, label="Transfer completion marker")
         finally:
             temporary.unlink(missing_ok=True)
         return {**self.status(transfer_id, controller_id=controller_id), "complete": True}
@@ -246,9 +395,12 @@ class TransferStore:
         digest = _validate_digest(artifact_sha256, "Artifact SHA-256")
         if manifest["artifact_sha256"] != digest or int(manifest["artifact_size"]) != int(artifact_size):
             raise TransferError("Transfer reference does not match its manifest")
+        self._validate_layout()
         object_path = self.objects / digest
-        if not object_path.is_file():
+        current_object = _direct_optional_file(object_path, label="Transfer object")
+        if current_object is None:
             self.finalize(transfer_id, controller_id=controller_id)
+        object_path = _direct_existing_file(object_path, label="Transfer object")
         raw = object_path.read_bytes()
         if len(raw) != int(artifact_size) or _sha256_bytes(raw) != digest:
             raise TransferError("Resolved transfer object failed integrity verification")
@@ -257,14 +409,26 @@ class TransferStore:
     def purge_expired(self) -> dict[str, int]:
         removed = 0
         now = datetime.now(UTC)
-        with exclusive_lock(self.lock_path):
-            for session in list(self.sessions.iterdir()):
+        with exclusive_lock(self._lock_file()):
+            self._validate_layout()
+            for candidate in list(self.sessions.iterdir()):
+                session = _direct_optional_directory(candidate, label="Transfer session")
+                if session is None:
+                    continue
+                manifest_path = _direct_optional_file(session / "manifest.json", label="Transfer manifest")
                 try:
-                    value = read_json(session / "manifest.json")
+                    if manifest_path is None:
+                        raise TransferError("Transfer manifest is missing")
+                    value = read_json(manifest_path)
                     expires = _parse_time(str(value.get("expires_at") or ""))
+                except TransferError as exc:
+                    if "symlink or reparse point" in str(exc):
+                        raise
+                    expires = datetime.min.replace(tzinfo=UTC)
                 except Exception:
                     expires = datetime.min.replace(tzinfo=UTC)
                 if now > expires:
-                    shutil.rmtree(session, ignore_errors=True)
+                    _direct_existing_directory(session, label="Transfer session")
+                    shutil.rmtree(session, ignore_errors=False)
                     removed += 1
         return {"removed_sessions": removed}
