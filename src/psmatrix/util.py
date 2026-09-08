@@ -3,11 +3,18 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import tempfile
+import threading
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, BinaryIO, Iterator
+
+
+_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+_LOCK_IDENTITIES: dict[str, os.stat_result] = {}
+_LOCK_IDENTITY_GUARD = threading.Lock()
 
 
 def utc_now_iso() -> str:
@@ -70,6 +77,123 @@ def read_json(path: Path) -> Any:
         return json.load(handle)
 
 
+def _is_link_or_reparse(info: os.stat_result) -> bool:
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0) & _REPARSE_POINT
+    )
+
+
+def _is_single_link_regular(info: os.stat_result) -> bool:
+    return stat.S_ISREG(info.st_mode) and int(getattr(info, "st_nlink", 1)) == 1
+
+
+def _same_file(left: os.stat_result, right: os.stat_result) -> bool:
+    try:
+        return os.path.samestat(left, right)
+    except (AttributeError, OSError, ValueError):
+        return (
+            getattr(left, "st_dev", None) == getattr(right, "st_dev", None)
+            and getattr(left, "st_ino", None) == getattr(right, "st_ino", None)
+            and getattr(left, "st_ino", 0) not in {0, None}
+        )
+
+
+def _lock_identity_key(path: Path) -> str:
+    return os.path.normcase(os.path.abspath(os.fspath(path)))
+
+
+def _reject_indirect_components(path: Path, *, label: str) -> Path:
+    candidate = Path(os.path.abspath(os.fspath(path)))
+    current = Path(candidate.anchor) if candidate.anchor else Path()
+    parts = candidate.parts[1:] if candidate.anchor else candidate.parts
+    for part in parts:
+        current = current / part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise OSError(f"Unable to inspect {label} path: {current}") from exc
+        if _is_link_or_reparse(info):
+            raise OSError(f"{label} path cannot use symlink or reparse indirection: {current}")
+    return candidate
+
+
+def _validate_open_lock_file(
+    path: Path,
+    handle: BinaryIO,
+    *,
+    expected_identity: os.stat_result | None = None,
+) -> os.stat_result:
+    candidate = _reject_indirect_components(path, label="Lock")
+    try:
+        current = candidate.lstat()
+        opened = os.fstat(handle.fileno())
+    except OSError as exc:
+        raise OSError(f"Unable to revalidate lock path: {candidate}") from exc
+    if (
+        _is_link_or_reparse(current)
+        or not _is_single_link_regular(current)
+        or not _is_single_link_regular(opened)
+        or not _same_file(current, opened)
+    ):
+        raise OSError(f"Lock path changed after acquisition: {candidate}")
+    if expected_identity is not None and not _same_file(opened, expected_identity):
+        raise OSError(f"Lock identity changed after initialization: {candidate}")
+    return opened
+
+
+def _open_direct_lock_file(
+    path: Path,
+    *,
+    expected_identity: os.stat_result | None = None,
+) -> BinaryIO:
+    candidate = _reject_indirect_components(path, label="Lock")
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    _reject_indirect_components(candidate.parent, label="Lock parent")
+    _reject_indirect_components(candidate, label="Lock")
+    try:
+        initial = candidate.lstat()
+    except FileNotFoundError:
+        initial = None
+    except OSError as exc:
+        raise OSError(f"Unable to inspect lock path: {candidate}") from exc
+    if initial is not None and (
+        _is_link_or_reparse(initial) or not _is_single_link_regular(initial)
+    ):
+        raise OSError(f"Lock path must be a direct regular file with one link: {candidate}")
+    if expected_identity is not None and initial is not None and not _same_file(initial, expected_identity):
+        raise OSError(f"Lock identity changed after initialization: {candidate}")
+
+    flags = os.O_RDWR | os.O_CREAT
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    fd: int | None = None
+    try:
+        fd = os.open(candidate, flags, 0o666)
+        opened = os.fstat(fd)
+        _reject_indirect_components(candidate.parent, label="Lock parent")
+        current = candidate.lstat()
+        if (
+            _is_link_or_reparse(current)
+            or not _is_single_link_regular(current)
+            or not _is_single_link_regular(opened)
+            or not _same_file(current, opened)
+        ):
+            raise OSError(f"Lock path changed while opening: {candidate}")
+        if expected_identity is not None and not _same_file(opened, expected_identity):
+            raise OSError(f"Lock identity changed after initialization: {candidate}")
+        handle = os.fdopen(fd, "r+b", closefd=True)
+        fd = None
+        return handle
+    except OSError:
+        raise
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def _lock_windows(handle: Any) -> None:
     import msvcrt
 
@@ -89,15 +213,43 @@ def _unlock_windows(handle: Any) -> None:
     msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
 
 
+def _pinned_lock_identity(path: Path) -> os.stat_result | None:
+    key = _lock_identity_key(path)
+    with _LOCK_IDENTITY_GUARD:
+        return _LOCK_IDENTITIES.get(key)
+
+
+def _pin_lock_identity(path: Path, opened: os.stat_result) -> os.stat_result:
+    key = _lock_identity_key(path)
+    with _LOCK_IDENTITY_GUARD:
+        existing = _LOCK_IDENTITIES.get(key)
+        if existing is None:
+            _LOCK_IDENTITIES[key] = opened
+            return opened
+        if not _same_file(existing, opened):
+            raise OSError(f"Lock identity changed after initialization: {path}")
+        return existing
+
+
 @contextmanager
-def exclusive_lock(path: Path) -> Iterator[None]:
-    """Cross-process advisory lock on POSIX and Windows."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+b") as handle:
+def exclusive_lock(
+    path: Path,
+    *,
+    expected_identity: os.stat_result | None = None,
+) -> Iterator[None]:
+    """Cross-process advisory lock with path-identity pinning on POSIX and Windows."""
+    pinned = expected_identity or _pinned_lock_identity(path)
+    with _open_direct_lock_file(path, expected_identity=pinned) as handle:
+        opened = os.fstat(handle.fileno())
+        pinned = _pin_lock_identity(path, opened) if expected_identity is None else expected_identity
+        if not _same_file(opened, pinned):
+            raise OSError(f"Lock identity changed after initialization: {path}")
         if os.name == "nt":
             _lock_windows(handle)
             try:
+                _validate_open_lock_file(path, handle, expected_identity=pinned)
                 yield
+                _validate_open_lock_file(path, handle, expected_identity=pinned)
             finally:
                 _unlock_windows(handle)
         else:
@@ -105,6 +257,8 @@ def exclusive_lock(path: Path) -> Iterator[None]:
 
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             try:
+                _validate_open_lock_file(path, handle, expected_identity=pinned)
                 yield
+                _validate_open_lock_file(path, handle, expected_identity=pinned)
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
