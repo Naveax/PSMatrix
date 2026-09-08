@@ -82,6 +82,19 @@ def _direct_existing_file(path: Path, *, label: str) -> Path:
     return resolved
 
 
+def _direct_existing_directory(path: Path, *, label: str) -> Path:
+    candidate = path.absolute()
+    _reject_indirect_components(candidate, label=label)
+    try:
+        resolved = candidate.resolve(strict=True)
+        info = resolved.lstat()
+    except OSError as exc:
+        raise WorkerError(f"{label} directory not found: {candidate}") from exc
+    if _is_link_or_reparse(info) or not stat.S_ISDIR(info.st_mode):
+        raise WorkerError(f"{label} is not a direct directory: {resolved}")
+    return resolved
+
+
 def _direct_directory_candidate(path: Path, *, label: str) -> Path:
     candidate = path.absolute()
     _reject_indirect_components(candidate, label=label)
@@ -446,10 +459,15 @@ class WindowsJobExecutor:
 
     def __call__(self, request: dict[str, Any], artifact: bytes) -> tuple[dict[str, Any], dict[str, Any]]:
         job_id = _canonical_job_id(request.get("job_id"))
-        workspace = self.config.workspace_root / job_id
+        workspace_root = _direct_existing_directory(self.config.workspace_root, label="Worker workspace")
+        workspace = workspace_root / job_id
+        _reject_indirect_components(workspace, label="Worker job workspace")
         if workspace.exists():
-            shutil.rmtree(workspace)
+            existing_workspace = _direct_existing_directory(workspace, label="Worker job workspace")
+            shutil.rmtree(existing_workspace)
+        _reject_indirect_components(workspace, label="Worker job workspace")
         workspace.mkdir(parents=True, exist_ok=False)
+        workspace = _direct_existing_directory(workspace, label="Worker job workspace")
         before = _run_reset(self.config.reset_before, workspace, "before")
         if self.config.reset_required and not before.get("configured"):
             before = {**before, "passed": False, "error": "A pre-job snapshot/reset command is required"}
@@ -459,10 +477,11 @@ class WindowsJobExecutor:
             "schema": 1, "status": "FAIL_WORKER", "worker_id": self.config.worker_id, "targets": []
         }
         try:
+            workspace = _direct_existing_directory(workspace, label="Worker job workspace")
             _safe_extract_zip(artifact, workspace)
             entrypoint = str(request.get("entrypoint") or "")
-            entry = (workspace / entrypoint).resolve()
-            if not entry.is_file() or workspace not in entry.parents:
+            entry = _direct_existing_file(workspace / entrypoint, label="Worker entrypoint")
+            if workspace not in entry.parents:
                 raise WorkerError("Worker entrypoint is missing or escapes the workspace")
             job_file = workspace / ".psmatrix-worker-job.json"
             output_file = workspace / ".psmatrix-worker-result.json"
