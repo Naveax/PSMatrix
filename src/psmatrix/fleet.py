@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,6 +23,88 @@ class FleetError(PSMatrixError):
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$")
 _LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _STATES = {"ACTIVE", "QUARANTINED", "REVOKED"}
+_REPARSE_POINT = 0x400
+
+
+def _lexical_absolute(path: Path) -> Path:
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def _is_link_or_reparse(info: os.stat_result) -> bool:
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0) & _REPARSE_POINT
+    )
+
+
+def _reject_indirect_components(path: Path, *, label: str) -> Path:
+    candidate = _lexical_absolute(path)
+    anchor = Path(candidate.anchor)
+    current = anchor
+    parts = candidate.parts[1:] if candidate.anchor else candidate.parts
+    for part in parts:
+        current = current / part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise FleetError(f"Unable to inspect {label}: {current}") from exc
+        if _is_link_or_reparse(info):
+            raise FleetError(f"{label} cannot use symlink or reparse indirection: {current}")
+    return candidate
+
+
+def _direct_directory(path: Path, *, label: str, create: bool = False) -> Path:
+    candidate = _reject_indirect_components(path, label=label)
+    if create:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise FleetError(f"Unable to create {label}: {candidate}") from exc
+    candidate = _reject_indirect_components(candidate, label=label)
+    try:
+        info = candidate.lstat()
+    except OSError as exc:
+        raise FleetError(f"{label} is unavailable: {candidate}") from exc
+    if _is_link_or_reparse(info) or not stat.S_ISDIR(info.st_mode):
+        raise FleetError(f"{label} must be a direct directory: {candidate}")
+    resolved = candidate.resolve()
+    _reject_indirect_components(resolved, label=label)
+    return resolved
+
+
+def _direct_file_candidate(path: Path, *, label: str) -> Path:
+    candidate = _reject_indirect_components(path, label=label)
+    try:
+        info = candidate.lstat()
+    except FileNotFoundError:
+        return candidate
+    except OSError as exc:
+        raise FleetError(f"Unable to inspect {label}: {candidate}") from exc
+    if _is_link_or_reparse(info) or not stat.S_ISREG(info.st_mode):
+        raise FleetError(f"{label} must be a direct regular file: {candidate}")
+    return candidate
+
+
+def _direct_existing_file(path: Path, *, label: str) -> Path:
+    candidate = _direct_file_candidate(path, label=label)
+    try:
+        info = candidate.lstat()
+    except FileNotFoundError as exc:
+        raise FleetError(f"{label} is missing: {candidate}") from exc
+    except OSError as exc:
+        raise FleetError(f"Unable to inspect {label}: {candidate}") from exc
+    if _is_link_or_reparse(info) or not stat.S_ISREG(info.st_mode):
+        raise FleetError(f"{label} must be a direct regular file: {candidate}")
+    resolved = candidate.resolve()
+    _reject_indirect_components(resolved, label=label)
+    try:
+        resolved_info = resolved.lstat()
+    except OSError as exc:
+        raise FleetError(f"{label} is unavailable: {resolved}") from exc
+    if _is_link_or_reparse(resolved_info) or not stat.S_ISREG(resolved_info.st_mode):
+        raise FleetError(f"{label} must be a direct regular file: {resolved}")
+    return resolved
 
 
 def _labels(value: dict[str, Any] | None) -> dict[str, str]:
@@ -62,16 +146,30 @@ class FleetRegistry:
     """Persistent controller-side worker enrollment and quarantine registry."""
 
     def __init__(self, home: Path):
-        self.home = home.resolve()
-        self.root = self.home / "fleet"
+        self.home = _direct_directory(home, label="Fleet home", create=True)
+        self.root = _direct_directory(self.home / "fleet", label="Fleet registry root", create=True)
         self.index = self.root / "registry.json"
         self.lock = self.root / ".lock"
-        self.root.mkdir(parents=True, exist_ok=True)
+        _direct_file_candidate(self.index, label="Fleet registry index")
+        _direct_file_candidate(self.lock, label="Fleet registry lock")
+
+    def _state_paths(self) -> tuple[Path, Path]:
+        _direct_directory(self.root, label="Fleet registry root")
+        return (
+            _direct_file_candidate(self.index, label="Fleet registry index"),
+            _direct_file_candidate(self.lock, label="Fleet registry lock"),
+        )
+
+    def _lock_path(self) -> Path:
+        _, lock = self._state_paths()
+        return lock
 
     def _load(self) -> dict[str, Any]:
-        if not self.index.is_file():
+        index, _ = self._state_paths()
+        if not index.exists():
             return {"schema": 1, "generation": 0, "workers": []}
-        value = read_json(self.index)
+        index = _direct_existing_file(index, label="Fleet registry index")
+        value = read_json(index)
         if not isinstance(value, dict) or value.get("schema") != 1 or not isinstance(value.get("workers"), list):
             raise FleetError("Fleet registry is malformed")
         stored_digest = value.get("digest")
@@ -86,11 +184,12 @@ class FleetRegistry:
         return value
 
     def _save(self, value: dict[str, Any]) -> None:
+        index, _ = self._state_paths()
         payload = dict(value)
         payload["generation"] = int(payload.get("generation", 0)) + 1
         payload["updated_at"] = utc_now_iso()
         payload["digest"] = _state_digest({key: val for key, val in payload.items() if key != "digest"})
-        atomic_write_json(self.index, payload)
+        atomic_write_json(index, payload)
 
     def enroll(
         self,
@@ -103,7 +202,7 @@ class FleetRegistry:
         reset_private_key: Path | None = None,
         reset_public_key: Path | None = None,
     ) -> dict[str, Any]:
-        endpoint_path = endpoint_path.resolve()
+        endpoint_path = _direct_existing_file(endpoint_path, label="Fleet endpoint config")
         endpoint = RemoteEndpoint.load(endpoint_path, trust_home=self.home)
         if not _ID_RE.fullmatch(endpoint.worker_id):
             raise FleetError("Worker identity is invalid")
@@ -114,16 +213,22 @@ class FleetRegistry:
         if any(item is not None for item in supplied):
             if not all(item is not None for item in supplied):
                 raise FleetError("Managed snapshot reset requires config, private key, and public key")
-            paths = [item.resolve() for item in supplied if item is not None]
-            if any(not item.is_file() for item in paths):
-                raise FleetError("Managed snapshot reset file is missing")
+            paths = [
+                _direct_existing_file(item, label=label)
+                for item, label in (
+                    (snapshot_config, "Managed snapshot config"),
+                    (reset_private_key, "Managed reset private key"),
+                    (reset_public_key, "Managed reset public key"),
+                )
+                if item is not None
+            ]
             reset = {
                 "snapshot_config": str(paths[0]),
                 "private_key": str(paths[1]),
                 "public_key": str(paths[2]),
             }
         now = utc_now_iso()
-        with exclusive_lock(self.lock):
+        with exclusive_lock(self._lock_path()):
             state = self._load()
             current = next((item for item in state["workers"] if item.get("worker_id") == endpoint.worker_id), None)
             if current is not None and not replace:
@@ -167,7 +272,7 @@ class FleetRegistry:
     def transition(self, worker_id: str, state_name: str, *, reason: str) -> dict[str, Any]:
         if state_name not in _STATES or not reason or len(reason) > 2048:
             raise FleetError("Fleet transition is invalid")
-        with exclusive_lock(self.lock):
+        with exclusive_lock(self._lock_path()):
             state = self._load()
             record = next((item for item in state["workers"] if item.get("worker_id") == worker_id), None)
             if record is None:
@@ -198,7 +303,7 @@ class FleetRegistry:
     ) -> dict[str, Any]:
         if not 1 <= int(quarantine_threshold) <= 100:
             raise FleetError("Quarantine threshold is invalid")
-        with exclusive_lock(self.lock):
+        with exclusive_lock(self._lock_path()):
             state = self._load()
             record = next((item for item in state["workers"] if item.get("worker_id") == worker_id), None)
             if record is None:
@@ -250,9 +355,13 @@ class FleetRegistry:
             health = item.get("last_health") if isinstance(item.get("last_health"), dict) else {}
             if require_healthy and (not health or health.get("passed") is not True or health.get("authoritative") is not True):
                 continue
+            endpoint = _direct_existing_file(
+                Path(str(item["endpoint"])),
+                label=f"Fleet endpoint config for {item.get('worker_id', 'unknown')}",
+            )
             candidates.append(WorkerSelection(
                 worker_id=str(item["worker_id"]), runtime_id=str(item["runtime_id"]),
-                endpoint=Path(str(item["endpoint"])).resolve(), priority=int(item.get("priority", 100)),
+                endpoint=endpoint, priority=int(item.get("priority", 100)),
                 labels={str(k): str(v) for k, v in worker_labels.items()}, health=health,
             ))
         candidates.sort(key=lambda item: (-item.priority, item.worker_id))
