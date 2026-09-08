@@ -510,13 +510,19 @@ def verify_windows_worker_package(
     package_path, package_bytes, _ = _read_direct_file(
         package, label="Windows deployment package"
     )
-    with zipfile.ZipFile(io.BytesIO(package_bytes)) as archive:
+    try:
+        archive_context = zipfile.ZipFile(io.BytesIO(package_bytes))
+    except zipfile.BadZipFile as exc:
+        raise DeploymentError("Deployment package is not a valid ZIP archive") from exc
+
+    with archive_context as archive:
         infos = archive.infolist()
         if not infos or len(infos) > 4096:
             raise DeploymentError("Deployment package entry count is invalid")
         names = [info.filename for info in infos]
         if len(names) != len(set(name.casefold() for name in names)):
             raise DeploymentError("Deployment package contains duplicate paths")
+
         total_size = 0
         for info in infos:
             _safe_archive_parts(info.filename)
@@ -527,34 +533,64 @@ def verify_windows_worker_package(
                 raise DeploymentError(
                     f"Deployment package contains a symlink entry: {info.filename}"
                 )
+            if info.is_dir() or mode not in {0, 0o100000}:
+                raise DeploymentError(
+                    f"Deployment package contains a special entry: {info.filename}"
+                )
             if info.file_size > 128 * 1024 * 1024:
                 raise DeploymentError("Deployment package entry is too large")
             total_size += info.file_size
             if total_size > 512 * 1024 * 1024:
                 raise DeploymentError("Deployment package expands beyond the supported limit")
+
         try:
             manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
         except (KeyError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise DeploymentError("Deployment manifest is missing or malformed") from exc
-        files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
-        allowed_entries = set(files) | {"manifest.json", "manifest.dsse.json"}
+        if (
+            not isinstance(manifest, dict)
+            or manifest.get("schema") != 1
+            or manifest.get("kind") != "psmatrix.windows-worker-deployment"
+            or not isinstance(manifest.get("files"), dict)
+        ):
+            raise DeploymentError("Deployment manifest is malformed")
+
+        files = manifest["files"]
+        reserved = {"manifest.json", "manifest.dsse.json"}
+        if any(name in reserved for name in files):
+            raise DeploymentError("Deployment manifest claims a reserved entry")
+
+        for name, meta in files.items():
+            if not isinstance(name, str):
+                raise DeploymentError("Deployment file metadata is malformed")
+            _safe_archive_parts(name)
+            if (
+                not isinstance(meta, dict)
+                or isinstance(meta.get("size"), bool)
+                or not isinstance(meta.get("size"), int)
+                or meta["size"] < 0
+                or meta["size"] > 128 * 1024 * 1024
+                or not isinstance(meta.get("sha256"), str)
+                or len(meta["sha256"]) != 64
+                or any(ch not in "0123456789abcdef" for ch in meta["sha256"])
+            ):
+                raise DeploymentError("Deployment file metadata is malformed")
+
+        allowed_entries = set(files) | reserved
         unexpected = sorted(set(names) - allowed_entries)
         if unexpected:
             raise DeploymentError(
                 "Deployment package contains unlisted entries: " + ", ".join(unexpected)
             )
+
         for name, meta in files.items():
-            if not isinstance(meta, dict):
-                raise DeploymentError("Deployment file metadata is malformed")
-            _safe_archive_parts(str(name))
             try:
                 raw = archive.read(name)
             except KeyError as exc:
                 raise DeploymentError(f"Deployment file is missing: {name}") from exc
-            if len(raw) != meta.get("size") or hashlib.sha256(raw).hexdigest() != meta.get(
-                "sha256"
-            ):
+            if len(raw) != meta["size"] or hashlib.sha256(raw).hexdigest() != meta["sha256"]:
                 raise DeploymentError(f"Deployment file integrity failed: {name}")
+
         signed = "manifest.dsse.json" in names
         verification = None
         if signing_public_key is not None:
@@ -566,10 +602,13 @@ def verify_windows_worker_package(
                 )
             except (KeyError, UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise DeploymentError("Deployment signature envelope is malformed") from exc
+            if not isinstance(envelope, dict):
+                raise DeploymentError("Deployment signature envelope is malformed")
             verification = verify_dsse_envelope(envelope, signing_public_key)
-            predicate = verification["statement"].get("predicate")
-            if predicate != manifest:
+            statement = verification.get("statement") if isinstance(verification, dict) else None
+            if not isinstance(statement, dict) or statement.get("predicate") != manifest:
                 raise DeploymentError("Deployment signature does not bind the manifest")
+
     return {
         "valid": True,
         "package": str(package_path),
