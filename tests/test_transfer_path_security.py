@@ -50,6 +50,16 @@ class TransferPathSecurityTests(unittest.TestCase):
                 with self.assertRaisesRegex(TransferError, "symlink or reparse point"):
                     TransferStore(root)
 
+    def test_store_rejects_simulated_intermediate_reparse_root(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            state = base / "state"
+            state.mkdir()
+            original_lstat = Path.lstat
+            with patch.object(Path, "lstat", _reparse_lstat(original_lstat, {state})):
+                with self.assertRaisesRegex(TransferError, "symlink or reparse point"):
+                    TransferStore(state / "store")
+
     def test_unknown_transfer_preserves_lookup_error(self):
         with tempfile.TemporaryDirectory() as temp:
             store = TransferStore(Path(temp))
@@ -110,6 +120,30 @@ class TransferPathSecurityTests(unittest.TestCase):
             with patch.object(Path, "lstat", _reparse_lstat(original_lstat, {manifest})):
                 with self.assertRaisesRegex(TransferError, "symlink or reparse point"):
                     store.status(created["transfer_id"], controller_id="controller-a")
+
+    def test_finalize_revalidates_objects_directory(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = TransferStore(Path(temp))
+            raw = b"o" * (64 * 1024)
+            digest = hashlib.sha256(raw).hexdigest()
+            created = store.create(
+                controller_id="controller-a",
+                artifact_sha256=digest,
+                artifact_size=len(raw),
+                chunk_size=64 * 1024,
+            )
+            store.put_chunk(
+                created["transfer_id"],
+                0,
+                raw,
+                chunk_sha256=digest,
+                controller_id="controller-a",
+            )
+
+            original_lstat = Path.lstat
+            with patch.object(Path, "lstat", _reparse_lstat(original_lstat, {store.objects})):
+                with self.assertRaisesRegex(TransferError, "symlink or reparse point"):
+                    store.finalize(created["transfer_id"], controller_id="controller-a")
 
     def test_finalize_rejects_reparse_existing_object(self):
         with tempfile.TemporaryDirectory() as temp:
