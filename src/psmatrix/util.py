@@ -130,7 +130,7 @@ def _open_direct_lock_file(path: Path) -> BinaryIO:
     flags |= getattr(os, "O_NOFOLLOW", 0)
     fd: int | None = None
     try:
-        fd = os.open(candidate, flags, 0o600)
+        fd = os.open(candidate, flags, 0o666)
         opened = os.fstat(fd)
         _reject_indirect_components(candidate.parent, label="Lock parent")
         current = candidate.lstat()
