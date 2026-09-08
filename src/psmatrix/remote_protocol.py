@@ -72,6 +72,21 @@ def _is_link_or_reparse(info: os.stat_result) -> bool:
     )
 
 
+def _is_single_link_regular(info: os.stat_result) -> bool:
+    return stat.S_ISREG(info.st_mode) and int(getattr(info, "st_nlink", 1)) == 1
+
+
+def _same_file(left: os.stat_result, right: os.stat_result) -> bool:
+    try:
+        return os.path.samestat(left, right)
+    except (AttributeError, OSError, ValueError):
+        return (
+            getattr(left, "st_dev", None) == getattr(right, "st_dev", None)
+            and getattr(left, "st_ino", None) == getattr(right, "st_ino", None)
+            and getattr(left, "st_ino", 0) not in {0, None}
+        )
+
+
 def _reject_indirect_components(path: Path, *, label: str) -> Path:
     candidate = path.absolute()
     current = Path(candidate.anchor) if candidate.anchor else Path()
@@ -117,8 +132,8 @@ def _direct_database_candidate(path: Path, *, label: str, must_exist: bool) -> P
         raise RemoteProtocolError(f"Unable to inspect {label} file {candidate}: {exc}") from exc
     if _is_link_or_reparse(info):
         raise RemoteProtocolError(f"{label} path contains a symlink or reparse point: {candidate}")
-    if not stat.S_ISREG(info.st_mode):
-        raise RemoteProtocolError(f"{label} is not a regular file: {candidate}")
+    if not _is_single_link_regular(info):
+        raise RemoteProtocolError(f"{label} must be a direct regular file with one link: {candidate}")
     return candidate
 
 
@@ -399,18 +414,50 @@ class ReplayGuard:
         parent = candidate.parent
         _reject_indirect_components(parent, label="Replay guard database parent")
         parent.mkdir(parents=True, exist_ok=True)
-        _direct_existing_directory(parent, label="Replay guard database parent")
+        parent = _direct_existing_directory(parent, label="Replay guard database parent")
+        try:
+            self._parent_identity = parent.lstat()
+        except OSError as exc:
+            raise RemoteProtocolError(f"Unable to inspect replay guard database parent: {parent}") from exc
         self.path = _validate_replay_paths(candidate, must_exist=False)
         with closing(sqlite3.connect(self.path)) as connection:
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS nonces (controller_id TEXT NOT NULL, nonce TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY(controller_id, nonce))"
             )
             connection.commit()
-        _validate_replay_paths(self.path, must_exist=True)
+        self.path = _validate_replay_paths(self.path, must_exist=True)
+        try:
+            self._database_identity = self.path.lstat()
+        except OSError as exc:
+            raise RemoteProtocolError(f"Unable to inspect replay guard database: {self.path}") from exc
+        self._validate_storage_identity()
+
+    def _validate_storage_identity(self) -> Path:
+        parent = _direct_existing_directory(
+            self.path.parent, label="Replay guard database parent"
+        )
+        try:
+            parent_info = parent.lstat()
+        except OSError as exc:
+            raise RemoteProtocolError(f"Unable to inspect replay guard database parent: {parent}") from exc
+        if not _same_file(parent_info, self._parent_identity):
+            raise RemoteProtocolError(
+                f"Replay guard database parent changed after initialization: {parent}"
+            )
+        database = _validate_replay_paths(self.path, must_exist=True)
+        try:
+            database_info = database.lstat()
+        except OSError as exc:
+            raise RemoteProtocolError(f"Unable to inspect replay guard database: {database}") from exc
+        if not _same_file(database_info, self._database_identity):
+            raise RemoteProtocolError(
+                f"Replay guard database changed after initialization: {database}"
+            )
+        return database
 
     def consume(self, controller_id: str, nonce: str, expires_at: datetime) -> None:
         now = datetime.now(UTC).isoformat()
-        database = _validate_replay_paths(self.path, must_exist=True)
+        database = self._validate_storage_identity()
         try:
             with closing(sqlite3.connect(database, timeout=10)) as connection:
                 connection.execute("DELETE FROM nonces WHERE expires_at < ?", (now,))
@@ -419,5 +466,6 @@ class ReplayGuard:
                     (controller_id, nonce, expires_at.astimezone(UTC).isoformat()),
                 )
                 connection.commit()
+            self._validate_storage_identity()
         except sqlite3.IntegrityError as exc:
             raise RemoteProtocolError("Worker request nonce has already been used") from exc
