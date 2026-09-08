@@ -439,26 +439,40 @@ def probe_windows_powershell(executable: str, expected_version: str, *, require_
 class WindowsJobExecutor:
     def __init__(self, config: WorkerConfig, harness: Path):
         self.config = config
-        self.harness = harness.resolve()
+        self.harness = _direct_existing_file(harness, label="Worker harness")
 
     def capabilities(self) -> dict[str, Any]:
         return {"worker_id": self.config.worker_id, **probe_windows_powershell(self.config.powershell_executable, self.config.expected_version, require_windows=not self.config.allow_non_windows_for_testing)}
 
     def __call__(self, request: dict[str, Any], artifact: bytes) -> tuple[dict[str, Any], dict[str, Any]]:
         job_id = _canonical_job_id(request.get("job_id"))
+        report: dict[str, Any] = {
+            "schema": 1, "status": "FAIL_WORKER", "worker_id": self.config.worker_id, "targets": []
+        }
         workspace = self.config.workspace_root / job_id
-        if workspace.exists():
-            shutil.rmtree(workspace)
-        workspace.mkdir(parents=True, exist_ok=False)
+        try:
+            _reject_indirect_components(self.config.workspace_root, label="Worker workspace")
+            root_info = self.config.workspace_root.lstat()
+            if _is_link_or_reparse(root_info) or not stat.S_ISDIR(root_info.st_mode):
+                raise WorkerError(f"Worker workspace is not a direct directory: {self.config.workspace_root}")
+            if workspace.exists():
+                _reject_indirect_components(workspace, label="Worker job workspace")
+                workspace_info = workspace.lstat()
+                if _is_link_or_reparse(workspace_info) or not stat.S_ISDIR(workspace_info.st_mode):
+                    raise WorkerError(f"Worker job workspace is not a direct directory: {workspace}")
+                shutil.rmtree(workspace)
+            workspace.mkdir(parents=False, exist_ok=False)
+            _reject_indirect_components(workspace, label="Worker job workspace")
+        except (PSMatrixError, OSError) as exc:
+            report["worker_error"] = str(exc)
+            return report, {"required": self.config.reset_required, "before": None, "after": None}
         before = _run_reset(self.config.reset_before, workspace, "before")
         if self.config.reset_required and not before.get("configured"):
             before = {**before, "passed": False, "error": "A pre-job snapshot/reset command is required"}
         if not before.get("passed"):
             return {"schema": 1, "status": "FAIL_RESET", "worker_id": self.config.worker_id, "targets": []}, {"required": self.config.reset_required, "before": before, "after": None}
-        report: dict[str, Any] = {
-            "schema": 1, "status": "FAIL_WORKER", "worker_id": self.config.worker_id, "targets": []
-        }
         try:
+            _reject_indirect_components(workspace, label="Worker job workspace")
             _safe_extract_zip(artifact, workspace)
             entrypoint = str(request.get("entrypoint") or "")
             entry = (workspace / entrypoint).resolve()
@@ -478,8 +492,9 @@ class WindowsJobExecutor:
                 "output": str(output_file),
                 "options": options,
             })
+            harness = _direct_existing_file(self.harness, label="Worker harness")
             completed = _run_process_tree(
-                [self.config.powershell_executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(self.harness), "-Job", str(job_file)],
+                [self.config.powershell_executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(harness), "-Job", str(job_file)],
                 cwd=workspace, timeout=timeout_seconds,
             )
             if output_file.is_file():
