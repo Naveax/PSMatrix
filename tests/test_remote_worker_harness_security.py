@@ -112,6 +112,36 @@ class RemoteWorkerHarnessSecurityTests(unittest.TestCase):
             self.assertFalse((workspace / job_id).exists())
             run_process.assert_not_called()
 
+    def test_executor_rejects_indirect_existing_job_directory_before_delete(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            harness = root / "Invoke-Worker.ps1"
+            harness.write_text("param()", encoding="utf-8")
+            workspace = root / "workspaces"
+            workspace.mkdir()
+            executor = WindowsJobExecutor(_config(workspace), harness)
+
+            job_id = str(uuid.uuid4())
+            job_dir = workspace / job_id
+            job_dir.mkdir()
+            marker = job_dir / "marker.txt"
+            marker.write_text("keep\n", encoding="utf-8")
+            request = {
+                "job_id": job_id,
+                "entrypoint": "entry.ps1",
+                "options": {"timeout_seconds": 30},
+            }
+            original_lstat = Path.lstat
+            with patch.object(Path, "lstat", _reparse_lstat(original_lstat, {job_dir})), \
+                 patch("psmatrix.remote_worker._run_process_tree") as run_process:
+                report, reset = executor(request, _artifact())
+
+            self.assertEqual(report["status"], "FAIL_WORKER")
+            self.assertIn("symlink or reparse point", report["worker_error"])
+            self.assertFalse(reset["required"])
+            self.assertEqual(marker.read_text(encoding="utf-8"), "keep\n")
+            run_process.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
