@@ -73,6 +73,19 @@ class ReplayGuardPathSecurityTests(unittest.TestCase):
                     guard.consume("controller-a", "n" * 32, expires)
             connect.assert_not_called()
 
+    def test_consume_revalidates_sqlite_sidecars_before_connect(self):
+        with tempfile.TemporaryDirectory() as temp:
+            guard = ReplayGuard(Path(temp) / "replay.sqlite3")
+            sidecar = Path(str(guard.path) + "-journal")
+            sidecar.write_bytes(b"")
+            original_lstat = Path.lstat
+            expires = datetime.now(UTC) + timedelta(minutes=5)
+            with patch.object(Path, "lstat", _reparse_lstat(original_lstat, {sidecar})), \
+                 patch("psmatrix.remote_protocol.sqlite3.connect") as connect:
+                with self.assertRaisesRegex(RemoteProtocolError, "symlink or reparse point"):
+                    guard.consume("controller-a", "n" * 32, expires)
+            connect.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
