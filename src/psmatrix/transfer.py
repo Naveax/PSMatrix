@@ -81,6 +81,21 @@ def _direct_existing_file(path: Path, *, label: str) -> Path:
     return candidate
 
 
+def _direct_file_candidate(path: Path, *, label: str) -> Path:
+    candidate = _reject_indirect_components(path, label=label)
+    try:
+        info = candidate.lstat()
+    except FileNotFoundError:
+        return candidate
+    except OSError as exc:
+        raise TransferError(f"Unable to inspect {label} file {candidate}: {exc}") from exc
+    if _is_link_or_reparse(info):
+        raise TransferError(f"{label} path contains a symlink or reparse point: {candidate}")
+    if not stat.S_ISREG(info.st_mode):
+        raise TransferError(f"{label} is not a regular file: {candidate}")
+    return candidate
+
+
 def _direct_optional_file(path: Path, *, label: str) -> Path | None:
     candidate = _reject_indirect_components(path, label=label)
     try:
@@ -168,17 +183,17 @@ class TransferStore:
             _reject_indirect_components(path, label=label)
             path.mkdir(parents=True, exist_ok=True)
             _direct_existing_directory(path, label=label)
-        _reject_indirect_components(self.lock_path, label="Transfer store lock")
+        _direct_file_candidate(self.lock_path, label="Transfer store lock")
 
     def _validate_layout(self) -> None:
         _direct_existing_directory(self.root, label="Transfer store root")
         _direct_existing_directory(self.sessions, label="Transfer sessions directory")
         _direct_existing_directory(self.objects, label="Transfer objects directory")
-        _direct_optional_file(self.lock_path, label="Transfer store lock")
+        _direct_file_candidate(self.lock_path, label="Transfer store lock")
 
     def _lock_file(self) -> Path:
         self._validate_layout()
-        return _reject_indirect_components(self.lock_path, label="Transfer store lock")
+        return _direct_file_candidate(self.lock_path, label="Transfer store lock")
 
     def _session(self, transfer_id: str) -> Path:
         try:
@@ -191,7 +206,10 @@ class TransferStore:
 
     def _existing_session(self, transfer_id: str) -> Path:
         self._validate_layout()
-        return _direct_existing_directory(self._session(transfer_id), label="Transfer session")
+        session = _direct_optional_directory(self._session(transfer_id), label="Transfer session")
+        if session is None:
+            raise TransferError("Unknown transfer ID")
+        return session
 
     def create(
         self,
@@ -263,7 +281,9 @@ class TransferStore:
 
     def _load_manifest(self, transfer_id: str, *, controller_id: str | None = None) -> dict[str, Any]:
         session = self._existing_session(transfer_id)
-        path = _direct_existing_file(session / "manifest.json", label="Transfer manifest")
+        path = _direct_optional_file(session / "manifest.json", label="Transfer manifest")
+        if path is None:
+            raise TransferError("Unknown transfer ID")
         value = read_json(path)
         if not isinstance(value, dict) or value.get("schema") != 1:
             raise TransferError("Transfer manifest is malformed")
