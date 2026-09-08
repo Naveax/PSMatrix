@@ -354,6 +354,12 @@ class TransferStore:
 
     def _session_directory(self, transfer_id: str) -> Path:
         session = self._session(transfer_id)
+        try:
+            session.lstat()
+        except FileNotFoundError as exc:
+            raise TransferError("Unknown transfer ID") from exc
+        except OSError as exc:
+            raise TransferError(f"Unable to inspect transfer session: {session}") from exc
         direct, _ = _direct_directory(session, label="Transfer session")
         return direct
 
@@ -407,8 +413,12 @@ class TransferStore:
                 )
                 if manifest_path is None:
                     continue
-                _, value = _read_direct_json(manifest_path, label="Transfer manifest")
-                value = _validate_manifest_value(value, transfer_id=session.name)
+                _, raw = _read_direct_file(manifest_path, label="Transfer manifest")
+                try:
+                    value = _decode_json(raw, label="Transfer manifest")
+                    value = _validate_manifest_value(value, transfer_id=session.name)
+                except TransferError:
+                    continue
                 if (
                     value.get("controller_id") == controller_id
                     and value.get("artifact_sha256") == digest
@@ -455,9 +465,12 @@ class TransferStore:
         self._validate_roots()
         canonical = _canonical_transfer_id(transfer_id)
         session = self._session_directory(canonical)
-        _, value = _read_direct_json(
+        manifest_path = _existing_direct_file(
             session / "manifest.json", label="Transfer manifest"
         )
+        if manifest_path is None:
+            raise TransferError("Unknown transfer ID")
+        _, value = _read_direct_json(manifest_path, label="Transfer manifest")
         value = _validate_manifest_value(value, transfer_id=canonical)
         if controller_id is not None and value.get("controller_id") != controller_id:
             raise TransferError("Transfer belongs to a different controller")
@@ -542,7 +555,7 @@ class TransferStore:
             flags |= getattr(os, "O_BINARY", 0)
             flags |= getattr(os, "O_NOFOLLOW", 0)
             try:
-                fd = os.open(temporary, flags, 0o600)
+                fd = os.open(temporary, flags, 0o666)
             except OSError as exc:
                 raise TransferError(f"Unable to create temporary transfer object: {temporary}") from exc
             try:
@@ -610,7 +623,7 @@ class TransferStore:
             try:
                 _reject_indirect_components(temporary.parent, label="Transfer temporary object parent")
                 temporary.unlink(missing_ok=True)
-            except OSError:
+            except (OSError, TransferError):
                 pass
         return {**self.status(transfer_id, controller_id=controller_id), "complete": True}
 
@@ -637,7 +650,6 @@ class TransferStore:
     def _remove_session(self, session: Path) -> None:
         session, _ = _direct_directory(session, label="Transfer session")
         allowed_files = {"manifest.json", "complete.json"}
-        chunks_path = session / "chunks"
         for name in sorted(os.listdir(session)):
             path = session / name
             if name == "chunks":
@@ -694,15 +706,12 @@ class TransferStore:
                 )
                 expires = datetime.min.replace(tzinfo=UTC)
                 if manifest_path is not None:
+                    _, raw = _read_direct_file(manifest_path, label="Transfer manifest")
                     try:
-                        _, value = _read_direct_json(
-                            manifest_path, label="Transfer manifest"
-                        )
+                        value = _decode_json(raw, label="Transfer manifest")
                         value = _validate_manifest_value(value, transfer_id=session.name)
                         expires = _parse_time(str(value["expires_at"]))
-                    except TransferError as exc:
-                        if "symlink or reparse" in str(exc) or "direct regular file" in str(exc):
-                            raise
+                    except TransferError:
                         expires = datetime.min.replace(tzinfo=UTC)
                 if now > expires:
                     self._remove_session(session)
