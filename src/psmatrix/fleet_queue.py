@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
+import stat
 import uuid
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
@@ -10,9 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from .errors import PSMatrixError
+from .runtime_ids import is_exact_windows_runtime_id
 from .signing import canonical_json_bytes
 from .util import atomic_write_json, exclusive_lock, read_json, utc_now_iso
-from .runtime_ids import is_exact_windows_runtime_id
 
 
 class FleetQueueError(PSMatrixError):
@@ -20,6 +22,91 @@ class FleetQueueError(PSMatrixError):
 
 
 _STATES = {"QUEUED", "LEASED", "COMPLETE", "FAILED"}
+_REPARSE_POINT = 0x400
+_SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
+
+
+def _lexical_absolute(path: Path) -> Path:
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def _is_link_or_reparse(info: os.stat_result) -> bool:
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0) & _REPARSE_POINT
+    )
+
+
+def _reject_indirect_components(path: Path, *, label: str) -> Path:
+    candidate = _lexical_absolute(path)
+    anchor = Path(candidate.anchor)
+    current = anchor
+    parts = candidate.parts[1:] if candidate.anchor else candidate.parts
+    for part in parts:
+        current = current / part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise FleetQueueError(f"Unable to inspect {label}: {current}") from exc
+        if _is_link_or_reparse(info):
+            raise FleetQueueError(
+                f"{label} cannot use symlink or reparse indirection: {current}"
+            )
+    return candidate
+
+
+def _direct_directory(path: Path, *, label: str, create: bool = False) -> Path:
+    candidate = _reject_indirect_components(path, label=label)
+    if create:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise FleetQueueError(f"Unable to create {label}: {candidate}") from exc
+    candidate = _reject_indirect_components(candidate, label=label)
+    try:
+        info = candidate.lstat()
+    except OSError as exc:
+        raise FleetQueueError(f"{label} is unavailable: {candidate}") from exc
+    if _is_link_or_reparse(info) or not stat.S_ISDIR(info.st_mode):
+        raise FleetQueueError(f"{label} must be a direct directory: {candidate}")
+    resolved = candidate.resolve()
+    _reject_indirect_components(resolved, label=label)
+    return resolved
+
+
+def _direct_file_candidate(path: Path, *, label: str) -> Path:
+    candidate = _reject_indirect_components(path, label=label)
+    try:
+        info = candidate.lstat()
+    except FileNotFoundError:
+        return candidate
+    except OSError as exc:
+        raise FleetQueueError(f"Unable to inspect {label}: {candidate}") from exc
+    if _is_link_or_reparse(info) or not stat.S_ISREG(info.st_mode):
+        raise FleetQueueError(f"{label} must be a direct regular file: {candidate}")
+    return candidate
+
+
+def _direct_existing_file(path: Path, *, label: str) -> Path:
+    candidate = _direct_file_candidate(path, label=label)
+    try:
+        info = candidate.lstat()
+    except FileNotFoundError as exc:
+        raise FleetQueueError(f"{label} is missing: {candidate}") from exc
+    except OSError as exc:
+        raise FleetQueueError(f"Unable to inspect {label}: {candidate}") from exc
+    if _is_link_or_reparse(info) or not stat.S_ISREG(info.st_mode):
+        raise FleetQueueError(f"{label} must be a direct regular file: {candidate}")
+    resolved = candidate.resolve()
+    _reject_indirect_components(resolved, label=label)
+    try:
+        resolved_info = resolved.lstat()
+    except OSError as exc:
+        raise FleetQueueError(f"{label} is unavailable: {resolved}") from exc
+    if _is_link_or_reparse(resolved_info) or not stat.S_ISREG(resolved_info.st_mode):
+        raise FleetQueueError(f"{label} must be a direct regular file: {resolved}")
+    return resolved
 
 
 def _time(value: str) -> datetime:
@@ -32,11 +119,25 @@ def _time(value: str) -> datetime:
 class FleetQueue:
     """SQLite-backed durable queue with idempotency and expiring leases."""
 
+    @staticmethod
+    def _prepare_database_path(path: Path) -> Path:
+        candidate = _reject_indirect_components(path, label="Fleet queue database")
+        parent = _direct_directory(
+            candidate.parent,
+            label="Fleet queue state directory",
+            create=True,
+        )
+        database = parent / candidate.name
+        _direct_file_candidate(database, label="Fleet queue database")
+        return database
+
     def __init__(self, path: Path):
-        self.path = path.resolve()
+        self.path = self._prepare_database_path(path)
         self.mirror_path = self.path.with_suffix(self.path.suffix + ".mirror.json")
         self.mirror_lock = self.mirror_path.with_suffix(self.mirror_path.suffix + ".lock")
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._validate_database_paths()
+        _direct_file_candidate(self.mirror_path, label="Fleet queue mirror")
+        _direct_file_candidate(self.mirror_lock, label="Fleet queue mirror lock")
         with closing(self._connect()) as connection:
             connection.executescript(
                 """
@@ -67,23 +168,63 @@ class FleetQueue:
                 INSERT OR IGNORE INTO meta(key, value) VALUES ('generation', '0');
                 """
             )
+            self._validate_database_paths(require_database=True)
             connection.commit()
+        self._validate_database_paths(require_database=True)
         self._refresh_mirror_if_needed()
 
     @classmethod
     def recovery_handle(cls, path: Path) -> "FleetQueue":
         """Create a path-only handle that can inspect/restore a corrupted database."""
         instance = cls.__new__(cls)
-        instance.path = path.resolve()
+        instance.path = cls._prepare_database_path(path)
         instance.mirror_path = instance.path.with_suffix(instance.path.suffix + ".mirror.json")
         instance.mirror_lock = instance.mirror_path.with_suffix(instance.mirror_path.suffix + ".lock")
-        instance.path.parent.mkdir(parents=True, exist_ok=True)
+        instance._validate_database_paths()
+        _direct_file_candidate(instance.mirror_path, label="Fleet queue mirror")
+        _direct_file_candidate(instance.mirror_lock, label="Fleet queue mirror lock")
         return instance
 
+    def _sqlite_paths(self) -> tuple[Path, ...]:
+        return (
+            self.path,
+            *(self.path.with_name(self.path.name + suffix) for suffix in _SQLITE_SIDECAR_SUFFIXES),
+        )
+
+    def _validate_database_paths(self, *, require_database: bool = False) -> None:
+        _direct_directory(self.path.parent, label="Fleet queue state directory")
+        for index, path in enumerate(self._sqlite_paths()):
+            label = "Fleet queue database" if index == 0 else f"Fleet queue SQLite sidecar {path.name}"
+            if index == 0 and require_database:
+                _direct_existing_file(path, label=label)
+            else:
+                _direct_file_candidate(path, label=label)
+
     def _connect(self):
-        connection = sqlite3.connect(self.path, timeout=30, isolation_level=None)
-        connection.row_factory = sqlite3.Row
-        return connection
+        self._validate_database_paths()
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+            connection.row_factory = sqlite3.Row
+            self._validate_database_paths(require_database=True)
+            return connection
+        except Exception:
+            if connection is not None:
+                connection.close()
+            raise
+
+    def _connect_readonly(self):
+        self._validate_database_paths(require_database=True)
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True, timeout=10)
+            connection.row_factory = sqlite3.Row
+            self._validate_database_paths(require_database=True)
+            return connection
+        except Exception:
+            if connection is not None:
+                connection.close()
+            raise
 
     @staticmethod
     def _generation(connection: sqlite3.Connection) -> int:
@@ -101,8 +242,7 @@ class FleetQueue:
         return [dict(row) for row in connection.execute("SELECT * FROM jobs ORDER BY job_id ASC").fetchall()]
 
     def _mirror_payload(self) -> dict[str, Any]:
-        with closing(sqlite3.connect(f"file:{self.path}?mode=ro", uri=True, timeout=10)) as connection:
-            connection.row_factory = sqlite3.Row
+        with closing(self._connect_readonly()) as connection:
             payload = {
                 "schema": 1,
                 "queue": self.path.name,
@@ -115,15 +255,26 @@ class FleetQueue:
 
     def _write_mirror(self) -> dict[str, Any]:
         payload = self._mirror_payload()
-        with exclusive_lock(self.mirror_lock):
-            atomic_write_json(self.mirror_path, payload)
+        mirror = _direct_file_candidate(self.mirror_path, label="Fleet queue mirror")
+        lock = _direct_file_candidate(self.mirror_lock, label="Fleet queue mirror lock")
+        with exclusive_lock(lock):
+            _direct_existing_file(lock, label="Fleet queue mirror lock")
+            mirror = _direct_file_candidate(mirror, label="Fleet queue mirror")
+            atomic_write_json(mirror, payload)
+            _direct_existing_file(mirror, label="Fleet queue mirror")
         return payload
 
     def mirror(self) -> dict[str, Any] | None:
-        if not self.mirror_path.is_file():
-            return None
+        mirror = _direct_file_candidate(self.mirror_path, label="Fleet queue mirror")
         try:
-            value = read_json(self.mirror_path)
+            mirror.lstat()
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise FleetQueueError("Queue mirror is unavailable") from exc
+        mirror = _direct_existing_file(mirror, label="Fleet queue mirror")
+        try:
+            value = read_json(mirror)
             if not isinstance(value, dict) or value.get("schema") != 1 or not isinstance(value.get("jobs"), list):
                 raise FleetQueueError("Queue mirror schema is invalid")
             stored = str(value.get("mirror_sha256") or "")
@@ -324,7 +475,7 @@ class FleetQueue:
     def integrity(self, *, full: bool = False) -> dict[str, Any]:
         """Run a read-only SQLite integrity check suitable for controller health gates."""
         try:
-            with closing(sqlite3.connect(f"file:{self.path}?mode=ro", uri=True, timeout=10)) as connection:
+            with closing(self._connect_readonly()) as connection:
                 rows = [str(row[0]) for row in connection.execute("PRAGMA " + ("integrity_check" if full else "quick_check")).fetchall()]
             return {"valid": rows == ["ok"], "errors": [] if rows == ["ok"] else rows}
         except sqlite3.DatabaseError as exc:
