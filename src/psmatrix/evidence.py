@@ -11,7 +11,6 @@ from pathlib import Path
 
 from .models import MatrixReport
 from .sbom import build_sbom
-from .util import sha256_file
 
 
 def _git_commit(root: Path) -> str | None:
@@ -84,7 +83,8 @@ def write_evidence_bundle(report: MatrixReport, path: Path, *, project_root: Pat
                 source = Path(target.source)
                 if not source.is_file() or target.source_sha256 in seen:
                     continue
-                actual_hash = sha256_file(source)
+                raw = source.read_bytes()
+                actual_hash = hashlib.sha256(raw).hexdigest()
                 if actual_hash != target.source_sha256:
                     raise ValueError(
                         f"Source changed after validation: {source} expected {target.source_sha256} got {actual_hash}"
@@ -94,7 +94,7 @@ def write_evidence_bundle(report: MatrixReport, path: Path, *, project_root: Pat
                     _zip_write(
                         zf,
                         f"sources/{target.source_sha256}-{source.name}",
-                        source.read_bytes(),
+                        raw,
                     )
                 )
             manifest = {"schema": 1, "entries": sorted(entries, key=lambda item: item["path"])}
