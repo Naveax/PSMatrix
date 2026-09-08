@@ -161,20 +161,24 @@ def _file_evidence(path: Path | None) -> dict[str, Any] | None:
     if boundary_state == "unavailable":
         return {"path": str(absolute), "exists": None, "kind": "unavailable"}
     try:
-        info = absolute.lstat()
-    except FileNotFoundError:
-        return {"path": str(absolute), "exists": False}
+        direct = absolute.resolve()
     except OSError:
         return {"path": str(absolute), "exists": None, "kind": "unavailable"}
+    try:
+        info = direct.lstat()
+    except FileNotFoundError:
+        return {"path": str(direct), "exists": False}
+    except OSError:
+        return {"path": str(direct), "exists": None, "kind": "unavailable"}
     if _is_link_or_reparse(info):
         return {"path": str(absolute), "exists": True, "kind": "indirect"}
     if stat.S_ISREG(info.st_mode):
         try:
-            digest = sha256_file(absolute)
+            digest = sha256_file(direct)
         except OSError:
-            return {"path": str(absolute), "exists": True, "kind": "unavailable-file"}
+            return {"path": str(direct), "exists": True, "kind": "unavailable-file"}
         return {
-            "path": str(absolute),
+            "path": str(direct),
             "exists": True,
             "kind": "file",
             "size": info.st_size,
@@ -182,12 +186,12 @@ def _file_evidence(path: Path | None) -> dict[str, Any] | None:
         }
     if stat.S_ISDIR(info.st_mode):
         return {
-            "path": str(absolute),
+            "path": str(direct),
             "exists": True,
             "kind": "directory",
-            "entries": _directory_evidence(absolute),
+            "entries": _directory_evidence(direct),
         }
-    return {"path": str(absolute), "exists": True, "kind": "other"}
+    return {"path": str(direct), "exists": True, "kind": "other"}
 
 
 def _adjacent_input_candidates(source: Path) -> list[Path]:
@@ -305,7 +309,7 @@ def file_evidence_from_execution_context(
         if not isinstance(size, int) or not isinstance(digest, str) or not digest:
             return None
         return {
-            "path": str(identity),
+            "path": str(resolved),
             "exists": True,
             "kind": "file",
             "size": size,
