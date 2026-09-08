@@ -122,6 +122,19 @@ def _direct_database_candidate(path: Path, *, label: str, must_exist: bool) -> P
     return candidate
 
 
+def _validate_replay_paths(path: Path, *, must_exist: bool) -> Path:
+    database = _direct_database_candidate(
+        path, label="Replay guard database", must_exist=must_exist
+    )
+    for suffix in ("-journal", "-wal", "-shm"):
+        _direct_database_candidate(
+            Path(str(database) + suffix),
+            label=f"Replay guard SQLite sidecar {suffix}",
+            must_exist=False,
+        )
+    return database
+
+
 def _parse_time(value: str) -> datetime:
     try:
         parsed = datetime.fromisoformat(value)
@@ -387,21 +400,17 @@ class ReplayGuard:
         _reject_indirect_components(parent, label="Replay guard database parent")
         parent.mkdir(parents=True, exist_ok=True)
         _direct_existing_directory(parent, label="Replay guard database parent")
-        self.path = _direct_database_candidate(
-            candidate, label="Replay guard database", must_exist=False
-        )
+        self.path = _validate_replay_paths(candidate, must_exist=False)
         with closing(sqlite3.connect(self.path)) as connection:
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS nonces (controller_id TEXT NOT NULL, nonce TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY(controller_id, nonce))"
             )
             connection.commit()
-        _direct_database_candidate(self.path, label="Replay guard database", must_exist=True)
+        _validate_replay_paths(self.path, must_exist=True)
 
     def consume(self, controller_id: str, nonce: str, expires_at: datetime) -> None:
         now = datetime.now(UTC).isoformat()
-        database = _direct_database_candidate(
-            self.path, label="Replay guard database", must_exist=True
-        )
+        database = _validate_replay_paths(self.path, must_exist=True)
         try:
             with closing(sqlite3.connect(database, timeout=10)) as connection:
                 connection.execute("DELETE FROM nonces WHERE expires_at < ?", (now,))
