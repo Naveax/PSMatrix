@@ -80,6 +80,10 @@ def _is_link_or_reparse(info: os.stat_result) -> bool:
     )
 
 
+def _is_single_link_regular(info: os.stat_result) -> bool:
+    return stat.S_ISREG(info.st_mode) and int(getattr(info, "st_nlink", 1)) == 1
+
+
 def _same_file(left: os.stat_result, right: os.stat_result) -> bool:
     try:
         return os.path.samestat(left, right)
@@ -108,6 +112,22 @@ def _reject_indirect_components(path: Path, *, label: str) -> Path:
     return candidate
 
 
+def _validate_open_lock_file(path: Path, handle: BinaryIO) -> None:
+    candidate = _reject_indirect_components(path, label="Lock")
+    try:
+        current = candidate.lstat()
+        opened = os.fstat(handle.fileno())
+    except OSError as exc:
+        raise OSError(f"Unable to revalidate lock path: {candidate}") from exc
+    if (
+        _is_link_or_reparse(current)
+        or not _is_single_link_regular(current)
+        or not _is_single_link_regular(opened)
+        or not _same_file(current, opened)
+    ):
+        raise OSError(f"Lock path changed after acquisition: {candidate}")
+
+
 def _open_direct_lock_file(path: Path) -> BinaryIO:
     candidate = _reject_indirect_components(path, label="Lock")
     candidate.parent.mkdir(parents=True, exist_ok=True)
@@ -120,9 +140,9 @@ def _open_direct_lock_file(path: Path) -> BinaryIO:
     except OSError as exc:
         raise OSError(f"Unable to inspect lock path: {candidate}") from exc
     if initial is not None and (
-        _is_link_or_reparse(initial) or not stat.S_ISREG(initial.st_mode)
+        _is_link_or_reparse(initial) or not _is_single_link_regular(initial)
     ):
-        raise OSError(f"Lock path must be a direct regular file: {candidate}")
+        raise OSError(f"Lock path must be a direct regular file with one link: {candidate}")
 
     flags = os.O_RDWR | os.O_CREAT
     flags |= getattr(os, "O_CLOEXEC", 0)
@@ -136,8 +156,8 @@ def _open_direct_lock_file(path: Path) -> BinaryIO:
         current = candidate.lstat()
         if (
             _is_link_or_reparse(current)
-            or not stat.S_ISREG(current.st_mode)
-            or not stat.S_ISREG(opened.st_mode)
+            or not _is_single_link_regular(current)
+            or not _is_single_link_regular(opened)
             or not _same_file(current, opened)
         ):
             raise OSError(f"Lock path changed while opening: {candidate}")
@@ -177,6 +197,7 @@ def exclusive_lock(path: Path) -> Iterator[None]:
         if os.name == "nt":
             _lock_windows(handle)
             try:
+                _validate_open_lock_file(path, handle)
                 yield
             finally:
                 _unlock_windows(handle)
@@ -185,6 +206,7 @@ def exclusive_lock(path: Path) -> Iterator[None]:
 
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             try:
+                _validate_open_lock_file(path, handle)
                 yield
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
