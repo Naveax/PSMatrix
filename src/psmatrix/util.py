@@ -112,7 +112,12 @@ def _reject_indirect_components(path: Path, *, label: str) -> Path:
     return candidate
 
 
-def _validate_open_lock_file(path: Path, handle: BinaryIO) -> None:
+def _validate_open_lock_file(
+    path: Path,
+    handle: BinaryIO,
+    *,
+    expected_identity: os.stat_result | None = None,
+) -> None:
     candidate = _reject_indirect_components(path, label="Lock")
     try:
         current = candidate.lstat()
@@ -126,9 +131,15 @@ def _validate_open_lock_file(path: Path, handle: BinaryIO) -> None:
         or not _same_file(current, opened)
     ):
         raise OSError(f"Lock path changed after acquisition: {candidate}")
+    if expected_identity is not None and not _same_file(opened, expected_identity):
+        raise OSError(f"Lock identity changed after initialization: {candidate}")
 
 
-def _open_direct_lock_file(path: Path) -> BinaryIO:
+def _open_direct_lock_file(
+    path: Path,
+    *,
+    expected_identity: os.stat_result | None = None,
+) -> BinaryIO:
     candidate = _reject_indirect_components(path, label="Lock")
     candidate.parent.mkdir(parents=True, exist_ok=True)
     _reject_indirect_components(candidate.parent, label="Lock parent")
@@ -143,6 +154,8 @@ def _open_direct_lock_file(path: Path) -> BinaryIO:
         _is_link_or_reparse(initial) or not _is_single_link_regular(initial)
     ):
         raise OSError(f"Lock path must be a direct regular file with one link: {candidate}")
+    if expected_identity is not None and initial is not None and not _same_file(initial, expected_identity):
+        raise OSError(f"Lock identity changed after initialization: {candidate}")
 
     flags = os.O_RDWR | os.O_CREAT
     flags |= getattr(os, "O_CLOEXEC", 0)
@@ -161,6 +174,8 @@ def _open_direct_lock_file(path: Path) -> BinaryIO:
             or not _same_file(current, opened)
         ):
             raise OSError(f"Lock path changed while opening: {candidate}")
+        if expected_identity is not None and not _same_file(opened, expected_identity):
+            raise OSError(f"Lock identity changed after initialization: {candidate}")
         handle = os.fdopen(fd, "r+b", closefd=True)
         fd = None
         return handle
@@ -191,13 +206,17 @@ def _unlock_windows(handle: Any) -> None:
 
 
 @contextmanager
-def exclusive_lock(path: Path) -> Iterator[None]:
+def exclusive_lock(
+    path: Path,
+    *,
+    expected_identity: os.stat_result | None = None,
+) -> Iterator[None]:
     """Cross-process advisory lock on POSIX and Windows."""
-    with _open_direct_lock_file(path) as handle:
+    with _open_direct_lock_file(path, expected_identity=expected_identity) as handle:
         if os.name == "nt":
             _lock_windows(handle)
             try:
-                _validate_open_lock_file(path, handle)
+                _validate_open_lock_file(path, handle, expected_identity=expected_identity)
                 yield
             finally:
                 _unlock_windows(handle)
@@ -206,7 +225,7 @@ def exclusive_lock(path: Path) -> Iterator[None]:
 
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             try:
-                _validate_open_lock_file(path, handle)
+                _validate_open_lock_file(path, handle, expected_identity=expected_identity)
                 yield
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
