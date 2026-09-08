@@ -86,6 +86,32 @@ class RemoteWorkerHarnessSecurityTests(unittest.TestCase):
             self.assertFalse(reset["required"])
             run_process.assert_not_called()
 
+    def test_executor_revalidates_workspace_root_before_job_mutation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            harness = root / "Invoke-Worker.ps1"
+            harness.write_text("param()", encoding="utf-8")
+            workspace = root / "workspaces"
+            workspace.mkdir()
+            executor = WindowsJobExecutor(_config(workspace), harness)
+
+            job_id = str(uuid.uuid4())
+            request = {
+                "job_id": job_id,
+                "entrypoint": "entry.ps1",
+                "options": {"timeout_seconds": 30},
+            }
+            original_lstat = Path.lstat
+            with patch.object(Path, "lstat", _reparse_lstat(original_lstat, {workspace})), \
+                 patch("psmatrix.remote_worker._run_process_tree") as run_process:
+                report, reset = executor(request, _artifact())
+
+            self.assertEqual(report["status"], "FAIL_WORKER")
+            self.assertIn("symlink or reparse point", report["worker_error"])
+            self.assertFalse(reset["required"])
+            self.assertFalse((workspace / job_id).exists())
+            run_process.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
