@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,7 @@ from typing import Any
 from .errors import PSMatrixError
 from .process import run_process
 from .signing import canonical_json_bytes, create_dsse_envelope, verify_dsse_envelope
-from .util import read_json, utc_now_iso
+from .util import utc_now_iso
 
 
 class SnapshotError(PSMatrixError):
@@ -19,6 +20,130 @@ class SnapshotError(PSMatrixError):
 
 _ALLOWED_PROVIDERS = {"hyper-v", "vmware", "virtualbox", "command-test"}
 _MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024
+_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+
+def _lexical_absolute(path: Path) -> Path:
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def _is_link_or_reparse(info: os.stat_result) -> bool:
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0) & _REPARSE_POINT
+    )
+
+
+def _same_file(left: os.stat_result, right: os.stat_result) -> bool:
+    try:
+        return os.path.samestat(left, right)
+    except (AttributeError, OSError, ValueError):
+        return (
+            getattr(left, "st_dev", None) == getattr(right, "st_dev", None)
+            and getattr(left, "st_ino", None) == getattr(right, "st_ino", None)
+            and getattr(left, "st_ino", 0) not in {0, None}
+        )
+
+
+def _reject_indirect_components(path: Path, *, label: str) -> Path:
+    candidate = _lexical_absolute(path)
+    current = Path(candidate.anchor) if candidate.anchor else Path()
+    parts = candidate.parts[1:] if candidate.anchor else candidate.parts
+    for part in parts:
+        current = current / part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise SnapshotError(f"Unable to inspect {label}: {current}") from exc
+        if _is_link_or_reparse(info):
+            raise SnapshotError(
+                f"{label} cannot use symlink or reparse indirection: {current}"
+            )
+    return candidate
+
+
+def _direct_directory(path: Path, *, label: str, create: bool = False) -> Path:
+    candidate = _reject_indirect_components(path, label=label)
+    if create:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise SnapshotError(f"Unable to create {label}: {candidate}") from exc
+    candidate = _reject_indirect_components(candidate, label=label)
+    try:
+        info = candidate.lstat()
+    except FileNotFoundError as exc:
+        raise SnapshotError(f"{label} not found: {candidate}") from exc
+    except OSError as exc:
+        raise SnapshotError(f"Unable to inspect {label}: {candidate}") from exc
+    if _is_link_or_reparse(info) or not stat.S_ISDIR(info.st_mode):
+        raise SnapshotError(f"{label} must be a direct directory: {candidate}")
+    return candidate
+
+
+def _read_direct_file_bytes(path: Path, *, label: str) -> tuple[Path, bytes]:
+    candidate = _reject_indirect_components(path, label=label)
+    try:
+        initial = candidate.lstat()
+    except FileNotFoundError as exc:
+        raise SnapshotError(f"{label} not found: {candidate}") from exc
+    except OSError as exc:
+        raise SnapshotError(f"Unable to inspect {label}: {candidate}") from exc
+    if _is_link_or_reparse(initial) or not stat.S_ISREG(initial.st_mode):
+        raise SnapshotError(f"{label} must be a direct regular file: {candidate}")
+
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    fd: int | None = None
+    try:
+        fd = os.open(candidate, flags)
+        with os.fdopen(fd, "rb", closefd=True) as handle:
+            fd = None
+            opened = os.fstat(handle.fileno())
+            current = candidate.lstat()
+            if (
+                _is_link_or_reparse(current)
+                or not stat.S_ISREG(current.st_mode)
+                or not stat.S_ISREG(opened.st_mode)
+                or not _same_file(current, opened)
+            ):
+                raise SnapshotError(f"{label} changed while opening: {candidate}")
+            raw = handle.read()
+            opened_after = os.fstat(handle.fileno())
+            current_after = candidate.lstat()
+            if (
+                _is_link_or_reparse(current_after)
+                or not stat.S_ISREG(current_after.st_mode)
+                or not _same_file(opened, opened_after)
+                or not _same_file(current_after, opened_after)
+                or int(opened.st_size) != int(opened_after.st_size)
+                or int(opened.st_mtime_ns) != int(opened_after.st_mtime_ns)
+            ):
+                raise SnapshotError(f"{label} changed while reading: {candidate}")
+    except SnapshotError:
+        raise
+    except OSError as exc:
+        raise SnapshotError(f"Unable to read {label}: {candidate}") from exc
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+    candidate = _reject_indirect_components(candidate, label=label)
+    try:
+        final = candidate.lstat()
+    except OSError as exc:
+        raise SnapshotError(f"Unable to revalidate {label}: {candidate}") from exc
+    if (
+        _is_link_or_reparse(final)
+        or not stat.S_ISREG(final.st_mode)
+        or not _same_file(final, opened_after)
+    ):
+        raise SnapshotError(f"{label} changed after read: {candidate}")
+    return candidate, raw
 
 
 def _command(value: Any, label: str) -> tuple[str, ...]:
@@ -74,12 +199,18 @@ class SnapshotAdapterConfig:
 
     @classmethod
     def load(cls, path: Path) -> "SnapshotAdapterConfig":
-        config_path = path.resolve()
+        config_path, raw = _read_direct_file_bytes(
+            path, label="Snapshot adapter configuration"
+        )
         base = config_path.parent
-        value = read_json(config_path)
+        try:
+            value = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise SnapshotError("Snapshot adapter configuration is invalid JSON") from exc
         if not isinstance(value, dict) or value.get("schema") != 1:
             raise SnapshotError("Unsupported snapshot adapter configuration")
         cwd_raw = Path(str(value.get("cwd") or "."))
+        cwd = _lexical_absolute(cwd_raw if cwd_raw.is_absolute() else base / cwd_raw)
         config = cls(
             adapter_id=str(value.get("adapter_id") or ""),
             provider=str(value.get("provider") or ""),
@@ -88,7 +219,7 @@ class SnapshotAdapterConfig:
             snapshot_id=str(value.get("snapshot_id") or ""),
             restore_command=_command(value.get("restore_command"), "restore_command"),
             measure_command=_command(value.get("measure_command"), "measure_command"),
-            cwd=(cwd_raw if cwd_raw.is_absolute() else base / cwd_raw).resolve(),
+            cwd=cwd,
             expected_after=dict(value.get("expected_after") or {}),
             timeout_seconds=int(value.get("timeout_seconds") or 600),
         )
@@ -112,7 +243,7 @@ class SnapshotAdapterConfig:
                 raise SnapshotError("Snapshot expected_after path is invalid")
             if isinstance(expected, (dict, list)) or len(str(expected)) > 4096:
                 raise SnapshotError("Snapshot expected_after value is invalid")
-        self.cwd.mkdir(parents=True, exist_ok=True)
+        _direct_directory(self.cwd, label="Snapshot working directory", create=True)
 
     def expand(self, command: tuple[str, ...], phase: str) -> list[str]:
         values = {
@@ -162,8 +293,11 @@ class SnapshotAdapter:
         self.config = config
 
     def measure(self, phase: str) -> dict[str, Any]:
+        cwd = _direct_directory(
+            self.config.cwd, label="Snapshot working directory"
+        )
         command = self.config.expand(self.config.measure_command, phase)
-        result = _run(command, cwd=self.config.cwd, timeout=min(self.config.timeout_seconds, 120))
+        result = _run(command, cwd=cwd, timeout=min(self.config.timeout_seconds, 120))
         if result["exit_code"] != 0:
             raise SnapshotError(
                 f"Snapshot measurement failed with exit code {result['exit_code']}; "
@@ -186,10 +320,14 @@ class SnapshotAdapter:
     def restore(self, *, phase: str, private_key: Path, public_key: Path) -> dict[str, Any]:
         if phase not in {"before", "after", "maintenance"}:
             raise SnapshotError("Snapshot restore phase is invalid")
+        cwd = _direct_directory(
+            self.config.cwd, label="Snapshot working directory"
+        )
         started = utc_now_iso()
         before = self.measure(phase + "-pre")
         command = self.config.expand(self.config.restore_command, phase)
-        result = _run(command, cwd=self.config.cwd, timeout=self.config.timeout_seconds)
+        cwd = _direct_directory(cwd, label="Snapshot working directory")
+        result = _run(command, cwd=cwd, timeout=self.config.timeout_seconds)
         if result["exit_code"] != 0:
             raise SnapshotError(
                 f"Snapshot restore failed with exit code {result['exit_code']}; "
