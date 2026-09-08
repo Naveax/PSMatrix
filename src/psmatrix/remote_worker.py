@@ -439,7 +439,7 @@ def probe_windows_powershell(executable: str, expected_version: str, *, require_
 class WindowsJobExecutor:
     def __init__(self, config: WorkerConfig, harness: Path):
         self.config = config
-        self.harness = harness.resolve()
+        self.harness = _direct_existing_file(harness, label="Worker harness")
 
     def capabilities(self) -> dict[str, Any]:
         return {"worker_id": self.config.worker_id, **probe_windows_powershell(self.config.powershell_executable, self.config.expected_version, require_windows=not self.config.allow_non_windows_for_testing)}
@@ -478,8 +478,9 @@ class WindowsJobExecutor:
                 "output": str(output_file),
                 "options": options,
             })
+            harness = _direct_existing_file(self.harness, label="Worker harness")
             completed = _run_process_tree(
-                [self.config.powershell_executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(self.harness), "-Job", str(job_file)],
+                [self.config.powershell_executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(harness), "-Job", str(job_file)],
                 cwd=workspace, timeout=timeout_seconds,
             )
             if output_file.is_file():
