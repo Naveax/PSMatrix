@@ -3,9 +3,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import secrets
 import re
 import sqlite3
+import stat
 import uuid
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
@@ -20,6 +22,7 @@ _REQUEST_SCHEMA = 1
 _RESULT_SCHEMA = 1
 _MAX_CLOCK_SKEW_SECONDS = 120
 _IDENTITY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$")
+_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
 def _validate_identity(value: Any, label: str) -> str:
@@ -61,6 +64,74 @@ def _validate_options(value: Any) -> dict[str, Any]:
 
 class RemoteProtocolError(PSMatrixError):
     """Raised for untrusted, expired, replayed, or malformed worker messages."""
+
+
+def _is_link_or_reparse(info: os.stat_result) -> bool:
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0) & _REPARSE_POINT
+    )
+
+
+def _reject_indirect_components(path: Path, *, label: str) -> Path:
+    candidate = path.absolute()
+    current = Path(candidate.anchor) if candidate.anchor else Path()
+    parts = candidate.parts[1:] if candidate.anchor else candidate.parts
+    for part in parts:
+        current = current / part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise RemoteProtocolError(f"Unable to inspect {label} path {current}: {exc}") from exc
+        if _is_link_or_reparse(info):
+            raise RemoteProtocolError(f"{label} path contains a symlink or reparse point: {current}")
+    return candidate
+
+
+def _direct_existing_directory(path: Path, *, label: str) -> Path:
+    candidate = _reject_indirect_components(path, label=label)
+    try:
+        info = candidate.lstat()
+    except FileNotFoundError as exc:
+        raise RemoteProtocolError(f"{label} directory not found: {candidate}") from exc
+    except OSError as exc:
+        raise RemoteProtocolError(f"Unable to inspect {label} directory {candidate}: {exc}") from exc
+    if _is_link_or_reparse(info):
+        raise RemoteProtocolError(f"{label} path contains a symlink or reparse point: {candidate}")
+    if not stat.S_ISDIR(info.st_mode):
+        raise RemoteProtocolError(f"{label} is not a directory: {candidate}")
+    return candidate
+
+
+def _direct_existing_file(path: Path, *, label: str) -> Path:
+    candidate = _reject_indirect_components(path, label=label)
+    try:
+        info = candidate.lstat()
+    except FileNotFoundError as exc:
+        raise RemoteProtocolError(f"{label} file not found: {candidate}") from exc
+    except OSError as exc:
+        raise RemoteProtocolError(f"Unable to inspect {label} file {candidate}: {exc}") from exc
+    if _is_link_or_reparse(info):
+        raise RemoteProtocolError(f"{label} path contains a symlink or reparse point: {candidate}")
+    if not stat.S_ISREG(info.st_mode):
+        raise RemoteProtocolError(f"{label} is not a regular file: {candidate}")
+    return candidate
+
+
+def _direct_optional_file(path: Path, *, label: str) -> Path | None:
+    candidate = _reject_indirect_components(path, label=label)
+    try:
+        info = candidate.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise RemoteProtocolError(f"Unable to inspect {label} file {candidate}: {exc}") from exc
+    if _is_link_or_reparse(info):
+        raise RemoteProtocolError(f"{label} path contains a symlink or reparse point: {candidate}")
+    if not stat.S_ISREG(info.st_mode):
+        raise RemoteProtocolError(f"{label} is not a regular file: {candidate}")
+    return candidate
 
 
 def _parse_time(value: str) -> datetime:
@@ -323,18 +394,24 @@ def verify_job_result(
 
 class ReplayGuard:
     def __init__(self, path: Path):
-        self.path = path.resolve()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = _reject_indirect_components(path, label="Replay database")
+        parent = _reject_indirect_components(self.path.parent, label="Replay database directory")
+        parent.mkdir(parents=True, exist_ok=True)
+        _direct_existing_directory(parent, label="Replay database directory")
+        _direct_optional_file(self.path, label="Replay database")
         with closing(sqlite3.connect(self.path)) as connection:
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS nonces (controller_id TEXT NOT NULL, nonce TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY(controller_id, nonce))"
             )
             connection.commit()
+        _direct_existing_file(self.path, label="Replay database")
 
     def consume(self, controller_id: str, nonce: str, expires_at: datetime) -> None:
         now = datetime.now(UTC).isoformat()
+        _direct_existing_directory(self.path.parent, label="Replay database directory")
+        database = _direct_existing_file(self.path, label="Replay database")
         try:
-            with closing(sqlite3.connect(self.path, timeout=10)) as connection:
+            with closing(sqlite3.connect(database, timeout=10)) as connection:
                 connection.execute("DELETE FROM nonces WHERE expires_at < ?", (now,))
                 connection.execute(
                     "INSERT INTO nonces(controller_id, nonce, expires_at) VALUES (?, ?, ?)",
