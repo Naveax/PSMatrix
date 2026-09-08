@@ -335,6 +335,7 @@ class TrustStore:
         return value
 
     def _write_index(self, value: dict[str, Any]) -> None:
+        _reject_indirect_components(self.root, label="Trust store")
         self.root.mkdir(parents=True, exist_ok=True)
         _reject_indirect_components(self.root, label="Trust store")
         _reject_indirect_components(self.index, label="Trust store index")
@@ -346,6 +347,7 @@ class TrustStore:
         source_key = _direct_existing_file(public_key, label="Public key")
         key_id = public_key_id(source_key)
         destination = self.keys / (key_id.replace(":", "-") + ".pem")
+        _reject_indirect_components(self.keys, label="Trust key directory")
         self.keys.mkdir(parents=True, exist_ok=True)
         _reject_indirect_components(self.keys, label="Trust key directory")
         _reject_indirect_components(destination, label="Trusted public key")
