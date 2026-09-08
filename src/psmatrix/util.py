@@ -5,6 +5,7 @@ import json
 import os
 import stat
 import tempfile
+import threading
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,6 +13,8 @@ from typing import Any, BinaryIO, Iterator
 
 
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+_LOCK_IDENTITIES: dict[str, os.stat_result] = {}
+_LOCK_IDENTITY_GUARD = threading.Lock()
 
 
 def utc_now_iso() -> str:
@@ -95,6 +98,10 @@ def _same_file(left: os.stat_result, right: os.stat_result) -> bool:
         )
 
 
+def _lock_identity_key(path: Path) -> str:
+    return os.path.normcase(os.path.abspath(os.fspath(path)))
+
+
 def _reject_indirect_components(path: Path, *, label: str) -> Path:
     candidate = Path(os.path.abspath(os.fspath(path)))
     current = Path(candidate.anchor) if candidate.anchor else Path()
@@ -117,7 +124,7 @@ def _validate_open_lock_file(
     handle: BinaryIO,
     *,
     expected_identity: os.stat_result | None = None,
-) -> None:
+) -> os.stat_result:
     candidate = _reject_indirect_components(path, label="Lock")
     try:
         current = candidate.lstat()
@@ -133,6 +140,7 @@ def _validate_open_lock_file(
         raise OSError(f"Lock path changed after acquisition: {candidate}")
     if expected_identity is not None and not _same_file(opened, expected_identity):
         raise OSError(f"Lock identity changed after initialization: {candidate}")
+    return opened
 
 
 def _open_direct_lock_file(
@@ -205,19 +213,43 @@ def _unlock_windows(handle: Any) -> None:
     msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
 
 
+def _pinned_lock_identity(path: Path) -> os.stat_result | None:
+    key = _lock_identity_key(path)
+    with _LOCK_IDENTITY_GUARD:
+        return _LOCK_IDENTITIES.get(key)
+
+
+def _pin_lock_identity(path: Path, opened: os.stat_result) -> os.stat_result:
+    key = _lock_identity_key(path)
+    with _LOCK_IDENTITY_GUARD:
+        existing = _LOCK_IDENTITIES.get(key)
+        if existing is None:
+            _LOCK_IDENTITIES[key] = opened
+            return opened
+        if not _same_file(existing, opened):
+            raise OSError(f"Lock identity changed after initialization: {path}")
+        return existing
+
+
 @contextmanager
 def exclusive_lock(
     path: Path,
     *,
     expected_identity: os.stat_result | None = None,
 ) -> Iterator[None]:
-    """Cross-process advisory lock on POSIX and Windows."""
-    with _open_direct_lock_file(path, expected_identity=expected_identity) as handle:
+    """Cross-process advisory lock with path-identity pinning on POSIX and Windows."""
+    pinned = expected_identity or _pinned_lock_identity(path)
+    with _open_direct_lock_file(path, expected_identity=pinned) as handle:
+        opened = os.fstat(handle.fileno())
+        pinned = _pin_lock_identity(path, opened) if expected_identity is None else expected_identity
+        if not _same_file(opened, pinned):
+            raise OSError(f"Lock identity changed after initialization: {path}")
         if os.name == "nt":
             _lock_windows(handle)
             try:
-                _validate_open_lock_file(path, handle, expected_identity=expected_identity)
+                _validate_open_lock_file(path, handle, expected_identity=pinned)
                 yield
+                _validate_open_lock_file(path, handle, expected_identity=pinned)
             finally:
                 _unlock_windows(handle)
         else:
@@ -225,7 +257,8 @@ def exclusive_lock(
 
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             try:
-                _validate_open_lock_file(path, handle, expected_identity=expected_identity)
+                _validate_open_lock_file(path, handle, expected_identity=pinned)
                 yield
+                _validate_open_lock_file(path, handle, expected_identity=pinned)
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
