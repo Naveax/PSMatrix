@@ -3,7 +3,6 @@ import hashlib
 import io
 import json
 import os
-import stat
 import tarfile
 import tempfile
 import unittest
@@ -19,13 +18,17 @@ from psmatrix.release import ReleaseError
 _REPARSE_POINT = 0x400
 
 
+def _absolute(path: Path) -> Path:
+    return Path(os.path.abspath(os.fspath(path)))
+
+
 def _reparse_lstat(target: Path):
     original = Path.lstat
-    wanted = Path(os.path.abspath(os.fspath(target)))
+    wanted = _absolute(target)
 
     def fake(path: Path):
         info = original(path)
-        current = Path(os.path.abspath(os.fspath(path)))
+        current = _absolute(path)
         if current == wanted:
             return SimpleNamespace(
                 st_mode=info.st_mode,
@@ -41,13 +44,13 @@ def _reparse_lstat(target: Path):
 
 
 class ReleasePathByteIntegrityTests(unittest.TestCase):
-    def test_manifest_rejects_reparse_artifact_before_hashing(self):
+    def test_manifest_rejects_reparse_artifact_before_digesting(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             artifact = root / "artifact.bin"
             artifact.write_bytes(b"artifact")
             with patch("pathlib.Path.lstat", new=_reparse_lstat(artifact)):
-                with patch.object(release, "sha256_file") as digest:
+                with patch.object(release.hashlib, "sha256") as digest:
                     with self.assertRaises(ReleaseError):
                         release.create_release_manifest(
                             [artifact], root / "manifest.json", version="1.0.0"
@@ -81,29 +84,48 @@ class ReleasePathByteIntegrityTests(unittest.TestCase):
                 release.create_release_manifest([artifact], output, version="1.0.0")
             self.assertEqual(json.loads(target.read_text(encoding="utf-8")), {"safe": True})
 
-    def test_manifest_size_and_digest_come_from_one_artifact_read(self):
+    def test_manifest_output_reparse_is_rejected_before_write(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            artifact = root / "artifact.bin"
+            artifact.write_bytes(b"artifact")
+            output = root / "manifest.json"
+            output.write_text('{"safe": true}\n', encoding="utf-8")
+            with patch("pathlib.Path.lstat", new=_reparse_lstat(output)):
+                with self.assertRaises(ReleaseError):
+                    release.create_release_manifest([artifact], output, version="1.0.0")
+            self.assertEqual(json.loads(output.read_text(encoding="utf-8")), {"safe": True})
+
+    def test_manifest_size_and_digest_use_one_direct_byte_snapshot(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             artifact = root / "artifact.bin"
             original = b"original"
             mutated = b"mutated-content-is-longer"
             artifact.write_bytes(original)
+            original_read = release._read_direct_file
+            artifact_absolute = _absolute(artifact)
+            reads = {"artifact": 0}
 
-            def drifting_digest(path: Path) -> str:
-                raw = Path(path).read_bytes()
-                artifact.write_bytes(mutated)
-                return hashlib.sha256(raw).hexdigest()
+            def drifting_read(path: Path, *, label: str):
+                result = original_read(path, label=label)
+                if _absolute(path) == artifact_absolute:
+                    reads["artifact"] += 1
+                    if reads["artifact"] == 1:
+                        artifact.write_bytes(mutated)
+                return result
 
-            with patch.object(release, "sha256_file", side_effect=drifting_digest):
+            with patch.object(release, "_read_direct_file", side_effect=drifting_read):
                 payload = release.create_release_manifest(
                     [artifact], root / "manifest.json", version="1.0.0"
                 )
 
             item = payload["manifest"]["artifacts"][0]
+            self.assertEqual(reads["artifact"], 1)
             self.assertEqual(item["sha256"], hashlib.sha256(original).hexdigest())
             self.assertEqual(item["size"], len(original))
 
-    def test_source_zip_and_tar_use_same_snapshotted_bytes(self):
+    def test_source_zip_and_tar_use_same_direct_byte_snapshot(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "source"
             root.mkdir()
@@ -112,20 +134,22 @@ class ReleasePathByteIntegrityTests(unittest.TestCase):
             mutated = b"print('v2 changed')\n"
             source.write_bytes(original)
             output = Path(temp) / "dist"
-            original_read = Path.read_bytes
+            original_read = release._read_direct_file
+            source_absolute = _absolute(source)
             reads = {"source": 0}
 
-            def drifting_read(path: Path) -> bytes:
-                data = original_read(path)
-                if Path(os.path.abspath(os.fspath(path))) == Path(os.path.abspath(os.fspath(source))):
+            def drifting_read(path: Path, *, label: str):
+                result = original_read(path, label=label)
+                if _absolute(path) == source_absolute:
                     reads["source"] += 1
                     if reads["source"] == 1:
                         source.write_bytes(mutated)
-                return data
+                return result
 
-            with patch("pathlib.Path.read_bytes", new=drifting_read):
+            with patch.object(release, "_read_direct_file", side_effect=drifting_read):
                 result = release.build_reproducible_source(root, output, name="pkg")
 
+            self.assertEqual(reads["source"], 1)
             with zipfile.ZipFile(Path(result["zip"]["path"])) as archive:
                 zip_bytes = archive.read("pkg/module.py")
             with gzip.open(Path(result["tar_gz"]["path"]), "rb") as gz:
@@ -136,6 +160,41 @@ class ReleasePathByteIntegrityTests(unittest.TestCase):
                 tar_bytes = member.read()
             self.assertEqual(zip_bytes, original)
             self.assertEqual(tar_bytes, original)
+
+    def test_source_root_reparse_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "source"
+            root.mkdir()
+            (root / "module.py").write_text("pass\n", encoding="utf-8")
+            output = Path(temp) / "dist"
+            with patch("pathlib.Path.lstat", new=_reparse_lstat(root)):
+                with self.assertRaises(ReleaseError):
+                    release.build_reproducible_source(root, output, name="pkg")
+            self.assertFalse(output.exists())
+
+    def test_output_directory_reparse_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "source"
+            root.mkdir()
+            (root / "module.py").write_text("pass\n", encoding="utf-8")
+            output = Path(temp) / "dist"
+            output.mkdir()
+            with patch("pathlib.Path.lstat", new=_reparse_lstat(output)):
+                with self.assertRaises(ReleaseError):
+                    release.build_reproducible_source(root, output, name="pkg")
+            self.assertEqual(list(output.iterdir()), [])
+
+    def test_source_archive_name_rejects_path_syntax(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "source"
+            root.mkdir()
+            (root / "module.py").write_text("pass\n", encoding="utf-8")
+            output = Path(temp) / "dist"
+            for name in ("", ".", "..", "../pkg", "pkg/sub", "pkg\\sub", "bad\x00name"):
+                with self.subTest(name=name):
+                    with self.assertRaises(ReleaseError):
+                        release.build_reproducible_source(root, output, name=name)
+            self.assertFalse(output.exists())
 
     def test_verify_manifest_rejects_reparse_artifact(self):
         with tempfile.TemporaryDirectory() as temp:
