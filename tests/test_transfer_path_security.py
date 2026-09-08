@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import psmatrix.transfer as transfer_module
 from psmatrix.transfer import TransferError, TransferStore
 
 
@@ -189,6 +190,60 @@ class TransferPathSecurityTests(unittest.TestCase):
             with patch("pathlib.Path.lstat", new=_reparse_lstat({store.objects})):
                 with self.assertRaisesRegex(TransferError, "symlink or reparse"):
                     store.status(created["transfer_id"], controller_id="controller-a")
+
+    def test_oversized_manifest_is_rejected_before_open(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = TransferStore(Path(temp) / "store")
+            raw = _raw()
+            created = _created(store, raw)
+            manifest = store.sessions / created["transfer_id"] / "manifest.json"
+            manifest.write_bytes(
+                b"x" * (transfer_module._MAX_METADATA_BYTES + 1)
+            )
+            with patch(
+                "psmatrix.transfer.os.open",
+                side_effect=AssertionError("oversized manifest must fail before os.open"),
+            ) as open_mock:
+                with self.assertRaisesRegex(TransferError, "size limit"):
+                    store.status(
+                        created["transfer_id"],
+                        controller_id="controller-a",
+                    )
+                open_mock.assert_not_called()
+
+    def test_put_chunk_rejects_oversized_existing_chunk(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = TransferStore(Path(temp) / "store")
+            raw = _raw()
+            created = _created(store, raw)
+            chunk = raw[: created["chunk_size"]]
+            target = store.sessions / created["transfer_id"] / "chunks" / "00000000.bin"
+            target.write_bytes(chunk + b"x")
+            with self.assertRaisesRegex(TransferError, "size limit"):
+                store.put_chunk(
+                    created["transfer_id"],
+                    0,
+                    chunk,
+                    chunk_sha256=hashlib.sha256(chunk).hexdigest(),
+                    controller_id="controller-a",
+                )
+
+    def test_resolve_rejects_oversized_content_object(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = TransferStore(Path(temp) / "store")
+            raw = _raw()
+            created = _created(store, raw)
+            _upload_all(store, created, raw)
+            store.finalize(created["transfer_id"], controller_id="controller-a")
+            object_path = store.objects / hashlib.sha256(raw).hexdigest()
+            object_path.write_bytes(raw + b"x")
+            with self.assertRaisesRegex(TransferError, "size limit"):
+                store.resolve(
+                    created["transfer_id"],
+                    controller_id="controller-a",
+                    artifact_sha256=hashlib.sha256(raw).hexdigest(),
+                    artifact_size=len(raw),
+                )
 
     @unittest.skipIf(os.name == "nt", "POSIX symlink semantics")
     def test_purge_rejects_indirect_session_without_touching_target(self):

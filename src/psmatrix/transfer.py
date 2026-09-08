@@ -22,6 +22,7 @@ _MIN_CHUNK = 64 * 1024
 _MAX_CHUNK = 8 * 1024 * 1024
 _MAX_SIZE = 128 * 1024 * 1024
 _MAX_CHUNKS = 2048
+_MAX_METADATA_BYTES = 64 * 1024
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
@@ -155,7 +156,14 @@ def _existing_direct_file(path: Path, *, label: str) -> Path | None:
     return candidate
 
 
-def _read_direct_file(path: Path, *, label: str) -> tuple[Path, bytes]:
+def _enforce_size_limit(info: os.stat_result, *, max_bytes: int | None, label: str, path: Path) -> None:
+    if max_bytes is not None and int(info.st_size) > max_bytes:
+        raise TransferError(f"{label} exceeds the {max_bytes}-byte size limit: {path}")
+
+
+def _read_direct_file(
+    path: Path, *, label: str, max_bytes: int | None = None
+) -> tuple[Path, bytes]:
     candidate = _reject_indirect_components(path, label=label)
     try:
         initial = candidate.lstat()
@@ -167,6 +175,7 @@ def _read_direct_file(path: Path, *, label: str) -> tuple[Path, bytes]:
         raise TransferError(f"{label} path contains a symlink or reparse point: {candidate}")
     if not _is_single_link_regular(initial):
         raise TransferError(f"{label} must be a direct regular file with one link: {candidate}")
+    _enforce_size_limit(initial, max_bytes=max_bytes, label=label, path=candidate)
 
     flags = os.O_RDONLY
     flags |= getattr(os, "O_CLOEXEC", 0)
@@ -187,7 +196,10 @@ def _read_direct_file(path: Path, *, label: str) -> tuple[Path, bytes]:
                 or not _same_file(current, opened)
             ):
                 raise TransferError(f"{label} changed while opening: {candidate}")
-            raw = handle.read()
+            _enforce_size_limit(opened, max_bytes=max_bytes, label=label, path=candidate)
+            raw = handle.read() if max_bytes is None else handle.read(max_bytes + 1)
+            if max_bytes is not None and len(raw) > max_bytes:
+                raise TransferError(f"{label} exceeds the {max_bytes}-byte size limit: {candidate}")
             opened_after = os.fstat(handle.fileno())
             current_after = candidate.lstat()
             if (
@@ -200,6 +212,7 @@ def _read_direct_file(path: Path, *, label: str) -> tuple[Path, bytes]:
                 or int(opened.st_mtime_ns) != int(opened_after.st_mtime_ns)
             ):
                 raise TransferError(f"{label} changed while reading: {candidate}")
+            _enforce_size_limit(opened_after, max_bytes=max_bytes, label=label, path=candidate)
     except TransferError:
         raise
     except OSError as exc:
@@ -219,6 +232,7 @@ def _read_direct_file(path: Path, *, label: str) -> tuple[Path, bytes]:
         or not _same_file(final, opened_after)
     ):
         raise TransferError(f"{label} changed after read: {candidate}")
+    _enforce_size_limit(final, max_bytes=max_bytes, label=label, path=candidate)
     try:
         resolved = candidate.resolve(strict=True)
     except (OSError, RuntimeError) as exc:
@@ -234,7 +248,7 @@ def _decode_json(raw: bytes, *, label: str) -> Any:
 
 
 def _read_direct_json(path: Path, *, label: str) -> tuple[Path, Any]:
-    direct, raw = _read_direct_file(path, label=label)
+    direct, raw = _read_direct_file(path, label=label, max_bytes=_MAX_METADATA_BYTES)
     return direct, _decode_json(raw, label=label)
 
 
@@ -249,7 +263,7 @@ def _prepare_output_file(path: Path, *, label: str) -> Path:
 def _atomic_write_direct_bytes(path: Path, value: bytes, *, label: str) -> Path:
     target = _prepare_output_file(path, label=label)
     atomic_write_bytes(target, value)
-    direct, persisted = _read_direct_file(target, label=label)
+    direct, persisted = _read_direct_file(target, label=label, max_bytes=len(value))
     if persisted != value:
         raise TransferError(f"{label} changed after write")
     return direct
@@ -413,7 +427,9 @@ class TransferStore:
                 )
                 if manifest_path is None:
                     continue
-                _, raw = _read_direct_file(manifest_path, label="Transfer manifest")
+                _, raw = _read_direct_file(
+                    manifest_path, label="Transfer manifest", max_bytes=_MAX_METADATA_BYTES
+                )
                 try:
                     value = _decode_json(raw, label="Transfer manifest")
                     value = _validate_manifest_value(value, transfer_id=session.name)
@@ -506,7 +522,9 @@ class TransferStore:
             self._chunks_directory(transfer_id)
             existing = _existing_direct_file(target, label="Transfer chunk")
             if existing is not None:
-                _, current = _read_direct_file(existing, label="Transfer chunk")
+                _, current = _read_direct_file(
+                    existing, label="Transfer chunk", max_bytes=expected_size
+                )
                 if current != data:
                     raise TransferError("Transfer chunk index already contains different data")
             else:
@@ -564,7 +582,9 @@ class TransferStore:
                     chunks = self._chunks_directory(transfer_id)
                     for index in range(int(manifest["chunk_count"])):
                         _, chunk = _read_direct_file(
-                            chunks / f"{index:08d}.bin", label="Transfer chunk"
+                            chunks / f"{index:08d}.bin",
+                            label="Transfer chunk",
+                            max_bytes=int(manifest["chunk_size"]),
                         )
                         total += len(chunk)
                         digest.update(chunk)
@@ -575,7 +595,9 @@ class TransferStore:
                 if fd >= 0:
                     os.close(fd)
             _, temporary_bytes = _read_direct_file(
-                temporary, label="Transfer temporary object"
+                temporary,
+                label="Transfer temporary object",
+                max_bytes=int(manifest["artifact_size"]),
             )
             if (
                 total != int(manifest["artifact_size"])
@@ -591,7 +613,7 @@ class TransferStore:
                 )
                 if existing is not None:
                     _, current = _read_direct_file(
-                        existing, label="Transfer content object"
+                        existing, label="Transfer content object", max_bytes=int(manifest["artifact_size"])
                     )
                     if len(current) != total or _sha256_bytes(current) != manifest["artifact_sha256"]:
                         raise TransferError("Content-addressed transfer object is corrupted")
@@ -604,7 +626,7 @@ class TransferStore:
                             f"Unable to publish transfer content object: {object_path}"
                         ) from exc
                     _, published = _read_direct_file(
-                        object_path, label="Transfer content object"
+                        object_path, label="Transfer content object", max_bytes=int(manifest["artifact_size"])
                     )
                     if len(published) != total or _sha256_bytes(published) != manifest["artifact_sha256"]:
                         raise TransferError("Published transfer object failed integrity verification")
@@ -642,7 +664,9 @@ class TransferStore:
         object_path = self.objects / digest
         if _existing_direct_file(object_path, label="Transfer content object") is None:
             self.finalize(transfer_id, controller_id=controller_id)
-        _, raw = _read_direct_file(object_path, label="Transfer content object")
+        _, raw = _read_direct_file(
+            object_path, label="Transfer content object", max_bytes=int(artifact_size)
+        )
         if len(raw) != int(artifact_size) or _sha256_bytes(raw) != digest:
             raise TransferError("Resolved transfer object failed integrity verification")
         return raw
@@ -706,7 +730,9 @@ class TransferStore:
                 )
                 expires = datetime.min.replace(tzinfo=UTC)
                 if manifest_path is not None:
-                    _, raw = _read_direct_file(manifest_path, label="Transfer manifest")
+                    _, raw = _read_direct_file(
+                        manifest_path, label="Transfer manifest", max_bytes=_MAX_METADATA_BYTES
+                    )
                     try:
                         value = _decode_json(raw, label="Transfer manifest")
                         value = _validate_manifest_value(value, transfer_id=session.name)
