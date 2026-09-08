@@ -3,11 +3,15 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import tempfile
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, BinaryIO, Iterator
+
+
+_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
 def utc_now_iso() -> str:
@@ -70,6 +74,83 @@ def read_json(path: Path) -> Any:
         return json.load(handle)
 
 
+def _is_link_or_reparse(info: os.stat_result) -> bool:
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0) & _REPARSE_POINT
+    )
+
+
+def _same_file(left: os.stat_result, right: os.stat_result) -> bool:
+    try:
+        return os.path.samestat(left, right)
+    except (AttributeError, OSError, ValueError):
+        return (
+            getattr(left, "st_dev", None) == getattr(right, "st_dev", None)
+            and getattr(left, "st_ino", None) == getattr(right, "st_ino", None)
+            and getattr(left, "st_ino", 0) not in {0, None}
+        )
+
+
+def _reject_indirect_components(path: Path, *, label: str) -> Path:
+    candidate = Path(os.path.abspath(os.fspath(path)))
+    current = Path(candidate.anchor) if candidate.anchor else Path()
+    parts = candidate.parts[1:] if candidate.anchor else candidate.parts
+    for part in parts:
+        current = current / part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise OSError(f"Unable to inspect {label} path: {current}") from exc
+        if _is_link_or_reparse(info):
+            raise OSError(f"{label} path cannot use symlink or reparse indirection: {current}")
+    return candidate
+
+
+def _open_direct_lock_file(path: Path) -> BinaryIO:
+    candidate = _reject_indirect_components(path, label="Lock")
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    _reject_indirect_components(candidate.parent, label="Lock parent")
+    _reject_indirect_components(candidate, label="Lock")
+    try:
+        initial = candidate.lstat()
+    except FileNotFoundError:
+        initial = None
+    except OSError as exc:
+        raise OSError(f"Unable to inspect lock path: {candidate}") from exc
+    if initial is not None and (
+        _is_link_or_reparse(initial) or not stat.S_ISREG(initial.st_mode)
+    ):
+        raise OSError(f"Lock path must be a direct regular file: {candidate}")
+
+    flags = os.O_RDWR | os.O_CREAT
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    fd: int | None = None
+    try:
+        fd = os.open(candidate, flags, 0o600)
+        opened = os.fstat(fd)
+        _reject_indirect_components(candidate.parent, label="Lock parent")
+        current = candidate.lstat()
+        if (
+            _is_link_or_reparse(current)
+            or not stat.S_ISREG(current.st_mode)
+            or not stat.S_ISREG(opened.st_mode)
+            or not _same_file(current, opened)
+        ):
+            raise OSError(f"Lock path changed while opening: {candidate}")
+        handle = os.fdopen(fd, "r+b", closefd=True)
+        fd = None
+        return handle
+    except OSError:
+        raise
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def _lock_windows(handle: Any) -> None:
     import msvcrt
 
@@ -92,8 +173,7 @@ def _unlock_windows(handle: Any) -> None:
 @contextmanager
 def exclusive_lock(path: Path) -> Iterator[None]:
     """Cross-process advisory lock on POSIX and Windows."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+b") as handle:
+    with _open_direct_lock_file(path) as handle:
         if os.name == "nt":
             _lock_windows(handle)
             try:
