@@ -53,6 +53,17 @@ class FleetQueuePathBoundaryTests(unittest.TestCase):
                 with self.assertRaises(FleetQueueError):
                     queue.list()
 
+    def test_connect_rejects_reparse_sqlite_sidecar_before_open(self):
+        with tempfile.TemporaryDirectory() as temp:
+            queue = FleetQueue(Path(temp) / "queue.sqlite3")
+            wal = queue.path.with_name(queue.path.name + "-wal")
+            wal.write_bytes(b"")
+            with patch("pathlib.Path.lstat", new=_reparse_lstat(wal)):
+                with patch("psmatrix.fleet_queue.sqlite3.connect") as connect:
+                    with self.assertRaises(FleetQueueError):
+                        queue._connect()
+                    connect.assert_not_called()
+
     def test_mirror_revalidates_mirror_file_before_read(self):
         with tempfile.TemporaryDirectory() as temp:
             queue = FleetQueue(Path(temp) / "queue.sqlite3")
