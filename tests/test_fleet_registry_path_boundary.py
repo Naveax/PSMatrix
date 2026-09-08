@@ -97,6 +97,37 @@ class FleetRegistryPathBoundaryTests(unittest.TestCase):
                             reset_public_key=public,
                         )
 
+    def test_select_revalidates_stored_endpoint_before_returning_it(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = root / "home"
+            endpoint = root / "endpoint.json"
+            endpoint.write_text("{}", encoding="utf-8")
+            fleet = FleetRegistry(home)
+            fleet._save(
+                {
+                    "schema": 1,
+                    "generation": 0,
+                    "workers": [
+                        {
+                            "worker_id": "worker-a",
+                            "runtime_id": "windows-powershell-5.1",
+                            "endpoint": str(endpoint),
+                            "state": "ACTIVE",
+                            "priority": 100,
+                            "labels": {},
+                            "last_health": {
+                                "passed": True,
+                                "authoritative": True,
+                            },
+                        }
+                    ],
+                }
+            )
+            with patch("pathlib.Path.lstat", new=_reparse_lstat(endpoint)):
+                with self.assertRaises(FleetError):
+                    fleet.select("windows-powershell-5.1")
+
 
 if __name__ == "__main__":
     unittest.main()
