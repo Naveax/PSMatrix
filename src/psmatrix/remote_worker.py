@@ -407,8 +407,11 @@ def create_source_archive(root: Path, files: list[Path]) -> bytes:
         raise WorkerError("Remote source file count is invalid")
     prepared: list[tuple[str, Path, tuple[str, ...], tuple[int, int]]] = []
     seen: set[str] = set()
+    seen_paths: set[Path] = set()
     for supplied in files:
         file_path = Path(os.path.abspath(os.fspath(supplied)))
+        if file_path in seen_paths:
+            continue
         try:
             relative = file_path.relative_to(root).as_posix()
         except ValueError as exc:
@@ -420,6 +423,7 @@ def create_source_archive(root: Path, files: list[Path]) -> bytes:
         file_info = _single_link_regular_info(file_path, label="Remote source file")
         if file_info is None:
             raise WorkerError(f"Invalid remote source file: {file_path}")
+        seen_paths.add(file_path)
         seen.add(canonical)
         prepared.append((canonical, file_path, parts, _filesystem_identity(file_info)))
     buffer = io.BytesIO()
