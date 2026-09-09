@@ -402,9 +402,9 @@ def _safe_extract_zip(data: bytes, destination: Path, *, max_files: int = 2048, 
 
 def create_source_archive(root: Path, files: list[Path]) -> bytes:
     root = Path(os.path.abspath(os.fspath(root)))
-    root, root_identity = _pin_direct_directory(root, label="Remote source root")
     if not files or len(files) > 2048:
         raise WorkerError("Remote source file count is invalid")
+    root, root_identity = _pin_direct_directory(root, label="Remote source root")
     prepared: list[tuple[str, Path, tuple[str, ...], tuple[int, int]]] = []
     seen: set[str] = set()
     seen_paths: set[Path] = set()
@@ -429,7 +429,7 @@ def create_source_archive(root: Path, files: list[Path]) -> bytes:
     buffer = io.BytesIO()
     total = 0
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for _, file_path, parts, file_identity in sorted(prepared, key=lambda item: item[0]):
+        for _, file_path, parts, file_identity in sorted(prepared, key=lambda item: str(item[1])):
             _assert_direct_directory_identity(root, root_identity, label="Remote source root")
             raw = _read_direct_bytes(file_path, label="Remote source file", expected_identity=file_identity)
             _assert_direct_directory_identity(root, root_identity, label="Remote source root")
