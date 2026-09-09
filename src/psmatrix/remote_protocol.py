@@ -3,9 +3,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import secrets
 import re
 import sqlite3
+import stat
 import uuid
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
@@ -20,6 +22,7 @@ _REQUEST_SCHEMA = 1
 _RESULT_SCHEMA = 1
 _MAX_CLOCK_SKEW_SECONDS = 120
 _IDENTITY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$")
+_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
 def _validate_identity(value: Any, label: str) -> str:
@@ -323,23 +326,172 @@ def verify_job_result(
 
 class ReplayGuard:
     def __init__(self, path: Path):
-        self.path = path.resolve()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(sqlite3.connect(self.path)) as connection:
-            connection.execute(
-                "CREATE TABLE IF NOT EXISTS nonces (controller_id TEXT NOT NULL, nonce TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY(controller_id, nonce))"
+        self.path = path.absolute()
+        self._reject_indirect_components(self.path.parent, label="Replay database parent")
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise RemoteProtocolError(f"Unable to create replay database parent {self.path.parent}: {exc}") from exc
+        self._parent_identity = self._direct_directory_identity(self.path.parent, label="Replay database parent")
+        self._database_identity = self._prepare_database()
+        try:
+            with closing(self._connect()) as connection:
+                connection.execute("PRAGMA trusted_schema=OFF")
+                connection.execute(
+                    "CREATE TABLE IF NOT EXISTS nonces (controller_id TEXT NOT NULL, nonce TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY(controller_id, nonce))"
+                )
+                connection.commit()
+                self._validate_schema(connection)
+        except RemoteProtocolError:
+            raise
+        except sqlite3.Error as exc:
+            raise RemoteProtocolError(f"Unable to initialize replay database {self.path}: {exc}") from exc
+        self._assert_database_identity()
+
+    @staticmethod
+    def _is_link_or_reparse(info: os.stat_result) -> bool:
+        return stat.S_ISLNK(info.st_mode) or bool(
+            getattr(info, "st_file_attributes", 0) & _REPARSE_POINT
+        )
+
+    @staticmethod
+    def _filesystem_identity(info: os.stat_result) -> tuple[int, int]:
+        return int(info.st_dev), int(info.st_ino)
+
+    @classmethod
+    def _reject_indirect_components(cls, path: Path, *, label: str) -> None:
+        absolute = path.absolute()
+        current = Path(absolute.anchor) if absolute.anchor else Path()
+        parts = absolute.parts[1:] if absolute.anchor else absolute.parts
+        for part in parts:
+            current = current / part
+            try:
+                info = current.lstat()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise RemoteProtocolError(f"Unable to inspect {label} path {current}: {exc}") from exc
+            if cls._is_link_or_reparse(info):
+                raise RemoteProtocolError(f"{label} path contains a symlink or reparse point: {current}")
+
+    @classmethod
+    def _direct_directory_identity(cls, path: Path, *, label: str) -> tuple[int, int]:
+        candidate = path.absolute()
+        cls._reject_indirect_components(candidate, label=label)
+        try:
+            info = candidate.lstat()
+        except OSError as exc:
+            raise RemoteProtocolError(f"Unable to inspect {label} directory {candidate}: {exc}") from exc
+        if cls._is_link_or_reparse(info) or not stat.S_ISDIR(info.st_mode):
+            raise RemoteProtocolError(f"{label} is not a direct directory: {candidate}")
+        return cls._filesystem_identity(info)
+
+    def _assert_parent_identity(self) -> None:
+        actual = self._direct_directory_identity(self.path.parent, label="Replay database parent")
+        if actual != self._parent_identity:
+            raise RemoteProtocolError(f"Replay database parent directory identity changed: {self.path.parent}")
+
+    def _database_info(self) -> os.stat_result:
+        self._reject_indirect_components(self.path, label="Replay database")
+        try:
+            info = self.path.lstat()
+        except OSError as exc:
+            raise RemoteProtocolError(f"Unable to inspect replay database {self.path}: {exc}") from exc
+        if self._is_link_or_reparse(info) or not stat.S_ISREG(info.st_mode):
+            raise RemoteProtocolError(f"Replay database is not a direct regular file: {self.path}")
+        if int(getattr(info, "st_nlink", 1)) != 1:
+            raise RemoteProtocolError(f"Replay database must have exactly one hard link: {self.path}")
+        return info
+
+    def _prepare_database(self) -> tuple[int, int]:
+        self._assert_parent_identity()
+        self._reject_indirect_components(self.path, label="Replay database")
+        try:
+            info = self.path.lstat()
+        except FileNotFoundError:
+            flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            fd = -1
+            try:
+                fd = os.open(self.path, flags, 0o600)
+            except OSError as exc:
+                raise RemoteProtocolError(f"Unable to create replay database {self.path}: {exc}") from exc
+            finally:
+                if fd >= 0:
+                    os.close(fd)
+            self._assert_parent_identity()
+            info = self._database_info()
+        except OSError as exc:
+            raise RemoteProtocolError(f"Unable to inspect replay database {self.path}: {exc}") from exc
+        else:
+            if self._is_link_or_reparse(info) or not stat.S_ISREG(info.st_mode):
+                raise RemoteProtocolError(f"Replay database is not a direct regular file: {self.path}")
+            if int(getattr(info, "st_nlink", 1)) != 1:
+                raise RemoteProtocolError(f"Replay database must have exactly one hard link: {self.path}")
+        return self._filesystem_identity(info)
+
+    def _assert_database_identity(self) -> None:
+        self._assert_parent_identity()
+        info = self._database_info()
+        if self._filesystem_identity(info) != self._database_identity:
+            raise RemoteProtocolError(f"Replay database file identity changed: {self.path}")
+
+    def _connect(self, *, timeout: float = 5.0) -> sqlite3.Connection:
+        self._assert_database_identity()
+        try:
+            connection = sqlite3.connect(f"{self.path.as_uri()}?mode=rw", uri=True, timeout=timeout)
+        except sqlite3.Error as exc:
+            raise RemoteProtocolError(f"Unable to open replay database {self.path}: {exc}") from exc
+        try:
+            self._assert_database_identity()
+        except Exception:
+            connection.close()
+            raise
+        return connection
+
+    @staticmethod
+    def _validate_schema(connection: sqlite3.Connection) -> None:
+        rows = connection.execute("PRAGMA table_info(nonces)").fetchall()
+        shape = [(str(row[1]), str(row[2]).upper(), int(row[3]), int(row[5])) for row in rows]
+        expected_connection = sqlite3.connect(":memory:")
+        try:
+            expected_connection.execute(
+                "CREATE TABLE nonces (controller_id TEXT NOT NULL, nonce TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY(controller_id, nonce))"
             )
-            connection.commit()
+            expected_rows = expected_connection.execute("PRAGMA table_info(nonces)").fetchall()
+            expected = [
+                (str(row[1]), str(row[2]).upper(), int(row[3]), int(row[5]))
+                for row in expected_rows
+            ]
+        finally:
+            expected_connection.close()
+        if shape != expected:
+            raise RemoteProtocolError("Replay database nonce schema is invalid")
+        unexpected = connection.execute(
+            "SELECT type, name FROM sqlite_master WHERE type IN ('trigger', 'view') AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+        if unexpected:
+            raise RemoteProtocolError("Replay database contains unexpected schema objects")
 
     def consume(self, controller_id: str, nonce: str, expires_at: datetime) -> None:
         now = datetime.now(UTC).isoformat()
         try:
-            with closing(sqlite3.connect(self.path, timeout=10)) as connection:
+            with closing(self._connect(timeout=10)) as connection:
+                connection.execute("PRAGMA trusted_schema=OFF")
+                self._validate_schema(connection)
+                connection.execute("BEGIN IMMEDIATE")
                 connection.execute("DELETE FROM nonces WHERE expires_at < ?", (now,))
                 connection.execute(
                     "INSERT INTO nonces(controller_id, nonce, expires_at) VALUES (?, ?, ?)",
                     (controller_id, nonce, expires_at.astimezone(UTC).isoformat()),
                 )
                 connection.commit()
+                self._validate_schema(connection)
         except sqlite3.IntegrityError as exc:
+            self._assert_database_identity()
             raise RemoteProtocolError("Worker request nonce has already been used") from exc
+        except RemoteProtocolError:
+            raise
+        except sqlite3.Error as exc:
+            self._assert_database_identity()
+            raise RemoteProtocolError(f"Replay database operation failed: {exc}") from exc
+        self._assert_database_identity()
