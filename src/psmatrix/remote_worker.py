@@ -91,6 +91,139 @@ def _direct_directory_candidate(path: Path, *, label: str) -> Path:
         raise WorkerError(f"Unable to resolve {label} path {candidate}: {exc}") from exc
 
 
+def _filesystem_identity(info: os.stat_result) -> tuple[int, int]:
+    return int(info.st_dev), int(info.st_ino)
+
+
+def _pin_direct_directory(path: Path, *, label: str) -> tuple[Path, tuple[int, int]]:
+    candidate = path.absolute()
+    _reject_indirect_components(candidate, label=label)
+    try:
+        info = candidate.lstat()
+    except OSError as exc:
+        raise WorkerError(f"Unable to inspect {label} directory {candidate}: {exc}") from exc
+    if _is_link_or_reparse(info) or not stat.S_ISDIR(info.st_mode):
+        raise WorkerError(f"{label} is not a direct directory: {candidate}")
+    return candidate, _filesystem_identity(info)
+
+
+def _assert_direct_directory_identity(path: Path, expected: tuple[int, int], *, label: str) -> None:
+    candidate = path.absolute()
+    _reject_indirect_components(candidate, label=label)
+    try:
+        info = candidate.lstat()
+    except OSError as exc:
+        raise WorkerError(f"Unable to inspect {label} directory {candidate}: {exc}") from exc
+    if _is_link_or_reparse(info) or not stat.S_ISDIR(info.st_mode):
+        raise WorkerError(f"{label} is not a direct directory: {candidate}")
+    if _filesystem_identity(info) != expected:
+        raise WorkerError(f"{label} directory identity changed: {candidate}")
+
+
+def _single_link_regular_info(path: Path, *, label: str, missing_ok: bool = False) -> os.stat_result | None:
+    candidate = path.absolute()
+    _reject_indirect_components(candidate, label=label)
+    try:
+        info = candidate.lstat()
+    except FileNotFoundError:
+        if missing_ok:
+            return None
+        raise WorkerError(f"{label} file not found: {candidate}")
+    except OSError as exc:
+        raise WorkerError(f"Unable to inspect {label} file {candidate}: {exc}") from exc
+    if _is_link_or_reparse(info) or not stat.S_ISREG(info.st_mode):
+        raise WorkerError(f"{label} is not a direct regular file: {candidate}")
+    if int(getattr(info, "st_nlink", 1)) != 1:
+        raise WorkerError(f"{label} must have exactly one hard link: {candidate}")
+    return info
+
+
+def _read_pinned_json(
+    path: Path,
+    *,
+    directory: Path,
+    directory_identity: tuple[int, int],
+    label: str,
+) -> Any | None:
+    _assert_direct_directory_identity(directory, directory_identity, label="Worker result cache")
+    before = _single_link_regular_info(path, label=label, missing_ok=True)
+    if before is None:
+        return None
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = -1
+    try:
+        try:
+            fd = os.open(path, flags)
+        except OSError as exc:
+            raise WorkerError(f"Unable to open {label} file {path}: {exc}") from exc
+        opened = os.fstat(fd)
+        if _is_link_or_reparse(opened) or not stat.S_ISREG(opened.st_mode):
+            raise WorkerError(f"{label} opened object is not a direct regular file: {path}")
+        if int(getattr(opened, "st_nlink", 1)) != 1:
+            raise WorkerError(f"{label} opened object must have exactly one hard link: {path}")
+        if _filesystem_identity(opened) != _filesystem_identity(before):
+            raise WorkerError(f"{label} file identity changed while opening: {path}")
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            fd = -1
+            value = json.load(handle)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    after = _single_link_regular_info(path, label=label)
+    if after is None or _filesystem_identity(after) != _filesystem_identity(before):
+        raise WorkerError(f"{label} file identity changed while reading: {path}")
+    _assert_direct_directory_identity(directory, directory_identity, label="Worker result cache")
+    return value
+
+
+def _write_pinned_json(
+    path: Path,
+    value: Any,
+    *,
+    directory: Path,
+    directory_identity: tuple[int, int],
+    label: str,
+) -> None:
+    _assert_direct_directory_identity(directory, directory_identity, label="Worker result cache")
+    if _single_link_regular_info(path, label=label, missing_ok=True) is not None:
+        raise WorkerError(f"{label} already exists: {path}")
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=directory)
+    tmp = Path(tmp_name)
+    opened_identity: tuple[int, int] | None = None
+    try:
+        opened = os.fstat(fd)
+        if _is_link_or_reparse(opened) or not stat.S_ISREG(opened.st_mode) or int(getattr(opened, "st_nlink", 1)) != 1:
+            raise WorkerError(f"{label} temporary file is not a direct single-link regular file: {tmp}")
+        opened_identity = _filesystem_identity(opened)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            fd = -1
+            json.dump(value, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary = _single_link_regular_info(tmp, label=f"{label} temporary")
+        if temporary is None or _filesystem_identity(temporary) != opened_identity:
+            raise WorkerError(f"{label} temporary file identity changed before publish: {tmp}")
+        _assert_direct_directory_identity(directory, directory_identity, label="Worker result cache")
+        if _single_link_regular_info(path, label=label, missing_ok=True) is not None:
+            raise WorkerError(f"{label} appeared concurrently: {path}")
+        try:
+            os.link(tmp, path)
+        except FileExistsError as exc:
+            raise WorkerError(f"{label} appeared concurrently: {path}") from exc
+        except OSError as exc:
+            raise WorkerError(f"Unable to publish {label} file {path}: {exc}") from exc
+        tmp.unlink()
+        final = _single_link_regular_info(path, label=label)
+        if final is None or _filesystem_identity(final) != opened_identity:
+            raise WorkerError(f"{label} file identity changed during publish: {path}")
+        _assert_direct_directory_identity(directory, directory_identity, label="Worker result cache")
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        tmp.unlink(missing_ok=True)
+
+
 def _config_command(value: Any, label: str) -> tuple[str, ...]:
     if value is None:
         return ()
@@ -531,7 +664,12 @@ class WorkerService:
         self.replay = ReplayGuard(config.workspace_root / ".replay.sqlite3")
         self.transfers = TransferStore(config.workspace_root / ".transfers")
         self.results = config.workspace_root / ".job-results"
-        self.results.mkdir(parents=True, exist_ok=True)
+        _reject_indirect_components(self.results, label="Worker result cache")
+        try:
+            self.results.mkdir(parents=False, exist_ok=True)
+        except OSError as exc:
+            raise WorkerError(f"Unable to initialize worker result cache directory {self.results}: {exc}") from exc
+        self.results, self.results_identity = _pin_direct_directory(self.results, label="Worker result cache")
         self.results_lock = threading.Lock()
 
     def signed_health(self) -> dict[str, Any]:
@@ -567,7 +705,13 @@ class WorkerService:
         digest = request_sha256(request)
         cache_path = self.results / f"{job_id}.json"
         with self.results_lock:
-            if cache_path.is_file():
+            cached = _read_pinned_json(
+                cache_path,
+                directory=self.results,
+                directory_identity=self.results_identity,
+                label="Worker result cache entry",
+            )
+            if cached is not None:
                 verify_job_request(
                     request,
                     expected_worker_id=self.config.worker_id,
@@ -577,7 +721,6 @@ class WorkerService:
                         transfer_id, controller_id=controller_id, artifact_sha256=artifact_digest, artifact_size=size
                     ),
                 )
-                cached = read_json(cache_path)
                 if not isinstance(cached, dict) or cached.get("request_sha256") != digest or not isinstance(cached.get("result"), dict):
                     raise WorkerError("Cached worker result integrity binding is invalid")
                 result = cached["result"]
@@ -613,12 +756,23 @@ class WorkerService:
             "result": result,
         }
         with self.results_lock:
-            if cache_path.is_file():
-                current = read_json(cache_path)
-                if current.get("request_sha256") != digest or current.get("result_sha256") != cache_value["result_sha256"]:
+            current = _read_pinned_json(
+                cache_path,
+                directory=self.results,
+                directory_identity=self.results_identity,
+                label="Worker result cache entry",
+            )
+            if current is not None:
+                if not isinstance(current, dict) or current.get("request_sha256") != digest or current.get("result_sha256") != cache_value["result_sha256"]:
                     raise WorkerError("Concurrent worker result cache conflict")
             else:
-                atomic_write_json(cache_path, cache_value)
+                _write_pinned_json(
+                    cache_path,
+                    cache_value,
+                    directory=self.results,
+                    directory_identity=self.results_identity,
+                    label="Worker result cache entry",
+                )
         return result
 
 
