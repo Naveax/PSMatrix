@@ -1175,7 +1175,6 @@ def submit_remote_job(endpoint: RemoteEndpoint, *, root: Path, files: list[Path]
     except ValueError as exc:
         raise WorkerError(f"Remote entrypoint escapes project root: {entry}") from exc
     _safe_archive_parts(entry_relative)
-    _single_link_regular_info(entry, label="Remote entrypoint")
     reference = None
     inline = archive
     if len(archive) > endpoint.inline_artifact_limit:
