@@ -43,7 +43,6 @@ def _marked_reparse_lstat(original, marked: Path):
     return fake
 
 
-@unittest.skip("temporary CI isolation for replay database hardening")
 class RemoteReplayDatabaseSecurityTests(unittest.TestCase):
     def test_normal_database_preserves_replay_rejection(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -55,6 +54,7 @@ class RemoteReplayDatabaseSecurityTests(unittest.TestCase):
             with self.assertRaisesRegex(RemoteProtocolError, "already been used"):
                 guard.consume("controller-1", nonce, _expires())
 
+    @unittest.skip("temporary CI isolation group B")
     def test_database_symlink_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -69,6 +69,7 @@ class RemoteReplayDatabaseSecurityTests(unittest.TestCase):
             with self.assertRaisesRegex(RemoteProtocolError, "symlink or reparse point"):
                 ReplayGuard(path)
 
+    @unittest.skip("temporary CI isolation group B")
     def test_symlink_parent_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -83,6 +84,7 @@ class RemoteReplayDatabaseSecurityTests(unittest.TestCase):
             with self.assertRaisesRegex(RemoteProtocolError, "symlink or reparse point"):
                 ReplayGuard(indirect / "replay.sqlite3")
 
+    @unittest.skip("temporary CI isolation group B")
     def test_database_reparse_point_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "replay.sqlite3"
@@ -93,6 +95,7 @@ class RemoteReplayDatabaseSecurityTests(unittest.TestCase):
                 with self.assertRaisesRegex(RemoteProtocolError, "symlink or reparse point"):
                     ReplayGuard(path)
 
+    @unittest.skip("temporary CI isolation group B")
     def test_database_hardlink_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
