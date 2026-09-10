@@ -2,6 +2,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,7 +23,7 @@ def _expires() -> datetime:
 
 
 def _create_valid_database(path: Path) -> None:
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection:
         connection.execute(_SCHEMA)
         connection.commit()
 
@@ -54,7 +55,6 @@ class RemoteReplayDatabaseSecurityTests(unittest.TestCase):
             with self.assertRaisesRegex(RemoteProtocolError, "already been used"):
                 guard.consume("controller-1", nonce, _expires())
 
-    @unittest.skip("temporary CI isolation group B")
     def test_database_symlink_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -69,7 +69,6 @@ class RemoteReplayDatabaseSecurityTests(unittest.TestCase):
             with self.assertRaisesRegex(RemoteProtocolError, "symlink or reparse point"):
                 ReplayGuard(path)
 
-    @unittest.skip("temporary CI isolation group B")
     def test_symlink_parent_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -84,7 +83,6 @@ class RemoteReplayDatabaseSecurityTests(unittest.TestCase):
             with self.assertRaisesRegex(RemoteProtocolError, "symlink or reparse point"):
                 ReplayGuard(indirect / "replay.sqlite3")
 
-    @unittest.skip("temporary CI isolation group B")
     def test_database_reparse_point_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "replay.sqlite3"
@@ -95,7 +93,6 @@ class RemoteReplayDatabaseSecurityTests(unittest.TestCase):
                 with self.assertRaisesRegex(RemoteProtocolError, "symlink or reparse point"):
                     ReplayGuard(path)
 
-    @unittest.skip("temporary CI isolation group B")
     def test_database_hardlink_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -113,7 +110,7 @@ class RemoteReplayDatabaseSecurityTests(unittest.TestCase):
     def test_existing_database_without_composite_primary_key_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "replay.sqlite3"
-            with sqlite3.connect(path) as connection:
+            with closing(sqlite3.connect(path)) as connection:
                 connection.execute(
                     "CREATE TABLE nonces (controller_id TEXT NOT NULL, nonce TEXT NOT NULL, expires_at TEXT NOT NULL)"
                 )
@@ -126,7 +123,7 @@ class RemoteReplayDatabaseSecurityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "replay.sqlite3"
             _create_valid_database(path)
-            with sqlite3.connect(path) as connection:
+            with closing(sqlite3.connect(path)) as connection:
                 connection.execute(
                     "CREATE TRIGGER erase_nonce AFTER INSERT ON nonces "
                     "BEGIN DELETE FROM nonces WHERE controller_id = NEW.controller_id AND nonce = NEW.nonce; END"
