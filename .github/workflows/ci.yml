@@ -302,75 +302,46 @@ jobs:
           }
           Write-Host 'matrix_runner_assignment=PASS'
 
-      - name: Check out exact revision with native git
+      - name: Restore frozen source/core revision
         shell: pwsh
-        env:
-          PSMATRIX_CI_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
           $expected = ([string]$env:GITHUB_SHA).ToLowerInvariant()
-          $eventRef = [string]$env:GITHUB_REF
           if ($expected -cnotmatch '^[0-9a-f]{40}$') {
               throw 'GITHUB_SHA is not an exact lowercase 40-hex commit.'
           }
-          if ([string]::IsNullOrWhiteSpace($eventRef) -or $eventRef -notmatch '^refs/(heads|pull)/') {
-              throw "Unsupported CI event ref: $eventRef"
-          }
-          if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_CI_TOKEN)) {
-              throw 'GitHub token is unavailable for exact native checkout.'
-          }
           Push-Location $env:GITHUB_WORKSPACE
           try {
-              Get-ChildItem -Force | Remove-Item -Recurse -Force -ErrorAction Stop
-              & git init .
+              if (-not (Test-Path -LiteralPath '.git' -PathType Container)) {
+                  throw 'Frozen source/core Git object store is unavailable on the trusted runner.'
+              }
+              $handoffHead = (git rev-parse HEAD).Trim().ToLowerInvariant()
+              if ($LASTEXITCODE -ne 0 -or $handoffHead -cnotmatch '^[0-9a-f]{40}$') {
+                  throw 'Unable to resolve frozen source/core checkout head.'
+              }
+              if ($handoffHead -ne $expected) {
+                  throw "Frozen source/core checkout head $handoffHead does not match GITHUB_SHA $expected."
+              }
+              & git cat-file -e "$expected^{commit}"
               if ($LASTEXITCODE -ne 0) {
-                  throw "git init failed: $LASTEXITCODE"
+                  throw "Frozen source/core object store does not contain expected commit $expected."
               }
-              & git remote add origin "https://github.com/$env:GITHUB_REPOSITORY.git"
+              & git reset --hard $expected
               if ($LASTEXITCODE -ne 0) {
-                  throw "git remote add failed: $LASTEXITCODE"
-              }
-              $basic = [Convert]::ToBase64String(
-                  [Text.Encoding]::UTF8.GetBytes("x-access-token:$env:PSMATRIX_CI_TOKEN")
-              )
-              $env:GIT_CONFIG_COUNT = '1'
-              $env:GIT_CONFIG_KEY_0 = 'http.https://github.com/.extraheader'
-              $env:GIT_CONFIG_VALUE_0 = "AUTHORIZATION: basic $basic"
-              try {
-                  & git fetch --no-tags --prune origin '+refs/heads/*:refs/remotes/origin/*'
-                  if ($LASTEXITCODE -ne 0) {
-                      throw "Frozen branch-object fetch failed: $LASTEXITCODE"
-                  }
-                  & git fetch --no-tags origin $eventRef
-                  if ($LASTEXITCODE -ne 0) {
-                      throw "Exact event-ref fetch failed: $LASTEXITCODE"
-                  }
-              }
-              finally {
-                  Remove-Item Env:GIT_CONFIG_COUNT -ErrorAction SilentlyContinue
-                  Remove-Item Env:GIT_CONFIG_KEY_0 -ErrorAction SilentlyContinue
-                  Remove-Item Env:GIT_CONFIG_VALUE_0 -ErrorAction SilentlyContinue
-                  $basic = $null
-              }
-              $fetched = (git rev-parse FETCH_HEAD).Trim().ToLowerInvariant()
-              if ($LASTEXITCODE -ne 0 -or $fetched -cnotmatch '^[0-9a-f]{40}$') {
-                  throw 'Unable to resolve fetched event revision.'
-              }
-              if ($fetched -ne $expected) {
-                  throw "Fetched event revision $fetched does not match GITHUB_SHA $expected."
-              }
-              & git checkout --detach --force $expected
-              if ($LASTEXITCODE -ne 0) {
-                  throw "Exact detached checkout failed: $LASTEXITCODE"
+                  throw "Unable to restore frozen exact revision: $LASTEXITCODE"
               }
               & git clean -ffdx
               if ($LASTEXITCODE -ne 0) {
-                  throw "Unable to clean exact native checkout: $LASTEXITCODE"
+                  throw "Unable to clean frozen exact revision: $LASTEXITCODE"
+              }
+              $restored = (git rev-parse HEAD).Trim().ToLowerInvariant()
+              if ($LASTEXITCODE -ne 0 -or $restored -ne $expected) {
+                  throw "Restored checkout does not match GITHUB_SHA $expected."
               }
               if (-not [string]::IsNullOrWhiteSpace((git status --porcelain --untracked-files=all))) {
-                  throw 'Native CI checkout is not clean.'
+                  throw 'Frozen canonical checkout is not clean.'
               }
-              Write-Host "native_checkout=PASS event_ref=$eventRef head=$expected frozen_branch_objects=true"
+              Write-Host "frozen_source_handoff=PASS head=$restored network_fetch=false"
           }
           finally {
               Pop-Location
