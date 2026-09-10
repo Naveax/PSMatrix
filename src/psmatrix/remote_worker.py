@@ -138,6 +138,47 @@ def _single_link_regular_info(path: Path, *, label: str, missing_ok: bool = Fals
     return info
 
 
+def _read_direct_bytes(
+    path: Path,
+    *,
+    label: str,
+    expected_identity: tuple[int, int] | None = None,
+) -> bytes:
+    before = _single_link_regular_info(path, label=label)
+    if before is None:
+        raise WorkerError(f"{label} file not found: {path}")
+    before_identity = _filesystem_identity(before)
+    if expected_identity is not None and before_identity != expected_identity:
+        raise WorkerError(f"{label} file identity changed before opening: {path}")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = -1
+    try:
+        try:
+            fd = os.open(path, flags)
+        except OSError as exc:
+            raise WorkerError(f"Unable to open {label} file {path}: {exc}") from exc
+        opened = os.fstat(fd)
+        if _is_link_or_reparse(opened) or not stat.S_ISREG(opened.st_mode):
+            raise WorkerError(f"{label} opened object is not a direct regular file: {path}")
+        if int(getattr(opened, "st_nlink", 1)) != 1:
+            raise WorkerError(f"{label} opened object must have exactly one hard link: {path}")
+        opened_identity = _filesystem_identity(opened)
+        if opened_identity != before_identity or (expected_identity is not None and opened_identity != expected_identity):
+            raise WorkerError(f"{label} file identity changed while opening: {path}")
+        with os.fdopen(fd, "rb") as handle:
+            fd = -1
+            raw = handle.read()
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    after = _single_link_regular_info(path, label=label)
+    if after is None or _filesystem_identity(after) != before_identity:
+        raise WorkerError(f"{label} file identity changed while reading: {path}")
+    if int(after.st_size) != len(raw):
+        raise WorkerError(f"{label} file size changed while reading: {path}")
+    return raw
+
+
 def _read_pinned_json(
     path: Path,
     *,
@@ -360,36 +401,46 @@ def _safe_extract_zip(data: bytes, destination: Path, *, max_files: int = 2048, 
 
 
 def create_source_archive(root: Path, files: list[Path]) -> bytes:
-    root = root.resolve()
+    root = Path(os.path.abspath(os.fspath(root)))
     if not files or len(files) > 2048:
         raise WorkerError("Remote source file count is invalid")
-    buffer = io.BytesIO()
+    root, root_identity = _pin_direct_directory(root, label="Remote source root")
+    prepared: list[tuple[str, Path, tuple[str, ...], tuple[int, int]]] = []
     seen: set[str] = set()
+    seen_paths: set[Path] = set()
+    for supplied in files:
+        file_path = Path(os.path.abspath(os.fspath(supplied)))
+        if file_path in seen_paths:
+            continue
+        try:
+            relative = file_path.relative_to(root).as_posix()
+        except ValueError as exc:
+            raise WorkerError(f"Remote source escapes project root: {file_path}") from exc
+        parts = _safe_archive_parts(relative)
+        canonical = "/".join(parts).casefold()
+        if canonical in seen:
+            raise WorkerError(f"Invalid or duplicate remote source file: {file_path}")
+        file_info = _single_link_regular_info(file_path, label="Remote source file")
+        if file_info is None:
+            raise WorkerError(f"Invalid remote source file: {file_path}")
+        seen_paths.add(file_path)
+        seen.add(canonical)
+        prepared.append((canonical, file_path, parts, _filesystem_identity(file_info)))
+    buffer = io.BytesIO()
     total = 0
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        prepared: list[Path] = []
-        for supplied in files:
-            if supplied.is_symlink():
-                raise WorkerError(f"Invalid remote source file: {supplied}")
-            prepared.append(supplied.resolve())
-        for file_path in sorted(set(prepared), key=str):
-            try:
-                relative = file_path.relative_to(root).as_posix()
-            except ValueError as exc:
-                raise WorkerError(f"Remote source escapes project root: {file_path}") from exc
-            parts = _safe_archive_parts(relative)
-            canonical = "/".join(parts).casefold()
-            if canonical in seen or not file_path.is_file():
-                raise WorkerError(f"Invalid or duplicate remote source file: {file_path}")
-            size = file_path.stat().st_size
-            total += size
+        for _, file_path, parts, file_identity in sorted(prepared, key=lambda item: str(item[1])):
+            _assert_direct_directory_identity(root, root_identity, label="Remote source root")
+            raw = _read_direct_bytes(file_path, label="Remote source file", expected_identity=file_identity)
+            _assert_direct_directory_identity(root, root_identity, label="Remote source root")
+            total += len(raw)
             if total > 128 * 1024 * 1024:
                 raise WorkerError("Remote source files exceed 128 MiB")
-            seen.add(canonical)
             info = zipfile.ZipInfo("/".join(parts), date_time=(1980, 1, 1, 0, 0, 0))
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o100644 << 16
-            archive.writestr(info, file_path.read_bytes())
+            archive.writestr(info, raw)
+    _assert_direct_directory_identity(root, root_identity, label="Remote source root")
     payload = buffer.getvalue()
     if len(payload) > 64 * 1024 * 1024:
         raise WorkerError("Compressed remote source artifact exceeds 64 MiB")
@@ -1120,9 +1171,14 @@ def probe_remote_endpoint(endpoint: RemoteEndpoint, *, timeout: int = 30) -> dic
 
 
 def submit_remote_job(endpoint: RemoteEndpoint, *, root: Path, files: list[Path], entrypoint: Path, options: dict[str, Any], timeout: int = 1200) -> dict[str, Any]:
-    root = root.resolve()
+    root = Path(os.path.abspath(os.fspath(root)))
     archive = create_source_archive(root, files)
-    entry_relative = entrypoint.resolve().relative_to(root).as_posix()
+    entry = Path(os.path.abspath(os.fspath(entrypoint)))
+    try:
+        entry_relative = entry.relative_to(root).as_posix()
+    except ValueError as exc:
+        raise WorkerError(f"Remote entrypoint escapes project root: {entry}") from exc
+    _safe_archive_parts(entry_relative)
     reference = None
     inline = archive
     if len(archive) > endpoint.inline_artifact_limit:
