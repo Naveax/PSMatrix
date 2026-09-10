@@ -34,7 +34,7 @@ class RemoteSourceArchivePathSecurityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             source = root / "entry.ps1"
-            source.write_text("'ok'\n", encoding="utf-8")
+            source.write_bytes(b"'ok'\n")
 
             payload = create_source_archive(root, [source])
 
