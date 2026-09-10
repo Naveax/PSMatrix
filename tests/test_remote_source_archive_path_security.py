@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import psmatrix.remote_worker as remote_worker
 from psmatrix.remote_worker import WorkerError, create_source_archive
 
 
@@ -27,6 +28,25 @@ def _reparse_lstat(original, marked: set[Path]):
         return info
 
     return fake
+
+
+class _OpenSwapProxy:
+    def __init__(self, delegate, source: Path, replacement: Path):
+        self._delegate = delegate
+        self._source = source
+        self._replacement = replacement
+        self.swapped = False
+
+    def __getattr__(self, name):
+        return getattr(self._delegate, name)
+
+    def open(self, path, flags, *args, **kwargs):
+        candidate = Path(path)
+        if candidate == self._source and not self.swapped:
+            self._source.unlink()
+            self._replacement.replace(self._source)
+            self.swapped = True
+        return self._delegate.open(path, flags, *args, **kwargs)
 
 
 class RemoteSourceArchivePathSecurityTests(unittest.TestCase):
@@ -96,6 +116,20 @@ class RemoteSourceArchivePathSecurityTests(unittest.TestCase):
             with self.assertRaisesRegex(WorkerError, "exactly one hard link"):
                 create_source_archive(root, [source])
 
+    def test_archive_rejects_file_replacement_between_lstat_and_open(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "entry.ps1"
+            source.write_text("'original'\n", encoding="utf-8")
+            replacement = root / "replacement.ps1"
+            replacement.write_text("'replacement'\n", encoding="utf-8")
+            proxy = _OpenSwapProxy(os, source, replacement)
+
+            with patch.object(remote_worker, "os", proxy):
+                with self.assertRaises(WorkerError):
+                    create_source_archive(root, [source])
+            self.assertTrue(proxy.swapped, "source replacement must occur before fail-closed rejection")
+
     def test_archive_rejects_lexically_outside_source(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -105,30 +139,6 @@ class RemoteSourceArchivePathSecurityTests(unittest.TestCase):
 
             with self.assertRaisesRegex(WorkerError, "escapes project root"):
                 create_source_archive(root, [outside])
-
-    def test_zz_archive_rejects_file_replacement_between_lstat_and_open(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            source = root / "entry.ps1"
-            source.write_text("'original'\n", encoding="utf-8")
-            replacement = root / "replacement.ps1"
-            replacement.write_text("'replacement'\n", encoding="utf-8")
-            original_open = os.open
-            swapped = False
-
-            def swapping_open(path, flags, *args, **kwargs):
-                nonlocal swapped
-                candidate = Path(path)
-                if candidate == source and not swapped:
-                    source.unlink()
-                    replacement.replace(source)
-                    swapped = True
-                return original_open(path, flags, *args, **kwargs)
-
-            with patch("psmatrix.remote_worker.os.open", side_effect=swapping_open):
-                with self.assertRaises(WorkerError):
-                    create_source_archive(root, [source])
-            self.assertTrue(swapped, "source replacement must occur before fail-closed rejection")
 
 
 if __name__ == "__main__":
