@@ -96,7 +96,17 @@ class RemoteSourceArchivePathSecurityTests(unittest.TestCase):
             with self.assertRaisesRegex(WorkerError, "exactly one hard link"):
                 create_source_archive(root, [source])
 
-    def test_archive_rejects_file_replacement_between_lstat_and_open(self):
+    def test_archive_rejects_lexically_outside_source(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            outside = root.parent / f"{root.name}-outside.ps1"
+            outside.write_text("'outside'\n", encoding="utf-8")
+            self.addCleanup(lambda: outside.unlink(missing_ok=True))
+
+            with self.assertRaisesRegex(WorkerError, "escapes project root"):
+                create_source_archive(root, [outside])
+
+    def test_zz_archive_rejects_file_replacement_between_lstat_and_open(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             source = root / "entry.ps1"
@@ -119,16 +129,6 @@ class RemoteSourceArchivePathSecurityTests(unittest.TestCase):
                 with self.assertRaises(WorkerError):
                     create_source_archive(root, [source])
             self.assertTrue(swapped, "source replacement must occur before fail-closed rejection")
-
-    def test_archive_rejects_lexically_outside_source(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            outside = root.parent / f"{root.name}-outside.ps1"
-            outside.write_text("'outside'\n", encoding="utf-8")
-            self.addCleanup(lambda: outside.unlink(missing_ok=True))
-
-            with self.assertRaisesRegex(WorkerError, "escapes project root"):
-                create_source_archive(root, [outside])
 
 
 if __name__ == "__main__":
