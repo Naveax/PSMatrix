@@ -1065,12 +1065,15 @@ def _https_exchange(
     base = parsed.path.rstrip("/") if parsed.path else ""
     connection = http.client.HTTPSConnection(parsed.hostname, parsed.port or 443, context=_client_context(endpoint), timeout=timeout)
     try:
-        connection.request(method, base + path, body=body, headers=headers)
+        connection.connect()
         if connection.sock is None:
             raise WorkerError("Remote worker TLS connection was not established")
         peer = connection.sock.getpeercert(binary_form=True)
+        if not peer:
+            raise WorkerError("Remote worker TLS peer certificate is missing")
         if endpoint.expected_server_certificate_sha256 and hashlib.sha256(peer).hexdigest().lower() != endpoint.expected_server_certificate_sha256.lower():
             raise WorkerError("Worker TLS certificate fingerprint mismatch")
+        connection.request(method, base + path, body=body, headers=headers)
         response = connection.getresponse()
         return response.status, response.read()
     except Exception as exc:
