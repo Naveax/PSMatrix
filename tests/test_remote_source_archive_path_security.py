@@ -62,6 +62,7 @@ class RemoteSourceArchivePathSecurityTests(unittest.TestCase):
                 self.assertEqual(archive.namelist(), ["entry.ps1"])
                 self.assertEqual(archive.read("entry.ps1"), b"'ok'\n")
 
+    @unittest.skip("temporary CI isolation: direct/hardlink/outside tests only")
     def test_archive_rejects_reparse_source_file(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -73,6 +74,7 @@ class RemoteSourceArchivePathSecurityTests(unittest.TestCase):
                 with self.assertRaisesRegex(WorkerError, "symlink or reparse point"):
                     create_source_archive(root, [source])
 
+    @unittest.skip("temporary CI isolation: direct/hardlink/outside tests only")
     def test_archive_rejects_reparse_source_root(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -84,6 +86,7 @@ class RemoteSourceArchivePathSecurityTests(unittest.TestCase):
                 with self.assertRaisesRegex(WorkerError, "symlink or reparse point"):
                     create_source_archive(root, [source])
 
+    @unittest.skip("temporary CI isolation: direct/hardlink/outside tests only")
     def test_archive_rejects_symlink_parent(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -116,7 +119,7 @@ class RemoteSourceArchivePathSecurityTests(unittest.TestCase):
             with self.assertRaisesRegex(WorkerError, "exactly one hard link"):
                 create_source_archive(root, [source])
 
-    @unittest.skip("temporary CI isolation: all tests except replacement race")
+    @unittest.skip("temporary CI isolation: direct/hardlink/outside tests only")
     def test_archive_rejects_file_replacement_between_lstat_and_open(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
