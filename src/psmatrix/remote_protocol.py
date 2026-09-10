@@ -346,7 +346,7 @@ class ReplayGuard:
             raise
         except sqlite3.Error as exc:
             raise RemoteProtocolError(f"Unable to initialize replay database {self.path}: {exc}") from exc
-        self._assert_database_identity()
+        self._assert_storage_identity()
 
     @staticmethod
     def _is_link_or_reparse(info: os.stat_result) -> bool:
@@ -435,14 +435,34 @@ class ReplayGuard:
         if self._filesystem_identity(info) != self._database_identity:
             raise RemoteProtocolError(f"Replay database file identity changed: {self.path}")
 
-    def _connect(self, *, timeout: float = 5.0) -> sqlite3.Connection:
+    def _assert_sidecar_paths(self) -> None:
+        for suffix in ("-journal", "-wal", "-shm"):
+            sidecar = Path(str(self.path) + suffix)
+            label = f"Replay database SQLite sidecar {suffix}"
+            self._reject_indirect_components(sidecar, label=label)
+            try:
+                info = sidecar.lstat()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise RemoteProtocolError(f"Unable to inspect {label} {sidecar}: {exc}") from exc
+            if self._is_link_or_reparse(info) or not stat.S_ISREG(info.st_mode):
+                raise RemoteProtocolError(f"{label} must be a direct regular file: {sidecar}")
+            if int(getattr(info, "st_nlink", 1)) != 1:
+                raise RemoteProtocolError(f"{label} must have exactly one hard link: {sidecar}")
+
+    def _assert_storage_identity(self) -> None:
         self._assert_database_identity()
+        self._assert_sidecar_paths()
+
+    def _connect(self, *, timeout: float = 5.0) -> sqlite3.Connection:
+        self._assert_storage_identity()
         try:
             connection = sqlite3.connect(f"{self.path.as_uri()}?mode=rw", uri=True, timeout=timeout)
         except sqlite3.Error as exc:
             raise RemoteProtocolError(f"Unable to open replay database {self.path}: {exc}") from exc
         try:
-            self._assert_database_identity()
+            self._assert_storage_identity()
         except Exception:
             connection.close()
             raise
@@ -487,11 +507,11 @@ class ReplayGuard:
                 connection.commit()
                 self._validate_schema(connection)
         except sqlite3.IntegrityError as exc:
-            self._assert_database_identity()
+            self._assert_storage_identity()
             raise RemoteProtocolError("Worker request nonce has already been used") from exc
         except RemoteProtocolError:
             raise
         except sqlite3.Error as exc:
-            self._assert_database_identity()
+            self._assert_storage_identity()
             raise RemoteProtocolError(f"Replay database operation failed: {exc}") from exc
-        self._assert_database_identity()
+        self._assert_storage_identity()
