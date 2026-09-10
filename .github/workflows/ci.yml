@@ -24,6 +24,8 @@ jobs:
     timeout-minutes: 45
     env:
       PYTHONPATH: ${{ github.workspace }}\src
+    outputs:
+      frozen_source_sha256: ${{ steps.freeze-source.outputs.sha256 }}
 
     steps:
       - name: Verify trusted runner assignment
@@ -270,6 +272,71 @@ jobs:
           }
           Write-Host 'doctor=PASS'
 
+      - name: Freeze validated source for canonical handoff
+        id: freeze-source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected = ([string]$env:GITHUB_SHA).ToLowerInvariant()
+          if ($expected -cnotmatch '^[0-9a-f]{40}$') {
+              throw 'GITHUB_SHA is not an exact lowercase 40-hex commit.'
+          }
+          $runKey = "$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if ($runKey -cnotmatch '^[0-9]+-[0-9]+$') {
+              throw "Invalid workflow run handoff key: $runKey"
+          }
+          $workspace = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+          $workspaceParent = Split-Path -Parent $workspace
+          $handoffRoot = Join-Path $workspaceParent '.psmatrix-ci-handoff'
+          $runRoot = Join-Path $handoffRoot $runKey
+          if (Test-Path -LiteralPath $runRoot) {
+              throw "Frozen source handoff already exists for this workflow attempt: $runKey"
+          }
+          New-Item -ItemType Directory -Path $handoffRoot -Force | Out-Null
+          New-Item -ItemType Directory -Path $runRoot -ErrorAction Stop | Out-Null
+          $archive = Join-Path $runRoot 'source.zip'
+          try {
+              Push-Location $workspace
+              try {
+                  $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+                  if ($LASTEXITCODE -ne 0 -or $head -ne $expected) {
+                      throw "Source handoff checkout does not match GITHUB_SHA $expected."
+                  }
+                  if (-not [string]::IsNullOrWhiteSpace((git status --porcelain --untracked-files=all))) {
+                      throw 'Source handoff checkout is not clean.'
+                  }
+                  & git archive --format=zip "--output=$archive" $expected
+                  if ($LASTEXITCODE -ne 0) {
+                      throw "Unable to create frozen source archive: $LASTEXITCODE"
+                  }
+              }
+              finally {
+                  Pop-Location
+              }
+              if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) {
+                  throw 'Frozen source archive was not materialized.'
+              }
+              $item = Get-Item -LiteralPath $archive -Force
+              if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                  throw 'Frozen source archive is a reparse point.'
+              }
+              if ($item.Length -le 0 -or $item.Length -gt 268435456) {
+                  throw "Frozen source archive size is invalid: $($item.Length)"
+              }
+              $digest = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($digest -cnotmatch '^[0-9a-f]{64}$') {
+                  throw 'Frozen source archive SHA-256 is invalid.'
+              }
+              Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "sha256=$digest"
+              Write-Host "frozen_source_archive=PASS head=$expected sha256=$digest bytes=$($item.Length)"
+          }
+          catch {
+              if (Test-Path -LiteralPath $runRoot) {
+                  Remove-Item -LiteralPath $runRoot -Recurse -Force -ErrorAction SilentlyContinue
+              }
+              throw
+          }
+
       - name: Emit source/core gate summary
         if: always()
         shell: pwsh
@@ -277,11 +344,25 @@ jobs:
           Write-Host 'ci_policy=trusted-self-hosted-pr-and-main-platform-neutral-core-gate'
           Write-Host 'ci_checkout_policy=native-git-exact-event-ref-all-heads-no-codeload-action'
           Write-Host 'ci_input_policy=tracked-files-only-explicit-workspace-clean'
+          Write-Host 'canonical_handoff_policy=run-scoped-hash-bound-git-archive'
           Write-Host 'release_candidate_runtime_policy=rc4-modules-deferred-on-non-rc4-source'
           Write-Host 'heavy_integration_policy=manual-full-workflow'
           Write-Host 'linux_native_fixture_policy=manual-linux-integration'
           Write-Host "run_id=$env:GITHUB_RUN_ID"
           Write-Host "run_attempt=$env:GITHUB_RUN_ATTEMPT"
+
+      - name: Cleanup failed source/core handoff
+        if: failure() || cancelled()
+        shell: pwsh
+        run: |
+          $runKey = "$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if ($runKey -match '^[0-9]+-[0-9]+$') {
+              $workspaceParent = Split-Path -Parent ([IO.Path]::GetFullPath($env:GITHUB_WORKSPACE))
+              $runRoot = Join-Path (Join-Path $workspaceParent '.psmatrix-ci-handoff') $runKey
+              if (Test-Path -LiteralPath $runRoot) {
+                  Remove-Item -LiteralPath $runRoot -Recurse -Force -ErrorAction SilentlyContinue
+              }
+          }
 
   canonical-matrix:
     name: Canonical 25-target matrix contract
@@ -291,6 +372,7 @@ jobs:
     timeout-minutes: 10
     env:
       PYTHONPATH: ${{ github.workspace }}\src
+      PSMATRIX_FROZEN_SOURCE_SHA256: ${{ needs.source-and-core.outputs.frozen_source_sha256 }}
 
     steps:
       - name: Verify trusted runner assignment
@@ -307,45 +389,50 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $expected = ([string]$env:GITHUB_SHA).ToLowerInvariant()
+          $expectedDigest = ([string]$env:PSMATRIX_FROZEN_SOURCE_SHA256).ToLowerInvariant()
           if ($expected -cnotmatch '^[0-9a-f]{40}$') {
               throw 'GITHUB_SHA is not an exact lowercase 40-hex commit.'
           }
-          Push-Location $env:GITHUB_WORKSPACE
-          try {
-              if (-not (Test-Path -LiteralPath '.git' -PathType Container)) {
-                  throw 'Frozen source/core Git object store is unavailable on the trusted runner.'
-              }
-              $handoffHead = (git rev-parse HEAD).Trim().ToLowerInvariant()
-              if ($LASTEXITCODE -ne 0 -or $handoffHead -cnotmatch '^[0-9a-f]{40}$') {
-                  throw 'Unable to resolve frozen source/core checkout head.'
-              }
-              if ($handoffHead -ne $expected) {
-                  throw "Frozen source/core checkout head $handoffHead does not match GITHUB_SHA $expected."
-              }
-              & git cat-file -e "$expected^{commit}"
-              if ($LASTEXITCODE -ne 0) {
-                  throw "Frozen source/core object store does not contain expected commit $expected."
-              }
-              & git reset --hard $expected
-              if ($LASTEXITCODE -ne 0) {
-                  throw "Unable to restore frozen exact revision: $LASTEXITCODE"
-              }
-              & git clean -ffdx
-              if ($LASTEXITCODE -ne 0) {
-                  throw "Unable to clean frozen exact revision: $LASTEXITCODE"
-              }
-              $restored = (git rev-parse HEAD).Trim().ToLowerInvariant()
-              if ($LASTEXITCODE -ne 0 -or $restored -ne $expected) {
-                  throw "Restored checkout does not match GITHUB_SHA $expected."
-              }
-              if (-not [string]::IsNullOrWhiteSpace((git status --porcelain --untracked-files=all))) {
-                  throw 'Frozen canonical checkout is not clean.'
-              }
-              Write-Host "frozen_source_handoff=PASS head=$restored network_fetch=false"
+          if ($expectedDigest -cnotmatch '^[0-9a-f]{64}$') {
+              throw 'Frozen source handoff digest is unavailable or invalid.'
           }
-          finally {
-              Pop-Location
+          $runKey = "$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if ($runKey -cnotmatch '^[0-9]+-[0-9]+$') {
+              throw "Invalid workflow run handoff key: $runKey"
           }
+          $workspace = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+          $workspaceParent = Split-Path -Parent $workspace
+          $runRoot = Join-Path (Join-Path $workspaceParent '.psmatrix-ci-handoff') $runKey
+          $archive = Join-Path $runRoot 'source.zip'
+          if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) {
+              throw "Frozen source archive is unavailable for workflow attempt: $runKey"
+          }
+          $item = Get-Item -LiteralPath $archive -Force
+          if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+              throw 'Frozen source archive is a reparse point.'
+          }
+          if ($item.Length -le 0 -or $item.Length -gt 268435456) {
+              throw "Frozen source archive size is invalid: $($item.Length)"
+          }
+          $actualDigest = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualDigest -ne $expectedDigest) {
+              throw "Frozen source archive digest $actualDigest does not match source/core output $expectedDigest."
+          }
+          if (-not (Test-Path -LiteralPath $workspace -PathType Container)) {
+              New-Item -ItemType Directory -Path $workspace -Force | Out-Null
+          }
+          Get-ChildItem -LiteralPath $workspace -Force | Remove-Item -Recurse -Force -ErrorAction Stop
+          Expand-Archive -LiteralPath $archive -DestinationPath $workspace -Force
+          if (-not (Test-Path -LiteralPath (Join-Path $workspace 'pyproject.toml') -PathType Leaf)) {
+              throw 'Frozen source restore is missing pyproject.toml.'
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $workspace 'src\psmatrix') -PathType Container)) {
+              throw 'Frozen source restore is missing src/psmatrix.'
+          }
+          if (Test-Path -LiteralPath (Join-Path $workspace '.git')) {
+              throw 'Frozen source archive unexpectedly materialized Git metadata.'
+          }
+          Write-Host "frozen_source_handoff=PASS head=$expected network_fetch=false mode=run-scoped-archive sha256=$actualDigest"
 
       - name: Materialize and diagnose canonical matrix contract
         shell: pwsh
@@ -405,3 +492,16 @@ jobs:
           }
           Write-Host 'complete_matrix_contract=PASS'
           exit 0
+
+      - name: Cleanup frozen source handoff
+        if: always()
+        shell: pwsh
+        run: |
+          $runKey = "$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if ($runKey -match '^[0-9]+-[0-9]+$') {
+              $workspaceParent = Split-Path -Parent ([IO.Path]::GetFullPath($env:GITHUB_WORKSPACE))
+              $runRoot = Join-Path (Join-Path $workspaceParent '.psmatrix-ci-handoff') $runKey
+              if (Test-Path -LiteralPath $runRoot) {
+                  Remove-Item -LiteralPath $runRoot -Recurse -Force -ErrorAction SilentlyContinue
+              }
+          }
