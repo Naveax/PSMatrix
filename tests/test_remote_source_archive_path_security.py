@@ -42,7 +42,6 @@ class RemoteSourceArchivePathSecurityTests(unittest.TestCase):
                 self.assertEqual(archive.namelist(), ["entry.ps1"])
                 self.assertEqual(archive.read("entry.ps1"), b"'ok'\n")
 
-    @unittest.skip("temporary CI isolation group B")
     def test_archive_rejects_reparse_source_file(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -54,7 +53,6 @@ class RemoteSourceArchivePathSecurityTests(unittest.TestCase):
                 with self.assertRaisesRegex(WorkerError, "symlink or reparse point"):
                     create_source_archive(root, [source])
 
-    @unittest.skip("temporary CI isolation group B")
     def test_archive_rejects_reparse_source_root(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -66,7 +64,6 @@ class RemoteSourceArchivePathSecurityTests(unittest.TestCase):
                 with self.assertRaisesRegex(WorkerError, "symlink or reparse point"):
                     create_source_archive(root, [source])
 
-    @unittest.skip("temporary CI isolation group B")
     def test_archive_rejects_symlink_parent(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -119,8 +116,9 @@ class RemoteSourceArchivePathSecurityTests(unittest.TestCase):
                 return original_open(path, flags, *args, **kwargs)
 
             with patch("psmatrix.remote_worker.os.open", side_effect=swapping_open):
-                with self.assertRaisesRegex(WorkerError, "identity changed while opening"):
+                with self.assertRaises(WorkerError):
                     create_source_archive(root, [source])
+            self.assertTrue(swapped, "source replacement must occur before fail-closed rejection")
 
     def test_archive_rejects_lexically_outside_source(self):
         with tempfile.TemporaryDirectory() as temp:
