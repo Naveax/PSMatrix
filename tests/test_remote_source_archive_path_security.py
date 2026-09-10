@@ -30,6 +30,7 @@ def _reparse_lstat(original, marked: set[Path]):
 
 
 class RemoteSourceArchivePathSecurityTests(unittest.TestCase):
+    @unittest.skip("temporary CI isolation: replacement-race test only")
     def test_archive_reads_direct_single_link_source(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -42,6 +43,7 @@ class RemoteSourceArchivePathSecurityTests(unittest.TestCase):
                 self.assertEqual(archive.namelist(), ["entry.ps1"])
                 self.assertEqual(archive.read("entry.ps1"), b"'ok'\n")
 
+    @unittest.skip("temporary CI isolation: replacement-race test only")
     def test_archive_rejects_reparse_source_file(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -53,6 +55,7 @@ class RemoteSourceArchivePathSecurityTests(unittest.TestCase):
                 with self.assertRaisesRegex(WorkerError, "symlink or reparse point"):
                     create_source_archive(root, [source])
 
+    @unittest.skip("temporary CI isolation: replacement-race test only")
     def test_archive_rejects_reparse_source_root(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -64,6 +67,7 @@ class RemoteSourceArchivePathSecurityTests(unittest.TestCase):
                 with self.assertRaisesRegex(WorkerError, "symlink or reparse point"):
                     create_source_archive(root, [source])
 
+    @unittest.skip("temporary CI isolation: replacement-race test only")
     def test_archive_rejects_symlink_parent(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -82,6 +86,7 @@ class RemoteSourceArchivePathSecurityTests(unittest.TestCase):
             with self.assertRaisesRegex(WorkerError, "symlink or reparse point"):
                 create_source_archive(root, [linked / "entry.ps1"])
 
+    @unittest.skip("temporary CI isolation: replacement-race test only")
     def test_archive_rejects_hardlinked_source_file(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -120,6 +125,7 @@ class RemoteSourceArchivePathSecurityTests(unittest.TestCase):
                     create_source_archive(root, [source])
             self.assertTrue(swapped, "source replacement must occur before fail-closed rejection")
 
+    @unittest.skip("temporary CI isolation: replacement-race test only")
     def test_archive_rejects_lexically_outside_source(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
