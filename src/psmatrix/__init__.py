@@ -8,3 +8,10 @@ from .ga_external_otlp import install as _install_external_otlp_ga_hardening
 
 _install_external_otlp_ga_hardening()
 del _install_external_otlp_ga_hardening
+
+# Keep remote-worker ZIP extraction bound to pinned filesystem objects instead
+# of re-resolving attacker-replaceable pathnames between validation and write.
+from .remote_zip_hardening import install as _install_remote_zip_hardening
+
+_install_remote_zip_hardening()
+del _install_remote_zip_hardening
