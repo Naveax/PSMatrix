@@ -46,6 +46,7 @@ class WorkerError(PSMatrixError):
 _IDENTITY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$")
 _WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+_MAX_REMOTE_RESPONSE_BYTES = 64 * 1024 * 1024
 
 
 def _is_link_or_reparse(info: os.stat_result) -> bool:
@@ -1056,6 +1057,23 @@ def _client_context(endpoint: RemoteEndpoint) -> ssl.SSLContext:
     return context
 
 
+def _read_bounded_response(response: Any) -> bytes:
+    content_length = response.getheader("Content-Length")
+    if content_length is not None:
+        try:
+            declared = int(content_length)
+        except (TypeError, ValueError) as exc:
+            raise WorkerError("Remote worker response Content-Length is invalid") from exc
+        if declared < 0:
+            raise WorkerError("Remote worker response Content-Length is invalid")
+        if declared > _MAX_REMOTE_RESPONSE_BYTES:
+            raise WorkerError("Remote worker response exceeds the configured limit")
+    raw = response.read(_MAX_REMOTE_RESPONSE_BYTES + 1)
+    if len(raw) > _MAX_REMOTE_RESPONSE_BYTES:
+        raise WorkerError("Remote worker response exceeds the configured limit")
+    return raw
+
+
 def _https_exchange(
     endpoint: RemoteEndpoint, method: str, path: str, *, body: bytes | None, headers: dict[str, str], timeout: int,
 ) -> tuple[int, bytes]:
@@ -1075,7 +1093,7 @@ def _https_exchange(
             raise WorkerError("Worker TLS certificate fingerprint mismatch")
         connection.request(method, base + path, body=body, headers=headers)
         response = connection.getresponse()
-        return response.status, response.read()
+        return response.status, _read_bounded_response(response)
     except Exception as exc:
         if isinstance(exc, PSMatrixError):
             raise
