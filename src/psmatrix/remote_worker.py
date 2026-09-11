@@ -47,6 +47,8 @@ _IDENTITY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$")
 _WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _MAX_REMOTE_RESPONSE_BYTES = 64 * 1024 * 1024
+_MAX_REMOTE_SOURCE_BYTES = 128 * 1024 * 1024
+_MAX_WORKER_REPORT_BYTES = 32 * 1024 * 1024
 
 
 def _is_link_or_reparse(info: os.stat_result) -> bool:
@@ -144,6 +146,7 @@ def _read_direct_bytes(
     *,
     label: str,
     expected_identity: tuple[int, int] | None = None,
+    maximum_bytes: int | None = None,
 ) -> bytes:
     before = _single_link_regular_info(path, label=label)
     if before is None:
@@ -151,6 +154,8 @@ def _read_direct_bytes(
     before_identity = _filesystem_identity(before)
     if expected_identity is not None and before_identity != expected_identity:
         raise WorkerError(f"{label} file identity changed before opening: {path}")
+    if maximum_bytes is not None and int(before.st_size) > maximum_bytes:
+        raise WorkerError(f"{label} exceeds the configured read limit: {path}")
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     fd = -1
     try:
@@ -166,12 +171,16 @@ def _read_direct_bytes(
         opened_identity = _filesystem_identity(opened)
         if opened_identity != before_identity or (expected_identity is not None and opened_identity != expected_identity):
             raise WorkerError(f"{label} file identity changed while opening: {path}")
+        if maximum_bytes is not None and int(opened.st_size) > maximum_bytes:
+            raise WorkerError(f"{label} exceeds the configured read limit: {path}")
         with os.fdopen(fd, "rb") as handle:
             fd = -1
-            raw = handle.read()
+            raw = handle.read() if maximum_bytes is None else handle.read(maximum_bytes + 1)
     finally:
         if fd >= 0:
             os.close(fd)
+    if maximum_bytes is not None and len(raw) > maximum_bytes:
+        raise WorkerError(f"{label} exceeds the configured read limit: {path}")
     after = _single_link_regular_info(path, label=label)
     if after is None or _filesystem_identity(after) != before_identity:
         raise WorkerError(f"{label} file identity changed while reading: {path}")
@@ -406,9 +415,10 @@ def create_source_archive(root: Path, files: list[Path]) -> bytes:
     if not files or len(files) > 2048:
         raise WorkerError("Remote source file count is invalid")
     root, root_identity = _pin_direct_directory(root, label="Remote source root")
-    prepared: list[tuple[str, Path, tuple[str, ...], tuple[int, int]]] = []
+    prepared: list[tuple[str, Path, tuple[str, ...], tuple[int, int], int]] = []
     seen: set[str] = set()
     seen_paths: set[Path] = set()
+    total_size = 0
     for supplied in files:
         file_path = Path(os.path.abspath(os.fspath(supplied)))
         if file_path in seen_paths:
@@ -424,19 +434,26 @@ def create_source_archive(root: Path, files: list[Path]) -> bytes:
         file_info = _single_link_regular_info(file_path, label="Remote source file")
         if file_info is None:
             raise WorkerError(f"Invalid remote source file: {file_path}")
+        file_size = int(file_info.st_size)
+        total_size += file_size
+        if total_size > _MAX_REMOTE_SOURCE_BYTES:
+            raise WorkerError("Remote source files exceed the configured limit")
         seen_paths.add(file_path)
         seen.add(canonical)
-        prepared.append((canonical, file_path, parts, _filesystem_identity(file_info)))
+        prepared.append((canonical, file_path, parts, _filesystem_identity(file_info), file_size))
     buffer = io.BytesIO()
-    total = 0
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for _, file_path, parts, file_identity in sorted(prepared, key=lambda item: str(item[1])):
+        for _, file_path, parts, file_identity, file_size in sorted(prepared, key=lambda item: str(item[1])):
             _assert_direct_directory_identity(root, root_identity, label="Remote source root")
-            raw = _read_direct_bytes(file_path, label="Remote source file", expected_identity=file_identity)
+            raw = _read_direct_bytes(
+                file_path,
+                label="Remote source file",
+                expected_identity=file_identity,
+                maximum_bytes=file_size,
+            )
+            if len(raw) != file_size:
+                raise WorkerError(f"Remote source file size changed before archive: {file_path}")
             _assert_direct_directory_identity(root, root_identity, label="Remote source root")
-            total += len(raw)
-            if total > 128 * 1024 * 1024:
-                raise WorkerError("Remote source files exceed 128 MiB")
             info = zipfile.ZipInfo("/".join(parts), date_time=(1980, 1, 1, 0, 0, 0))
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o100644 << 16
@@ -682,8 +699,15 @@ class WindowsJobExecutor:
                 [self.config.powershell_executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(harness), "-Job", str(job_file)],
                 cwd=workspace, timeout=timeout_seconds,
             )
-            if output_file.is_file():
-                loaded = read_json(output_file)
+            output_info = _single_link_regular_info(output_file, label="Windows worker report", missing_ok=True)
+            if output_info is not None:
+                loaded_raw = _read_direct_bytes(
+                    output_file,
+                    label="Windows worker report",
+                    expected_identity=_filesystem_identity(output_info),
+                    maximum_bytes=_MAX_WORKER_REPORT_BYTES,
+                )
+                loaded = json.loads(loaded_raw.decode("utf-8"))
                 if not isinstance(loaded, dict):
                     raise WorkerError("Windows worker report root must be an object")
                 report = loaded
