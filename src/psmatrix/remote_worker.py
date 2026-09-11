@@ -5,6 +5,7 @@ import http.client
 import io
 import json
 import os
+import secrets
 import shutil
 import signal
 import ssl
@@ -17,6 +18,7 @@ import uuid
 import threading
 import zipfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
@@ -52,6 +54,76 @@ _MAX_WORKER_REPORT_BYTES = 32 * 1024 * 1024
 _MAX_REMOTE_CONFIG_BYTES = 1024 * 1024
 _MAX_TLS_CERTIFICATE_BYTES = 1024 * 1024
 _MAX_RESULT_CACHE_BYTES = 64 * 1024 * 1024
+_HEALTH_CHALLENGE_HEADER = "X-PSMatrix-Health-Challenge"
+_HEALTH_CHALLENGE_BYTES = 32
+_HEALTH_CHALLENGE_HEX_LENGTH = _HEALTH_CHALLENGE_BYTES * 2
+_HEALTH_ATTESTATION_MAX_AGE_SECONDS = 60
+_HEALTH_ATTESTATION_MAX_FUTURE_SKEW_SECONDS = 30
+
+
+def _validate_health_challenge(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != _HEALTH_CHALLENGE_HEX_LENGTH
+        or any(ch not in "0123456789abcdef" for ch in value)
+    ):
+        raise WorkerError("Remote health challenge must be 64 lowercase hexadecimal characters")
+    return value
+
+
+def _parse_health_checked_at(value: Any) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise WorkerError("Remote worker health attestation checked_at is invalid")
+    try:
+        checked_at = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise WorkerError("Remote worker health attestation checked_at is invalid") from exc
+    if checked_at.tzinfo is None:
+        raise WorkerError("Remote worker health attestation checked_at is invalid")
+    return checked_at.astimezone(timezone.utc)
+
+
+def _validate_health_attestation_statement(
+    statement: dict[str, Any],
+    *,
+    expected_worker_id: str,
+    expected_challenge: str,
+    now: datetime | None = None,
+) -> tuple[dict[str, Any], str]:
+    if statement.get("predicateType") != "https://psmatrix.dev/attestation/worker-health/v1":
+        raise WorkerError("Remote worker health attestation predicate is invalid")
+    predicate = statement.get("predicate")
+    if not isinstance(predicate, dict) or predicate.get("schema") != 1:
+        raise WorkerError("Remote worker health attestation predicate is invalid")
+    challenge = predicate.get("challenge")
+    if not isinstance(challenge, str) or not secrets.compare_digest(challenge, expected_challenge):
+        raise WorkerError("Remote worker health attestation challenge mismatch")
+    capabilities = predicate.get("capabilities")
+    if not isinstance(capabilities, dict):
+        raise WorkerError("Remote worker health attestation capabilities are invalid")
+    if predicate.get("worker_id") != expected_worker_id or capabilities.get("worker_id") not in {None, expected_worker_id}:
+        raise WorkerError("Remote worker health attestation claims a different identity")
+    checked_at_raw = predicate.get("checked_at")
+    checked_at = _parse_health_checked_at(checked_at_raw)
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        raise WorkerError("Remote worker health validation clock is invalid")
+    age_seconds = (current.astimezone(timezone.utc) - checked_at).total_seconds()
+    if age_seconds > _HEALTH_ATTESTATION_MAX_AGE_SECONDS:
+        raise WorkerError("Remote worker health attestation is stale")
+    if age_seconds < -_HEALTH_ATTESTATION_MAX_FUTURE_SKEW_SECONDS:
+        raise WorkerError("Remote worker health attestation checked_at is too far in the future")
+    subject = statement.get("subject")
+    if not isinstance(subject, list) or len(subject) != 1 or not isinstance(subject[0], dict):
+        raise WorkerError("Remote worker health attestation subject is invalid")
+    capability_subject = subject[0]
+    if capability_subject.get("name") != expected_worker_id:
+        raise WorkerError("Remote worker health attestation subject is invalid")
+    digest = capability_subject.get("digest")
+    expected_digest = hashlib.sha256(canonical_json_bytes(capabilities)).hexdigest()
+    if not isinstance(digest, dict) or digest.get("sha256") != expected_digest:
+        raise WorkerError("Remote worker health attestation capability digest mismatch")
+    return capabilities, checked_at_raw
 
 
 def _is_link_or_reparse(info: os.stat_result) -> bool:
@@ -762,7 +834,8 @@ class WorkerService:
         self.results, self.results_identity = _pin_direct_directory(self.results, label="Worker result cache")
         self.results_lock = threading.Lock()
 
-    def signed_health(self) -> dict[str, Any]:
+    def signed_health(self, challenge: str) -> dict[str, Any]:
+        challenge = _validate_health_challenge(challenge)
         capabilities = self.capabilities_provider()
         statement = {
             "_type": "https://in-toto.io/Statement/v1",
@@ -775,6 +848,7 @@ class WorkerService:
                 "schema": 1,
                 "worker_id": self.config.worker_id,
                 "checked_at": utc_now_iso(),
+                "challenge": challenge,
                 "capabilities": capabilities,
             },
         }
@@ -909,7 +983,12 @@ def build_worker_server(service: WorkerService) -> ThreadingHTTPServer:
                     self._json(HTTPStatus.OK, service_ref.capabilities_provider())
                     return
                 if self.path == "/v1/health":
-                    self._json(HTTPStatus.OK, service_ref.signed_health())
+                    try:
+                        challenge = _validate_health_challenge(self.headers.get(_HEALTH_CHALLENGE_HEADER))
+                    except WorkerError as exc:
+                        self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                        return
+                    self._json(HTTPStatus.OK, service_ref.signed_health(challenge))
                     return
                 match = re.fullmatch(r"/v1/transfers/([0-9a-fA-F-]{36})", self.path)
                 if match:
@@ -1202,7 +1281,15 @@ def _upload_resumable(endpoint: RemoteEndpoint, archive: bytes, *, timeout: int)
 
 
 def probe_remote_endpoint(endpoint: RemoteEndpoint, *, timeout: int = 30) -> dict[str, Any]:
-    status, raw = _https_exchange_retry(endpoint, "GET", "/v1/health", body=None, headers={}, timeout=timeout)
+    challenge = secrets.token_hex(_HEALTH_CHALLENGE_BYTES)
+    status, raw = _https_exchange_retry(
+        endpoint,
+        "GET",
+        "/v1/health",
+        body=None,
+        headers={_HEALTH_CHALLENGE_HEADER: challenge},
+        timeout=timeout,
+    )
     if status != HTTPStatus.OK:
         raise WorkerError(f"Remote worker health endpoint returned HTTP {status}: {raw.decode('utf-8', errors='replace')[-4096:]}")
     try:
@@ -1213,12 +1300,13 @@ def probe_remote_endpoint(endpoint: RemoteEndpoint, *, timeout: int = 30) -> dic
         raise WorkerError("Remote worker health response identity is invalid")
     verified = verify_dsse_envelope(value["attestation"], endpoint.worker_signing_public_key)
     statement = verified["statement"]
-    if statement.get("predicateType") != "https://psmatrix.dev/attestation/worker-health/v1":
-        raise WorkerError("Remote worker health attestation predicate is invalid")
-    predicate = statement.get("predicate") if isinstance(statement.get("predicate"), dict) else {}
-    capabilities = predicate.get("capabilities") if isinstance(predicate.get("capabilities"), dict) else {}
-    if predicate.get("worker_id") != endpoint.worker_id or capabilities.get("worker_id") not in {None, endpoint.worker_id}:
-        raise WorkerError("Remote worker health attestation claims a different identity")
+    if not isinstance(statement, dict):
+        raise WorkerError("Remote worker health attestation statement is invalid")
+    capabilities, checked_at = _validate_health_attestation_statement(
+        statement,
+        expected_worker_id=endpoint.worker_id,
+        expected_challenge=challenge,
+    )
     if capabilities.get("authoritative") is not True:
         raise WorkerError("Remote worker health is not authoritative")
     if endpoint.expected_runtime_id and capabilities.get("runtime_id") != endpoint.expected_runtime_id:
@@ -1227,7 +1315,7 @@ def probe_remote_endpoint(endpoint: RemoteEndpoint, *, timeout: int = 30) -> dic
         "valid": True,
         "worker_id": endpoint.worker_id,
         "runtime_id": capabilities.get("runtime_id"),
-        "checked_at": predicate.get("checked_at"),
+        "checked_at": checked_at,
         "capabilities": capabilities,
         "key_ids": verified["key_ids"],
     }
