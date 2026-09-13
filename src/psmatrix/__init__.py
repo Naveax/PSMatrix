@@ -30,6 +30,13 @@ from .signing_publish_hardening import install as _install_signing_publish_harde
 _install_signing_publish_hardening()
 del _install_signing_publish_hardening
 
+# Bind resumable-transfer manifest/chunk/completion atomic writes to pinned
+# parent-directory identities through the shared signing publish primitive.
+from .transfer_publish_hardening import install as _install_transfer_publish_hardening
+
+_install_transfer_publish_hardening()
+del _install_transfer_publish_hardening
+
 # Reject Win32 device/namespace path spellings before remote ZIP extraction can
 # hand them to filesystem APIs.
 from .remote_windows_path_hardening import install as _install_remote_windows_path_hardening
