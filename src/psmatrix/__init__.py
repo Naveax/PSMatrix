@@ -22,3 +22,10 @@ from .remote_zip_hardening import install as _install_remote_zip_hardening
 
 _install_remote_zip_hardening()
 del _install_remote_zip_hardening
+
+# Pin the Windows runtime and worker harness to non-replaceable filesystem
+# objects for the executor lifetime and launch only their exact absolute paths.
+from .remote_process_identity_hardening import install as _install_remote_process_identity_hardening
+
+_install_remote_process_identity_hardening()
+del _install_remote_process_identity_hardening
