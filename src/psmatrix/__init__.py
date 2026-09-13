@@ -29,3 +29,10 @@ from .remote_process_identity_hardening import install as _install_remote_proces
 
 _install_remote_process_identity_hardening()
 del _install_remote_process_identity_hardening
+
+# Bind the worker job-control file and exact entrypoint to pinned identities for
+# the lifetime of each PowerShell worker process.
+from .remote_job_input_hardening import install as _install_remote_job_input_hardening
+
+_install_remote_job_input_hardening()
+del _install_remote_job_input_hardening
