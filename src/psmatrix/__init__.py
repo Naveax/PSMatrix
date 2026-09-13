@@ -9,6 +9,13 @@ from .ga_external_otlp import install as _install_external_otlp_ga_hardening
 _install_external_otlp_ga_hardening()
 del _install_external_otlp_ga_hardening
 
+# Bind signing-key reads to one filesystem identity and snapshot the captured
+# bytes before cryptography/OpenSSL performs any later filename-based reopen.
+from .signing_key_material_hardening import install as _install_signing_key_material_hardening
+
+_install_signing_key_material_hardening()
+del _install_signing_key_material_hardening
+
 # Reject Win32 device/namespace path spellings before remote ZIP extraction can
 # hand them to filesystem APIs.
 from .remote_windows_path_hardening import install as _install_remote_windows_path_hardening
