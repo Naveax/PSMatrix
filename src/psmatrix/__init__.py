@@ -36,3 +36,10 @@ from .remote_job_input_hardening import install as _install_remote_job_input_har
 
 _install_remote_job_input_hardening()
 del _install_remote_job_input_hardening
+
+# Reserve the worker result path as a direct file before launch and keep its
+# non-replaceable identity pinned until the Python side has consumed the report.
+from .remote_result_output_hardening import install as _install_remote_result_output_hardening
+
+_install_remote_result_output_hardening()
+del _install_remote_result_output_hardening
