@@ -44,6 +44,13 @@ from .remote_process_identity_hardening import install as _install_remote_proces
 _install_remote_process_identity_hardening()
 del _install_remote_process_identity_hardening
 
+# Resolve configured reset executables once, attach them to the same persistent
+# launch pin set, and execute only the exact pinned paths for reset phases.
+from .remote_reset_launch_hardening import install as _install_remote_reset_launch_hardening
+
+_install_remote_reset_launch_hardening()
+del _install_remote_reset_launch_hardening
+
 # Bind the worker job-control file and exact entrypoint to pinned identities for
 # the lifetime of each PowerShell worker process.
 from .remote_job_input_hardening import install as _install_remote_job_input_hardening
