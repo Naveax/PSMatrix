@@ -16,6 +16,13 @@ from .signing_key_material_hardening import install as _install_signing_key_mate
 _install_signing_key_material_hardening()
 del _install_signing_key_material_hardening
 
+# Bind trust-index reads and trust enrollment source material to identity-safe
+# bytes before trust decisions or persistent trust copies are made.
+from .signing_trust_store_hardening import install as _install_signing_trust_store_hardening
+
+_install_signing_trust_store_hardening()
+del _install_signing_trust_store_hardening
+
 # Reject Win32 device/namespace path spellings before remote ZIP extraction can
 # hand them to filesystem APIs.
 from .remote_windows_path_hardening import install as _install_remote_windows_path_hardening
