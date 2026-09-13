@@ -23,6 +23,13 @@ from .signing_trust_store_hardening import install as _install_signing_trust_sto
 _install_signing_trust_store_hardening()
 del _install_signing_trust_store_hardening
 
+# Publish signing/trust outputs relative to pinned parent-directory identities
+# so atomic replacement cannot be redirected through a swapped parent pathname.
+from .signing_publish_hardening import install as _install_signing_publish_hardening
+
+_install_signing_publish_hardening()
+del _install_signing_publish_hardening
+
 # Reject Win32 device/namespace path spellings before remote ZIP extraction can
 # hand them to filesystem APIs.
 from .remote_windows_path_hardening import install as _install_remote_windows_path_hardening
