@@ -210,8 +210,10 @@ def install() -> None:
     # Consumers that need native directory identities install only after the
     # create-and-return-handle ABI above is authoritative.
     from . import remote_zip_directory_create_hardening as zip_directory_hardening
+    from . import transfer_chunk_write_hardening as chunk_write_hardening
     from . import transfer_manifest_read_hardening as manifest_hardening
 
     zip_directory_hardening.install()
     manifest_hardening.install()
+    chunk_write_hardening.install()
     _INSTALLED = True
