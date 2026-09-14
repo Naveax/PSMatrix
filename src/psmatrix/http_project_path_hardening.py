@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import PurePosixPath
-from typing import Any
 
 _INSTALLED = False
 _WINDOWS_FORBIDDEN = set('<>:"|?*')
@@ -25,7 +24,7 @@ _WINDOWS_RESERVED = {
 
 
 def _segment_device_stem(segment: str) -> str:
-    return segment.split(".", 1)[0].upper()
+    return segment.split(".", 1)[0].rstrip(" .").upper()
 
 
 def _hardened_safe_relative(value: str) -> PurePosixPath:
