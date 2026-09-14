@@ -51,6 +51,13 @@ from .transfer_session_hardening import install as _install_transfer_session_har
 _install_transfer_session_hardening()
 del _install_transfer_session_hardening
 
+# Quarantine expired transfer sessions by verified identity and remove their
+# contents through descriptor/handle-bound operations rather than mutable paths.
+from .transfer_session_purge_hardening import install as _install_transfer_session_purge_hardening
+
+_install_transfer_session_purge_hardening()
+del _install_transfer_session_purge_hardening
+
 # Reject Win32 device/namespace path spellings before remote ZIP extraction can
 # hand them to filesystem APIs.
 from .remote_windows_path_hardening import install as _install_remote_windows_path_hardening
