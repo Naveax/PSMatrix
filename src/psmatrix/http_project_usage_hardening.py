@@ -154,6 +154,7 @@ def _directory_usage_posix(sessions: Any, root: Path) -> tuple[int, int]:
         or not nofollow
         or os.open not in os.supports_dir_fd
         or os.stat not in os.supports_dir_fd
+        or os.listdir not in os.supports_fd
     ):
         raise sessions.SessionError("Descriptor-relative project usage traversal is unavailable")
     flags = os.O_RDONLY | directory | nofollow | getattr(os, "O_CLOEXEC", 0)
@@ -171,11 +172,7 @@ def _directory_usage_posix(sessions: Any, root: Path) -> tuple[int, int]:
         if _identity(visible) != expected:
             raise sessions.SessionError("Project usage root identity changed while opening")
         if os.path.ismount(root):
-            # A project root created as part of the session tree must stay on the
-            # session filesystem rather than becoming a later mount boundary.
-            parent = root.parent.lstat()
-            if int(parent.st_dev) != int(opened.st_dev):
-                raise sessions.SessionError("Project usage root crosses a filesystem boundary")
+            raise sessions.SessionError("Project usage root cannot be a mount point")
         result = _scan_posix_directory(
             sessions,
             fd,
