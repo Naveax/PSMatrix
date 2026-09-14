@@ -236,3 +236,10 @@ from .http_project_path_hardening import install as _install_http_project_path_h
 
 _install_http_project_path_hardening()
 del _install_http_project_path_hardening
+
+# Bind the HTTP session-store authority path to the exact initialized directory
+# identity and fail closed if that authority is replaced between operations.
+from .http_session_root_hardening import install as _install_http_session_root_hardening
+
+_install_http_session_root_hardening()
+del _install_http_session_root_hardening
