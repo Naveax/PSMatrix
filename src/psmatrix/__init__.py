@@ -292,3 +292,10 @@ from .http_upload_quota_hardening import install as _install_http_upload_quota_h
 
 _install_http_upload_quota_hardening()
 del _install_http_upload_quota_hardening
+
+# Bind delivery-gate key reads and first creation to one direct filesystem
+# identity so HMAC authority cannot be redirected through a swapped key path.
+from .gate_key_hardening import install as _install_gate_key_hardening
+
+_install_gate_key_hardening()
+del _install_gate_key_hardening
