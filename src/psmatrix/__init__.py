@@ -264,3 +264,10 @@ from .http_session_record_hardening import install as _install_http_session_reco
 
 _install_http_session_record_hardening()
 del _install_http_session_record_hardening
+
+# Create each HTTP session tree beneath the pinned store root and bind initial
+# metadata/audit publication to the exact newly-created directory identity.
+from .http_session_create_hardening import install as _install_http_session_create_hardening
+
+_install_http_session_create_hardening()
+del _install_http_session_create_hardening
