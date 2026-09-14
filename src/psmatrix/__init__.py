@@ -44,6 +44,13 @@ from .transfer_object_publish_hardening import install as _install_transfer_obje
 _install_transfer_object_publish_hardening()
 del _install_transfer_object_publish_hardening
 
+# Create new transfer session/chunks directories relative to the pinned sessions
+# root identity instead of trusting mutable pathnames during mkdir.
+from .transfer_session_hardening import install as _install_transfer_session_hardening
+
+_install_transfer_session_hardening()
+del _install_transfer_session_hardening
+
 # Reject Win32 device/namespace path spellings before remote ZIP extraction can
 # hand them to filesystem APIs.
 from .remote_windows_path_hardening import install as _install_remote_windows_path_hardening
