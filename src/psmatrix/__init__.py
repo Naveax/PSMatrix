@@ -80,6 +80,13 @@ from .remote_workspace_create_hardening import install as _install_remote_worksp
 _install_remote_workspace_create_hardening()
 del _install_remote_workspace_create_hardening
 
+# Define the complete ctypes ABI for the NtCreateFile create-and-pin primitive,
+# including explicit argument types and success-handle validation.
+from .remote_workspace_native_api_hardening import install as _install_remote_workspace_native_api_hardening
+
+_install_remote_workspace_native_api_hardening()
+del _install_remote_workspace_native_api_hardening
+
 # Pin the Windows runtime and worker harness to non-replaceable filesystem
 # objects for the executor lifetime and launch only their exact absolute paths.
 from .remote_process_identity_hardening import install as _install_remote_process_identity_hardening
