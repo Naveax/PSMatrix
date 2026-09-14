@@ -243,3 +243,10 @@ from .http_session_root_hardening import install as _install_http_session_root_h
 
 _install_http_session_root_hardening()
 del _install_http_session_root_hardening
+
+# Validate every HTTP session resource limit as a bounded integer contract,
+# including artifact bytes which the base validator previously left unchecked.
+from .http_session_limits_hardening import install as _install_http_session_limits_hardening
+
+_install_http_session_limits_hardening()
+del _install_http_session_limits_hardening
