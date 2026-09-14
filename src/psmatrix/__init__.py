@@ -229,3 +229,10 @@ from .http_artifact_secret_hardening import install as _install_http_artifact_se
 
 _install_http_artifact_secret_hardening()
 del _install_http_artifact_secret_hardening
+
+# Enforce one canonical, cross-platform-safe project path grammar before HTTP
+# session paths reach POSIX, Win32, artifact-token, or response-header surfaces.
+from .http_project_path_hardening import install as _install_http_project_path_hardening
+
+_install_http_project_path_hardening()
+del _install_http_project_path_hardening
