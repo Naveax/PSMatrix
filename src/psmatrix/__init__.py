@@ -79,6 +79,14 @@ from .remote_process_identity_hardening import install as _install_remote_proces
 _install_remote_process_identity_hardening()
 del _install_remote_process_identity_hardening
 
+# Refuse recursive deletion of a pre-existing canonical worker job workspace.
+# Stale/colliding job directories fail closed instead of being trusted as an
+# rmtree target merely because their pathname matches the signed job ID.
+from .remote_workspace_cleanup_hardening import install as _install_remote_workspace_cleanup_hardening
+
+_install_remote_workspace_cleanup_hardening()
+del _install_remote_workspace_cleanup_hardening
+
 # Resolve configured reset executables once, attach them to the same persistent
 # launch pin set, and execute only the exact pinned paths for reset phases.
 from .remote_reset_launch_hardening import install as _install_remote_reset_launch_hardening
