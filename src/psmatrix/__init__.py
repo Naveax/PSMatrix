@@ -285,3 +285,10 @@ from .http_project_usage_hardening import install as _install_http_project_usage
 
 _install_http_project_usage_hardening()
 del _install_http_project_usage_hardening
+
+# Serialize each session's quota scan and upload publication across store
+# instances using the initialized store-root identity as lock authority.
+from .http_upload_quota_hardening import install as _install_http_upload_quota_hardening
+
+_install_http_upload_quota_hardening()
+del _install_http_upload_quota_hardening
