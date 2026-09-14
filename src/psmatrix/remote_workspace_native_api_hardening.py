@@ -209,4 +209,10 @@ def install() -> None:
         _hardened_create_windows_directory_handle
     )
     workspace_hardening._native_api_contract_hardened = True
+
+    # Consumers that create nested Windows directories must install only after
+    # the native create-and-return-handle ABI above is authoritative.
+    from . import remote_zip_directory_create_hardening as zip_directory_hardening
+
+    zip_directory_hardening.install()
     _INSTALLED = True
