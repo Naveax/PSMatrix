@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 _INSTALLED = False
 _MAX_PROJECT_BYTES = 10 * 1024 * 1024 * 1024
 _MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024
+_ORIGINAL_GET: Callable[..., Any] | None = None
 
 
 def _integer(name: str, value: Any) -> int:
@@ -40,8 +41,22 @@ def _hardened_validate(self: Any) -> None:
         raise sessions.SessionError("Artifact TTL is outside the supported range")
 
 
+def _hardened_get(
+    self: Any,
+    session_id: str,
+    principal: str,
+    *,
+    touch: bool = True,
+) -> Any:
+    if _ORIGINAL_GET is None:
+        raise RuntimeError("HTTP session limit hardening is not installed")
+    record = _ORIGINAL_GET(self, session_id, principal, touch=touch)
+    record.limits.validate()
+    return record
+
+
 def install() -> None:
-    global _INSTALLED
+    global _INSTALLED, _ORIGINAL_GET
     if _INSTALLED:
         return
 
@@ -52,5 +67,7 @@ def install() -> None:
         return
 
     sessions.SessionLimits.validate = _hardened_validate
+    _ORIGINAL_GET = sessions.ProjectSessionStore.get
+    sessions.ProjectSessionStore.get = _hardened_get
     sessions._session_limits_contract_hardened = True
     _INSTALLED = True
