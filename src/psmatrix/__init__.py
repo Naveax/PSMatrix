@@ -72,6 +72,14 @@ from .remote_zip_hardening import install as _install_remote_zip_hardening
 _install_remote_zip_hardening()
 del _install_remote_zip_hardening
 
+# Create the canonical job workspace and acquire its stable filesystem identity
+# before reset/extraction. Windows uses NtCreateFile FILE_CREATE so directory
+# creation and the first non-delete-share handle are one kernel operation.
+from .remote_workspace_create_hardening import install as _install_remote_workspace_create_hardening
+
+_install_remote_workspace_create_hardening()
+del _install_remote_workspace_create_hardening
+
 # Pin the Windows runtime and worker harness to non-replaceable filesystem
 # objects for the executor lifetime and launch only their exact absolute paths.
 from .remote_process_identity_hardening import install as _install_remote_process_identity_hardening
