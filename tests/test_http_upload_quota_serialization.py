@@ -31,10 +31,10 @@ class HTTPUploadQuotaSerializationTests(unittest.TestCase):
             loaded = second.get(created.session_id, "principal", touch=False)
 
             barrier = threading.Barrier(3)
-            successes = []
-            failures = []
+            successes: list[str] = []
+            failures: list[tuple[str, str]] = []
 
-            def upload(store, record, name):
+            def upload(store: ProjectSessionStore, record, name: str) -> None:
                 barrier.wait()
                 try:
                     store.upload(record, name, b"X" * 1200)
@@ -59,14 +59,34 @@ class HTTPUploadQuotaSerializationTests(unittest.TestCase):
             self.assertEqual(total, 1200)
             self.assertIn("quota", failures[0][1].lower())
 
-    def test_different_sessions_do_not_share_the_same_lock(self):
+    def test_lock_authority_is_shared_by_root_identity_and_session_id(self):
         from psmatrix import http_upload_quota_hardening as hardening
 
         with tempfile.TemporaryDirectory() as temp:
-            store = ProjectSessionStore(Path(temp) / "home")
-            first = store.create("principal")
-            second = store.create("principal")
-            self.assertIsNot(hardening._session_lock(first), hardening._session_lock(second))
+            home = Path(temp) / "home"
+            first_store = ProjectSessionStore(home)
+            first = first_store.create("principal")
+            second_store = ProjectSessionStore(home)
+            loaded = second_store.get(first.session_id, "principal", touch=False)
+            other = first_store.create("principal")
+
+            first_key = hardening._session_key(first_store, first)
+            second_key = hardening._session_key(second_store, loaded)
+            other_key = hardening._session_key(first_store, other)
+            self.assertEqual(first_key, second_key)
+            self.assertNotEqual(first_key, other_key)
+
+            with hardening._session_lock(first_store, first):
+                shared = hardening._SESSION_LOCKS[first_key]
+                self.assertEqual(hardening._SESSION_LOCK_USERS[first_key], 1)
+                with hardening._session_lock(second_store, loaded):
+                    self.assertIs(hardening._SESSION_LOCKS[first_key], shared)
+                    self.assertEqual(hardening._SESSION_LOCK_USERS[first_key], 2)
+                self.assertIs(hardening._SESSION_LOCKS[first_key], shared)
+                self.assertEqual(hardening._SESSION_LOCK_USERS[first_key], 1)
+
+            self.assertNotIn(first_key, hardening._SESSION_LOCKS)
+            self.assertNotIn(first_key, hardening._SESSION_LOCK_USERS)
 
 
 if __name__ == "__main__":
