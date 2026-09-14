@@ -116,6 +116,13 @@ from .remote_timeout_cleanup_hardening import install as _install_remote_timeout
 _install_remote_timeout_cleanup_hardening()
 del _install_remote_timeout_cleanup_hardening
 
+# Create or reuse the worker result-cache directory relative to a pinned
+# workspace-root identity before storing its long-lived filesystem identity.
+from .remote_result_cache_create_hardening import install as _install_remote_result_cache_create_hardening
+
+_install_remote_result_cache_create_hardening()
+del _install_remote_result_cache_create_hardening
+
 # Bind worker result-cache reads and no-overwrite publication to the exact
 # cache parent identity rather than reopening a mutable directory pathname.
 from .remote_result_cache_hardening import install as _install_remote_result_cache_hardening
