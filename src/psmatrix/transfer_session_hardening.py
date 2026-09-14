@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import stat
 from datetime import UTC, datetime, timedelta
@@ -26,7 +27,189 @@ def _assert_sessions_parent(transfer: Any, store: Any) -> tuple[Path, os.stat_re
     return parent, info
 
 
-def _create_session_tree(transfer: Any, store: Any, session: Path) -> tuple[Path, Path]:
+def _manifest_bytes(value: dict[str, Any]) -> bytes:
+    return (
+        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+
+
+def _assert_posix_created_session_binding(
+    transfer: Any,
+    store: Any,
+    session: Path,
+    parent_fd: int,
+    session_fd: int,
+    expected_parent: os.stat_result,
+    expected_session: os.stat_result,
+) -> None:
+    try:
+        visible_parent = store.sessions.lstat()
+        opened_parent = os.fstat(parent_fd)
+        visible_session = os.stat(
+            session.name,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+        opened_session = os.fstat(session_fd)
+    except OSError as exc:
+        raise transfer.TransferError(
+            "Transfer session identity became unavailable during create"
+        ) from exc
+    if (
+        transfer._is_link_or_reparse(visible_parent)
+        or not stat.S_ISDIR(visible_parent.st_mode)
+        or transfer._is_link_or_reparse(opened_parent)
+        or not stat.S_ISDIR(opened_parent.st_mode)
+        or not transfer._same_file(visible_parent, expected_parent)
+        or not transfer._same_file(opened_parent, expected_parent)
+        or not transfer._same_file(visible_parent, store._sessions_identity)
+        or transfer._is_link_or_reparse(visible_session)
+        or not stat.S_ISDIR(visible_session.st_mode)
+        or transfer._is_link_or_reparse(opened_session)
+        or not stat.S_ISDIR(opened_session.st_mode)
+        or not transfer._same_file(visible_session, expected_session)
+        or not transfer._same_file(opened_session, expected_session)
+    ):
+        raise transfer.TransferError(
+            "Transfer session identity changed before manifest publication"
+        )
+
+
+def _publish_manifest_posix(
+    transfer: Any,
+    store: Any,
+    session: Path,
+    parent_fd: int,
+    session_fd: int,
+    expected_parent: os.stat_result,
+    expected_session: os.stat_result,
+    value: dict[str, Any],
+) -> None:
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    supports = getattr(os, "supports_dir_fd", set())
+    if not nofollow or os.open not in supports or os.replace not in supports:
+        raise transfer.TransferError(
+            "Descriptor-relative transfer manifest publication is unavailable"
+        )
+    raw = _manifest_bytes(value)
+    temp_name = f".manifest.json.{uuid.uuid4().hex}.tmp"
+    output_fd = -1
+    published = False
+    opened_identity: os.stat_result | None = None
+    try:
+        _assert_posix_created_session_binding(
+            transfer,
+            store,
+            session,
+            parent_fd,
+            session_fd,
+            expected_parent,
+            expected_session,
+        )
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | nofollow
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_BINARY", 0)
+        )
+        try:
+            output_fd = os.open(temp_name, flags, 0o600, dir_fd=session_fd)
+        except OSError as exc:
+            raise transfer.TransferError(
+                "Unable to create transfer manifest temporary file"
+            ) from exc
+        opened_identity = os.fstat(output_fd)
+        if (
+            transfer._is_link_or_reparse(opened_identity)
+            or not transfer._is_single_link_regular(opened_identity)
+        ):
+            raise transfer.TransferError(
+                "Transfer manifest temporary file is not a direct single-link file"
+            )
+        with os.fdopen(output_fd, "wb", closefd=False) as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        written = os.fstat(output_fd)
+        if (
+            not transfer._same_file(opened_identity, written)
+            or int(written.st_size) != len(raw)
+        ):
+            raise transfer.TransferError(
+                "Transfer manifest temporary file changed while writing"
+            )
+
+        _assert_posix_created_session_binding(
+            transfer,
+            store,
+            session,
+            parent_fd,
+            session_fd,
+            expected_parent,
+            expected_session,
+        )
+        try:
+            os.replace(
+                temp_name,
+                "manifest.json",
+                src_dir_fd=session_fd,
+                dst_dir_fd=session_fd,
+            )
+        except OSError as exc:
+            raise transfer.TransferError("Unable to publish transfer manifest") from exc
+        published = True
+        final = os.stat("manifest.json", dir_fd=session_fd, follow_symlinks=False)
+        if (
+            transfer._is_link_or_reparse(final)
+            or not transfer._is_single_link_regular(final)
+            or opened_identity is None
+            or not transfer._same_file(final, opened_identity)
+            or int(final.st_size) != len(raw)
+        ):
+            raise transfer.TransferError(
+                "Transfer manifest identity changed during publication"
+            )
+        _assert_posix_created_session_binding(
+            transfer,
+            store,
+            session,
+            parent_fd,
+            session_fd,
+            expected_parent,
+            expected_session,
+        )
+        try:
+            os.fsync(session_fd)
+        except OSError:
+            pass
+        published = False
+    except Exception:
+        if published:
+            try:
+                os.unlink("manifest.json", dir_fd=session_fd)
+            except OSError:
+                pass
+        raise
+    finally:
+        if output_fd >= 0:
+            try:
+                os.close(output_fd)
+            except OSError:
+                pass
+        try:
+            os.unlink(temp_name, dir_fd=session_fd)
+        except OSError:
+            pass
+
+
+def _create_session_tree(
+    transfer: Any,
+    store: Any,
+    session: Path,
+    manifest_value: dict[str, Any],
+) -> tuple[Path, Path]:
     parent, _ = _assert_sessions_parent(transfer, store)
     if session.parent != parent:
         raise transfer.TransferError("Transfer session parent is not the pinned sessions directory")
@@ -83,6 +266,26 @@ def _create_session_tree(transfer: Any, store: Any, session: Path) -> tuple[Path
                     "Transfer chunks directory has no stable Windows file identity"
                 )
 
+            # The native-created session handle intentionally omits delete sharing,
+            # so the canonical parent cannot be renamed or replaced while the
+            # path-based atomic writer publishes the manifest into this session.
+            transfer._atomic_write_direct_json(
+                session / "manifest.json",
+                manifest_value,
+                label="Transfer manifest",
+            )
+            verification, final_session_identity = zip_hardening._open_windows_directory(
+                adapter,
+                session,
+            )
+            try:
+                if final_session_identity != session_identity:
+                    raise transfer.TransferError(
+                        "Transfer session identity changed during manifest publication"
+                    )
+            finally:
+                zip_hardening._close_windows_handle(verification)
+
             direct_session, _ = transfer._direct_directory(session, label="Transfer session")
             direct_chunks, _ = transfer._direct_directory(
                 chunks,
@@ -92,8 +295,8 @@ def _create_session_tree(transfer: Any, store: Any, session: Path) -> tuple[Path
             return direct_session, direct_chunks
         finally:
             # Do not attempt pathname cleanup after a partially successful native
-            # transaction. An incomplete UUID session has no manifest and is
-            # ignored by normal lookup; purge can later quarantine it by identity.
+            # transaction. An incomplete UUID session has no trusted publication
+            # state and purge can later quarantine it by identity.
             for handle in reversed(handles):
                 try:
                     zip_hardening._close_windows_handle(handle)
@@ -107,6 +310,7 @@ def _create_session_tree(transfer: Any, store: Any, session: Path) -> tuple[Path
     flags = os.O_RDONLY | directory_flag | nofollow | getattr(os, "O_CLOEXEC", 0)
     parent_fd = session_fd = chunks_fd = -1
     created_session = created_chunks = False
+    opened_session: os.stat_result | None = None
     try:
         parent_fd = os.open(parent, flags)
         parent_opened = os.fstat(parent_fd)
@@ -140,6 +344,17 @@ def _create_session_tree(transfer: Any, store: Any, session: Path) -> tuple[Path
             raise transfer.TransferError("Transfer sessions directory identity changed during create")
         if not transfer._same_file(current_session, opened_session):
             raise transfer.TransferError("Transfer session identity changed during create")
+
+        _publish_manifest_posix(
+            transfer,
+            store,
+            session,
+            parent_fd,
+            session_fd,
+            parent_opened,
+            opened_session,
+            manifest_value,
+        )
         direct_session, _ = transfer._direct_directory(session, label="Transfer session")
         direct_chunks, _ = transfer._direct_directory(session / "chunks", label="Transfer chunks directory")
         return direct_session, direct_chunks
@@ -149,9 +364,18 @@ def _create_session_tree(transfer: Any, store: Any, session: Path) -> tuple[Path
                 os.rmdir("chunks", dir_fd=session_fd)
             except OSError:
                 pass
-        if created_session and parent_fd >= 0:
+        if created_session and parent_fd >= 0 and opened_session is not None:
+            # Never clean up through the canonical pathname unless it still names
+            # the exact directory this call created. Otherwise a replacement
+            # directory could be destroyed after an attacker-controlled swap.
             try:
-                os.rmdir(session.name, dir_fd=parent_fd)
+                visible = os.stat(
+                    session.name,
+                    dir_fd=parent_fd,
+                    follow_symlinks=False,
+                )
+                if transfer._same_file(visible, opened_session):
+                    os.rmdir(session.name, dir_fd=parent_fd)
             except OSError:
                 pass
         raise
@@ -236,11 +460,11 @@ def _hardened_create(
     session = self._session(manifest.transfer_id)
     with transfer.exclusive_lock(self.lock_path):
         self._validate_roots()
-        session, _ = _create_session_tree(transfer, self, session)
-        transfer._atomic_write_direct_json(
-            session / "manifest.json",
+        _create_session_tree(
+            transfer,
+            self,
+            session,
             manifest.to_dict(),
-            label="Transfer manifest",
         )
     return {**manifest.to_dict(), "missing": list(range(count)), "complete": False}
 
