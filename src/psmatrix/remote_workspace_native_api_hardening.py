@@ -198,21 +198,20 @@ def install() -> None:
 
     from . import remote_workspace_create_hardening as workspace_hardening
 
-    if getattr(workspace_hardening, "_native_api_contract_hardened", False):
-        _INSTALLED = True
-        return
+    if not getattr(workspace_hardening, "_native_api_contract_hardened", False):
+        _ORIGINAL_CREATE_WINDOWS_DIRECTORY_HANDLE = (
+            workspace_hardening._create_windows_directory_handle
+        )
+        workspace_hardening._create_windows_directory_handle = (
+            _hardened_create_windows_directory_handle
+        )
+        workspace_hardening._native_api_contract_hardened = True
 
-    _ORIGINAL_CREATE_WINDOWS_DIRECTORY_HANDLE = (
-        workspace_hardening._create_windows_directory_handle
-    )
-    workspace_hardening._create_windows_directory_handle = (
-        _hardened_create_windows_directory_handle
-    )
-    workspace_hardening._native_api_contract_hardened = True
-
-    # Consumers that create nested Windows directories must install only after
-    # the native create-and-return-handle ABI above is authoritative.
+    # Consumers that need native directory identities install only after the
+    # create-and-return-handle ABI above is authoritative.
     from . import remote_zip_directory_create_hardening as zip_directory_hardening
+    from . import transfer_manifest_read_hardening as manifest_hardening
 
     zip_directory_hardening.install()
+    manifest_hardening.install()
     _INSTALLED = True
