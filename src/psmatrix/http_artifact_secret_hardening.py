@@ -88,8 +88,34 @@ def _read_windows_secret(sessions: Any, path: Path) -> bytes:
         return first
 
 
+def _write_secret_temp(sessions: Any, fd: int, value: bytes) -> tuple[int, int]:
+    if os.name != "nt" and hasattr(os, "fchmod"):
+        os.fchmod(fd, 0o600)
+    opened = os.fstat(fd)
+    if not stat.S_ISREG(opened.st_mode) or int(getattr(opened, "st_nlink", 1)) != 1:
+        raise sessions.SessionError("HTTP artifact signing key temporary file is unsafe")
+    expected_identity = _identity(opened)
+
+    with os.fdopen(fd, "w+b", closefd=False) as handle:
+        handle.write(value)
+        handle.flush()
+        os.fsync(handle.fileno())
+        handle.seek(0)
+        captured = handle.read(_SECRET_BYTES + 1)
+    written = os.fstat(fd)
+    if captured != value or int(written.st_size) != _SECRET_BYTES or _identity(written) != expected_identity:
+        raise sessions.SessionError("HTTP artifact signing key changed while being written")
+    if os.name != "nt" and written.st_mode & 0o077:
+        raise sessions.SessionError("HTTP artifact signing key temporary permissions are too broad")
+    return expected_identity
+
+
 def _create_posix_secret(sessions: Any, parent_fd: int, name: str) -> bytes:
+    if os.link not in os.supports_dir_fd:
+        raise sessions.SessionError("Descriptor-relative no-overwrite key publication is unavailable")
+
     value = secrets.token_bytes(_SECRET_BYTES)
+    temporary = f".{name}.{secrets.token_hex(16)}.tmp"
     flags = (
         os.O_RDWR
         | os.O_CREAT
@@ -98,80 +124,107 @@ def _create_posix_secret(sessions: Any, parent_fd: int, name: str) -> bytes:
         | getattr(os, "O_CLOEXEC", 0)
         | getattr(os, "O_BINARY", 0)
     )
+    fd = -1
+    published = False
+    expected_identity: tuple[int, int] | None = None
     try:
-        fd = os.open(name, flags, 0o600, dir_fd=parent_fd)
-    except FileExistsError:
-        return _read_posix_secret(sessions, parent_fd, name)
-    except OSError as exc:
-        raise sessions.SessionError("Unable to create the HTTP artifact signing key safely") from exc
+        try:
+            fd = os.open(temporary, flags, 0o600, dir_fd=parent_fd)
+        except OSError as exc:
+            raise sessions.SessionError("Unable to create the HTTP artifact signing key temporary file") from exc
+        expected_identity = _write_secret_temp(sessions, fd, value)
 
-    try:
-        if hasattr(os, "fchmod"):
-            os.fchmod(fd, 0o600)
-        opened = os.fstat(fd)
-        if not stat.S_ISREG(opened.st_mode) or int(getattr(opened, "st_nlink", 1)) != 1:
-            raise sessions.SessionError("HTTP artifact signing key creation produced an unsafe file")
-        expected_identity = _identity(opened)
+        try:
+            os.link(
+                temporary,
+                name,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+            published = True
+        except FileExistsError:
+            return _read_posix_secret(sessions, parent_fd, name)
+        except (OSError, TypeError, NotImplementedError) as exc:
+            raise sessions.SessionError("Unable to publish the HTTP artifact signing key safely") from exc
+        finally:
+            try:
+                os.unlink(temporary, dir_fd=parent_fd)
+            except OSError:
+                pass
 
-        with os.fdopen(fd, "w+b", closefd=False) as handle:
-            handle.write(value)
-            handle.flush()
-            os.fsync(handle.fileno())
-            handle.seek(0)
-            captured = handle.read(_SECRET_BYTES + 1)
-        written = os.fstat(fd)
-        _validate_secret_info(sessions, written)
-        if captured != value or _identity(written) != expected_identity:
-            raise sessions.SessionError("HTTP artifact signing key changed while being created")
-
+        final_open = os.fstat(fd)
         visible = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        _validate_secret_info(sessions, final_open)
         _validate_secret_info(sessions, visible)
-        if _identity(visible) != expected_identity or _stamp(visible) != _stamp(written):
-            raise sessions.SessionError("HTTP artifact signing key identity changed during creation")
+        if _identity(final_open) != expected_identity or _identity(visible) != expected_identity:
+            raise sessions.SessionError("HTTP artifact signing key identity changed during publication")
+        if _stamp(final_open) != _stamp(visible):
+            raise sessions.SessionError("HTTP artifact signing key metadata changed during publication")
         try:
             os.fsync(parent_fd)
         except OSError as exc:
             raise sessions.SessionError("Unable to persist the HTTP artifact signing key directory entry") from exc
+        published = False
         return value
+    except Exception:
+        if published and expected_identity is not None:
+            try:
+                visible = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                if _identity(visible) == expected_identity:
+                    os.unlink(name, dir_fd=parent_fd)
+            except OSError:
+                pass
+        raise
     finally:
-        os.close(fd)
+        if fd >= 0:
+            os.close(fd)
+        try:
+            os.unlink(temporary, dir_fd=parent_fd)
+        except OSError:
+            pass
 
 
 def _create_windows_secret(sessions: Any, path: Path) -> bytes:
     value = secrets.token_bytes(_SECRET_BYTES)
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(16)}.tmp")
     flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    fd = -1
     try:
-        fd = os.open(path, flags, 0o600)
-    except FileExistsError:
-        return _read_windows_secret(sessions, path)
-    except OSError as exc:
-        raise sessions.SessionError("Unable to create the HTTP artifact signing key safely") from exc
-
-    try:
-        opened = os.fstat(fd)
-        if not stat.S_ISREG(opened.st_mode) or int(getattr(opened, "st_nlink", 1)) != 1:
-            raise sessions.SessionError("HTTP artifact signing key creation produced an unsafe file")
-        expected_identity = _identity(opened)
-        with os.fdopen(fd, "w+b", closefd=False) as handle:
-            handle.write(value)
-            handle.flush()
-            os.fsync(handle.fileno())
-            handle.seek(0)
-            captured = handle.read(_SECRET_BYTES + 1)
-        written = os.fstat(fd)
-        if captured != value or int(written.st_size) != _SECRET_BYTES or _identity(written) != expected_identity:
-            raise sessions.SessionError("HTTP artifact signing key changed while being created")
-        visible = path.lstat()
+        try:
+            fd = os.open(temporary, flags, 0o600)
+        except OSError as exc:
+            raise sessions.SessionError("Unable to create the HTTP artifact signing key temporary file") from exc
+        expected_identity = _write_secret_temp(sessions, fd, value)
+        visible_temp = temporary.lstat()
         if (
-            not stat.S_ISREG(visible.st_mode)
-            or stat.S_ISLNK(visible.st_mode)
-            or int(getattr(visible, "st_nlink", 1)) != 1
-            or _identity(visible) != expected_identity
+            not stat.S_ISREG(visible_temp.st_mode)
+            or stat.S_ISLNK(visible_temp.st_mode)
+            or int(getattr(visible_temp, "st_nlink", 1)) != 1
+            or _identity(visible_temp) != expected_identity
         ):
-            raise sessions.SessionError("HTTP artifact signing key identity changed during creation")
+            raise sessions.SessionError("HTTP artifact signing key temporary identity changed")
+        os.close(fd)
+        fd = -1
+
+        try:
+            os.rename(temporary, path)
+        except FileExistsError:
+            return _read_windows_secret(sessions, path)
+        except OSError as exc:
+            raise sessions.SessionError("Unable to publish the HTTP artifact signing key safely") from exc
+
+        captured = _read_windows_secret(sessions, path)
+        if captured != value:
+            raise sessions.SessionError("HTTP artifact signing key changed during publication")
         return value
     finally:
-        os.close(fd)
+        if fd >= 0:
+            os.close(fd)
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _hardened_load_secret(self: Any) -> bytes:
