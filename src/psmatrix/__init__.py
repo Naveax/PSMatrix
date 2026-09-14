@@ -128,7 +128,7 @@ del _install_remote_process_identity_hardening
 from .remote_reset_input_hardening import install as _install_remote_reset_input_hardening
 
 _install_remote_reset_input_hardening()
-del _install_reset_input_hardening
+del _install_remote_reset_input_hardening
 
 # Freeze the environment inherited by worker child processes at executor
 # initialization so later process-global environment mutation cannot redirect
