@@ -201,3 +201,10 @@ from .remote_tls_material_hardening import install as _install_remote_tls_materi
 
 _install_remote_tls_material_hardening()
 del _install_remote_tls_material_hardening
+
+# Snapshot artifact-download bytes from a direct file identity after capability
+# verification so HTTP response streaming never reopens a mutable artifact path.
+from .http_artifact_read_hardening import install as _install_http_artifact_read_hardening
+
+_install_http_artifact_read_hardening()
+del _install_http_artifact_read_hardening
