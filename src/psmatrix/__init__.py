@@ -128,7 +128,7 @@ del _install_remote_process_identity_hardening
 from .remote_reset_input_hardening import install as _install_remote_reset_input_hardening
 
 _install_remote_reset_input_hardening()
-del _install_remote_reset_input_hardening
+del _install_reset_input_hardening
 
 # Freeze the environment inherited by worker child processes at executor
 # initialization so later process-global environment mutation cannot redirect
@@ -222,3 +222,10 @@ from .http_upload_publish_hardening import install as _install_http_upload_publi
 
 _install_http_upload_publish_hardening()
 del _install_http_upload_publish_hardening
+
+# Create or read the artifact HMAC secret through a pinned HTTP parent and one
+# direct single-link file identity, preserving 0600 semantics on POSIX.
+from .http_artifact_secret_hardening import install as _install_http_artifact_secret_hardening
+
+_install_http_artifact_secret_hardening()
+del _install_http_artifact_secret_hardening
