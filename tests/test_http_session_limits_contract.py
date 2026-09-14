@@ -1,7 +1,10 @@
+import tempfile
 import unittest
+from pathlib import Path
 
 from psmatrix import http_sessions as sessions
-from psmatrix.http_sessions import SessionError, SessionLimits
+from psmatrix.http_sessions import ProjectSessionStore, SessionError, SessionLimits
+from psmatrix.util import atomic_write_json, read_json
 
 
 class HTTPSessionLimitsContractTests(unittest.TestCase):
@@ -9,6 +12,10 @@ class HTTPSessionLimitsContractTests(unittest.TestCase):
         self.assertTrue(getattr(sessions, "_session_limits_contract_hardened", False))
         self.assertEqual(
             SessionLimits.validate.__module__,
+            "psmatrix.http_session_limits_hardening",
+        )
+        self.assertEqual(
+            ProjectSessionStore.get.__module__,
             "psmatrix.http_session_limits_hardening",
         )
 
@@ -45,6 +52,17 @@ class HTTPSessionLimitsContractTests(unittest.TestCase):
     def test_artifact_ttl_cannot_outlive_configured_session_ttl(self):
         with self.assertRaises(SessionError):
             SessionLimits(ttl_seconds=60, artifact_ttl_seconds=120).validate()
+
+    def test_persisted_invalid_limits_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = ProjectSessionStore(Path(temp) / "home")
+            record = store.create("principal")
+            path = store._record_path(record.session_id)
+            value = read_json(path)
+            value["limits"]["max_files"] = True
+            atomic_write_json(path, value)
+            with self.assertRaises(SessionError):
+                store.get(record.session_id, "principal", touch=False)
 
 
 if __name__ == "__main__":
