@@ -87,6 +87,13 @@ from .remote_process_identity_hardening import install as _install_remote_proces
 _install_remote_process_identity_hardening()
 del _install_remote_process_identity_hardening
 
+# Bind explicitly declared reset scripts/configuration inputs to immutable
+# identities. Windows keeps no-write/no-delete pins for the executor lifetime.
+from .remote_reset_input_hardening import install as _install_remote_reset_input_hardening
+
+_install_remote_reset_input_hardening()
+del _install_remote_reset_input_hardening
+
 # Refuse recursive deletion of a pre-existing canonical worker job workspace.
 # Stale/colliding job directories fail closed instead of being trusted as an
 # rmtree target merely because their pathname matches the signed job ID.
