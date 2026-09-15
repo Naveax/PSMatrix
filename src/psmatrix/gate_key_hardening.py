@@ -399,7 +399,7 @@ def _create_windows(gate: Any, path: Path) -> bytes:
 def _hardened_load_key(home: Path, *, create: bool) -> bytes:
     from . import gate
 
-    home = Path(home).resolve()
+    home = Path(home)
     _ensure_home(gate, home)
     if os.name == "nt":
         with _windows_parent(gate, home) as parent:
