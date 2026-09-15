@@ -380,6 +380,8 @@ def _hardened_write_gate_receipt(path: Path, receipt: dict[str, Any]) -> None:
 
     root, parent_parts, name, candidate = _absolute_parts(Path(path))
     raw = _serialize_receipt(receipt)
+    if len(raw) > _MAX_RECEIPT_BYTES:
+        raise gate.GateError("Delivery gate receipt exceeds maximum size")
     shim = SimpleNamespace(SessionError=gate.GateError)
 
     if os.name == "nt":
