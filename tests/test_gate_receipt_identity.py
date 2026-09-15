@@ -167,6 +167,38 @@ class GateReceiptIdentityTests(unittest.TestCase):
                 with self.assertRaises(GateError):
                     gate.load_gate_receipt(path)
 
+    @unittest.skipUnless(os.name == "posix", "POSIX publish parent-race coverage")
+    def test_parent_swap_during_publish_fails_closed(self):
+        from psmatrix import http_upload_publish_hardening as upload_hardening
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            parent = root / "receipts"
+            parent.mkdir()
+            path = parent / "gate.json"
+            gate.write_gate_receipt(path, {"value": "first"})
+            moved_parent = root / "receipts-old"
+            original_publish = upload_hardening._publish_posix
+
+            def publish_then_replace(session, parent_fd, name, data):
+                original_publish(session, parent_fd, name, data)
+                parent.rename(moved_parent)
+                parent.mkdir()
+
+            with mock.patch.object(
+                upload_hardening,
+                "_publish_posix",
+                side_effect=publish_then_replace,
+            ):
+                with self.assertRaises(GateError):
+                    gate.write_gate_receipt(path, {"value": "second"})
+
+            self.assertFalse(path.exists())
+            self.assertEqual(
+                gate.load_gate_receipt(moved_parent / "gate.json"),
+                {"value": "second"},
+            )
+
     @unittest.skipUnless(os.name == "posix", "POSIX no-follow coverage")
     def test_receipt_open_uses_no_follow_when_available(self):
         nofollow = getattr(os, "O_NOFOLLOW", 0)
