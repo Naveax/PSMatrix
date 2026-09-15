@@ -51,8 +51,7 @@ def _absolute_parts(path: Path) -> tuple[Path, tuple[str, ...], str, Path]:
         from . import gate
 
         raise gate.GateError("Delivery gate receipt path has no writable parent")
-    root = Path(parts[0])
-    return root, tuple(parts[1:-1]), parts[-1], candidate
+    return Path(parts[0]), tuple(parts[1:-1]), parts[-1], candidate
 
 
 def _after_receipt_lstat(path: Path) -> None:
@@ -73,23 +72,23 @@ def _read_fd(fd: int, limit: int) -> bytes:
 
 
 @contextmanager
-def _posix_existing_parent(
+def _posix_parent(
     gate: Any,
     root: Path,
     parent_parts: tuple[str, ...],
+    *,
+    create: bool,
 ) -> Iterator[int]:
     directory = getattr(os, "O_DIRECTORY", 0)
     nofollow = getattr(os, "O_NOFOLLOW", 0)
-    if (
-        not directory
-        or not nofollow
-        or os.open not in os.supports_dir_fd
-        or os.stat not in os.supports_dir_fd
-    ):
-        raise gate.GateError("Descriptor-relative delivery gate receipt reads are unavailable")
+    required = {os.open, os.stat}
+    if create:
+        required.add(os.mkdir)
+    if not directory or not nofollow or not required.issubset(os.supports_dir_fd):
+        raise gate.GateError("Descriptor-relative delivery gate receipt access is unavailable")
 
     flags = os.O_RDONLY | directory | nofollow | getattr(os, "O_CLOEXEC", 0)
-    opened: list[tuple[int, Path, tuple[int, int]]] = []
+    opened: list[tuple[int, str, int, Path, tuple[int, int]]] = []
     root_fd = -1
     try:
         try:
@@ -110,11 +109,31 @@ def _posix_existing_parent(
             child_path = current_path / component
             try:
                 before = os.stat(component, dir_fd=current_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                if not create:
+                    raise gate.GateError(
+                        f"Delivery gate receipt parent is missing: {child_path}"
+                    )
+                try:
+                    os.mkdir(component, 0o700, dir_fd=current_fd)
+                except FileExistsError:
+                    pass
+                except OSError as exc:
+                    raise gate.GateError(
+                        f"Unable to create delivery gate receipt parent: {child_path}"
+                    ) from exc
+                try:
+                    before = os.stat(component, dir_fd=current_fd, follow_symlinks=False)
+                except OSError as exc:
+                    raise gate.GateError(
+                        f"Unable to inspect delivery gate receipt parent: {child_path}"
+                    ) from exc
             except OSError as exc:
                 raise gate.GateError(
                     f"Unable to inspect delivery gate receipt parent: {child_path}"
                 ) from exc
             _validate_directory(gate, before, child_path)
+
             try:
                 child_fd = os.open(component, flags, dir_fd=current_fd)
             except OSError as exc:
@@ -131,16 +150,18 @@ def _posix_existing_parent(
                 raise gate.GateError(
                     f"Delivery gate receipt parent identity changed: {child_path}"
                 )
-            opened.append((child_fd, child_path, expected))
+            opened.append((current_fd, component, child_fd, child_path, expected))
             current_fd = child_fd
             current_path = child_path
 
         yield current_fd
 
-        for child_fd, child_path, expected in opened:
-            final = os.fstat(child_fd)
-            _validate_directory(gate, final, child_path)
-            if _identity(final) != expected:
+        for parent_fd, component, child_fd, child_path, expected in opened:
+            pinned = os.fstat(child_fd)
+            visible = os.stat(component, dir_fd=parent_fd, follow_symlinks=False)
+            _validate_directory(gate, pinned, child_path)
+            _validate_directory(gate, visible, child_path)
+            if _identity(pinned) != expected or _identity(visible) != expected:
                 raise gate.GateError(
                     f"Delivery gate receipt parent identity changed: {child_path}"
                 )
@@ -151,8 +172,10 @@ def _posix_existing_parent(
             or _identity(root_visible_final) != root_identity
         ):
             raise gate.GateError("Delivery gate receipt root identity changed")
+    except OSError as exc:
+        raise gate.GateError("Unable to verify delivery gate receipt parent identity") from exc
     finally:
-        for child_fd, _, _ in reversed(opened):
+        for _, _, child_fd, _, _ in reversed(opened):
             try:
                 os.close(child_fd)
             except OSError:
@@ -341,7 +364,7 @@ def _hardened_load_gate_receipt(path: Path) -> dict[str, Any]:
     if os.name == "nt":
         return _decode_receipt(gate, _read_windows(gate, candidate))
 
-    with _posix_existing_parent(gate, root, parent_parts) as parent_fd:
+    with _posix_parent(gate, root, parent_parts, create=False) as parent_fd:
         return _decode_receipt(gate, _read_posix(gate, parent_fd, name, candidate))
 
 
@@ -380,24 +403,24 @@ def _hardened_write_gate_receipt(path: Path, receipt: dict[str, Any]) -> None:
         except OSError as exc:
             raise gate.GateError("Unable to publish the delivery gate receipt safely") from exc
     else:
-        try:
-            with upload_hardening._posix_parent(shim, root, parent_parts) as parent_fd:
-                try:
-                    existing = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-                except FileNotFoundError:
-                    existing = None
-                except OSError as exc:
-                    raise gate.GateError(
-                        "Unable to inspect the delivery gate receipt destination"
-                    ) from exc
-                if existing is not None:
-                    _validate_receipt_info(gate, existing, candidate)
+        with _posix_parent(gate, root, parent_parts, create=True) as parent_fd:
+            try:
+                existing = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                existing = None
+            except OSError as exc:
+                raise gate.GateError(
+                    "Unable to inspect the delivery gate receipt destination"
+                ) from exc
+            if existing is not None:
+                _validate_receipt_info(gate, existing, candidate)
+            try:
                 upload_hardening._publish_posix(shim, parent_fd, name, raw)
-                persisted = _read_posix(gate, parent_fd, name, candidate)
-        except gate.GateError:
-            raise
-        except OSError as exc:
-            raise gate.GateError("Unable to publish the delivery gate receipt safely") from exc
+            except gate.GateError:
+                raise
+            except OSError as exc:
+                raise gate.GateError("Unable to publish the delivery gate receipt safely") from exc
+            persisted = _read_posix(gate, parent_fd, name, candidate)
 
     if persisted != raw:
         raise gate.GateError("Delivery gate receipt persistence verification failed")
