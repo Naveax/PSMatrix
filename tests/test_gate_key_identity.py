@@ -31,6 +31,22 @@ class GateKeyIdentityTests(unittest.TestCase):
             with self.assertRaises(GateError):
                 gate._load_key(Path(temp) / "home", create=False)
 
+    def test_symlink_home_is_rejected_without_touching_target(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            target = root / "target-home"
+            target.mkdir()
+            home = root / "home"
+            try:
+                home.symlink_to(target, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("directory symlink creation unavailable")
+
+            with self.assertRaises(GateError):
+                gate._load_key(home, create=True)
+
+            self.assertFalse((target / "gate").exists())
+
     @unittest.skipUnless(os.name == "posix", "POSIX key metadata coverage")
     def test_symlink_directory_fifo_and_device_are_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
