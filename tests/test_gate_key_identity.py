@@ -147,6 +147,7 @@ class GateKeyIdentityTests(unittest.TestCase):
             home = Path(temp) / "home"
             gate._load_key(home, create=True)
             original_open = os.open
+            original_supports = set(os.supports_dir_fd)
             key_flags: list[int] = []
 
             def tracked_open(path, flags, *args, **kwargs):
@@ -154,8 +155,10 @@ class GateKeyIdentityTests(unittest.TestCase):
                     key_flags.append(flags)
                 return original_open(path, flags, *args, **kwargs)
 
-            with mock.patch.object(hardening.os, "open", side_effect=tracked_open):
-                gate._load_key(home, create=False)
+            with mock.patch.object(hardening.os, "open", side_effect=tracked_open) as patched_open:
+                supported = (original_supports - {original_open}) | {patched_open}
+                with mock.patch.object(hardening.os, "supports_dir_fd", supported):
+                    gate._load_key(home, create=False)
             self.assertTrue(key_flags)
             self.assertTrue(all(flags & nofollow for flags in key_flags))
 
@@ -165,14 +168,18 @@ class GateKeyIdentityTests(unittest.TestCase):
             home = Path(temp) / "home"
             path = home / "gate" / "hmac.key"
             winner = b"w" * 32
+            original_link = os.link
+            original_supports = set(os.supports_dir_fd)
 
             def lose_race(*args, **kwargs):
                 path.write_bytes(winner)
                 path.chmod(0o600)
                 raise FileExistsError(path)
 
-            with mock.patch.object(hardening.os, "link", side_effect=lose_race):
-                loaded = gate._load_key(home, create=True)
+            with mock.patch.object(hardening.os, "link", side_effect=lose_race) as patched_link:
+                supported = (original_supports - {original_link}) | {patched_link}
+                with mock.patch.object(hardening.os, "supports_dir_fd", supported):
+                    loaded = gate._load_key(home, create=True)
 
             self.assertEqual(loaded, winner)
             self.assertEqual(path.read_bytes(), winner)
