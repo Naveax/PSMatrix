@@ -74,7 +74,6 @@ def _dpapi_protect(value: bytes) -> bytes:
         _CRYPTPROTECT_UI_FORBIDDEN,
         ctypes.byref(output_blob),
     )
-    # Keep the input backing buffer alive until CryptProtectData has returned.
     _ = input_buffer
     if not result:
         code = ctypes.get_last_error()
@@ -160,9 +159,6 @@ def _load_key(home: Path, *, create: bool) -> bytes:
     atomic_write_bytes(path, _encode_key_for_storage(key))
     if os.name != "nt":
         os.chmod(path, 0o600)
-    # Read the persisted representation back through the platform security
-    # boundary before accepting it. This proves DPAPI/permissions and disk bytes
-    # are usable for subsequent receipt verification.
     persisted = _decode_key_from_storage(path, path.read_bytes())
     if not hmac.compare_digest(key, persisted):
         raise GateError("Delivery gate key persistence verification failed")
@@ -279,3 +275,19 @@ def load_gate_receipt(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise GateError("Delivery gate receipt root must be an object")
     return value
+
+
+from .gate_source_identity_hardening import install as _install_gate_source_identity_hardening
+
+_install_gate_source_identity_hardening()
+del _install_gate_source_identity_hardening
+
+from .gate_key_hardening import install as _install_gate_key_hardening
+
+_install_gate_key_hardening()
+del _install_gate_key_hardening
+
+from .gate_receipt_hardening import install as _install_gate_receipt_hardening
+
+_install_gate_receipt_hardening()
+del _install_gate_receipt_hardening
