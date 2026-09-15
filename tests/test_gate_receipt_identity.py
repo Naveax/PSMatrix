@@ -199,6 +199,19 @@ class GateReceiptIdentityTests(unittest.TestCase):
             with self.assertRaises(GateError):
                 gate.load_gate_receipt(path)
 
+    def test_oversized_write_is_rejected_without_replacing_existing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "gate.json"
+            gate.write_gate_receipt(path, {"value": "safe"})
+            original = path.read_bytes()
+            oversized = {"value": "x" * hardening._MAX_RECEIPT_BYTES}
+
+            with self.assertRaisesRegex(GateError, "exceeds maximum size"):
+                gate.write_gate_receipt(path, oversized)
+
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(gate.load_gate_receipt(path), {"value": "safe"})
+
 
 if __name__ == "__main__":
     unittest.main()
