@@ -147,6 +147,26 @@ class GateReceiptIdentityTests(unittest.TestCase):
                 with self.assertRaises(GateError):
                     gate.load_gate_receipt(path)
 
+    @unittest.skipUnless(os.name == "posix", "POSIX parent-race coverage")
+    def test_parent_swap_during_read_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            parent = root / "receipts"
+            parent.mkdir()
+            path = parent / "gate.json"
+            path.write_text('{"value": "first"}\n', encoding="utf-8")
+            moved_parent = root / "receipts-old"
+
+            def replace(candidate: Path) -> None:
+                if candidate == path and not moved_parent.exists():
+                    parent.rename(moved_parent)
+                    parent.mkdir()
+                    path.write_text('{"value": "second"}\n', encoding="utf-8")
+
+            with mock.patch.object(hardening, "_after_receipt_lstat", side_effect=replace):
+                with self.assertRaises(GateError):
+                    gate.load_gate_receipt(path)
+
     @unittest.skipUnless(os.name == "posix", "POSIX no-follow coverage")
     def test_receipt_open_uses_no_follow_when_available(self):
         nofollow = getattr(os, "O_NOFOLLOW", 0)
