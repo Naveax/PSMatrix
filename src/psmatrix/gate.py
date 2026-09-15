@@ -286,3 +286,8 @@ from .gate_key_hardening import install as _install_gate_key_hardening
 
 _install_gate_key_hardening()
 del _install_gate_key_hardening
+
+from .gate_receipt_hardening import install as _install_gate_receipt_hardening
+
+_install_gate_receipt_hardening()
+del _install_gate_receipt_hardening
