@@ -35,7 +35,7 @@ from .remote_protocol import (
 )
 from .signing import TrustStore, canonical_json_bytes, create_dsse_envelope, verify_dsse_envelope
 from .runtime_ids import is_exact_windows_runtime_id
-from .util import atomic_write_json, read_json, utc_now_iso
+from .util import atomic_write_json, utc_now_iso
 from .transfer import TransferError, TransferStore
 
 
@@ -46,6 +46,12 @@ class WorkerError(PSMatrixError):
 _IDENTITY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$")
 _WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+_MAX_REMOTE_RESPONSE_BYTES = 64 * 1024 * 1024
+_MAX_REMOTE_SOURCE_BYTES = 128 * 1024 * 1024
+_MAX_WORKER_REPORT_BYTES = 32 * 1024 * 1024
+_MAX_REMOTE_CONFIG_BYTES = 1024 * 1024
+_MAX_TLS_CERTIFICATE_BYTES = 1024 * 1024
+_MAX_RESULT_CACHE_BYTES = 64 * 1024 * 1024
 
 
 def _is_link_or_reparse(info: os.stat_result) -> bool:
@@ -143,6 +149,7 @@ def _read_direct_bytes(
     *,
     label: str,
     expected_identity: tuple[int, int] | None = None,
+    maximum_bytes: int | None = None,
 ) -> bytes:
     before = _single_link_regular_info(path, label=label)
     if before is None:
@@ -150,6 +157,8 @@ def _read_direct_bytes(
     before_identity = _filesystem_identity(before)
     if expected_identity is not None and before_identity != expected_identity:
         raise WorkerError(f"{label} file identity changed before opening: {path}")
+    if maximum_bytes is not None and int(before.st_size) > maximum_bytes:
+        raise WorkerError(f"{label} exceeds the configured read limit: {path}")
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     fd = -1
     try:
@@ -165,18 +174,41 @@ def _read_direct_bytes(
         opened_identity = _filesystem_identity(opened)
         if opened_identity != before_identity or (expected_identity is not None and opened_identity != expected_identity):
             raise WorkerError(f"{label} file identity changed while opening: {path}")
+        if maximum_bytes is not None and int(opened.st_size) > maximum_bytes:
+            raise WorkerError(f"{label} exceeds the configured read limit: {path}")
         with os.fdopen(fd, "rb") as handle:
             fd = -1
-            raw = handle.read()
+            raw = handle.read() if maximum_bytes is None else handle.read(maximum_bytes + 1)
     finally:
         if fd >= 0:
             os.close(fd)
+    if maximum_bytes is not None and len(raw) > maximum_bytes:
+        raise WorkerError(f"{label} exceeds the configured read limit: {path}")
     after = _single_link_regular_info(path, label=label)
     if after is None or _filesystem_identity(after) != before_identity:
         raise WorkerError(f"{label} file identity changed while reading: {path}")
     if int(after.st_size) != len(raw):
         raise WorkerError(f"{label} file size changed while reading: {path}")
     return raw
+
+
+def _read_direct_json(
+    path: Path,
+    *,
+    label: str,
+    maximum_bytes: int,
+    expected_identity: tuple[int, int] | None = None,
+) -> Any:
+    raw = _read_direct_bytes(
+        path,
+        label=label,
+        expected_identity=expected_identity,
+        maximum_bytes=maximum_bytes,
+    )
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise WorkerError(f"{label} contains malformed JSON: {path}") from exc
 
 
 def _read_pinned_json(
@@ -190,29 +222,12 @@ def _read_pinned_json(
     before = _single_link_regular_info(path, label=label, missing_ok=True)
     if before is None:
         return None
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    fd = -1
-    try:
-        try:
-            fd = os.open(path, flags)
-        except OSError as exc:
-            raise WorkerError(f"Unable to open {label} file {path}: {exc}") from exc
-        opened = os.fstat(fd)
-        if _is_link_or_reparse(opened) or not stat.S_ISREG(opened.st_mode):
-            raise WorkerError(f"{label} opened object is not a direct regular file: {path}")
-        if int(getattr(opened, "st_nlink", 1)) != 1:
-            raise WorkerError(f"{label} opened object must have exactly one hard link: {path}")
-        if _filesystem_identity(opened) != _filesystem_identity(before):
-            raise WorkerError(f"{label} file identity changed while opening: {path}")
-        with os.fdopen(fd, "r", encoding="utf-8") as handle:
-            fd = -1
-            value = json.load(handle)
-    finally:
-        if fd >= 0:
-            os.close(fd)
-    after = _single_link_regular_info(path, label=label)
-    if after is None or _filesystem_identity(after) != _filesystem_identity(before):
-        raise WorkerError(f"{label} file identity changed while reading: {path}")
+    value = _read_direct_json(
+        path,
+        label=label,
+        expected_identity=_filesystem_identity(before),
+        maximum_bytes=_MAX_RESULT_CACHE_BYTES,
+    )
     _assert_direct_directory_identity(directory, directory_identity, label="Worker result cache")
     return value
 
@@ -344,11 +359,16 @@ def _run_process_tree(command: list[str], *, cwd: Path, timeout: int) -> subproc
 
 
 def certificate_sha256(path: Path) -> str:
-    direct = _direct_existing_file(path, label="TLS certificate")
-    text = direct.read_text(encoding="utf-8")
+    direct = path.absolute()
+    raw = _read_direct_bytes(
+        direct,
+        label="TLS certificate",
+        maximum_bytes=_MAX_TLS_CERTIFICATE_BYTES,
+    )
     try:
+        text = raw.decode("utf-8")
         der = ssl.PEM_cert_to_DER_cert(text)
-    except ValueError as exc:
+    except (UnicodeDecodeError, ValueError) as exc:
         raise WorkerError(f"Invalid PEM certificate: {direct}") from exc
     return hashlib.sha256(der).hexdigest()
 
@@ -405,9 +425,10 @@ def create_source_archive(root: Path, files: list[Path]) -> bytes:
     if not files or len(files) > 2048:
         raise WorkerError("Remote source file count is invalid")
     root, root_identity = _pin_direct_directory(root, label="Remote source root")
-    prepared: list[tuple[str, Path, tuple[str, ...], tuple[int, int]]] = []
+    prepared: list[tuple[str, Path, tuple[str, ...], tuple[int, int], int]] = []
     seen: set[str] = set()
     seen_paths: set[Path] = set()
+    total_size = 0
     for supplied in files:
         file_path = Path(os.path.abspath(os.fspath(supplied)))
         if file_path in seen_paths:
@@ -423,19 +444,26 @@ def create_source_archive(root: Path, files: list[Path]) -> bytes:
         file_info = _single_link_regular_info(file_path, label="Remote source file")
         if file_info is None:
             raise WorkerError(f"Invalid remote source file: {file_path}")
+        file_size = int(file_info.st_size)
+        total_size += file_size
+        if total_size > _MAX_REMOTE_SOURCE_BYTES:
+            raise WorkerError("Remote source files exceed the configured limit")
         seen_paths.add(file_path)
         seen.add(canonical)
-        prepared.append((canonical, file_path, parts, _filesystem_identity(file_info)))
+        prepared.append((canonical, file_path, parts, _filesystem_identity(file_info), file_size))
     buffer = io.BytesIO()
-    total = 0
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for _, file_path, parts, file_identity in sorted(prepared, key=lambda item: str(item[1])):
+        for _, file_path, parts, file_identity, file_size in sorted(prepared, key=lambda item: str(item[1])):
             _assert_direct_directory_identity(root, root_identity, label="Remote source root")
-            raw = _read_direct_bytes(file_path, label="Remote source file", expected_identity=file_identity)
+            raw = _read_direct_bytes(
+                file_path,
+                label="Remote source file",
+                expected_identity=file_identity,
+                maximum_bytes=file_size,
+            )
+            if len(raw) != file_size:
+                raise WorkerError(f"Remote source file size changed before archive: {file_path}")
             _assert_direct_directory_identity(root, root_identity, label="Remote source root")
-            total += len(raw)
-            if total > 128 * 1024 * 1024:
-                raise WorkerError("Remote source files exceed 128 MiB")
             info = zipfile.ZipInfo("/".join(parts), date_time=(1980, 1, 1, 0, 0, 0))
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o100644 << 16
@@ -475,7 +503,11 @@ class WorkerConfig:
     def load(cls, path: Path) -> "WorkerConfig":
         config_path = _direct_existing_file(path, label="Worker configuration")
         base = config_path.parent
-        value = read_json(config_path)
+        value = _read_direct_json(
+            config_path,
+            label="Worker configuration",
+            maximum_bytes=_MAX_REMOTE_CONFIG_BYTES,
+        )
         if not isinstance(value, dict) or value.get("schema") != 1:
             raise WorkerError("Unsupported worker configuration")
         tls = value.get("tls") if isinstance(value.get("tls"), dict) else {}
@@ -681,8 +713,15 @@ class WindowsJobExecutor:
                 [self.config.powershell_executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(harness), "-Job", str(job_file)],
                 cwd=workspace, timeout=timeout_seconds,
             )
-            if output_file.is_file():
-                loaded = read_json(output_file)
+            output_info = _single_link_regular_info(output_file, label="Windows worker report", missing_ok=True)
+            if output_info is not None:
+                loaded_raw = _read_direct_bytes(
+                    output_file,
+                    label="Windows worker report",
+                    expected_identity=_filesystem_identity(output_info),
+                    maximum_bytes=_MAX_WORKER_REPORT_BYTES,
+                )
+                loaded = json.loads(loaded_raw.decode("utf-8"))
                 if not isinstance(loaded, dict):
                     raise WorkerError("Windows worker report root must be an object")
                 report = loaded
@@ -972,7 +1011,11 @@ class RemoteEndpoint:
     def load(cls, path: Path, *, trust_home: Path | None = None) -> "RemoteEndpoint":
         config_path = _direct_existing_file(path, label="Remote endpoint configuration")
         base = config_path.parent
-        value = read_json(config_path)
+        value = _read_direct_json(
+            config_path,
+            label="Remote endpoint configuration",
+            maximum_bytes=_MAX_REMOTE_CONFIG_BYTES,
+        )
         if not isinstance(value, dict) or value.get("schema") != 1:
             raise WorkerError("Unsupported remote endpoint configuration")
         tls = value.get("tls") if isinstance(value.get("tls"), dict) else {}
@@ -1056,6 +1099,23 @@ def _client_context(endpoint: RemoteEndpoint) -> ssl.SSLContext:
     return context
 
 
+def _read_bounded_response(response: Any) -> bytes:
+    content_length = response.getheader("Content-Length")
+    if content_length is not None:
+        try:
+            declared = int(content_length)
+        except (TypeError, ValueError) as exc:
+            raise WorkerError("Remote worker response Content-Length is invalid") from exc
+        if declared < 0:
+            raise WorkerError("Remote worker response Content-Length is invalid")
+        if declared > _MAX_REMOTE_RESPONSE_BYTES:
+            raise WorkerError("Remote worker response exceeds the configured limit")
+    raw = response.read(_MAX_REMOTE_RESPONSE_BYTES + 1)
+    if len(raw) > _MAX_REMOTE_RESPONSE_BYTES:
+        raise WorkerError("Remote worker response exceeds the configured limit")
+    return raw
+
+
 def _https_exchange(
     endpoint: RemoteEndpoint, method: str, path: str, *, body: bytes | None, headers: dict[str, str], timeout: int,
 ) -> tuple[int, bytes]:
@@ -1065,14 +1125,17 @@ def _https_exchange(
     base = parsed.path.rstrip("/") if parsed.path else ""
     connection = http.client.HTTPSConnection(parsed.hostname, parsed.port or 443, context=_client_context(endpoint), timeout=timeout)
     try:
-        connection.request(method, base + path, body=body, headers=headers)
+        connection.connect()
         if connection.sock is None:
             raise WorkerError("Remote worker TLS connection was not established")
         peer = connection.sock.getpeercert(binary_form=True)
+        if not peer:
+            raise WorkerError("Remote worker TLS peer certificate is missing")
         if endpoint.expected_server_certificate_sha256 and hashlib.sha256(peer).hexdigest().lower() != endpoint.expected_server_certificate_sha256.lower():
             raise WorkerError("Worker TLS certificate fingerprint mismatch")
+        connection.request(method, base + path, body=body, headers=headers)
         response = connection.getresponse()
-        return response.status, response.read()
+        return response.status, _read_bounded_response(response)
     except Exception as exc:
         if isinstance(exc, PSMatrixError):
             raise
