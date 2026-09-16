@@ -9,6 +9,7 @@ from psmatrix.http_sessions import ProjectSessionStore, SessionError, SessionLim
 
 class HTTPUploadQuotaSerializationTests(unittest.TestCase):
     def test_hardening_is_installed(self):
+        self.assertTrue(getattr(sessions, "_project_usage_identity_hardened", False))
         self.assertTrue(getattr(sessions, "_upload_quota_serialized", False))
         self.assertEqual(
             ProjectSessionStore.upload.__module__,
