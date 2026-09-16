@@ -92,7 +92,11 @@ def install() -> None:
 
     if not getattr(sessions, "_session_root_authority_hardened", False):
         raise RuntimeError("HTTP upload quota serialization requires session-root hardening")
-    if not getattr(sessions, "_directory_usage_identity_hardened", False):
+    usage_identity_hardened = bool(
+        getattr(sessions, "_directory_usage_identity_hardened", False)
+        or getattr(sessions, "_project_usage_identity_hardened", False)
+    )
+    if not usage_identity_hardened:
         raise RuntimeError("HTTP upload quota serialization requires identity-safe usage accounting")
 
     _ORIGINAL_UPLOAD = sessions.ProjectSessionStore.upload
