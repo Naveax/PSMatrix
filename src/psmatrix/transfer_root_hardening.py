@@ -210,9 +210,15 @@ def _open_or_create_windows_directory(
     if info is None:
         try:
             handle, identity = workspace_hardening._create_windows_directory_handle(adapter, path)
+        except transfer.TransferError as create_error:
+            # Another process may have created the shared transfer directory
+            # after the missing-path inspection. Accept only a direct native
+            # directory reopen; unsafe replacements still fail closed.
+            try:
+                handle, identity = zip_hardening._open_windows_directory(adapter, path)
+            except transfer.TransferError:
+                raise create_error
         except Exception as exc:
-            if isinstance(exc, transfer.TransferError):
-                raise
             raise transfer.TransferError(f"Unable to create {label}: {path}") from exc
     else:
         if transfer._is_link_or_reparse(info) or not stat.S_ISDIR(info.st_mode):

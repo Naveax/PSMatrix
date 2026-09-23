@@ -83,6 +83,31 @@ class TransferRootHardeningTests(unittest.TestCase):
             self.assertTrue(store.sessions.is_dir())
             self.assertTrue(store.objects.is_dir())
 
+    @unittest.skipUnless(os.name == "nt", "Windows transfer bootstrap concurrency regression")
+    def test_windows_bootstrap_reopens_concurrent_creator(self):
+        from psmatrix import remote_workspace_create_hardening as workspace_hardening
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "store"
+
+            def concurrent_winner(worker, path):
+                path.mkdir()
+                raise transfer.TransferError(
+                    f"Unable to atomically create worker job workspace {path}: WinError 183"
+                )
+
+            with patch.object(
+                workspace_hardening,
+                "_create_windows_directory_handle",
+                side_effect=concurrent_winner,
+            ):
+                store = transfer.TransferStore(root)
+
+            store._validate_roots()
+            self.assertEqual(store.root, root.resolve())
+            self.assertTrue(store.sessions.is_dir())
+            self.assertTrue(store.objects.is_dir())
+
 
 if __name__ == "__main__":
     unittest.main()
