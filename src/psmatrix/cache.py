@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import RuntimeSpec, TargetReport, target_report_from_dict
-from .util import atomic_write_json, read_json, sha256_file, utc_now_iso
+from .util import atomic_write_json, exclusive_lock, read_json, sha256_file, utc_now_iso
 
 _CACHE_SCHEMA = 2
 _EXECUTION_CONTEXT_EXCLUDED = {".git", ".psmatrix", "node_modules", "target", "__pycache__"}
@@ -688,89 +688,94 @@ class ResultCache:
             "report": report_value,
         }
         with self._lock:
-            if _direct_directory_stat(self.records) is None:
-                return False
-            try:
-                path.parent.mkdir(exist_ok=False)
-            except FileExistsError:
-                pass
-            except OSError:
-                return False
-            if _direct_directory_stat(path.parent) is None:
-                return False
-            atomic_write_json(path, payload)
+            with exclusive_lock(self.root / ".result-cache.lock"):
+                if _direct_directory_stat(self.records) is None:
+                    return False
+                try:
+                    path.parent.mkdir(exist_ok=False)
+                except FileExistsError:
+                    pass
+                except OSError:
+                    return False
+                if _direct_directory_stat(path.parent) is None:
+                    return False
+                atomic_write_json(path, payload)
         return True
 
     def clear(self) -> dict[str, int]:
-        before = self.stats()
-        if _direct_directory_stat(self.records) is None:
-            raise OSError("refusing to clear an indirect cache targets path")
-        try:
-            shutil.rmtree(self.records)
-        except FileNotFoundError:
-            pass
-        self.records.mkdir(parents=True, exist_ok=True)
-        if _direct_directory_stat(self.records) is None:
-            raise OSError("cache targets path could not be recreated safely")
-        return before
+        with self._lock:
+            with exclusive_lock(self.root / ".result-cache.lock"):
+                before = self.stats()
+                if _direct_directory_stat(self.records) is None:
+                    raise OSError("refusing to clear an indirect cache targets path")
+                try:
+                    shutil.rmtree(self.records)
+                except FileNotFoundError:
+                    pass
+                self.records.mkdir(parents=True, exist_ok=True)
+                if _direct_directory_stat(self.records) is None:
+                    raise OSError("cache targets path could not be recreated safely")
+                return before
 
     def prune(self, *, max_age_days: float | None = None, max_records: int | None = None) -> dict[str, int]:
-        files = self._record_files()
-        removed = 0
-        now = datetime.now(UTC)
-        if max_age_days is not None:
-            cutoff = now - timedelta(days=max_age_days)
-            for path in list(files):
-                try:
-                    payload = read_json(path)
-                    created = datetime.fromisoformat(str(payload.get("created_at")))
-                    if created.tzinfo is None:
-                        created = created.replace(tzinfo=UTC)
-                except (OSError, ValueError, TypeError):
-                    info = _regular_file_stat(path)
-                    if info is None:
-                        files.remove(path)
-                        continue
-                    created = datetime.fromtimestamp(info.st_mtime, UTC)
-                if created < cutoff:
+        with self._lock:
+            with exclusive_lock(self.root / ".result-cache.lock"):
+                files = self._record_files()
+                removed = 0
+                now = datetime.now(UTC)
+                if max_age_days is not None:
+                    cutoff = now - timedelta(days=max_age_days)
+                    for path in list(files):
+                        try:
+                            payload = read_json(path)
+                            created = datetime.fromisoformat(str(payload.get("created_at")))
+                            if created.tzinfo is None:
+                                created = created.replace(tzinfo=UTC)
+                        except (OSError, ValueError, TypeError):
+                            info = _regular_file_stat(path)
+                            if info is None:
+                                files.remove(path)
+                                continue
+                            created = datetime.fromtimestamp(info.st_mtime, UTC)
+                        if created < cutoff:
+                            try:
+                                path.unlink()
+                            except FileNotFoundError:
+                                files.remove(path)
+                                continue
+                            except OSError:
+                                continue
+                            files.remove(path)
+                            removed += 1
+                if max_records is not None:
+                    ranked = []
+                    for path in files:
+                        info = _regular_file_stat(path)
+                        if info is not None:
+                            ranked.append((path, info.st_mtime))
+                    ranked.sort(key=lambda item: item[1], reverse=True)
+                    for path, _mtime in ranked[max_records:]:
+                        try:
+                            path.unlink()
+                        except FileNotFoundError:
+                            continue
+                        except OSError:
+                            continue
+                        removed += 1
+                if _direct_directory_stat(self.records) is None:
+                    directories = []
+                else:
                     try:
-                        path.unlink()
-                    except FileNotFoundError:
-                        files.remove(path)
-                        continue
+                        directories = list(self.records.iterdir())
                     except OSError:
-                        continue
-                    files.remove(path)
-                    removed += 1
-        if max_records is not None:
-            ranked = []
-            for path in files:
-                info = _regular_file_stat(path)
-                if info is not None:
-                    ranked.append((path, info.st_mtime))
-            ranked.sort(key=lambda item: item[1], reverse=True)
-            for path, _mtime in ranked[max_records:]:
-                try:
-                    path.unlink()
-                except FileNotFoundError:
-                    continue
-                except OSError:
-                    continue
-                removed += 1
-        if _direct_directory_stat(self.records) is None:
-            directories = []
-        else:
-            try:
-                directories = list(self.records.iterdir())
-            except OSError:
-                directories = []
-        for directory in directories:
-            if _direct_directory_stat(directory) is not None:
-                try:
-                    directory.rmdir()
-                except OSError:
-                    pass
-        return {"removed": removed, **self.stats()}
+                        directories = []
+                for directory in directories:
+                    if _direct_directory_stat(directory) is not None:
+                        try:
+                            directory.rmdir()
+                        except OSError:
+                            pass
+                return {"removed": removed, **self.stats()}
 
     def stats(self) -> dict[str, int]:
         records = 0
