@@ -14,10 +14,18 @@ class HTTPUploadPublishIdentityTests(unittest.TestCase):
         store = ProjectSessionStore(root / "home")
         return store, store.create("principal")
 
-    def test_install_replaces_path_only_upload_implementation(self):
+    def test_install_preserves_publish_boundary_beneath_quota_wrapper(self):
+        from psmatrix import http_upload_quota_hardening as quota_hardening
+
         self.assertTrue(getattr(sessions, "_upload_publish_boundary_hardened", False))
+        self.assertTrue(getattr(sessions, "_upload_quota_serialized", False))
         self.assertEqual(
             ProjectSessionStore.upload.__module__,
+            "psmatrix.http_upload_quota_hardening",
+        )
+        self.assertIsNotNone(quota_hardening._ORIGINAL_UPLOAD)
+        self.assertEqual(
+            quota_hardening._ORIGINAL_UPLOAD.__module__,
             "psmatrix.http_upload_publish_hardening",
         )
 

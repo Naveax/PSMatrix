@@ -23,7 +23,8 @@ class ProductionGALocalProvisioningWorkspaceTests(unittest.TestCase):
         return subprocess.run(
             [str(self.pwsh), "-NoLogo", "-NoProfile", "-File", str(SCRIPT), "-Root", str(root), *extra],
             cwd=ROOT,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=90,

@@ -14,9 +14,10 @@ class HTTPSessionLimitsContractTests(unittest.TestCase):
             SessionLimits.validate.__module__,
             "psmatrix.http_session_limits_hardening",
         )
+        self.assertTrue(getattr(sessions, "_http_session_record_identity_hardened", False))
         self.assertEqual(
             ProjectSessionStore.get.__module__,
-            "psmatrix.http_session_limits_hardening",
+            "psmatrix.http_session_record_hardening",
         )
 
     def test_default_limits_remain_valid(self):
