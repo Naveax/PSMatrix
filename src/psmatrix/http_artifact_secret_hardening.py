@@ -3,11 +3,13 @@ from __future__ import annotations
 import os
 import secrets
 import stat
+import threading
 from pathlib import Path
 from typing import Any
 
 _INSTALLED = False
 _SECRET_BYTES = 32
+_SECRET_GUARD = threading.Lock()
 
 
 def _identity(info: os.stat_result) -> tuple[int, int]:
@@ -232,13 +234,30 @@ def _hardened_load_secret(self: Any) -> bytes:
     from . import http_upload_publish_hardening as upload_hardening
 
     if os.name == "nt":
+        from .util import exclusive_lock
+
         with upload_hardening._windows_parent(sessions, self.home, ("http",)):
             try:
                 return _read_windows_secret(sessions, self._secret_path)
             except sessions.SessionError:
-                if self._secret_path.exists():
-                    raise
-                return _create_windows_secret(sessions, self._secret_path)
+                pass
+
+            with _SECRET_GUARD:
+                # A sibling thread may have completed publication while this
+                # thread waited for the cheap in-process guard.
+                try:
+                    return _read_windows_secret(sessions, self._secret_path)
+                except sessions.SessionError:
+                    pass
+
+                lock_path = self._secret_path.with_name(".artifact-hmac.lock")
+                with exclusive_lock(lock_path):
+                    try:
+                        return _read_windows_secret(sessions, self._secret_path)
+                    except sessions.SessionError:
+                        if self._secret_path.exists():
+                            raise
+                        return _create_windows_secret(sessions, self._secret_path)
 
     with upload_hardening._posix_parent(sessions, self.home, ("http",)) as parent_fd:
         try:
