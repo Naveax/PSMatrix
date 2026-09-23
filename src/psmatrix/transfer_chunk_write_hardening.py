@@ -13,6 +13,7 @@ _ORIGINAL_PUT_CHUNK: Callable[..., Any] | None = None
 class _TransferWorkerAdapter:
     def __init__(self, transfer: Any):
         self.WorkerError = transfer.TransferError
+        self._is_link_or_reparse = transfer._is_link_or_reparse
 
 
 def _write_all(fd: int, data: bytes) -> None:

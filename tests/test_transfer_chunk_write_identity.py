@@ -22,6 +22,10 @@ class TransferChunkWriteIdentityTests(unittest.TestCase):
         )
         return store, str(created["transfer_id"]), payload
 
+    def test_worker_adapter_exposes_transfer_reparse_classifier(self):
+        adapter = hardening._TransferWorkerAdapter(transfer)
+        self.assertIs(adapter._is_link_or_reparse, transfer._is_link_or_reparse)
+
     def test_put_chunk_accepts_idempotent_same_bytes_and_rejects_different_bytes(self):
         with tempfile.TemporaryDirectory() as temp:
             store, transfer_id, payload = self._store(Path(temp))
