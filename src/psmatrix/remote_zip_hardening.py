@@ -211,6 +211,10 @@ def _windows_api() -> tuple[Any, Any, Any]:
 
 def _open_windows_directory(rw: Any, path: Path) -> tuple[Any, tuple[int, int]]:
     ctypes, kernel32, info_type = _windows_api()
+    # Attribute-only opens are exempt from Win32 share-mode enforcement.
+    # Request directory data access so omitting FILE_SHARE_DELETE actually
+    # prevents pathname replacement while the directory is pinned.
+    FILE_LIST_DIRECTORY = 0x0001
     FILE_READ_ATTRIBUTES = 0x0080
     FILE_SHARE_READ = 0x00000001
     FILE_SHARE_WRITE = 0x00000002
@@ -220,7 +224,15 @@ def _open_windows_directory(rw: Any, path: Path) -> tuple[Any, tuple[int, int]]:
     FILE_ATTRIBUTE_DIRECTORY = 0x00000010
     FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
     invalid = ctypes.c_void_p(-1).value
-    handle = kernel32.CreateFileW(str(path), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, None, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, None)
+    handle = kernel32.CreateFileW(
+        str(path),
+        FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        None,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+        None,
+    )
     if handle == invalid:
         error = ctypes.WinError(ctypes.get_last_error())
         raise rw.WorkerError(f"Unable to pin worker artifact directory {path}: {error}") from error
