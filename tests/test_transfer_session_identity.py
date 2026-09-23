@@ -134,8 +134,14 @@ class TransferSessionIdentityTests(unittest.TestCase):
             self.assertFalse((moved / "manifest.json").exists())
             self.assertFalse((replacement / "manifest.json").exists())
 
-    def test_install_wires_store_create(self):
-        self.assertIs(transfer.TransferStore.create, hardening._hardened_create)
+    def test_install_preserves_session_create_beneath_reuse_wrapper(self):
+        from psmatrix import transfer_create_reuse_hardening as reuse_hardening
+
+        self.assertIs(transfer.TransferStore.create, reuse_hardening._hardened_create)
+        self.assertIs(reuse_hardening._ORIGINAL_CREATE, hardening._hardened_create)
+        self.assertTrue(
+            getattr(transfer.TransferStore, "_session_creation_identity_hardened", False)
+        )
 
 
 if __name__ == "__main__":
