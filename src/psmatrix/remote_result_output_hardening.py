@@ -23,6 +23,9 @@ def _create_windows_output_slot(rw: Any, path: Path) -> Any:
             handles.append(handle)
 
         ctypes, kernel32, info_type = zip_hardening._windows_api()
+        # Attribute-only opens do not enforce the intended Win32 share lock.
+        # Read-data access keeps worker writes allowed while denying delete/replace.
+        FILE_READ_DATA = 0x0001
         FILE_READ_ATTRIBUTES = 0x0080
         FILE_SHARE_READ = 0x00000001
         FILE_SHARE_WRITE = 0x00000002
@@ -35,7 +38,7 @@ def _create_windows_output_slot(rw: Any, path: Path) -> Any:
 
         handle = kernel32.CreateFileW(
             str(absolute),
-            FILE_READ_ATTRIBUTES,
+            FILE_READ_DATA | FILE_READ_ATTRIBUTES,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             None,
             CREATE_NEW,
