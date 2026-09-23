@@ -9,10 +9,16 @@ from psmatrix import transfer_root_hardening as hardening
 
 
 class TransferRootHardeningTests(unittest.TestCase):
-    def test_install_replaces_transfer_store_initializer(self):
-        self.assertIs(transfer.TransferStore.__init__, hardening._hardened_init)
+    def test_install_preserves_root_bootstrap_beneath_lock_wrapper(self):
+        from psmatrix import transfer_lock_hardening as lock_hardening
+
+        self.assertIs(transfer.TransferStore.__init__, lock_hardening._hardened_init)
+        self.assertIs(lock_hardening._ORIGINAL_INIT, hardening._hardened_init)
         self.assertTrue(
             getattr(transfer.TransferStore, "_root_bootstrap_identity_hardened", False)
+        )
+        self.assertTrue(
+            getattr(transfer.TransferStore, "_lock_authority_identity_hardened", False)
         )
 
     @unittest.skipIf(os.name == "nt", "descriptor-relative POSIX regression")

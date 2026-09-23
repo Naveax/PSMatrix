@@ -84,8 +84,14 @@ class TransferObjectPublishBoundaryTests(unittest.TestCase):
             self.assertTrue(second["complete"])
             self.assertEqual((store.objects / digest).read_bytes(), data)
 
-    def test_install_wires_transfer_finalize(self):
-        self.assertIs(transfer.TransferStore.finalize, hardening._hardened_finalize)
+    def test_install_preserves_object_publish_beneath_temp_object_finalizer(self):
+        from psmatrix import transfer_temp_object_hardening as temp_hardening
+
+        self.assertIs(transfer.TransferStore.finalize, temp_hardening._hardened_finalize)
+        self.assertTrue(
+            getattr(transfer.TransferStore, "_object_publish_identity_hardened", False)
+        )
+        self.assertIsNotNone(hardening._ORIGINAL_FINALIZE)
 
 
 if __name__ == "__main__":
