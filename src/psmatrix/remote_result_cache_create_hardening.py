@@ -107,10 +107,23 @@ def _create_windows_result_cache(rw: Any, root: Path) -> tuple[Path, tuple[int, 
             raise rw.WorkerError(f"Unable to inspect worker result cache {path}: {exc}") from exc
 
         if info is None:
-            created_handle, created_identity = workspace_hardening._create_windows_directory_handle(
-                rw,
-                path,
-            )
+            try:
+                created_handle, created_identity = workspace_hardening._create_windows_directory_handle(
+                    rw,
+                    path,
+                )
+            except rw.WorkerError as create_error:
+                # Another worker process may have created the shared cache
+                # after the missing-path inspection. Reopen only if the
+                # winning path is still a direct directory; otherwise retain
+                # the original fail-closed create error.
+                try:
+                    created_handle, created_identity = zip_hardening._open_windows_directory(
+                        rw,
+                        path,
+                    )
+                except rw.WorkerError:
+                    raise create_error
             handles.append(created_handle)
         else:
             if rw._is_link_or_reparse(info) or not stat.S_ISDIR(info.st_mode):

@@ -70,6 +70,32 @@ class RemoteResultCacheCreateHardeningTests(unittest.TestCase):
             self.assertTrue(path.is_dir())
             rw._assert_direct_directory_identity(path, identity, label="Worker result cache")
 
+    @unittest.skipUnless(os.name == "nt", "Windows result-cache concurrency regression")
+    def test_windows_result_cache_reopens_concurrent_creator(self):
+        from psmatrix import remote_workspace_create_hardening as workspace_hardening
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            expected = root / ".job-results"
+
+            def concurrent_winner(worker, path):
+                self.assertEqual(path, expected)
+                path.mkdir()
+                raise rw.WorkerError(
+                    f"Unable to atomically create worker job workspace {path}: WinError 183"
+                )
+
+            with patch.object(
+                workspace_hardening,
+                "_create_windows_directory_handle",
+                side_effect=concurrent_winner,
+            ):
+                path, identity = hardening._create_windows_result_cache(rw, root)
+
+            self.assertEqual(path, expected)
+            self.assertTrue(path.is_dir())
+            rw._assert_direct_directory_identity(path, identity, label="Worker result cache")
+
 
 if __name__ == "__main__":
     unittest.main()
