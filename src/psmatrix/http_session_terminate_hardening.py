@@ -323,16 +323,18 @@ def _terminate_windows(
 
 
 def _hardened_terminate(self: Any, session_id: str, principal: str) -> None:
+    from . import http_session_record_hardening as record_hardening
     from . import http_session_root_hardening as root_hardening
     from . import http_sessions as sessions
 
     with self._lock:
         root_hardening._assert_root(self)
         self._record_path(session_id)
-        if os.name == "nt":
-            _terminate_windows(sessions, self, session_id, principal)
-        else:
-            _terminate_posix(sessions, self, session_id, principal)
+        with record_hardening._session_record_lock(self, session_id):
+            if os.name == "nt":
+                _terminate_windows(sessions, self, session_id, principal)
+            else:
+                _terminate_posix(sessions, self, session_id, principal)
         root_hardening._assert_root(self)
 
 
