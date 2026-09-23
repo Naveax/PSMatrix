@@ -129,6 +129,9 @@ def _open_windows_source_file(rw: Any, path: Path) -> tuple[Any, tuple[int, int]
     from . import remote_zip_hardening as zip_hardening
 
     ctypes, kernel32, info_type = zip_hardening._windows_api()
+    # Attribute-only opens are exempt from Win32 share-mode enforcement.
+    # Request read data so omitting WRITE/DELETE sharing actually pins bytes.
+    FILE_READ_DATA = 0x0001
     FILE_READ_ATTRIBUTES = 0x0080
     FILE_SHARE_READ = 0x00000001
     OPEN_EXISTING = 3
@@ -139,7 +142,7 @@ def _open_windows_source_file(rw: Any, path: Path) -> tuple[Any, tuple[int, int]
 
     handle = kernel32.CreateFileW(
         str(path),
-        FILE_READ_ATTRIBUTES,
+        FILE_READ_DATA | FILE_READ_ATTRIBUTES,
         FILE_SHARE_READ,
         None,
         OPEN_EXISTING,

@@ -68,6 +68,9 @@ def _open_windows_launch_file(rw: Any, path: Path) -> _PinnedLaunchFile:
             handles.append(handle)
 
         ctypes, kernel32, info_type = zip_hardening._windows_api()
+        # Attribute-only opens are exempt from Win32 share-mode enforcement.
+        # Request read data so omitting WRITE/DELETE sharing actually pins bytes.
+        FILE_READ_DATA = 0x0001
         FILE_READ_ATTRIBUTES = 0x0080
         FILE_SHARE_READ = 0x00000001
         OPEN_EXISTING = 3
@@ -78,7 +81,7 @@ def _open_windows_launch_file(rw: Any, path: Path) -> _PinnedLaunchFile:
 
         handle = kernel32.CreateFileW(
             str(absolute),
-            FILE_READ_ATTRIBUTES,
+            FILE_READ_DATA | FILE_READ_ATTRIBUTES,
             FILE_SHARE_READ,
             None,
             OPEN_EXISTING,

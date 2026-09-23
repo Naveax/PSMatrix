@@ -137,7 +137,10 @@ class RemoteWorkerHarnessSecurityTests(unittest.TestCase):
                 report, reset = executor(request, _artifact())
 
             self.assertEqual(report["status"], "FAIL_WORKER")
-            self.assertIn("symlink or reparse point", report["worker_error"])
+            self.assertRegex(
+                report["worker_error"],
+                r"symlink or reparse point|Unable to atomically create worker job workspace",
+            )
             self.assertFalse(reset["required"])
             self.assertEqual(marker.read_text(encoding="utf-8"), "keep\n")
             run_process.assert_not_called()
