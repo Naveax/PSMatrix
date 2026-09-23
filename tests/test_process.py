@@ -441,9 +441,10 @@ class ProcessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             pid_path = root / "resource-child.pid"
+            base_executable = getattr(sys, "_base_executable", None) or sys.executable
             result = run_process(
                 [
-                    sys.executable,
+                    base_executable,
                     "-c",
                     (
                         "import subprocess,sys,time\n"
