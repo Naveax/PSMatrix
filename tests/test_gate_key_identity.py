@@ -15,6 +15,26 @@ class GateKeyIdentityTests(unittest.TestCase):
         self.assertTrue(getattr(gate, "_key_identity_hardened", False))
         self.assertEqual(gate._load_key.__module__, "psmatrix.gate_key_hardening")
 
+    @unittest.skipUnless(os.name == "nt", "Windows metadata stamp semantics")
+    def test_windows_stamp_ignores_ctime_skew(self):
+        first = mock.Mock(
+            st_size=347,
+            st_mtime_ns=123456789,
+            st_mtime=0,
+            st_ctime_ns=1000,
+            st_ctime=0,
+            st_nlink=1,
+        )
+        second = mock.Mock(
+            st_size=347,
+            st_mtime_ns=123456789,
+            st_mtime=0,
+            st_ctime_ns=2000,
+            st_ctime=0,
+            st_nlink=1,
+        )
+        self.assertEqual(hardening._stamp(first), hardening._stamp(second))
+
     def test_create_persists_and_reuses_same_key(self):
         with tempfile.TemporaryDirectory() as temp:
             home = Path(temp) / "home"

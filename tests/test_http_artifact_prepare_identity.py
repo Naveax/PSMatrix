@@ -34,12 +34,12 @@ class HTTPArtifactPrepareIdentityTests(unittest.TestCase):
     def test_direct_reader_enforces_artifact_limit_while_hashing(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            limits = SessionLimits(max_artifact_bytes=4)
+            limits = SessionLimits(max_artifact_bytes=1024)
             store = ProjectSessionStore(root / "home", limits)
             record = store.create("principal")
             target = record.root / ".psmatrix" / "mcp" / "report.json"
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(b"12345")
+            target.write_bytes(b"x" * 1025)
             with self.assertRaises(SessionError):
                 store.prepare_artifact(record, ".psmatrix/mcp/report.json", purpose="diagnostic")
 

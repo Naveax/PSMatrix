@@ -18,13 +18,17 @@ def _identity(info: os.stat_result) -> tuple[int, int]:
     return int(info.st_dev), int(info.st_ino)
 
 
-def _stamp(info: os.stat_result) -> tuple[int, int, int, int]:
-    return (
+def _stamp(info: os.stat_result) -> tuple[int, ...]:
+    values = [
         int(info.st_size),
         int(getattr(info, "st_mtime_ns", int(info.st_mtime * 1_000_000_000))),
-        int(getattr(info, "st_ctime_ns", int(info.st_ctime * 1_000_000_000))),
-        int(getattr(info, "st_nlink", 1)),
-    )
+    ]
+    if os.name != "nt":
+        values.append(
+            int(getattr(info, "st_ctime_ns", int(info.st_ctime * 1_000_000_000)))
+        )
+    values.append(int(getattr(info, "st_nlink", 1)))
+    return tuple(values)
 
 
 def _is_reparse(info: os.stat_result) -> bool:
