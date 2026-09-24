@@ -74,7 +74,7 @@ class HTTPSessionTerminateIdentityTests(unittest.TestCase):
             self.assertTrue(marker.is_file())
             self.assertEqual(marker.read_text(encoding="utf-8"), "keep")
 
-    @unittest.skipUnless(os.name == "posix", "POSIX quarantine-race coverage")
+    @unittest.skipUnless(os.name in {"posix", "nt"}, "quarantine-race coverage requires POSIX or Windows")
     def test_quarantine_replacement_fails_closed_after_session_is_terminated(self):
         from psmatrix import http_session_terminate_hardening as hardening
 
