@@ -27,6 +27,7 @@ class RemoteHealthAttestationChallengeTests(unittest.TestCase):
 
     def tearDown(self):
         self._temp.cleanup()
+
     def _capabilities(self):
         return {
             "worker_id": self.worker_id,
