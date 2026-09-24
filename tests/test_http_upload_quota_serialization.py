@@ -1,5 +1,9 @@
+import os
+import subprocess
+import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -88,6 +92,60 @@ class HTTPUploadQuotaSerializationTests(unittest.TestCase):
 
             self.assertNotIn(first_key, hardening._SESSION_LOCKS)
             self.assertNotIn(first_key, hardening._SESSION_LOCK_USERS)
+
+    def test_cross_process_upload_waits_for_session_quota_lock(self):
+        from psmatrix import http_upload_quota_hardening as hardening
+        from psmatrix.util import exclusive_lock
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = root / "home"
+            ready = root / "ready"
+            store = ProjectSessionStore(home)
+            record = store.create("principal")
+            lock_path = hardening._cross_process_lock_path(store, record)
+
+            child = r"""
+import sys
+from pathlib import Path
+from psmatrix.http_sessions import ProjectSessionStore
+
+home = Path(sys.argv[1])
+session_id = sys.argv[2]
+ready = Path(sys.argv[3])
+store = ProjectSessionStore(home)
+record = store.get(session_id, "principal", touch=False)
+ready.write_text("ready", encoding="utf-8")
+store.upload(record, "child.bin", b"X" * 32)
+print("done", flush=True)
+"""
+            process = None
+            try:
+                with exclusive_lock(lock_path):
+                    process = subprocess.Popen(
+                        [sys.executable, "-c", child, str(home), record.session_id, str(ready)],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        env=dict(os.environ),
+                    )
+                    deadline = time.monotonic() + 10.0
+                    while not ready.exists() and process.poll() is None:
+                        if time.monotonic() >= deadline:
+                            self.fail("child did not reach upload boundary")
+                        time.sleep(0.01)
+                    self.assertTrue(ready.exists())
+                    time.sleep(0.25)
+                    self.assertIsNone(process.poll(), "child upload bypassed the cross-process quota lock")
+
+                stdout, stderr = process.communicate(timeout=10)
+                self.assertEqual(process.returncode, 0, stderr)
+                self.assertEqual(stdout.strip(), "done")
+                self.assertEqual((record.root / "child.bin").read_bytes(), b"X" * 32)
+            finally:
+                if process is not None and process.poll() is None:
+                    process.kill()
+                    process.communicate(timeout=5)
 
 
 if __name__ == "__main__":

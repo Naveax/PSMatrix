@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import threading
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator
@@ -25,6 +26,12 @@ def _session_key(self: Any, record: Any) -> tuple[int, int, str]:
     if not session_id:
         raise sessions.SessionError("HTTP upload session identity is missing")
     return int(root_identity[0]), int(root_identity[1]), session_id
+
+
+def _cross_process_lock_path(self: Any, record: Any) -> Any:
+    _, _, session_id = _session_key(self, record)
+    digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+    return self.root / ".upload-quota-locks" / f"{digest}.lock"
 
 
 @contextmanager
@@ -64,19 +71,32 @@ def _hardened_upload(
     if _ORIGINAL_UPLOAD is None:
         raise RuntimeError("HTTP upload quota serialization is not installed")
 
-    # Multiple store instances can authorize uploads into the same session.
-    # Serialize the quota scan + publication by the initialized store-root
-    # filesystem identity and session ID rather than a mutable pathname. The
-    # per-store lock remains nested for compatibility with the base store.
+    # Multiple store instances and processes can authorize uploads into
+    # the same session. Keep the in-process identity lock as the cheap fast
+    # path, then serialize the quota scan + publication across processes with
+    # a direct, identity-pinned lock file outside the project quota tree.
+    from . import http_session_root_hardening as root_hardening
+    from . import http_sessions as sessions
+    from .util import exclusive_lock
+
     with _session_lock(self, record):
-        with self._lock:
-            return _ORIGINAL_UPLOAD(
-                self,
-                record,
-                path,
-                data,
-                content_type=content_type,
-            )
+        root_hardening._assert_root(self)
+        lock_path = _cross_process_lock_path(self, record)
+        try:
+            with exclusive_lock(lock_path):
+                root_hardening._assert_root(self)
+                with self._lock:
+                    result = _ORIGINAL_UPLOAD(
+                        self,
+                        record,
+                        path,
+                        data,
+                        content_type=content_type,
+                    )
+                root_hardening._assert_root(self)
+                return result
+        except OSError as exc:
+            raise sessions.SessionError("Unable to acquire HTTP upload quota lock") from exc
 
 
 def install() -> None:

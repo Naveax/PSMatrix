@@ -9,6 +9,19 @@ from psmatrix import transfer
 from psmatrix import transfer_session_hardening as session_hardening
 
 
+def _manifest_value(transfer_id: str) -> dict:
+    return transfer.TransferManifest(
+        transfer_id=transfer_id,
+        controller_id="controller-a",
+        artifact_sha256="a" * 64,
+        artifact_size=1,
+        chunk_size=1,
+        chunk_count=1,
+        created_at="2026-01-01T00:00:00+00:00",
+        expires_at="2099-01-01T00:00:00+00:00",
+    ).to_dict()
+
+
 class TransferSessionNativeCreateTests(unittest.TestCase):
     @unittest.skipIf(os.name == "nt", "POSIX descriptor-relative regression")
     def test_posix_session_creation_still_uses_descriptor_relative_path(self):
@@ -19,6 +32,7 @@ class TransferSessionNativeCreateTests(unittest.TestCase):
                 transfer,
                 store,
                 session,
+                _manifest_value(session.name),
             )
             self.assertTrue(direct_session.is_dir())
             self.assertTrue(direct_chunks.is_dir())
@@ -47,6 +61,7 @@ class TransferSessionNativeCreateTests(unittest.TestCase):
                     transfer,
                     store,
                     session,
+                    _manifest_value(session.name),
                 )
 
             self.assertEqual(created, [session, session / "chunks"])
@@ -63,7 +78,12 @@ class TransferSessionNativeCreateTests(unittest.TestCase):
             sentinel.write_text("keep", encoding="utf-8")
 
             with self.assertRaises(transfer.TransferError):
-                session_hardening._create_session_tree(transfer, store, session)
+                session_hardening._create_session_tree(
+                    transfer,
+                    store,
+                    session,
+                    _manifest_value(session.name),
+                )
 
             self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep")
 

@@ -14,10 +14,18 @@ class HTTPUploadPublishIdentityTests(unittest.TestCase):
         store = ProjectSessionStore(root / "home")
         return store, store.create("principal")
 
-    def test_install_replaces_path_only_upload_implementation(self):
+    def test_install_preserves_publish_boundary_beneath_quota_wrapper(self):
+        from psmatrix import http_upload_quota_hardening as quota_hardening
+
         self.assertTrue(getattr(sessions, "_upload_publish_boundary_hardened", False))
+        self.assertTrue(getattr(sessions, "_upload_quota_serialized", False))
         self.assertEqual(
             ProjectSessionStore.upload.__module__,
+            "psmatrix.http_upload_quota_hardening",
+        )
+        self.assertIsNotNone(quota_hardening._ORIGINAL_UPLOAD)
+        self.assertEqual(
+            quota_hardening._ORIGINAL_UPLOAD.__module__,
             "psmatrix.http_upload_publish_hardening",
         )
 
@@ -39,6 +47,32 @@ class HTTPUploadPublishIdentityTests(unittest.TestCase):
             detail = store.upload(record, "replace.txt", b"new-value")
             self.assertEqual((record.root / "replace.txt").read_bytes(), b"new-value")
             self.assertEqual(detail["sha256"], hashlib.sha256(b"new-value").hexdigest())
+
+    def test_windows_parent_reopens_when_concurrent_creator_wins(self):
+        from psmatrix import http_upload_publish_hardening as hardening
+        from psmatrix import remote_zip_hardening as zip_hardening
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            root_handle = object()
+            child_handle = object()
+            open_directory = mock.Mock(
+                side_effect=[
+                    (root_handle, (1, 1)),
+                    SessionError("missing"),
+                    (child_handle, (1, 2)),
+                ]
+            )
+            with (
+                mock.patch.object(zip_hardening, "_windows_chain", return_value=[root]),
+                mock.patch.object(zip_hardening, "_open_windows_directory", open_directory),
+                mock.patch.object(zip_hardening, "_close_windows_handle"),
+                mock.patch.object(Path, "mkdir", side_effect=FileExistsError),
+            ):
+                with hardening._windows_parent(sessions, root, ("http",)) as parent:
+                    self.assertEqual(parent, root / "http")
+
+            self.assertEqual(open_directory.call_count, 3)
 
     @unittest.skipUnless(os.name == "posix", "POSIX descriptor-relative parent semantics")
     def test_symlinked_upload_parent_is_rejected_before_publication(self):

@@ -6,12 +6,16 @@ import json
 import os
 import secrets
 import stat
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterator
 
 _INSTALLED = False
+_LOCK_GUARD = threading.Lock()
+_SESSION_LOCKS: dict[tuple[int, int, str], threading.RLock] = {}
+_SESSION_LOCK_USERS: dict[tuple[int, int, str], int] = {}
 
 
 def _identity(info: os.stat_result) -> tuple[int, int]:
@@ -32,6 +36,60 @@ def _validate_record(sessions: Any, info: os.stat_result) -> None:
 
 def _json_bytes(value: Any) -> bytes:
     return (json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def _session_lock_key(store: Any, session_id: str) -> tuple[int, int, str]:
+    from . import http_sessions as sessions
+
+    root_identity = getattr(store, "_session_store_root_identity", None)
+    if (
+        not isinstance(root_identity, tuple)
+        or len(root_identity) != 2
+        or not all(isinstance(value, int) for value in root_identity)
+    ):
+        raise sessions.SessionError("HTTP session-record lock authority is uninitialized")
+    if not session_id:
+        raise sessions.SessionError("HTTP session identity is missing")
+    return int(root_identity[0]), int(root_identity[1]), session_id
+
+
+@contextmanager
+def _session_record_lock(store: Any, session_id: str) -> Iterator[None]:
+    from . import http_session_root_hardening as root_hardening
+    from . import http_sessions as sessions
+    from .util import exclusive_lock
+
+    key = _session_lock_key(store, session_id)
+    with _LOCK_GUARD:
+        lock = _SESSION_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _SESSION_LOCKS[key] = lock
+            _SESSION_LOCK_USERS[key] = 0
+        _SESSION_LOCK_USERS[key] += 1
+
+    lock.acquire()
+    try:
+        root_hardening._assert_root(store)
+        digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+        lock_path = store.root / ".session-record-locks" / f"{digest}.lock"
+        try:
+            with exclusive_lock(lock_path):
+                root_hardening._assert_root(store)
+                yield
+                root_hardening._assert_root(store)
+        except OSError as exc:
+            raise sessions.SessionError("Unable to acquire HTTP session-record lock") from exc
+    finally:
+        lock.release()
+        with _LOCK_GUARD:
+            users = _SESSION_LOCK_USERS.get(key, 0) - 1
+            if users <= 0:
+                _SESSION_LOCK_USERS.pop(key, None)
+                if _SESSION_LOCKS.get(key) is lock:
+                    _SESSION_LOCKS.pop(key, None)
+            else:
+                _SESSION_LOCK_USERS[key] = users
 
 
 def _decode_record(sessions: Any, raw: bytes) -> dict[str, Any]:
@@ -380,54 +438,55 @@ def _hardened_get(
         # Preserve the canonical session-id grammar and root-authority check.
         self._record_path(session_id)
 
-        if os.name == "nt":
-            with _windows_session_parent(sessions, self, session_id) as session_dir:
-                value = _read_windows_record(sessions, session_dir)
-                expiry, limits = _validate_record_value(
-                    sessions,
-                    value,
-                    session_id=session_id,
-                    principal=principal,
-                )
-                if expiry <= sessions.datetime.now(sessions.UTC):
-                    value["terminated"] = True
-                    _publish_windows_record(sessions, session_dir, value)
-                    raise sessions.SessionError("Session expired")
-                if touch:
-                    value["last_seen_at"] = sessions.utc_now_iso()
-                    _publish_windows_record(sessions, session_dir, value)
-                result = _record_from_value(
-                    sessions,
-                    value,
-                    session_id=session_id,
-                    principal=principal,
-                    session_dir=session_dir,
-                    limits=limits,
-                )
-        else:
-            with _posix_session_parent(sessions, self, session_id) as (parent_fd, session_dir):
-                value = _read_posix_record(sessions, parent_fd)
-                expiry, limits = _validate_record_value(
-                    sessions,
-                    value,
-                    session_id=session_id,
-                    principal=principal,
-                )
-                if expiry <= sessions.datetime.now(sessions.UTC):
-                    value["terminated"] = True
-                    _publish_posix_record(sessions, parent_fd, value)
-                    raise sessions.SessionError("Session expired")
-                if touch:
-                    value["last_seen_at"] = sessions.utc_now_iso()
-                    _publish_posix_record(sessions, parent_fd, value)
-                result = _record_from_value(
-                    sessions,
-                    value,
-                    session_id=session_id,
-                    principal=principal,
-                    session_dir=session_dir,
-                    limits=limits,
-                )
+        with _session_record_lock(self, session_id):
+            if os.name == "nt":
+                with _windows_session_parent(sessions, self, session_id) as session_dir:
+                    value = _read_windows_record(sessions, session_dir)
+                    expiry, limits = _validate_record_value(
+                        sessions,
+                        value,
+                        session_id=session_id,
+                        principal=principal,
+                    )
+                    if expiry <= sessions.datetime.now(sessions.UTC):
+                        value["terminated"] = True
+                        _publish_windows_record(sessions, session_dir, value)
+                        raise sessions.SessionError("Session expired")
+                    if touch:
+                        value["last_seen_at"] = sessions.utc_now_iso()
+                        _publish_windows_record(sessions, session_dir, value)
+                    result = _record_from_value(
+                        sessions,
+                        value,
+                        session_id=session_id,
+                        principal=principal,
+                        session_dir=session_dir,
+                        limits=limits,
+                    )
+            else:
+                with _posix_session_parent(sessions, self, session_id) as (parent_fd, session_dir):
+                    value = _read_posix_record(sessions, parent_fd)
+                    expiry, limits = _validate_record_value(
+                        sessions,
+                        value,
+                        session_id=session_id,
+                        principal=principal,
+                    )
+                    if expiry <= sessions.datetime.now(sessions.UTC):
+                        value["terminated"] = True
+                        _publish_posix_record(sessions, parent_fd, value)
+                        raise sessions.SessionError("Session expired")
+                    if touch:
+                        value["last_seen_at"] = sessions.utc_now_iso()
+                        _publish_posix_record(sessions, parent_fd, value)
+                    result = _record_from_value(
+                        sessions,
+                        value,
+                        session_id=session_id,
+                        principal=principal,
+                        session_dir=session_dir,
+                        limits=limits,
+                    )
 
         root_hardening._assert_root(self)
         return result

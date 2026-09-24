@@ -9,10 +9,16 @@ from psmatrix import transfer_root_hardening as hardening
 
 
 class TransferRootHardeningTests(unittest.TestCase):
-    def test_install_replaces_transfer_store_initializer(self):
-        self.assertIs(transfer.TransferStore.__init__, hardening._hardened_init)
+    def test_install_preserves_root_bootstrap_beneath_lock_wrapper(self):
+        from psmatrix import transfer_lock_hardening as lock_hardening
+
+        self.assertIs(transfer.TransferStore.__init__, lock_hardening._hardened_init)
+        self.assertIs(lock_hardening._ORIGINAL_INIT, hardening._hardened_init)
         self.assertTrue(
             getattr(transfer.TransferStore, "_root_bootstrap_identity_hardened", False)
+        )
+        self.assertTrue(
+            getattr(transfer.TransferStore, "_lock_authority_identity_hardened", False)
         )
 
     @unittest.skipIf(os.name == "nt", "descriptor-relative POSIX regression")
@@ -74,6 +80,31 @@ class TransferRootHardeningTests(unittest.TestCase):
             store = transfer.TransferStore(root)
             store._validate_roots()
             self.assertTrue(store.root.is_dir())
+            self.assertTrue(store.sessions.is_dir())
+            self.assertTrue(store.objects.is_dir())
+
+    @unittest.skipUnless(os.name == "nt", "Windows transfer bootstrap concurrency regression")
+    def test_windows_bootstrap_reopens_concurrent_creator(self):
+        from psmatrix import remote_workspace_create_hardening as workspace_hardening
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "store"
+
+            def concurrent_winner(worker, path):
+                path.mkdir()
+                raise transfer.TransferError(
+                    f"Unable to atomically create worker job workspace {path}: WinError 183"
+                )
+
+            with patch.object(
+                workspace_hardening,
+                "_create_windows_directory_handle",
+                side_effect=concurrent_winner,
+            ):
+                store = transfer.TransferStore(root)
+
+            store._validate_roots()
+            self.assertEqual(store.root, root.resolve())
             self.assertTrue(store.sessions.is_dir())
             self.assertTrue(store.objects.is_dir())
 

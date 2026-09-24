@@ -1,5 +1,8 @@
 import os
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -27,6 +30,56 @@ class HTTPSessionRecordIdentityTests(unittest.TestCase):
             ):
                 loaded = store.get(record.session_id, "principal")
             self.assertEqual(loaded.session_id, record.session_id)
+
+    def test_cross_process_touch_waits_for_session_record_lock(self):
+        from psmatrix import http_session_record_hardening as hardening
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = root / "home"
+            ready = root / "ready"
+            store = ProjectSessionStore(home)
+            record = store.create("principal")
+
+            child = r"""
+import sys
+from pathlib import Path
+from psmatrix.http_sessions import ProjectSessionStore
+
+home = Path(sys.argv[1])
+session_id = sys.argv[2]
+ready = Path(sys.argv[3])
+store = ProjectSessionStore(home)
+ready.write_text("ready", encoding="utf-8")
+store.get(session_id, "principal", touch=True)
+print("done", flush=True)
+"""
+            process = None
+            try:
+                with hardening._session_record_lock(store, record.session_id):
+                    process = subprocess.Popen(
+                        [sys.executable, "-c", child, str(home), record.session_id, str(ready)],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        env=dict(os.environ),
+                    )
+                    deadline = time.monotonic() + 10.0
+                    while not ready.exists() and process.poll() is None:
+                        if time.monotonic() >= deadline:
+                            self.fail("child did not reach session-record boundary")
+                        time.sleep(0.01)
+                    self.assertTrue(ready.exists())
+                    time.sleep(0.25)
+                    self.assertIsNone(process.poll(), "child touch bypassed the session-record lock")
+
+                stdout, stderr = process.communicate(timeout=10)
+                self.assertEqual(process.returncode, 0, stderr)
+                self.assertEqual(stdout.strip(), "done")
+            finally:
+                if process is not None and process.poll() is None:
+                    process.kill()
+                    process.communicate(timeout=5)
 
     @unittest.skipUnless(hasattr(os, "link"), "hardlinks unavailable")
     def test_hardlinked_session_record_is_rejected(self):

@@ -48,6 +48,12 @@ def _artifact() -> bytes:
     return buffer.getvalue()
 
 
+def _close_executor(executor) -> None:
+    finalizer = getattr(executor, "_psmatrix_launch_pin_finalizer", None)
+    if finalizer is not None and getattr(finalizer, "alive", False):
+        finalizer()
+
+
 class RemoteWorkerHarnessSecurityTests(unittest.TestCase):
     def test_executor_rejects_reparse_harness_at_construction(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -70,21 +76,24 @@ class RemoteWorkerHarnessSecurityTests(unittest.TestCase):
             workspace = root / "workspaces"
             workspace.mkdir()
             executor = WindowsJobExecutor(_config(workspace), harness)
+            try:
 
-            request = {
-                "job_id": str(uuid.uuid4()),
-                "entrypoint": "entry.ps1",
-                "options": {"timeout_seconds": 30},
-            }
-            original_lstat = Path.lstat
-            with patch.object(Path, "lstat", _reparse_lstat(original_lstat, {executor.harness})), \
-                 patch("psmatrix.remote_worker._run_process_tree") as run_process:
-                report, reset = executor(request, _artifact())
+                request = {
+                    "job_id": str(uuid.uuid4()),
+                    "entrypoint": "entry.ps1",
+                    "options": {"timeout_seconds": 30},
+                }
+                original_lstat = Path.lstat
+                with patch.object(Path, "lstat", _reparse_lstat(original_lstat, {executor.harness})), \
+                     patch("psmatrix.remote_worker._run_process_tree") as run_process:
+                    report, reset = executor(request, _artifact())
 
-            self.assertEqual(report["status"], "FAIL_WORKER")
-            self.assertIn("symlink or reparse point", report["worker_error"])
-            self.assertFalse(reset["required"])
-            run_process.assert_not_called()
+                self.assertEqual(report["status"], "FAIL_WORKER")
+                self.assertIn("symlink or reparse point", report["worker_error"])
+                self.assertFalse(reset["required"])
+                run_process.assert_not_called()
+            finally:
+                _close_executor(executor)
 
     def test_executor_revalidates_workspace_root_before_job_mutation(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -94,23 +103,26 @@ class RemoteWorkerHarnessSecurityTests(unittest.TestCase):
             workspace = root / "workspaces"
             workspace.mkdir()
             executor = WindowsJobExecutor(_config(workspace), harness)
+            try:
 
-            job_id = str(uuid.uuid4())
-            request = {
-                "job_id": job_id,
-                "entrypoint": "entry.ps1",
-                "options": {"timeout_seconds": 30},
-            }
-            original_lstat = Path.lstat
-            with patch.object(Path, "lstat", _reparse_lstat(original_lstat, {workspace})), \
-                 patch("psmatrix.remote_worker._run_process_tree") as run_process:
-                report, reset = executor(request, _artifact())
+                job_id = str(uuid.uuid4())
+                request = {
+                    "job_id": job_id,
+                    "entrypoint": "entry.ps1",
+                    "options": {"timeout_seconds": 30},
+                }
+                original_lstat = Path.lstat
+                with patch.object(Path, "lstat", _reparse_lstat(original_lstat, {workspace})), \
+                     patch("psmatrix.remote_worker._run_process_tree") as run_process:
+                    report, reset = executor(request, _artifact())
 
-            self.assertEqual(report["status"], "FAIL_WORKER")
-            self.assertIn("symlink or reparse point", report["worker_error"])
-            self.assertFalse(reset["required"])
-            self.assertFalse((workspace / job_id).exists())
-            run_process.assert_not_called()
+                self.assertEqual(report["status"], "FAIL_WORKER")
+                self.assertIn("symlink or reparse point", report["worker_error"])
+                self.assertFalse(reset["required"])
+                self.assertFalse((workspace / job_id).exists())
+                run_process.assert_not_called()
+            finally:
+                _close_executor(executor)
 
     def test_executor_rejects_indirect_existing_job_directory_before_delete(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -120,27 +132,33 @@ class RemoteWorkerHarnessSecurityTests(unittest.TestCase):
             workspace = root / "workspaces"
             workspace.mkdir()
             executor = WindowsJobExecutor(_config(workspace), harness)
+            try:
 
-            job_id = str(uuid.uuid4())
-            job_dir = workspace / job_id
-            job_dir.mkdir()
-            marker = job_dir / "marker.txt"
-            marker.write_text("keep\n", encoding="utf-8")
-            request = {
-                "job_id": job_id,
-                "entrypoint": "entry.ps1",
-                "options": {"timeout_seconds": 30},
-            }
-            original_lstat = Path.lstat
-            with patch.object(Path, "lstat", _reparse_lstat(original_lstat, {job_dir})), \
-                 patch("psmatrix.remote_worker._run_process_tree") as run_process:
-                report, reset = executor(request, _artifact())
+                job_id = str(uuid.uuid4())
+                job_dir = workspace / job_id
+                job_dir.mkdir()
+                marker = job_dir / "marker.txt"
+                marker.write_text("keep\n", encoding="utf-8")
+                request = {
+                    "job_id": job_id,
+                    "entrypoint": "entry.ps1",
+                    "options": {"timeout_seconds": 30},
+                }
+                original_lstat = Path.lstat
+                with patch.object(Path, "lstat", _reparse_lstat(original_lstat, {job_dir})), \
+                     patch("psmatrix.remote_worker._run_process_tree") as run_process:
+                    report, reset = executor(request, _artifact())
 
-            self.assertEqual(report["status"], "FAIL_WORKER")
-            self.assertIn("symlink or reparse point", report["worker_error"])
-            self.assertFalse(reset["required"])
-            self.assertEqual(marker.read_text(encoding="utf-8"), "keep\n")
-            run_process.assert_not_called()
+                self.assertEqual(report["status"], "FAIL_WORKER")
+                self.assertRegex(
+                    report["worker_error"],
+                    r"symlink or reparse point|Unable to atomically create worker job workspace",
+                )
+                self.assertFalse(reset["required"])
+                self.assertEqual(marker.read_text(encoding="utf-8"), "keep\n")
+                run_process.assert_not_called()
+            finally:
+                _close_executor(executor)
 
 
 if __name__ == "__main__":

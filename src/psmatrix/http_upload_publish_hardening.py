@@ -117,11 +117,11 @@ def _windows_parent(
             try:
                 handle, _ = zip_hardening._open_windows_directory(shim, child)
             except sessions.SessionError:
-                if child.exists():
-                    raise
                 try:
                     child.mkdir(mode=0o700)
                 except FileExistsError:
+                    # Another creator may have won the race. The direct
+                    # directory pin below remains the authority check.
                     pass
                 except OSError as exc:
                     raise sessions.SessionError("Unable to create an upload parent directory") from exc

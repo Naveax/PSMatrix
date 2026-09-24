@@ -162,7 +162,6 @@ def _windows_path_identity(
 def _purge_windows_directory(
     sessions: Any,
     path: Path,
-    delete_handle: Any,
     expected: tuple[int, int],
 ) -> None:
     from . import remote_zip_hardening as zip_hardening
@@ -175,8 +174,6 @@ def _purge_windows_directory(
         if pin_identity != expected:
             raise sessions.SessionError(f"Terminated session directory identity changed: {path}")
         for name in sorted(os.listdir(path)):
-            if _windows_path_identity(sessions, path, directory=True) != expected:
-                raise sessions.SessionError(f"Terminated session directory identity changed: {path}")
             child = path / name
             directory_handle = None
             try:
@@ -204,13 +201,13 @@ def _purge_windows_directory(
                 visible = _windows_path_identity(sessions, child, directory=True)
                 if visible != child_identity:
                     raise sessions.SessionError(f"Terminated session child identity changed: {child}")
+                purge_hardening._close_windows_handle(directory_handle)
+                directory_handle = None
                 _purge_windows_directory(
                     sessions,
                     child,
-                    directory_handle,
                     child_identity,
                 )
-                directory_handle = None
             finally:
                 if directory_handle is not None:
                     purge_hardening._close_windows_handle(directory_handle)
@@ -220,8 +217,25 @@ def _purge_windows_directory(
     finally:
         zip_hardening._close_windows_handle(pin)
 
-    purge_hardening._delete_windows_handle(adapter, delete_handle, path)
-    purge_hardening._close_windows_handle(delete_handle)
+    delete_handle, delete_identity = purge_hardening._open_windows_delete_handle(
+        adapter,
+        path,
+        directory=True,
+    )
+    try:
+        if delete_identity != expected:
+            raise sessions.SessionError(f"Terminated session directory identity changed before delete: {path}")
+        purge_hardening._delete_windows_handle(adapter, delete_handle, path)
+    finally:
+        purge_hardening._close_windows_handle(delete_handle)
+
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise sessions.SessionError(f"Unable to verify terminated session directory deletion: {path}") from exc
+    raise sessions.SessionError(f"Terminated session directory was replaced during delete: {path}")
 
 
 def _purge_windows_child(
@@ -252,8 +266,9 @@ def _purge_windows_child(
         visible = _windows_path_identity(sessions, quarantine, directory=True)
         if visible != expected:
             raise sessions.SessionError(f"Terminated session {name} quarantine identity changed")
-        _purge_windows_directory(sessions, quarantine, delete_handle, expected)
+        purge_hardening._close_windows_handle(delete_handle)
         delete_handle = None
+        _purge_windows_directory(sessions, quarantine, expected)
         renamed = False
     finally:
         if delete_handle is not None:
@@ -323,16 +338,18 @@ def _terminate_windows(
 
 
 def _hardened_terminate(self: Any, session_id: str, principal: str) -> None:
+    from . import http_session_record_hardening as record_hardening
     from . import http_session_root_hardening as root_hardening
     from . import http_sessions as sessions
 
     with self._lock:
         root_hardening._assert_root(self)
         self._record_path(session_id)
-        if os.name == "nt":
-            _terminate_windows(sessions, self, session_id, principal)
-        else:
-            _terminate_posix(sessions, self, session_id, principal)
+        with record_hardening._session_record_lock(self, session_id):
+            if os.name == "nt":
+                _terminate_windows(sessions, self, session_id, principal)
+            else:
+                _terminate_posix(sessions, self, session_id, principal)
         root_hardening._assert_root(self)
 
 

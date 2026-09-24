@@ -105,8 +105,11 @@ class TransferFinalizeReadIdentityTests(unittest.TestCase):
             self.assertFalse((replacement / "complete.json").exists())
             self.assertFalse((renamed / "complete.json").exists())
 
-    def test_install_replaces_finalize(self):
-        self.assertIs(transfer.TransferStore.finalize, hardening._hardened_finalize)
+    def test_install_preserves_finalize_read_beneath_temp_object_wrapper(self):
+        from psmatrix import transfer_temp_object_hardening as temp_hardening
+
+        self.assertIs(transfer.TransferStore.finalize, temp_hardening._hardened_finalize)
+        self.assertIs(temp_hardening._ORIGINAL_FINALIZE, hardening._hardened_finalize)
         self.assertTrue(
             getattr(transfer.TransferStore, "_finalize_read_identity_hardened", False)
         )

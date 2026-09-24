@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
@@ -15,6 +16,28 @@ class HTTPSessionTerminateIdentityTests(unittest.TestCase):
             ProjectSessionStore.terminate.__module__,
             "psmatrix.http_session_terminate_hardening",
         )
+
+    def test_terminate_uses_session_record_lock(self):
+        from psmatrix import http_session_record_hardening as record_hardening
+
+        with tempfile.TemporaryDirectory() as temp:
+            store = ProjectSessionStore(Path(temp) / "home")
+            record = store.create("principal")
+            events = []
+
+            @contextmanager
+            def locked(_store, session_id):
+                events.append(("enter", session_id))
+                yield
+                events.append(("exit", session_id))
+
+            with mock.patch.object(record_hardening, "_session_record_lock", new=locked):
+                store.terminate(record.session_id, "principal")
+
+            self.assertEqual(
+                events,
+                [("enter", record.session_id), ("exit", record.session_id)],
+            )
 
     def test_terminate_avoids_path_json_and_shutil_rmtree(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -51,7 +74,7 @@ class HTTPSessionTerminateIdentityTests(unittest.TestCase):
             self.assertTrue(marker.is_file())
             self.assertEqual(marker.read_text(encoding="utf-8"), "keep")
 
-    @unittest.skipUnless(os.name == "posix", "POSIX quarantine-race coverage")
+    @unittest.skipUnless(os.name in {"posix", "nt"}, "quarantine-race coverage requires POSIX or Windows")
     def test_quarantine_replacement_fails_closed_after_session_is_terminated(self):
         from psmatrix import http_session_terminate_hardening as hardening
 

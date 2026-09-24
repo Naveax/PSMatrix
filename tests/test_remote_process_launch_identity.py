@@ -78,6 +78,7 @@ class RemoteProcessLaunchIdentityTests(unittest.TestCase):
             harness.write_text("Write-Output ok", encoding="utf-8")
             runtime_pin = _FakePin(runtime, (1, 10))
             harness_pin = _FakePin(harness, (1, 11))
+            taskkill_pin = _FakePin(root / "taskkill.exe", (1, 12))
             config = SimpleNamespace(powershell_executable="powershell.exe")
 
             with patch.object(hardening, "_is_windows", return_value=True), patch.object(
@@ -87,7 +88,7 @@ class RemoteProcessLaunchIdentityTests(unittest.TestCase):
             ), patch.object(
                 hardening,
                 "_open_windows_launch_file",
-                side_effect=[runtime_pin, harness_pin],
+                side_effect=[runtime_pin, harness_pin, taskkill_pin],
             ):
                 executor = WindowsJobExecutor(config, harness)
 

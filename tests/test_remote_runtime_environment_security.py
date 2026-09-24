@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from psmatrix import remote_process_identity_hardening as process_hardening
 from psmatrix import remote_runtime_environment_hardening as hardening
+from psmatrix import remote_timeout_cleanup_hardening as timeout_hardening
 from psmatrix import remote_worker as rw
 
 
@@ -72,9 +73,14 @@ class RemoteRuntimeEnvironmentTests(unittest.TestCase):
                     "trusted",
                 )
 
-    def test_install_replaces_only_remote_worker_subprocess_reference(self):
-        self.assertIsInstance(rw.subprocess, hardening._SubprocessProxy)
+    def test_install_preserves_runtime_environment_beneath_timeout_cleanup_proxy(self):
+        self.assertIsInstance(
+            rw.subprocess,
+            timeout_hardening._TimeoutCleanupSubprocessProxy,
+        )
+        self.assertIsInstance(rw.subprocess._delegate, hardening._SubprocessProxy)
         self.assertTrue(getattr(rw, "_runtime_environment_identity_hardened", False))
+        self.assertTrue(getattr(rw, "_timeout_cleanup_identity_hardened", False))
 
 
 if __name__ == "__main__":
