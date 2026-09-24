@@ -14,7 +14,14 @@ function Get-PathComparison() {
     return [StringComparison]::Ordinal
 }
 function Test-PathEqual([string]$Left, [string]$Right) {
-    return [string]::Equals([IO.Path]::GetFullPath($Left), [IO.Path]::GetFullPath($Right), (Get-PathComparison))
+    $comparison = Get-PathComparison
+    $leftFull = [IO.Path]::GetFullPath($Left)
+    $rightFull = [IO.Path]::GetFullPath($Right)
+    $leftRoot = [IO.Path]::GetPathRoot($leftFull)
+    $rightRoot = [IO.Path]::GetPathRoot($rightFull)
+    if (-not [string]::Equals($leftFull, $leftRoot, $comparison)) { $leftFull = $leftFull.TrimEnd([char]92,[char]47) }
+    if (-not [string]::Equals($rightFull, $rightRoot, $comparison)) { $rightFull = $rightFull.TrimEnd([char]92,[char]47) }
+    return [string]::Equals($leftFull, $rightFull, $comparison)
 }
 function Test-PathInside([string]$Path, [string]$RootPath) {
     $prefix = [IO.Path]::GetFullPath($RootPath).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
