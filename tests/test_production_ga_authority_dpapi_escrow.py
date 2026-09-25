@@ -132,6 +132,8 @@ class ProductionGAAuthorityDpapiEscrowTests(unittest.TestCase):
         pwsh = shutil.which("pwsh")
         assert pwsh is not None
         with tempfile.TemporaryDirectory() as temporary:
+            environment = os.environ.copy()
+            environment.pop("OS", None)
             root = Path(temporary)
             authority = root / "authorities"
             escrow = root / "escrow"
@@ -159,6 +161,7 @@ class ProductionGAAuthorityDpapiEscrowTests(unittest.TestCase):
                     str(protect_report),
                 ],
                 cwd=ROOT,
+                env=environment,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -204,6 +207,7 @@ class ProductionGAAuthorityDpapiEscrowTests(unittest.TestCase):
                     str(restore_report),
                 ],
                 cwd=ROOT,
+                env=environment,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -242,6 +246,7 @@ class ProductionGAAuthorityDpapiEscrowTests(unittest.TestCase):
                     str(tampered_destination),
                 ],
                 cwd=ROOT,
+                env=environment,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,

@@ -197,7 +197,7 @@ function Assert-AuthorityManifest {
     return $rows
 }
 
-if ($env:OS -ne 'Windows_NT') {
+if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
     throw 'Production GA DPAPI escrow requires Windows CurrentUser DPAPI.'
 }
 
