@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,9 +21,13 @@ class ProductionGALocalProvisioningWorkspaceTests(unittest.TestCase):
             raise unittest.SkipTest("PowerShell 7 required")
 
     def _run(self, root: Path, *extra: str) -> subprocess.CompletedProcess[str]:
+        environment = os.environ.copy()
+        python_parent_with_separator = str(Path(sys.executable).parent) + os.sep
+        environment["PATH"] = python_parent_with_separator + os.pathsep + environment.get("PATH", "")
         return subprocess.run(
             [str(self.pwsh), "-NoLogo", "-NoProfile", "-File", str(SCRIPT), "-Root", str(root), *extra],
             cwd=ROOT,
+            env=environment,
             encoding="utf-8",
             errors="replace",
             stdout=subprocess.PIPE,
