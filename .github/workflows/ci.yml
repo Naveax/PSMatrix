@@ -102,9 +102,11 @@ jobs:
                   if ($LASTEXITCODE -ne 0) {
                       throw "Frozen branch-object fetch failed: $LASTEXITCODE"
                   }
-                  & git fetch --no-tags origin $eventRef
+                  # PR merge refs are mutable and may advance while a queued run waits.
+                  # Fetch the immutable event snapshot commit recorded in GITHUB_SHA instead.
+                  & git fetch --no-tags origin $expected
                   if ($LASTEXITCODE -ne 0) {
-                      throw "Exact event-ref fetch failed: $LASTEXITCODE"
+                      throw "Exact event SHA fetch failed: $LASTEXITCODE"
                   }
               }
               finally {
@@ -118,7 +120,7 @@ jobs:
                   throw 'Unable to resolve fetched event revision.'
               }
               if ($fetched -ne $expected) {
-                  throw "Fetched event revision $fetched does not match GITHUB_SHA $expected."
+                  throw "Fetched event SHA $fetched does not match GITHUB_SHA $expected."
               }
               & git checkout --detach --force $expected
               if ($LASTEXITCODE -ne 0) {
