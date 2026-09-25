@@ -58,9 +58,31 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_CI_TOKEN)) {
               throw 'GitHub token is unavailable for exact native checkout.'
           }
+          function Clear-WorkspaceContents([string]$Path) {
+              for ($attempt = 1; $attempt -le 3; $attempt++) {
+                  $entries = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop)
+                  if ($entries.Count -eq 0) {
+                      return
+                  }
+                  foreach ($entry in $entries) {
+                      try {
+                          Remove-Item -LiteralPath $entry.FullName -Recurse -Force -ErrorAction Stop
+                      }
+                      catch [System.Management.Automation.ItemNotFoundException] {
+                          if ((Test-Path -LiteralPath $entry.FullName) -and $attempt -eq 3) {
+                              throw
+                          }
+                      }
+                  }
+              }
+              $remaining = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop)
+              if ($remaining.Count -ne 0) {
+                  throw "Workspace cleanup did not converge; remaining entries: $($remaining.Count)"
+              }
+          }
           Push-Location $env:GITHUB_WORKSPACE
           try {
-              Get-ChildItem -Force | Remove-Item -Recurse -Force -ErrorAction Stop
+              Clear-WorkspaceContents $env:GITHUB_WORKSPACE
               & git init .
               if ($LASTEXITCODE -ne 0) {
                   throw "git init failed: $LASTEXITCODE"
@@ -421,7 +443,29 @@ jobs:
           if (-not (Test-Path -LiteralPath $workspace -PathType Container)) {
               New-Item -ItemType Directory -Path $workspace -Force | Out-Null
           }
-          Get-ChildItem -LiteralPath $workspace -Force | Remove-Item -Recurse -Force -ErrorAction Stop
+          function Clear-WorkspaceContents([string]$Path) {
+              for ($attempt = 1; $attempt -le 3; $attempt++) {
+                  $entries = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop)
+                  if ($entries.Count -eq 0) {
+                      return
+                  }
+                  foreach ($entry in $entries) {
+                      try {
+                          Remove-Item -LiteralPath $entry.FullName -Recurse -Force -ErrorAction Stop
+                      }
+                      catch [System.Management.Automation.ItemNotFoundException] {
+                          if ((Test-Path -LiteralPath $entry.FullName) -and $attempt -eq 3) {
+                              throw
+                          }
+                      }
+                  }
+              }
+              $remaining = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop)
+              if ($remaining.Count -ne 0) {
+                  throw "Workspace cleanup did not converge; remaining entries: $($remaining.Count)"
+              }
+          }
+          Clear-WorkspaceContents $workspace
           Expand-Archive -LiteralPath $archive -DestinationPath $workspace -Force
           if (-not (Test-Path -LiteralPath (Join-Path $workspace 'pyproject.toml') -PathType Leaf)) {
               throw 'Frozen source restore is missing pyproject.toml.'
