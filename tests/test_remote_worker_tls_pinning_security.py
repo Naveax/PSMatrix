@@ -18,9 +18,17 @@ class _Socket:
 
 class _Response:
     status = 202
+    _body = b"accepted"
 
-    def read(self) -> bytes:
-        return b"accepted"
+    def getheader(self, name: str):
+        if name.lower() == "content-length":
+            return str(len(self._body))
+        return None
+
+    def read(self, amount: int | None = None) -> bytes:
+        if amount is None:
+            return self._body
+        return self._body[:amount]
 
 
 def _connection_type(certificate: bytes | None, *, create_socket: bool = True):
