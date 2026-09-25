@@ -1,10 +1,15 @@
+import os
 import shutil
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from psmatrix.cache import ResultCache
+from psmatrix.util import exclusive_lock
 
 
 class CacheConcurrentMaintenanceTests(unittest.TestCase):
@@ -108,6 +113,114 @@ class CacheConcurrentMaintenanceTests(unittest.TestCase):
             # An unreadable/disappearing records root is not trustworthy enough
             # to report records that maintenance cannot enumerate directly.
             self.assertEqual(result["records"], 0)
+
+    def test_cross_process_store_waits_for_cache_mutation_lock(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            cache_root = root / "cache"
+            ready = root / "ready-store"
+            cache = ResultCache(cache_root)
+            lock_path = cache.root / ".result-cache.lock"
+            child = r"""
+import sys
+from pathlib import Path
+from psmatrix.cache import ResultCache, cache_key
+from psmatrix.models import TargetReport
+
+cache_root = Path(sys.argv[1])
+ready = Path(sys.argv[2])
+cache = ResultCache(cache_root)
+source = cache_root.parent / "child.ps1"
+source.write_text("'ok'", encoding="utf-8")
+report = TargetReport(
+    runtime_id="powershell-7.6.4-linux-x64",
+    runtime_version="7.6.4",
+    source=str(source),
+    source_sha256="c" * 64,
+    status="PASS",
+    parse_ok=True,
+)
+material = {"key": "value"}
+key = cache_key(material)
+ready.write_text("ready", encoding="utf-8")
+if not cache.store(key, report, material):
+    raise SystemExit(2)
+print("done", flush=True)
+"""
+            process = None
+            try:
+                with exclusive_lock(lock_path):
+                    process = subprocess.Popen(
+                        [sys.executable, "-c", child, str(cache_root), str(ready)],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        env=dict(os.environ),
+                    )
+                    deadline = time.monotonic() + 10.0
+                    while not ready.exists() and process.poll() is None:
+                        if time.monotonic() >= deadline:
+                            self.fail("child did not reach cache store boundary")
+                        time.sleep(0.01)
+                    self.assertTrue(ready.exists())
+                    time.sleep(0.25)
+                    self.assertIsNone(process.poll(), "child store bypassed cache mutation lock")
+
+                stdout, stderr = process.communicate(timeout=10)
+                self.assertEqual(process.returncode, 0, stderr)
+                self.assertEqual(stdout.strip(), "done")
+            finally:
+                if process is not None and process.poll() is None:
+                    process.kill()
+                    process.communicate(timeout=5)
+
+    def test_cross_process_clear_waits_for_cache_mutation_lock(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            cache_root = root / "cache"
+            ready = root / "ready-clear"
+            cache = ResultCache(cache_root)
+            self._record(cache, "a" * 64)
+            lock_path = cache.root / ".result-cache.lock"
+            child = r"""
+import sys
+from pathlib import Path
+from psmatrix.cache import ResultCache
+
+cache_root = Path(sys.argv[1])
+ready = Path(sys.argv[2])
+cache = ResultCache(cache_root)
+ready.write_text("ready", encoding="utf-8")
+cache.clear()
+print("done", flush=True)
+"""
+            process = None
+            try:
+                with exclusive_lock(lock_path):
+                    process = subprocess.Popen(
+                        [sys.executable, "-c", child, str(cache_root), str(ready)],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        env=dict(os.environ),
+                    )
+                    deadline = time.monotonic() + 10.0
+                    while not ready.exists() and process.poll() is None:
+                        if time.monotonic() >= deadline:
+                            self.fail("child did not reach cache clear boundary")
+                        time.sleep(0.01)
+                    self.assertTrue(ready.exists())
+                    time.sleep(0.25)
+                    self.assertIsNone(process.poll(), "child clear bypassed cache mutation lock")
+
+                stdout, stderr = process.communicate(timeout=10)
+                self.assertEqual(process.returncode, 0, stderr)
+                self.assertEqual(stdout.strip(), "done")
+                self.assertEqual(cache.stats(), {"records": 0, "bytes": 0})
+            finally:
+                if process is not None and process.poll() is None:
+                    process.kill()
+                    process.communicate(timeout=5)
 
 
 if __name__ == "__main__":
