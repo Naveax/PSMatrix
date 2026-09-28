@@ -76,19 +76,21 @@ class RemoteWorkerBoundedFileReadTests(unittest.TestCase):
             workspace = root / "workspaces"
             workspace.mkdir()
             executor = WindowsJobExecutor(_config(workspace), harness)
+            try:
+                def run_process(command, *, cwd, timeout):
+                    (cwd / ".psmatrix-worker-result.json").write_bytes(b'{"x":12}\n')
+                    return subprocess.CompletedProcess(command, 0, "", "")
 
-            def run_process(command, *, cwd, timeout):
-                (cwd / ".psmatrix-worker-result.json").write_bytes(b'{"x":12}\n')
-                return subprocess.CompletedProcess(command, 0, "", "")
+                with patch("psmatrix.remote_worker._MAX_WORKER_REPORT_BYTES", 8), patch(
+                    "psmatrix.remote_worker._run_process_tree", side_effect=run_process
+                ):
+                    report, reset = executor(_request(), _artifact())
 
-            with patch("psmatrix.remote_worker._MAX_WORKER_REPORT_BYTES", 8), patch(
-                "psmatrix.remote_worker._run_process_tree", side_effect=run_process
-            ):
-                report, reset = executor(_request(), _artifact())
-
-            self.assertEqual(report["status"], "FAIL_WORKER")
-            self.assertIn("exceeds the configured read limit", report["worker_error"])
-            self.assertFalse(reset["required"])
+                self.assertEqual(report["status"], "FAIL_WORKER")
+                self.assertIn("exceeds the configured read limit", report["worker_error"])
+                self.assertFalse(reset["required"])
+            finally:
+                executor._psmatrix_launch_pin_finalizer()
 
     def test_executor_rejects_symlink_worker_report(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -100,21 +102,23 @@ class RemoteWorkerBoundedFileReadTests(unittest.TestCase):
             outside = root / "outside.json"
             outside.write_text('{"schema":1,"status":"PASS","worker_id":"worker-51","targets":[]}\n', encoding="utf-8")
             executor = WindowsJobExecutor(_config(workspace), harness)
+            try:
+                def run_process(command, *, cwd, timeout):
+                    output = cwd / ".psmatrix-worker-result.json"
+                    try:
+                        output.symlink_to(outside)
+                    except (OSError, NotImplementedError) as exc:
+                        self.skipTest(f"symlink creation is unavailable: {exc}")
+                    return subprocess.CompletedProcess(command, 0, "", "")
 
-            def run_process(command, *, cwd, timeout):
-                output = cwd / ".psmatrix-worker-result.json"
-                try:
-                    output.symlink_to(outside)
-                except (OSError, NotImplementedError) as exc:
-                    self.skipTest(f"symlink creation is unavailable: {exc}")
-                return subprocess.CompletedProcess(command, 0, "", "")
+                with patch("psmatrix.remote_worker._run_process_tree", side_effect=run_process):
+                    report, reset = executor(_request(), _artifact())
 
-            with patch("psmatrix.remote_worker._run_process_tree", side_effect=run_process):
-                report, reset = executor(_request(), _artifact())
-
-            self.assertEqual(report["status"], "FAIL_WORKER")
-            self.assertIn("symlink or reparse point", report["worker_error"])
-            self.assertFalse(reset["required"])
+                self.assertEqual(report["status"], "FAIL_WORKER")
+                self.assertIn("symlink or reparse point", report["worker_error"])
+                self.assertFalse(reset["required"])
+            finally:
+                executor._psmatrix_launch_pin_finalizer()
 
     def test_executor_accepts_small_direct_worker_report(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -124,21 +128,23 @@ class RemoteWorkerBoundedFileReadTests(unittest.TestCase):
             workspace = root / "workspaces"
             workspace.mkdir()
             executor = WindowsJobExecutor(_config(workspace), harness)
+            try:
+                def run_process(command, *, cwd, timeout):
+                    (cwd / ".psmatrix-worker-result.json").write_text(
+                        '{"schema":1,"status":"PASS","worker_id":"worker-51","targets":[]}\n',
+                        encoding="utf-8",
+                    )
+                    return subprocess.CompletedProcess(command, 0, "stdout", "stderr")
 
-            def run_process(command, *, cwd, timeout):
-                (cwd / ".psmatrix-worker-result.json").write_text(
-                    '{"schema":1,"status":"PASS","worker_id":"worker-51","targets":[]}\n',
-                    encoding="utf-8",
-                )
-                return subprocess.CompletedProcess(command, 0, "stdout", "stderr")
+                with patch("psmatrix.remote_worker._run_process_tree", side_effect=run_process):
+                    report, reset = executor(_request(), _artifact())
 
-            with patch("psmatrix.remote_worker._run_process_tree", side_effect=run_process):
-                report, reset = executor(_request(), _artifact())
-
-            self.assertEqual(report["status"], "PASS")
-            self.assertEqual(report["worker_id"], "worker-51")
-            self.assertEqual(report["worker_execution"]["exit_code"], 0)
-            self.assertFalse(reset["required"])
+                self.assertEqual(report["status"], "PASS")
+                self.assertEqual(report["worker_id"], "worker-51")
+                self.assertEqual(report["worker_execution"]["exit_code"], 0)
+                self.assertFalse(reset["required"])
+            finally:
+                executor._psmatrix_launch_pin_finalizer()
 
 
 if __name__ == "__main__":
