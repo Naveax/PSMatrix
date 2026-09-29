@@ -44,6 +44,13 @@ from .transfer_object_publish_hardening import install as _install_transfer_obje
 _install_transfer_object_publish_hardening()
 del _install_transfer_object_publish_hardening
 
+# Bootstrap the transfer root, sessions, and objects directories by stable
+# descriptor/handle identity instead of recursive pathname-only mkdir calls.
+from .transfer_root_hardening import install as _install_transfer_root_hardening
+
+_install_transfer_root_hardening()
+del _install_transfer_root_hardening
+
 # Create new transfer session/chunks directories relative to the pinned sessions
 # root identity instead of trusting mutable pathnames during mkdir.
 from .transfer_session_hardening import install as _install_transfer_session_hardening
