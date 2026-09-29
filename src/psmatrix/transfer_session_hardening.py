@@ -32,6 +32,7 @@ def _create_session_tree(transfer: Any, store: Any, session: Path) -> tuple[Path
         raise transfer.TransferError("Transfer session parent is not the pinned sessions directory")
 
     if os.name == "nt":
+        from . import remote_workspace_create_hardening as workspace_hardening
         from . import remote_zip_hardening as zip_hardening
 
         adapter = _TransferWorkerAdapter(transfer)
@@ -40,47 +41,59 @@ def _create_session_tree(transfer: Any, store: Any, session: Path) -> tuple[Path
             for component in zip_hardening._windows_chain(parent):
                 handle, _ = zip_hardening._open_windows_directory(adapter, component)
                 handles.append(handle)
-            try:
-                session.mkdir(parents=False, exist_ok=False)
-            except OSError as exc:
-                raise transfer.TransferError(f"Unable to create transfer session: {session}") from exc
-            session, session_info = transfer._direct_directory(session, label="Transfer session")
-            session_handle, session_identity = zip_hardening._open_windows_directory(adapter, session)
-            handles.append(session_handle)
-            expected_identity = (
-                int(getattr(session_info, "st_dev", 0)),
-                int(getattr(session_info, "st_ino", 0)),
+
+            session_handle, session_identity = workspace_hardening._create_windows_directory_handle(
+                adapter,
+                session,
             )
-            # On Windows Python stat IDs can be zero on some versions/filesystems,
-            # so the Win32 handle identity is authoritative while the handle lives.
+            handles.append(session_handle)
+            verification, visible_session_identity = zip_hardening._open_windows_directory(
+                adapter,
+                session,
+            )
+            try:
+                if visible_session_identity != session_identity:
+                    raise transfer.TransferError(
+                        "Transfer session identity changed immediately after native create"
+                    )
+            finally:
+                zip_hardening._close_windows_handle(verification)
             if session_identity == (0, 0):
                 raise transfer.TransferError("Transfer session has no stable Windows file identity")
+
             chunks = session / "chunks"
+            chunks_handle, chunks_identity = workspace_hardening._create_windows_directory_handle(
+                adapter,
+                chunks,
+            )
+            handles.append(chunks_handle)
+            verification, visible_chunks_identity = zip_hardening._open_windows_directory(
+                adapter,
+                chunks,
+            )
             try:
-                chunks.mkdir(parents=False, exist_ok=False)
-            except OSError as exc:
-                raise transfer.TransferError(f"Unable to create transfer chunks directory: {chunks}") from exc
-            chunks, _ = transfer._direct_directory(chunks, label="Transfer chunks directory")
-            chunk_handle, _ = zip_hardening._open_windows_directory(adapter, chunks)
-            handles.append(chunk_handle)
+                if visible_chunks_identity != chunks_identity:
+                    raise transfer.TransferError(
+                        "Transfer chunks identity changed immediately after native create"
+                    )
+            finally:
+                zip_hardening._close_windows_handle(verification)
+            if chunks_identity == (0, 0):
+                raise transfer.TransferError(
+                    "Transfer chunks directory has no stable Windows file identity"
+                )
+
+            direct_session, _ = transfer._direct_directory(session, label="Transfer session")
+            direct_chunks, _ = transfer._direct_directory(
+                chunks,
+                label="Transfer chunks directory",
+            )
             _assert_sessions_parent(transfer, store)
-            return session, chunks
-        except Exception:
-            # Cleanup only paths created by this transaction. Parent/session pins
-            # prevent pathname replacement while cleanup is attempted.
-            try:
-                chunks = session / "chunks"
-                if chunks.exists():
-                    chunks.rmdir()
-            except OSError:
-                pass
-            try:
-                if session.exists():
-                    session.rmdir()
-            except OSError:
-                pass
-            raise
+            return direct_session, direct_chunks
         finally:
+            # Do not attempt pathname cleanup after a partially successful native
+            # transaction. An incomplete UUID session has no manifest and is
+            # ignored by normal lookup; purge can later quarantine it by identity.
             for handle in reversed(handles):
                 try:
                     zip_hardening._close_windows_handle(handle)
