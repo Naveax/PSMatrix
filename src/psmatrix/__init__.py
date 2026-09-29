@@ -271,3 +271,10 @@ from .http_session_create_hardening import install as _install_http_session_crea
 
 _install_http_session_create_hardening()
 del _install_http_session_create_hardening
+
+# Terminate sessions through the pinned session authority and quarantine/delete
+# project/home trees without pathname-based shutil.rmtree traversal.
+from .http_session_terminate_hardening import install as _install_http_session_terminate_hardening
+
+_install_http_session_terminate_hardening()
+del _install_http_session_terminate_hardening
