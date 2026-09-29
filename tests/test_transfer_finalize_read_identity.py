@@ -37,6 +37,7 @@ class TransferFinalizeReadIdentityTests(unittest.TestCase):
             result = store.finalize(transfer_id, controller_id="controller-a")
             self.assertTrue(result["complete"])
             self.assertEqual((store.objects / digest).read_bytes(), data)
+            self.assertTrue((store.sessions / transfer_id / "complete.json").is_file())
 
     @unittest.skipIf(os.name == "nt", "POSIX descriptor-relative regression")
     def test_posix_session_replacement_during_chunk_read_fails_closed(self):
@@ -71,6 +72,38 @@ class TransferFinalizeReadIdentityTests(unittest.TestCase):
             self.assertTrue(swapped)
             self.assertEqual((renamed / "chunks" / "00000000.bin").read_bytes(), data)
             self.assertEqual((replacement / "chunks" / "00000000.bin").read_bytes(), b"x" * len(data))
+
+    @unittest.skipIf(os.name == "nt", "POSIX descriptor-relative regression")
+    def test_posix_completion_refuses_replacement_session(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store, transfer_id, _, _ = self._store_with_chunk(Path(temp))
+            session = store.sessions / transfer_id
+            renamed = store.sessions / f".{transfer_id}.original"
+            replacement = store.sessions / transfer_id
+            original_write = hardening._write_completion_for_session
+            swapped = False
+
+            def replacing_write(module, active_store, canonical, expected_session, value):
+                nonlocal swapped
+                if not swapped:
+                    swapped = True
+                    session.rename(renamed)
+                    replacement.mkdir()
+                return original_write(
+                    module,
+                    active_store,
+                    canonical,
+                    expected_session,
+                    value,
+                )
+
+            with patch.object(hardening, "_write_completion_for_session", side_effect=replacing_write):
+                with self.assertRaises(transfer.TransferError):
+                    store.finalize(transfer_id, controller_id="controller-a")
+
+            self.assertTrue(swapped)
+            self.assertFalse((replacement / "complete.json").exists())
+            self.assertFalse((renamed / "complete.json").exists())
 
     def test_install_replaces_finalize(self):
         self.assertIs(transfer.TransferStore.finalize, hardening._hardened_finalize)
