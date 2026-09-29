@@ -10,16 +10,25 @@ WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 class CIExactEventShaCheckoutTests(unittest.TestCase):
     def test_checkout_fetches_immutable_event_sha_not_mutable_pr_ref(self) -> None:
         source = WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("& git fetch --no-tags origin $expected", source)
-        self.assertNotIn("& git fetch --no-tags origin $eventRef", source)
-        self.assertIn("Exact event SHA fetch failed:", source)
-        self.assertIn("Fetched event SHA $fetched does not match GITHUB_SHA $expected.", source)
+        marker = "Invoke-GitFetchWithRetry -Label 'Exact event SHA fetch' -Arguments @("
+        self.assertIn(marker, source)
+        fetch_start = source.index(marker)
+        fetch_end = source.index("\n                  )", fetch_start)
+        fetch_block = source[fetch_start:fetch_end]
+        self.assertIn("$expected", fetch_block)
+        self.assertNotIn("$eventRef", fetch_block)
+        self.assertIn(
+            "Fetched event SHA $fetched does not match GITHUB_SHA $expected.",
+            source,
+        )
 
     def test_event_ref_is_still_validated_but_not_used_as_checkout_identity(self) -> None:
         source = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("$eventRef = [string]$env:GITHUB_REF", source)
         self.assertIn("Unsupported CI event ref:", source)
-        fetch = source.index("& git fetch --no-tags origin $expected")
+        fetch = source.index(
+            "Invoke-GitFetchWithRetry -Label 'Exact event SHA fetch' -Arguments @("
+        )
         checkout = source.index("& git checkout --detach --force $expected")
         self.assertLess(fetch, checkout)
 
