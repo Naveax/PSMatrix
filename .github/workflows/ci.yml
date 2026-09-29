@@ -82,15 +82,42 @@ jobs:
           }
           function Invoke-GitFetchWithRetry([string]$Label, [string[]]$Arguments) {
               $maxAttempts = 3
+              $attemptTimeoutMs = 120000
               for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-                  & git -c http.version=HTTP/1.1 -c http.lowSpeedLimit=1024 -c http.lowSpeedTime=20 @Arguments
-                  if ($LASTEXITCODE -eq 0) {
+                  $stdoutPath = Join-Path $env:RUNNER_TEMP "psmatrix-git-fetch-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-$attempt.out.log"
+                  $stderrPath = Join-Path $env:RUNNER_TEMP "psmatrix-git-fetch-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-$attempt.err.log"
+                  Remove-Item -LiteralPath $stdoutPath,$stderrPath -Force -ErrorAction SilentlyContinue
+                  $gitArguments = @(
+                      '-c', 'http.version=HTTP/1.1',
+                      '-c', 'http.lowSpeedLimit=1024',
+                      '-c', 'http.lowSpeedTime=20'
+                  ) + $Arguments
+                  $process = Start-Process -FilePath 'git' -ArgumentList $gitArguments -NoNewWindow -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+                  $completed = $process.WaitForExit($attemptTimeoutMs)
+                  if (-not $completed) {
+                      try {
+                          Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+                      }
+                      catch {
+                          Write-Warning "$Label timed out and process cleanup reported: $($_.Exception.Message)"
+                      }
+                      $exitCode = 124
+                  }
+                  else {
+                      $exitCode = $process.ExitCode
+                  }
+                  foreach ($logPath in @($stdoutPath, $stderrPath)) {
+                      if (Test-Path -LiteralPath $logPath -PathType Leaf) {
+                          Get-Content -LiteralPath $logPath -ErrorAction SilentlyContinue | Select-Object -Last 80 | ForEach-Object { Write-Host $_ }
+                          Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue
+                      }
+                  }
+                  if ($completed -and $exitCode -eq 0) {
                       if ($attempt -gt 1) {
                           Write-Host "$Label recovered on attempt $attempt/$maxAttempts"
                       }
                       return
                   }
-                  $exitCode = $LASTEXITCODE
                   if ($attempt -eq $maxAttempts) {
                       throw "$Label failed after $maxAttempts attempts; last exit code: $exitCode"
                   }
@@ -121,6 +148,7 @@ jobs:
                       'fetch',
                       '--no-tags',
                       '--prune',
+                      '--depth=1',
                       'origin',
                       '+refs/heads/*:refs/remotes/origin/*'
                   )
