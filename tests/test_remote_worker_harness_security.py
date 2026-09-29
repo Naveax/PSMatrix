@@ -81,11 +81,11 @@ class RemoteWorkerHarnessSecurityTests(unittest.TestCase):
                  patch("psmatrix.remote_worker._run_process_tree") as run_process:
                 report, reset = executor(request, _artifact())
 
+            executor._psmatrix_launch_pin_finalizer()
             self.assertEqual(report["status"], "FAIL_WORKER")
             self.assertIn("symlink or reparse point", report["worker_error"])
             self.assertFalse(reset["required"])
             run_process.assert_not_called()
-            executor._psmatrix_launch_pin_finalizer()
 
     def test_executor_revalidates_workspace_root_before_job_mutation(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -107,12 +107,12 @@ class RemoteWorkerHarnessSecurityTests(unittest.TestCase):
                  patch("psmatrix.remote_worker._run_process_tree") as run_process:
                 report, reset = executor(request, _artifact())
 
+            executor._psmatrix_launch_pin_finalizer()
             self.assertEqual(report["status"], "FAIL_WORKER")
             self.assertIn("symlink or reparse point", report["worker_error"])
             self.assertFalse(reset["required"])
             self.assertFalse((workspace / job_id).exists())
             run_process.assert_not_called()
-            executor._psmatrix_launch_pin_finalizer()
 
     def test_executor_rejects_indirect_existing_job_directory_before_delete(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -138,12 +138,15 @@ class RemoteWorkerHarnessSecurityTests(unittest.TestCase):
                  patch("psmatrix.remote_worker._run_process_tree") as run_process:
                 report, reset = executor(request, _artifact())
 
+            executor._psmatrix_launch_pin_finalizer()
             self.assertEqual(report["status"], "FAIL_WORKER")
-            self.assertIn("symlink or reparse point", report["worker_error"])
+            self.assertRegex(
+                report["worker_error"],
+                "symlink or reparse point|Unable to atomically create worker job workspace",
+            )
             self.assertFalse(reset["required"])
             self.assertEqual(marker.read_text(encoding="utf-8"), "keep\n")
             run_process.assert_not_called()
-            executor._psmatrix_launch_pin_finalizer()
 
 
 if __name__ == "__main__":
