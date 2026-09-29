@@ -37,6 +37,13 @@ from .transfer_publish_hardening import install as _install_transfer_publish_har
 _install_transfer_publish_hardening()
 del _install_transfer_publish_hardening
 
+# Publish verified content-addressed transfer objects relative to pinned parent
+# identities instead of a final pathname-based os.replace.
+from .transfer_object_publish_hardening import install as _install_transfer_object_publish_hardening
+
+_install_transfer_object_publish_hardening()
+del _install_transfer_object_publish_hardening
+
 # Reject Win32 device/namespace path spellings before remote ZIP extraction can
 # hand them to filesystem APIs.
 from .remote_windows_path_hardening import install as _install_remote_windows_path_hardening
