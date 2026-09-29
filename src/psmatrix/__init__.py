@@ -109,6 +109,13 @@ from .remote_runtime_environment_hardening import install as _install_remote_run
 _install_remote_runtime_environment_hardening()
 del _install_remote_runtime_environment_hardening
 
+# Pin the Windows timeout-cleanup utility to the real System32 taskkill.exe and
+# run it with the executor-bound environment instead of a fresh PATH lookup.
+from .remote_timeout_cleanup_hardening import install as _install_remote_timeout_cleanup_hardening
+
+_install_remote_timeout_cleanup_hardening()
+del _install_remote_timeout_cleanup_hardening
+
 # Refuse recursive deletion of a pre-existing canonical worker job workspace.
 # Stale/colliding job directories fail closed instead of being trusted as an
 # rmtree target merely because their pathname matches the signed job ID.
