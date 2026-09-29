@@ -73,7 +73,16 @@ class RemoteRuntimeEnvironmentTests(unittest.TestCase):
                 )
 
     def test_install_replaces_only_remote_worker_subprocess_reference(self):
-        self.assertIsInstance(rw.subprocess, hardening._SubprocessProxy)
+        current = rw.subprocess
+        found = False
+        visited: set[int] = set()
+        while current is not None and id(current) not in visited:
+            visited.add(id(current))
+            if isinstance(current, hardening._SubprocessProxy):
+                found = True
+                break
+            current = getattr(current, "_delegate", getattr(current, "_module", None))
+        self.assertTrue(found, "runtime-environment subprocess proxy is missing from the wrapper chain")
         self.assertTrue(getattr(rw, "_runtime_environment_identity_hardened", False))
 
 
