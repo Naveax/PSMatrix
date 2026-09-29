@@ -72,6 +72,13 @@ from .remote_result_output_hardening import install as _install_remote_result_ou
 _install_remote_result_output_hardening()
 del _install_remote_result_output_hardening
 
+# Bind every signed artifact source file to its manifest bytes before worker
+# launch and pin those source identities for the process lifetime on Windows.
+from .remote_workspace_source_hardening import install as _install_remote_workspace_source_hardening
+
+_install_remote_workspace_source_hardening()
+del _install_remote_workspace_source_hardening
+
 # Snapshot identity-checked TLS certificate, key, and CA bytes into private
 # temporary files before Python/OpenSSL performs its filename-based loads.
 from .remote_tls_material_hardening import install as _install_remote_tls_material_hardening
