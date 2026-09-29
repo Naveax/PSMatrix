@@ -58,6 +58,13 @@ from .transfer_session_hardening import install as _install_transfer_session_har
 _install_transfer_session_hardening()
 del _install_transfer_session_hardening
 
+# Keep create-time reuse decisions bound to the exact session/manifest/chunks
+# identities that justified reuse instead of reopening a canonical UUID path.
+from .transfer_create_reuse_hardening import install as _install_transfer_create_reuse_hardening
+
+_install_transfer_create_reuse_hardening()
+del _install_transfer_create_reuse_hardening
+
 # Quarantine expired transfer sessions by verified identity and remove their
 # contents through descriptor/handle-bound operations rather than mutable paths.
 from .transfer_session_purge_hardening import install as _install_transfer_session_purge_hardening
