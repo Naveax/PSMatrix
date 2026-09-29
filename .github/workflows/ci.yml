@@ -80,6 +80,25 @@ jobs:
                   throw "Workspace cleanup did not converge; remaining entries: $($remaining.Count)"
               }
           }
+          function Invoke-GitFetchWithRetry([string]$Label, [string[]]$Arguments) {
+              $maxAttempts = 3
+              for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+                  & git -c http.version=HTTP/1.1 -c http.lowSpeedLimit=1024 -c http.lowSpeedTime=20 @Arguments
+                  if ($LASTEXITCODE -eq 0) {
+                      if ($attempt -gt 1) {
+                          Write-Host "$Label recovered on attempt $attempt/$maxAttempts"
+                      }
+                      return
+                  }
+                  $exitCode = $LASTEXITCODE
+                  if ($attempt -eq $maxAttempts) {
+                      throw "$Label failed after $maxAttempts attempts; last exit code: $exitCode"
+                  }
+                  $delaySeconds = [Math]::Min(8, 2 * $attempt)
+                  Write-Warning "$Label attempt $attempt/$maxAttempts failed with exit code $exitCode; retrying in $delaySeconds seconds."
+                  Start-Sleep -Seconds $delaySeconds
+              }
+          }
           Push-Location $env:GITHUB_WORKSPACE
           try {
               Clear-WorkspaceContents $env:GITHUB_WORKSPACE
@@ -98,16 +117,21 @@ jobs:
               $env:GIT_CONFIG_KEY_0 = 'http.https://github.com/.extraheader'
               $env:GIT_CONFIG_VALUE_0 = "AUTHORIZATION: basic $basic"
               try {
-                  & git fetch --no-tags --prune origin '+refs/heads/*:refs/remotes/origin/*'
-                  if ($LASTEXITCODE -ne 0) {
-                      throw "Frozen branch-object fetch failed: $LASTEXITCODE"
-                  }
+                  Invoke-GitFetchWithRetry -Label 'Frozen branch-object fetch' -Arguments @(
+                      'fetch',
+                      '--no-tags',
+                      '--prune',
+                      'origin',
+                      '+refs/heads/*:refs/remotes/origin/*'
+                  )
                   # PR merge refs are mutable and may advance while a queued run waits.
                   # Fetch the immutable event snapshot commit recorded in GITHUB_SHA instead.
-                  & git fetch --no-tags origin $expected
-                  if ($LASTEXITCODE -ne 0) {
-                      throw "Exact event SHA fetch failed: $LASTEXITCODE"
-                  }
+                  Invoke-GitFetchWithRetry -Label 'Exact event SHA fetch' -Arguments @(
+                      'fetch',
+                      '--no-tags',
+                      'origin',
+                      $expected
+                  )
               }
               finally {
                   Remove-Item Env:GIT_CONFIG_COUNT -ErrorAction SilentlyContinue
