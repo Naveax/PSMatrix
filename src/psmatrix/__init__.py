@@ -116,6 +116,13 @@ from .remote_timeout_cleanup_hardening import install as _install_remote_timeout
 _install_remote_timeout_cleanup_hardening()
 del _install_remote_timeout_cleanup_hardening
 
+# Bind worker result-cache reads and no-overwrite publication to the exact
+# cache parent identity rather than reopening a mutable directory pathname.
+from .remote_result_cache_hardening import install as _install_remote_result_cache_hardening
+
+_install_remote_result_cache_hardening()
+del _install_remote_result_cache_hardening
+
 # Refuse recursive deletion of a pre-existing canonical worker job workspace.
 # Stale/colliding job directories fail closed instead of being trusted as an
 # rmtree target merely because their pathname matches the signed job ID.
