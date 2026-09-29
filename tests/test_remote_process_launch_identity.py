@@ -78,7 +78,18 @@ class RemoteProcessLaunchIdentityTests(unittest.TestCase):
             harness.write_text("Write-Output ok", encoding="utf-8")
             runtime_pin = _FakePin(runtime, (1, 10))
             harness_pin = _FakePin(harness, (1, 11))
+            extra_pins: list[_FakePin] = []
             config = SimpleNamespace(powershell_executable="powershell.exe")
+
+            def open_launch_pin(_rw, path):
+                candidate = Path(path)
+                if candidate == runtime:
+                    return runtime_pin
+                if candidate == harness:
+                    return harness_pin
+                pin = _FakePin(candidate, (1, 12 + len(extra_pins)))
+                extra_pins.append(pin)
+                return pin
 
             with patch.object(hardening, "_is_windows", return_value=True), patch.object(
                 hardening,
@@ -87,7 +98,7 @@ class RemoteProcessLaunchIdentityTests(unittest.TestCase):
             ), patch.object(
                 hardening,
                 "_open_windows_launch_file",
-                side_effect=[runtime_pin, harness_pin],
+                side_effect=open_launch_pin,
             ):
                 executor = WindowsJobExecutor(config, harness)
 
