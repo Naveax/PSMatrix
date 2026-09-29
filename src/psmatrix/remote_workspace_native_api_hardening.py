@@ -215,6 +215,7 @@ def install() -> None:
     from . import transfer_manifest_read_hardening as manifest_hardening
     from . import transfer_resolve_object_hardening as resolve_hardening
     from . import transfer_status_hardening as status_hardening
+    from . import transfer_temp_object_hardening as temp_object_hardening
 
     zip_directory_hardening.install()
     manifest_hardening.install()
@@ -222,4 +223,5 @@ def install() -> None:
     status_hardening.install()
     resolve_hardening.install()
     finalize_hardening.install()
+    temp_object_hardening.install()
     _INSTALLED = True
