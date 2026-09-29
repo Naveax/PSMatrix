@@ -117,8 +117,11 @@ def _windows_parent(
             try:
                 handle, _ = zip_hardening._open_windows_directory(shim, child)
             except sessions.SessionError:
-                if child.exists():
-                    raise
+                # Another trusted store instance may create this exact direct
+                # directory after our failed open but before mkdir.  Attempt
+                # create-or-converge, then re-open through the identity-safe
+                # Windows handle path.  Reparse/non-directory paths still fail
+                # closed in _open_windows_directory.
                 try:
                     child.mkdir(mode=0o700)
                 except FileExistsError:
