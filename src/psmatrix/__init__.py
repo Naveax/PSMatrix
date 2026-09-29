@@ -250,3 +250,10 @@ from .http_session_limits_hardening import install as _install_http_session_limi
 
 _install_http_session_limits_hardening()
 del _install_http_session_limits_hardening
+
+# Serialize audit-chain mutation on one direct single-link file identity and
+# verify the exact locked bytes rather than reopening mutable audit pathnames.
+from .http_audit_log_hardening import install as _install_http_audit_log_hardening
+
+_install_http_audit_log_hardening()
+del _install_http_audit_log_hardening
