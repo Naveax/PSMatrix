@@ -94,6 +94,14 @@ from .remote_reset_input_hardening import install as _install_remote_reset_input
 _install_remote_reset_input_hardening()
 del _install_remote_reset_input_hardening
 
+# Freeze the environment inherited by worker child processes at executor
+# initialization so later process-global environment mutation cannot redirect
+# runtime, reset, module-search, or helper behavior.
+from .remote_runtime_environment_hardening import install as _install_remote_runtime_environment_hardening
+
+_install_remote_runtime_environment_hardening()
+del _install_remote_runtime_environment_hardening
+
 # Refuse recursive deletion of a pre-existing canonical worker job workspace.
 # Stale/colliding job directories fail closed instead of being trusted as an
 # rmtree target merely because their pathname matches the signed job ID.
