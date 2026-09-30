@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import stat
 import uuid
@@ -9,6 +10,7 @@ from typing import Any, Callable
 
 _INSTALLED = False
 _ORIGINAL_FINALIZE: Callable[..., Any] | None = None
+SessionIdentity = tuple[int, int]
 
 
 class _TransferWorkerAdapter:
@@ -28,13 +30,17 @@ def _expected_chunk_size(manifest: dict[str, Any], index: int) -> int:
     return chunk_size
 
 
+def _posix_identity(info: os.stat_result) -> SessionIdentity:
+    return int(info.st_dev), int(info.st_ino)
+
+
 def _read_chunks_posix(
     transfer: Any,
     store: Any,
     canonical: str,
     controller_id: str,
     status: dict[str, Any],
-) -> tuple[dict[str, Any], list[bytes]]:
+) -> tuple[dict[str, Any], list[bytes], SessionIdentity]:
     from . import transfer_chunk_write_hardening as chunk_hardening
     from . import transfer_manifest_read_hardening as manifest_hardening
     from . import transfer_status_hardening as status_hardening
@@ -118,7 +124,7 @@ def _read_chunks_posix(
             opened_session,
             opened_chunks,
         )
-        return manifest, chunks
+        return manifest, chunks, _posix_identity(opened_session)
     except OSError as exc:
         raise transfer.TransferError("Transfer finalize source identity check failed") from exc
     finally:
@@ -136,19 +142,25 @@ def _read_chunks_windows(
     canonical: str,
     controller_id: str,
     status: dict[str, Any],
-) -> tuple[dict[str, Any], list[bytes]]:
+) -> tuple[dict[str, Any], list[bytes], SessionIdentity]:
     from . import remote_process_identity_hardening as process_hardening
     from . import remote_zip_hardening as zip_hardening
 
     adapter = _TransferWorkerAdapter(transfer)
     session = store.sessions / canonical
+    session_abs = Path(os.path.abspath(os.fspath(session)))
     chunks_path = session / "chunks"
     handles: list[Any] = []
+    session_identity: SessionIdentity | None = None
     try:
         store._validate_roots()
         for component in zip_hardening._windows_chain(chunks_path):
-            handle, _ = zip_hardening._open_windows_directory(adapter, component)
+            handle, identity = zip_hardening._open_windows_directory(adapter, component)
             handles.append(handle)
+            if component == session_abs:
+                session_identity = identity
+        if session_identity is None:
+            raise transfer.TransferError("Unable to pin transfer session identity for finalize")
         manifest = store._load_manifest(canonical, controller_id=controller_id)
         if not _manifest_matches_status(manifest, status):
             raise transfer.TransferError("Transfer manifest changed between status and finalize")
@@ -174,7 +186,7 @@ def _read_chunks_windows(
             finally:
                 pin.close()
         store._validate_roots()
-        return manifest, chunks
+        return manifest, chunks, session_identity
     finally:
         for handle in reversed(handles):
             try:
@@ -189,10 +201,233 @@ def _read_chunks(
     canonical: str,
     controller_id: str,
     status: dict[str, Any],
-) -> tuple[dict[str, Any], list[bytes]]:
+) -> tuple[dict[str, Any], list[bytes], SessionIdentity]:
     if os.name == "nt":
         return _read_chunks_windows(transfer, store, canonical, controller_id, status)
     return _read_chunks_posix(transfer, store, canonical, controller_id, status)
+
+
+def _completion_bytes(value: dict[str, Any]) -> bytes:
+    return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+
+
+def _assert_visible_posix_session(
+    transfer: Any,
+    store: Any,
+    canonical: str,
+    sessions_fd: int,
+    session_fd: int,
+    expected_session: SessionIdentity,
+) -> None:
+    opened = os.fstat(session_fd)
+    visible = os.stat(canonical, dir_fd=sessions_fd, follow_symlinks=False)
+    visible_root = store.sessions.lstat()
+    if (
+        transfer._is_link_or_reparse(opened)
+        or not stat.S_ISDIR(opened.st_mode)
+        or _posix_identity(opened) != expected_session
+        or transfer._is_link_or_reparse(visible)
+        or not stat.S_ISDIR(visible.st_mode)
+        or _posix_identity(visible) != expected_session
+        or transfer._is_link_or_reparse(visible_root)
+        or not stat.S_ISDIR(visible_root.st_mode)
+        or not transfer._same_file(visible_root, os.fstat(sessions_fd))
+        or not transfer._same_file(visible_root, store._sessions_identity)
+    ):
+        raise transfer.TransferError("Transfer session identity changed before completion publication")
+
+
+def _write_completion_posix(
+    transfer: Any,
+    store: Any,
+    canonical: str,
+    expected_session: SessionIdentity,
+    value: dict[str, Any],
+) -> None:
+    from . import transfer_manifest_read_hardening as manifest_hardening
+
+    directory = getattr(os, "O_DIRECTORY", 0)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    supports = getattr(os, "supports_dir_fd", set())
+    if (
+        not directory
+        or not nofollow
+        or os.open not in supports
+        or os.replace not in supports
+        or os.unlink not in supports
+    ):
+        raise transfer.TransferError("Descriptor-relative completion publication is unavailable")
+    dir_flags = os.O_RDONLY | directory | nofollow | getattr(os, "O_CLOEXEC", 0)
+    file_flags = (
+        os.O_RDWR
+        | os.O_CREAT
+        | os.O_EXCL
+        | nofollow
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
+    read_flags = (
+        os.O_RDONLY
+        | nofollow
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    sessions_fd = session_fd = temp_fd = final_fd = -1
+    temp_name = f".complete.json.{uuid.uuid4().hex}.tmp"
+    published = False
+    raw = _completion_bytes(value)
+    try:
+        sessions_fd = os.open(store.sessions, dir_flags)
+        opened_sessions = os.fstat(sessions_fd)
+        if (
+            transfer._is_link_or_reparse(opened_sessions)
+            or not stat.S_ISDIR(opened_sessions.st_mode)
+            or not transfer._same_file(opened_sessions, store._sessions_identity)
+        ):
+            raise transfer.TransferError("Transfer sessions directory identity changed before completion publication")
+        try:
+            session_fd = os.open(canonical, dir_flags, dir_fd=sessions_fd)
+        except FileNotFoundError as exc:
+            raise transfer.TransferError("Transfer session disappeared before completion publication") from exc
+        _assert_visible_posix_session(
+            transfer,
+            store,
+            canonical,
+            sessions_fd,
+            session_fd,
+            expected_session,
+        )
+
+        temp_fd = os.open(temp_name, file_flags, 0o600, dir_fd=session_fd)
+        temp_info = os.fstat(temp_fd)
+        if (
+            transfer._is_link_or_reparse(temp_info)
+            or not stat.S_ISREG(temp_info.st_mode)
+            or int(getattr(temp_info, "st_nlink", 1)) != 1
+        ):
+            raise transfer.TransferError("Transfer completion temporary file is unsafe")
+        with os.fdopen(temp_fd, "wb", closefd=True) as output:
+            temp_fd = -1
+            output.write(raw)
+            output.flush()
+            os.fsync(output.fileno())
+
+        _assert_visible_posix_session(
+            transfer,
+            store,
+            canonical,
+            sessions_fd,
+            session_fd,
+            expected_session,
+        )
+        os.replace(
+            temp_name,
+            "complete.json",
+            src_dir_fd=session_fd,
+            dst_dir_fd=session_fd,
+        )
+        published = True
+        try:
+            os.fsync(session_fd)
+        except OSError:
+            pass
+
+        final_fd = os.open("complete.json", read_flags, dir_fd=session_fd)
+        final_info = os.fstat(final_fd)
+        if (
+            transfer._is_link_or_reparse(final_info)
+            or not stat.S_ISREG(final_info.st_mode)
+            or int(getattr(final_info, "st_nlink", 1)) != 1
+            or not transfer._same_file(final_info, temp_info)
+        ):
+            raise transfer.TransferError("Transfer completion record identity changed after publication")
+        if manifest_hardening._read_file_fd(
+            transfer,
+            final_fd,
+            label="Transfer completion record",
+        ) != raw:
+            raise transfer.TransferError("Transfer completion record bytes changed after publication")
+        _assert_visible_posix_session(
+            transfer,
+            store,
+            canonical,
+            sessions_fd,
+            session_fd,
+            expected_session,
+        )
+    except OSError as exc:
+        raise transfer.TransferError("Transfer completion publication identity check failed") from exc
+    finally:
+        for fd in (final_fd, temp_fd):
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+        if session_fd >= 0 and not published:
+            try:
+                os.unlink(temp_name, dir_fd=session_fd)
+            except OSError:
+                pass
+        for fd in (session_fd, sessions_fd):
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+
+def _write_completion_windows(
+    transfer: Any,
+    store: Any,
+    canonical: str,
+    expected_session: SessionIdentity,
+    value: dict[str, Any],
+) -> None:
+    from . import remote_zip_hardening as zip_hardening
+
+    adapter = _TransferWorkerAdapter(transfer)
+    session = store.sessions / canonical
+    handles: list[Any] = []
+    observed: SessionIdentity | None = None
+    try:
+        store._validate_roots()
+        for component in zip_hardening._windows_chain(session):
+            handle, observed = zip_hardening._open_windows_directory(adapter, component)
+            handles.append(handle)
+        if observed != expected_session:
+            raise transfer.TransferError("Transfer session identity changed before completion publication")
+        transfer._atomic_write_direct_json(
+            session / "complete.json",
+            value,
+            label="Transfer completion record",
+        )
+        check, current = zip_hardening._open_windows_directory(adapter, session)
+        try:
+            if current != expected_session:
+                raise transfer.TransferError("Transfer session identity changed after completion publication")
+        finally:
+            zip_hardening._close_windows_handle(check)
+        store._validate_roots()
+    finally:
+        for handle in reversed(handles):
+            try:
+                zip_hardening._close_windows_handle(handle)
+            except Exception:
+                pass
+
+
+def _write_completion_for_session(
+    transfer: Any,
+    store: Any,
+    canonical: str,
+    expected_session: SessionIdentity,
+    value: dict[str, Any],
+) -> None:
+    if os.name == "nt":
+        _write_completion_windows(transfer, store, canonical, expected_session, value)
+    else:
+        _write_completion_posix(transfer, store, canonical, expected_session, value)
 
 
 def _hardened_finalize(
@@ -209,7 +444,7 @@ def _hardened_finalize(
     status = self.status(canonical, controller_id=controller_id)
     if status["missing"]:
         raise transfer.TransferError("Transfer is incomplete")
-    manifest, chunks = _read_chunks(
+    manifest, chunks, session_identity = _read_chunks(
         transfer,
         self,
         canonical,
@@ -298,8 +533,11 @@ def _hardened_finalize(
                         "Published transfer object failed integrity verification"
                     )
 
-            transfer._atomic_write_direct_json(
-                self._session_directory(canonical) / "complete.json",
+            _write_completion_for_session(
+                transfer,
+                self,
+                canonical,
+                session_identity,
                 {
                     "schema": 1,
                     "completed_at": transfer.utc_now_iso(),
@@ -307,7 +545,6 @@ def _hardened_finalize(
                     "sha256": manifest["artifact_sha256"],
                     "size": total,
                 },
-                label="Transfer completion record",
             )
     finally:
         try:
