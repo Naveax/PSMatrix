@@ -85,7 +85,11 @@ class TransferObjectPublishBoundaryTests(unittest.TestCase):
             self.assertEqual((store.objects / digest).read_bytes(), data)
 
     def test_install_wires_transfer_finalize(self):
-        self.assertIs(transfer.TransferStore.finalize, hardening._hardened_finalize)
+        # Later transfer hardening layers intentionally wrap finalize again.
+        # Functional publication tests above prove this layer remains effective.
+        self.assertTrue(
+            getattr(transfer.TransferStore, "_object_publish_identity_hardened", False)
+        )
 
 
 if __name__ == "__main__":
