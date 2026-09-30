@@ -281,3 +281,8 @@ from .gate_source_identity_hardening import install as _install_gate_source_iden
 
 _install_gate_source_identity_hardening()
 del _install_gate_source_identity_hardening
+
+from .gate_key_hardening import install as _install_gate_key_hardening
+
+_install_gate_key_hardening()
+del _install_gate_key_hardening
