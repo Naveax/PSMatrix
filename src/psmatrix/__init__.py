@@ -208,3 +208,10 @@ from .http_artifact_read_hardening import install as _install_http_artifact_read
 
 _install_http_artifact_read_hardening()
 del _install_http_artifact_read_hardening
+
+# Derive artifact-token digest and size from one direct file identity so token
+# metadata cannot mix multiple pathname observations during preparation.
+from .http_artifact_prepare_hardening import install as _install_http_artifact_prepare_hardening
+
+_install_http_artifact_prepare_hardening()
+del _install_http_artifact_prepare_hardening
