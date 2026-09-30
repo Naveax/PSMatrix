@@ -215,3 +215,10 @@ from .http_artifact_prepare_hardening import install as _install_http_artifact_p
 
 _install_http_artifact_prepare_hardening()
 del _install_http_artifact_prepare_hardening
+
+# Create upload parents beneath a pinned project root and publish upload bytes
+# through a direct parent identity instead of a mutable pathname-only replace.
+from .http_upload_publish_hardening import install as _install_http_upload_publish_hardening
+
+_install_http_upload_publish_hardening()
+del _install_http_upload_publish_hardening
