@@ -212,10 +212,12 @@ def install() -> None:
     from . import remote_zip_directory_create_hardening as zip_directory_hardening
     from . import transfer_chunk_write_hardening as chunk_write_hardening
     from . import transfer_manifest_read_hardening as manifest_hardening
+    from . import transfer_resolve_object_hardening as resolve_hardening
     from . import transfer_status_hardening as status_hardening
 
     zip_directory_hardening.install()
     manifest_hardening.install()
     chunk_write_hardening.install()
     status_hardening.install()
+    resolve_hardening.install()
     _INSTALLED = True
