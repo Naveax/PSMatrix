@@ -51,6 +51,14 @@ from .transfer_root_hardening import install as _install_transfer_root_hardening
 _install_transfer_root_hardening()
 del _install_transfer_root_hardening
 
+# Bind TransferStore mutation locking to the initialized transfer-root identity.
+# POSIX locks the root directory inode; Windows pins the root chain and exact
+# no-delete-share lock file before taking the byte-range lock.
+from .transfer_lock_hardening import install as _install_transfer_lock_hardening
+
+_install_transfer_lock_hardening()
+del _install_transfer_lock_hardening
+
 # Create new transfer session/chunks directories relative to the pinned sessions
 # root identity instead of trusting mutable pathnames during mkdir.
 from .transfer_session_hardening import install as _install_transfer_session_hardening
