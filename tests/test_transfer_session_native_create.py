@@ -19,6 +19,7 @@ class TransferSessionNativeCreateTests(unittest.TestCase):
                 transfer,
                 store,
                 session,
+                {"session_id": session.name},
             )
             self.assertTrue(direct_session.is_dir())
             self.assertTrue(direct_chunks.is_dir())
@@ -47,6 +48,7 @@ class TransferSessionNativeCreateTests(unittest.TestCase):
                     transfer,
                     store,
                     session,
+                    {"session_id": session.name},
                 )
 
             self.assertEqual(created, [session, session / "chunks"])
@@ -63,7 +65,12 @@ class TransferSessionNativeCreateTests(unittest.TestCase):
             sentinel.write_text("keep", encoding="utf-8")
 
             with self.assertRaises(transfer.TransferError):
-                session_hardening._create_session_tree(transfer, store, session)
+                session_hardening._create_session_tree(
+                    transfer,
+                    store,
+                    session,
+                    {"session_id": session.name},
+                )
 
             self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep")
 
