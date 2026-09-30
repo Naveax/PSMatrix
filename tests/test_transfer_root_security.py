@@ -10,7 +10,8 @@ from psmatrix import transfer_root_hardening as hardening
 
 class TransferRootHardeningTests(unittest.TestCase):
     def test_install_replaces_transfer_store_initializer(self):
-        self.assertIs(transfer.TransferStore.__init__, hardening._hardened_init)
+        # Later lock-authority hardening intentionally wraps TransferStore.__init__.
+        # The durable contract is that root bootstrap identity hardening remains installed.
         self.assertTrue(
             getattr(transfer.TransferStore, "_root_bootstrap_identity_hardened", False)
         )
