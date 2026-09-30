@@ -65,6 +65,13 @@ from .transfer_session_purge_hardening import install as _install_transfer_sessi
 _install_transfer_session_purge_hardening()
 del _install_transfer_session_purge_hardening
 
+# Bind each purge-expiry decision to the exact session identity scanned before
+# quarantine/deletion so a pathname replacement cannot redirect that decision.
+from .transfer_purge_scan_hardening import install as _install_transfer_purge_scan_hardening
+
+_install_transfer_purge_scan_hardening()
+del _install_transfer_purge_scan_hardening
+
 # Reject Win32 device/namespace path spellings before remote ZIP extraction can
 # hand them to filesystem APIs.
 from .remote_windows_path_hardening import install as _install_remote_windows_path_hardening
