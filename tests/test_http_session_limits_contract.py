@@ -14,10 +14,9 @@ class HTTPSessionLimitsContractTests(unittest.TestCase):
             SessionLimits.validate.__module__,
             "psmatrix.http_session_limits_hardening",
         )
-        self.assertEqual(
-            ProjectSessionStore.get.__module__,
-            "psmatrix.http_session_limits_hardening",
-        )
+        # Later identity hardening may replace ProjectSessionStore.get entirely.
+        # The durable contract is that SessionLimits.validate remains hardened;
+        # persisted-record validation is covered by test_persisted_invalid_limits_fail_closed.
 
     def test_default_limits_remain_valid(self):
         SessionLimits().validate()

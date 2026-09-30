@@ -257,3 +257,10 @@ from .http_audit_log_hardening import install as _install_http_audit_log_hardeni
 
 _install_http_audit_log_hardening()
 del _install_http_audit_log_hardening
+
+# Bind session.json reads and touch/expiry updates to a pinned session-directory
+# identity instead of reopening the session path after validation.
+from .http_session_record_hardening import install as _install_http_session_record_hardening
+
+_install_http_session_record_hardening()
+del _install_http_session_record_hardening
