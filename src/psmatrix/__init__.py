@@ -222,3 +222,10 @@ from .http_upload_publish_hardening import install as _install_http_upload_publi
 
 _install_http_upload_publish_hardening()
 del _install_http_upload_publish_hardening
+
+# Create or read the artifact HMAC secret through a pinned HTTP parent and one
+# direct single-link file identity, preserving 0600 semantics on POSIX.
+from .http_artifact_secret_hardening import install as _install_http_artifact_secret_hardening
+
+_install_http_artifact_secret_hardening()
+del _install_http_artifact_secret_hardening
