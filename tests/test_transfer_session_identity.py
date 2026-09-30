@@ -135,11 +135,7 @@ class TransferSessionIdentityTests(unittest.TestCase):
             self.assertFalse((replacement / "manifest.json").exists())
 
     def test_install_wires_store_create(self):
-        # Later create/reuse hardening intentionally wraps TransferStore.create.
-        # The durable contract is that session-creation identity hardening remains installed.
-        self.assertTrue(
-            getattr(transfer.TransferStore, "_session_creation_identity_hardened", False)
-        )
+        self.assertIs(transfer.TransferStore.create, hardening._hardened_create)
 
 
 if __name__ == "__main__":
