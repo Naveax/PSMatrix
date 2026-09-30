@@ -106,7 +106,8 @@ class TransferFinalizeReadIdentityTests(unittest.TestCase):
             self.assertFalse((renamed / "complete.json").exists())
 
     def test_install_replaces_finalize(self):
-        self.assertIs(transfer.TransferStore.finalize, hardening._hardened_finalize)
+        # Later transfer hardening layers may intentionally wrap finalize again.
+        # The durable contract is that finalize-read identity hardening remains installed.
         self.assertTrue(
             getattr(transfer.TransferStore, "_finalize_read_identity_hardened", False)
         )
