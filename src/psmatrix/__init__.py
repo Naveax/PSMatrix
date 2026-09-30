@@ -278,3 +278,10 @@ from .http_session_terminate_hardening import install as _install_http_session_t
 
 _install_http_session_terminate_hardening()
 del _install_http_session_terminate_hardening
+
+# Account project file count/bytes by direct filesystem identity so quota and
+# status decisions cannot be redirected through swapped or indirect entries.
+from .http_project_usage_hardening import install as _install_http_project_usage_hardening
+
+_install_http_project_usage_hardening()
+del _install_http_project_usage_hardening
