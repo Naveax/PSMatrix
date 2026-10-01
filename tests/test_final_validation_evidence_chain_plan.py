@@ -132,6 +132,35 @@ class FinalValidationEvidenceChainPlanTests(unittest.TestCase):
         )
         self.assertFalse(value["ga_eligible"])
 
+    def test_plan_separates_legacy_evidence_identity_from_v2_lock_candidate(self) -> None:
+        value = self._build(self._summary(ready=True))
+        self.assertEqual(value["final_release_commit"], "02cef95d40cf524ce00f9d917188343dc49e6f2c")
+        self.assertEqual(value["lock_signing_candidate_commit"], "43922a5544745c64165df4aedd9c57391bfe6c51")
+        self.assertEqual(
+            value["lock_signing_candidate_source_branch"],
+            "final/2.0.0-release-candidate-anchor-v2",
+        )
+        self.assertFalse(value["lock_signing_candidate_authoritative"])
+        self.assertTrue(value["fresh_final_windows_certification_required"])
+        signing = value["protected_final_release_signing"]
+        self.assertEqual(signing["candidate_release_commit"], value["lock_signing_candidate_commit"])
+        self.assertEqual(signing["candidate_source_branch"], value["lock_signing_candidate_source_branch"])
+        self.assertTrue(signing["requires_fresh_final_windows_certification_after_signing"])
+        self.assertFalse(signing["legacy_rc4_campaign_rebind_allowed"])
+        self.assertFalse(value["ready_for_final_release_signing"])
+        self.assertFalse(value["ga_eligible"])
+
+    def test_v2_lock_candidate_drift_and_premature_authority_fail_closed(self) -> None:
+        drift = copy.deepcopy(self.lock)
+        drift["final_release_commit"] = "0" * 40
+        with self.assertRaisesRegex(module.FinalValidationEvidenceChainError, "candidate release commit drifted"):
+            self._build(self._summary(ready=True), lock=drift)
+
+        premature = copy.deepcopy(self.lock)
+        premature["preparation_state"]["authoritative"] = True
+        with self.assertRaisesRegex(module.FinalValidationEvidenceChainError, "already claims production authority"):
+            self._build(self._summary(ready=True), lock=premature)
+
     def test_execution_head_is_frozen_publication_anchor_not_mutable_main(self) -> None:
         with self.assertRaises(module.FinalValidationEvidenceChainError):
             self._build(self._summary(ready=False), control_head="f" * 40)

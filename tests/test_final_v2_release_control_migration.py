@@ -65,7 +65,7 @@ class FinalV2ReleaseControlMigrationTests(unittest.TestCase):
         )
         allowed = sorted(contract["control_source"]["changed_path_allowlist"])
         self.assertEqual(changed, allowed)
-        self.assertEqual(len(changed), 18)
+        self.assertEqual(len(changed), 20)
         self.assertFalse(any(path.startswith("src/psmatrix/") for path in changed))
 
     def test_source_preflight_targets_v2_source_branch(self):
