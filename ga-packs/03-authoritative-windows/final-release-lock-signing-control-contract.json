@@ -23,7 +23,9 @@
       "scripts/ga/sign_windows_authority_final_release.py",
       "tests/test_final_v2_release_control_migration.py",
       "tests/test_windows_authority_final_release_lock_signing.py",
-      "tests/test_windows_authority_final_release_promotion.py"
+      "tests/test_windows_authority_final_release_promotion.py",
+      "scripts/ga/validate_final_production_bootstrap.py",
+      "tests/test_final_production_bootstrap_contract.py"
     ]
   },
   "rc4_authority_continuity": {

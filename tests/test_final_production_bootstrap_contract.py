@@ -120,6 +120,48 @@ class FinalProductionBootstrapContractTests(unittest.TestCase):
         for relative in self.contract["active_repository_targets"].values():
             self.assertFalse((ROOT / relative).exists(), relative)
 
+    def test_v2_lock_candidate_is_staged_without_relabeling_legacy_production_evidence(self) -> None:
+        legacy_final = "02cef95d40cf524ce00f9d917188343dc49e6f2c"
+        v2_final = "43922a5544745c64165df4aedd9c57391bfe6c51"
+        self.assertEqual(self.contract["final_release_commit"], legacy_final)
+        self.assertEqual(self.execution["final_release_commit"], legacy_final)
+        self.assertEqual(self.lock_control["final_release_commit"], v2_final)
+        self.assertEqual(
+            self.lock_control["final_release_source_branch"],
+            "final/2.0.0-release-candidate-anchor-v2",
+        )
+        self.assertTrue(self.lock_control["safety"]["fresh_final_windows_certification_required_after_signing"])
+        self.assertFalse(self.lock_control["safety"]["legacy_rc4_campaign_rebind_allowed"])
+        self.assertFalse(self.lock_control["safety"]["rc4_evidence_may_be_relabelled_as_final"])
+        self.assertTrue(all(value is False for value in self.lock_control["preparation_state"].values()))
+
+        result = self.validator.validate(ROOT)
+        self.assertEqual(result["final_release_commit"], legacy_final)
+        self.assertEqual(result["lock_signing_candidate_commit"], v2_final)
+        self.assertEqual(
+            result["lock_signing_candidate_source_branch"],
+            "final/2.0.0-release-candidate-anchor-v2",
+        )
+        self.assertFalse(result["lock_signing_candidate_authoritative"])
+        self.assertTrue(result["fresh_final_windows_certification_required"])
+
+    def test_v2_lock_candidate_identity_drift_fails_closed(self) -> None:
+        original_read = self.validator._read_json
+
+        def fake_read(path):
+            value = original_read(path)
+            if Path(path).name == LOCK_CONTROL.name:
+                value = dict(value)
+                value["final_release_commit"] = "0" * 40
+            return value
+
+        with mock.patch.object(self.validator, "_read_json", side_effect=fake_read):
+            with self.assertRaisesRegex(
+                self.validator.ProductionBootstrapError,
+                "v2 lock/signing candidate commit differs",
+            ):
+                self.validator.validate(ROOT)
+
     def test_bootstrap_requirements_are_fail_closed(self) -> None:
         requirements = self.contract["requirements"]
         for key in (

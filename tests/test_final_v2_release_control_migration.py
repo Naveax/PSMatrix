@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import subprocess
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,6 +47,26 @@ class FinalV2ReleaseControlMigrationTests(unittest.TestCase):
         self.assertIn("downstream_v2_evidence_controls_ready=false", text)
         self.assertNotIn("gh workflow run ga-windows-authority-final-windows-evidence-rebind.yml", text)
         self.assertNotIn("gh workflow run ga-final-security-review-packet.yml", text)
+
+    def test_control_source_changed_path_closure_is_exact(self):
+        contract = json.loads(
+            (ROOT / "ga-packs/03-authoritative-windows/final-release-lock-signing-control-contract.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        changed = sorted(
+            line.strip().replace("\\", "/")
+            for line in subprocess.check_output(
+                ["git", "diff", "--name-only", NEW_FINAL],
+                cwd=ROOT,
+                text=True,
+            ).splitlines()
+            if line.strip()
+        )
+        allowed = sorted(contract["control_source"]["changed_path_allowlist"])
+        self.assertEqual(changed, allowed)
+        self.assertEqual(len(changed), 18)
+        self.assertFalse(any(path.startswith("src/psmatrix/") for path in changed))
 
     def test_source_preflight_targets_v2_source_branch(self):
         text = (ROOT / ".github/workflows/ga-windows-authority-final-release-lock-signing-source-preflight.yml").read_text(encoding="utf-8")
