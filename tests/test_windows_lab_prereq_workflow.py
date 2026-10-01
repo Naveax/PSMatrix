@@ -58,6 +58,21 @@ class WindowsLabPrerequisiteWorkflowTests(unittest.TestCase):
             raw,
         )
 
+    def test_issue_comment_interpolates_and_updates_idempotently(self) -> None:
+        raw = WORKFLOW.read_text(encoding="utf-8")
+        publish = raw.split("- name: Publish value-free audit to issue 261", 1)[1].split(
+            "- name: Enforce required Windows lab prerequisites", 1
+        )[0]
+
+        self.assertNotIn("`$env:", publish)
+        self.assertNotIn("`$(", publish)
+        self.assertIn("Run: $env:GITHUB_RUN_ID", publish)
+        self.assertIn("Gate status: $gateStatus", publish)
+        self.assertIn("Runner exact NAVEAX/Windows: $($v.runner_exact_naveax)", publish)
+        self.assertIn('startswith("### Windows-lab prerequisite audit")', publish)
+        self.assertIn("--method PATCH", publish)
+        self.assertIn("audit_comment_idempotent=true", publish)
+
 
 if __name__ == "__main__":
     unittest.main()
