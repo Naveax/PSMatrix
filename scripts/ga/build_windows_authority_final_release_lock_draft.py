@@ -326,6 +326,8 @@ def build(
             "sign_without_exact_lock_match_allowed": False,
             "rc4_evidence_may_be_relabelled_as_final": False,
             "final_windows_evidence_rebind_required_after_signing": True,
+            "fresh_final_windows_certification_required_after_signing": True,
+            "legacy_rc4_campaign_rebind_allowed": False,
             "final_ga_evaluator_allowed_during_signing": False,
         },
         "review_state": "DRAFT_REQUIRES_HUMAN_REVIEW",

@@ -3,20 +3,27 @@
   "kind": "psmatrix.windows-authority-final-release-lock-signing-control-contract",
   "pack": "03-authoritative-windows",
   "version": "2.0.0",
-  "final_release_commit": "02cef95d40cf524ce00f9d917188343dc49e6f2c",
-  "final_release_source_branch": "final/2.0.0-release-candidate-anchor",
+  "final_release_commit": "43922a5544745c64165df4aedd9c57391bfe6c51",
+  "final_release_source_branch": "final/2.0.0-release-candidate-anchor-v2",
   "control_source": {
     "runtime_source_changes_allowed": false,
     "changed_path_allowlist": [
-      ".github/workflows/ga-windows-authority-final-release-lock-promotion.yml",
-      ".github/workflows/ga-windows-authority-final-release-lock-review.yml",
       ".github/workflows/ga-windows-authority-final-release-lock-signing-source-preflight.yml",
       ".github/workflows/ga-windows-authority-final-release-sign-from-lock.yml",
+      ".github/workflows/ga-windows-authority-final-staging-candidate-selfhosted.yml",
+      ".github/workflows/ops-final-human-approval-promotion-dispatch.yml",
+      ".github/workflows/ops-final-lock-review-human-gate.yml",
+      ".github/workflows/ops-final-promotion-to-reviewed-pr.yml",
+      ".github/workflows/ops-final-reviewed-lock-merge-to-signing.yml",
+      ".github/workflows/ops-final-signing-to-rebind-and-security-review.yml",
+      ".github/workflows/ops-rc4-closure-to-final-lock-review.yml",
       "ga-packs/03-authoritative-windows/final-release-lock-signing-control-contract.json",
       "scripts/ga/build_windows_authority_final_release_lock_draft.py",
       "scripts/ga/promote_windows_authority_final_release_lock.py",
       "scripts/ga/sign_windows_authority_final_release.py",
-      "tests/test_windows_authority_final_release_lock_signing.py"
+      "tests/test_final_v2_release_control_migration.py",
+      "tests/test_windows_authority_final_release_lock_signing.py",
+      "tests/test_windows_authority_final_release_promotion.py"
     ]
   },
   "rc4_authority_continuity": {
@@ -48,7 +55,9 @@
     "sign_without_exact_lock_match_allowed": false,
     "rc4_evidence_may_be_relabelled_as_final": false,
     "final_windows_evidence_rebind_required_after_signing": true,
-    "final_ga_evaluator_allowed_during_signing": false
+    "final_ga_evaluator_allowed_during_signing": false,
+    "fresh_final_windows_certification_required_after_signing": true,
+    "legacy_rc4_campaign_rebind_allowed": false
   },
   "preparation_state": {
     "active_final_lock_present": false,

@@ -24,8 +24,8 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       HUMAN_GATE_ISSUE: '263'
-      FINAL_LOCK_CONTROL_BRANCH: release/2.0.0-final-lock-control
-      FINAL_CANDIDATE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
+      FINAL_LOCK_CONTROL_BRANCH: release/2.0.0-final-lock-control-v2
+      FINAL_CANDIDATE_COMMIT: 43922a5544745c64165df4aedd9c57391bfe6c51
       APPROVAL_COMMENT: ${{ github.event.comment.body }}
     steps:
       - name: Resolve exact machine binding and require exact owner approval

@@ -140,7 +140,11 @@ jobs:
               if safety.get(field) is not False:
                   raise SystemExit(f'unsafe final lock safety field: {field}')
           if safety.get('final_windows_evidence_rebind_required_after_signing') is not True:
-              raise SystemExit('final lock does not require post-signing Windows evidence rebind')
+              raise SystemExit('final lock does not require post-signing Windows evidence binding')
+          if safety.get('fresh_final_windows_certification_required_after_signing') is not True:
+              raise SystemExit('final lock does not require fresh post-signing Windows certification')
+          if safety.get('legacy_rc4_campaign_rebind_allowed') is not False:
+              raise SystemExit('final lock permits legacy RC4 campaign rebind')
 
           key = lock.get('release_public_key') or {}
           digest = hashlib.sha256(public_path.read_bytes()).hexdigest()

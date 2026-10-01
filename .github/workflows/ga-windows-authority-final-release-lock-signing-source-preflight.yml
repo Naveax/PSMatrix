@@ -3,29 +3,43 @@ name: production-ga-windows-authority-final-release-lock-signing-source-prefligh
 on:
   workflow_dispatch:
   push:
-    branches: ["final/2.0.0-lock-signing-controls"]
+    branches: ["final/2.0.0-lock-signing-controls-v2"]
     paths:
-      - ".github/workflows/ga-windows-authority-final-release-lock-promotion.yml"
-      - ".github/workflows/ga-windows-authority-final-release-lock-review.yml"
       - ".github/workflows/ga-windows-authority-final-release-lock-signing-source-preflight.yml"
       - ".github/workflows/ga-windows-authority-final-release-sign-from-lock.yml"
+      - ".github/workflows/ga-windows-authority-final-staging-candidate-selfhosted.yml"
+      - ".github/workflows/ops-final-human-approval-promotion-dispatch.yml"
+      - ".github/workflows/ops-final-lock-review-human-gate.yml"
+      - ".github/workflows/ops-final-promotion-to-reviewed-pr.yml"
+      - ".github/workflows/ops-final-reviewed-lock-merge-to-signing.yml"
+      - ".github/workflows/ops-final-signing-to-rebind-and-security-review.yml"
+      - ".github/workflows/ops-rc4-closure-to-final-lock-review.yml"
       - "ga-packs/03-authoritative-windows/final-release-lock-signing-control-contract.json"
       - "scripts/ga/build_windows_authority_final_release_lock_draft.py"
       - "scripts/ga/promote_windows_authority_final_release_lock.py"
       - "scripts/ga/sign_windows_authority_final_release.py"
+      - "tests/test_final_v2_release_control_migration.py"
       - "tests/test_windows_authority_final_release_lock_signing.py"
+      - "tests/test_windows_authority_final_release_promotion.py"
   pull_request:
-    branches: ["final/2.0.0-release-candidate-anchor"]
+    branches: ["final/2.0.0-release-candidate-anchor-v2"]
     paths:
-      - ".github/workflows/ga-windows-authority-final-release-lock-promotion.yml"
-      - ".github/workflows/ga-windows-authority-final-release-lock-review.yml"
       - ".github/workflows/ga-windows-authority-final-release-lock-signing-source-preflight.yml"
       - ".github/workflows/ga-windows-authority-final-release-sign-from-lock.yml"
+      - ".github/workflows/ga-windows-authority-final-staging-candidate-selfhosted.yml"
+      - ".github/workflows/ops-final-human-approval-promotion-dispatch.yml"
+      - ".github/workflows/ops-final-lock-review-human-gate.yml"
+      - ".github/workflows/ops-final-promotion-to-reviewed-pr.yml"
+      - ".github/workflows/ops-final-reviewed-lock-merge-to-signing.yml"
+      - ".github/workflows/ops-final-signing-to-rebind-and-security-review.yml"
+      - ".github/workflows/ops-rc4-closure-to-final-lock-review.yml"
       - "ga-packs/03-authoritative-windows/final-release-lock-signing-control-contract.json"
       - "scripts/ga/build_windows_authority_final_release_lock_draft.py"
       - "scripts/ga/promote_windows_authority_final_release_lock.py"
       - "scripts/ga/sign_windows_authority_final_release.py"
+      - "tests/test_final_v2_release_control_migration.py"
       - "tests/test_windows_authority_final_release_lock_signing.py"
+      - "tests/test_windows_authority_final_release_promotion.py"
 
 concurrency:
   group: production-ga-windows-authority-final-release-lock-signing-source-preflight-${{ github.event.pull_request.head.ref || github.ref }}
@@ -61,7 +75,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Verify exact control head, frozen final source, and nine-path closure
+      - name: Verify exact control head, frozen final source, and v2 control closure
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -113,7 +127,8 @@ jobs:
             scripts/ga/build_windows_authority_final_release_lock_draft.py `
             scripts/ga/promote_windows_authority_final_release_lock.py `
             scripts/ga/sign_windows_authority_final_release.py `
-            tests/test_windows_authority_final_release_lock_signing.py
+            tests/test_windows_authority_final_release_lock_signing.py `
+            tests/test_final_v2_release_control_migration.py
           if ($LASTEXITCODE -ne 0) { throw 'Final lock/signing control compile failed.' }
           Write-Host 'final_lock_signing_compile=PASS'
 
@@ -123,6 +138,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           python -m unittest -v `
             tests.test_windows_authority_final_release_lock_signing `
+            tests.test_final_v2_release_control_migration `
             tests.test_windows_authority_final_release_promotion `
             tests.test_windows_authority_rc4_authority_rotation
           if ($LASTEXITCODE -ne 0) { throw 'Final lock/signing source contract suite failed.' }

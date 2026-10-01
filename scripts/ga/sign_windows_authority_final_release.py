@@ -228,7 +228,11 @@ def sign(
     if safety.get("rc4_evidence_may_be_relabelled_as_final") is not False:
         raise RuntimeError("Final release lock permits RC4 evidence relabelling")
     if safety.get("final_windows_evidence_rebind_required_after_signing") is not True:
-        raise RuntimeError("Final release lock does not require Windows evidence rebind")
+        raise RuntimeError("Final release lock does not require post-signing Windows evidence binding")
+    if safety.get("fresh_final_windows_certification_required_after_signing") is not True:
+        raise RuntimeError("Final release lock does not require fresh post-signing Windows certification")
+    if safety.get("legacy_rc4_campaign_rebind_allowed") is not False:
+        raise RuntimeError("Final release lock permits legacy RC4 campaign rebind")
     if safety.get("final_ga_evaluator_allowed_during_signing") is not False:
         raise RuntimeError("Final release lock permits GA evaluator during signing")
 
