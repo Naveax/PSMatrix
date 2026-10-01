@@ -75,3 +75,5 @@ jobs:
           git add ops/status/rc4-staging-dispatch.json
           git commit -m 'ops: publish RC4 staging dispatch receipt'
           git push origin HEAD:ops/ga-control-20260818
+
+# artifact-refresh-20261001 staging
