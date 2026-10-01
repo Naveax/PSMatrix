@@ -12,6 +12,7 @@ class ProductionBootstrapError(RuntimeError):
 
 
 EXPECTED_EXECUTION_CONTROL_HEAD = "49080a038bcf02ea328d862904e43af4fcf540db"
+EXPECTED_BOOTSTRAP_SOURCE_HEAD = "a4a0da2fd527a61b3757c186a27650ce7a55c3bd"
 EXPECTED_READINESS_SOURCE_HEAD = "6bfedb4979d0832daf01f3f452144f7bb7f830d6"
 EXPECTED_PRODUCER_ANCHOR = "89372d9432433237abdf677900093b399c4d0868"
 EXPECTED_FINAL_RELEASE_COMMIT = "02cef95d40cf524ce00f9d917188343dc49e6f2c"
@@ -322,6 +323,8 @@ def validate(
             raise ProductionBootstrapError(f"source preparation crossed production boundary: {key}")
 
     source_control = contract.get("control_source") or {}
+    if source_control.get("source_head") != EXPECTED_BOOTSTRAP_SOURCE_HEAD:
+        raise ProductionBootstrapError("production bootstrap frozen source head mismatch")
     if source_control.get("runtime_source_changes_allowed") is not False or set(source_control.get("changed_path_allowlist") or []) != EXPECTED_CONTROL_PATHS:
         raise ProductionBootstrapError("production bootstrap source boundary is not exact nine paths / zero runtime")
 
@@ -339,6 +342,7 @@ def validate(
         "status": "PASS",
         "version": "2.0.0",
         "execution_control_head": EXPECTED_EXECUTION_CONTROL_HEAD,
+        "bootstrap_source_head": EXPECTED_BOOTSTRAP_SOURCE_HEAD,
         "final_release_commit": EXPECTED_FINAL_RELEASE_COMMIT,
         "lock_signing_candidate_commit": EXPECTED_LOCK_RELEASE_COMMIT,
         "lock_signing_candidate_source_branch": EXPECTED_LOCK_SOURCE_BRANCH,
