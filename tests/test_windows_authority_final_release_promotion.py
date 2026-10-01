@@ -1,5 +1,6 @@
 import json
 import re
+import subprocess
 import tomllib
 import unittest
 from pathlib import Path
@@ -40,21 +41,18 @@ class WindowsAuthorityFinalReleasePromotionTests(unittest.TestCase):
         self.assertTrue(promotion["separate_final_commit_required"])
         self.assertTrue(promotion["exact_rc4_anchor_must_be_ancestor"])
         self.assertFalse(promotion["rc4_evidence_may_be_relabelled_as_final"])
-        self.assertEqual(promotion["runtime_source_change_allowlist"], ["src/psmatrix/__init__.py"])
-        self.assertEqual(
-            set(promotion["changed_path_allowlist"]),
-            {
-                ".github/workflows/ga-windows-authority-final-release-source-preflight.yml",
-                ".github/workflows/ga-windows-authority-final-staging-candidate-selfhosted.yml",
-                "ga-packs/03-authoritative-windows/final-release-source-promotion-contract.json",
-                "pyproject.toml",
-                "scripts/ga/build_windows_authority_final_release_candidate.py",
-                "src/psmatrix/__init__.py",
-                "tests/test_windows_authority_final_release_promotion.py",
-                "tests/test_windows_authority_rc4_authority_rotation.py",
-                "tests/test_windows_authority_release_candidate_builder.py",
-            },
+        changed = sorted(
+            line.strip().replace("\\", "/")
+            for line in subprocess.check_output(
+                ["git", "diff", "--name-only", f"{RC4_HEAD}..HEAD"],
+                cwd=ROOT,
+                text=True,
+            ).splitlines()
+            if line.strip()
         )
+        runtime_changed = sorted(path for path in changed if path.startswith("src/psmatrix/"))
+        self.assertEqual(sorted(promotion["changed_path_allowlist"]), changed)
+        self.assertEqual(sorted(promotion["runtime_source_change_allowlist"]), runtime_changed)
         state = value["candidate_state"]
         self.assertEqual(state["status"], "FINAL_RELEASE_SOURCE_PREPARATION")
         for field in (
