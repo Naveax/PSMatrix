@@ -44,6 +44,7 @@ jobs:
       PYTHONPATH: ${{ github.workspace }}\src
       EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
       EXECUTION_CONTROL_HEAD: 49080a038bcf02ea328d862904e43af4fcf540db
+      BOOTSTRAP_SOURCE_HEAD: a4a0da2fd527a61b3757c186a27650ce7a55c3bd
       READINESS_SOURCE_HEAD: 6bfedb4979d0832daf01f3f452144f7bb7f830d6
       PRODUCER_SOURCE_ANCHOR: 89372d9432433237abdf677900093b399c4d0868
       FINAL_RELEASE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
@@ -76,20 +77,26 @@ jobs:
           if (-not [string]::IsNullOrWhiteSpace((git status --porcelain))) {
               throw 'Production bootstrap source checkout is dirty.'
           }
-          foreach ($sha in @($env:EXECUTION_CONTROL_HEAD,$env:READINESS_SOURCE_HEAD,$env:PRODUCER_SOURCE_ANCHOR,$env:FINAL_RELEASE_COMMIT)) {
+          foreach ($sha in @($env:EXECUTION_CONTROL_HEAD,$env:BOOTSTRAP_SOURCE_HEAD,$env:READINESS_SOURCE_HEAD,$env:PRODUCER_SOURCE_ANCHOR,$env:FINAL_RELEASE_COMMIT)) {
               git cat-file -e "$sha^{commit}"
               if ($LASTEXITCODE -ne 0) { throw "Frozen production bootstrap source commit is unavailable: $sha" }
           }
-          git merge-base --is-ancestor $env:EXECUTION_CONTROL_HEAD $head
-          if ($LASTEXITCODE -ne 0) { throw 'Execution-control head is not an ancestor of production bootstrap head.' }
+          $postPublication = $env:GITHUB_REF -eq 'refs/heads/main'
+          $closureHead = if ($postPublication) { $env:BOOTSTRAP_SOURCE_HEAD } else { $head }
+          git merge-base --is-ancestor $env:EXECUTION_CONTROL_HEAD $closureHead
+          if ($LASTEXITCODE -ne 0) { throw 'Execution-control head is not an ancestor of the frozen production bootstrap source.' }
+          if ($postPublication) {
+              git merge-base --is-ancestor $env:BOOTSTRAP_SOURCE_HEAD $head
+              if ($LASTEXITCODE -ne 0) { throw 'Frozen production bootstrap source is not an ancestor of the published default branch.' }
+          }
           $contract = Get-Content 'ga-packs\03-authoritative-windows\final-production-bootstrap-contract.json' -Raw | ConvertFrom-Json
           if ([int]$contract.schema -ne 1 -or [string]$contract.kind -ne 'psmatrix.final-production-bootstrap-contract' -or [string]$contract.version -ne '2.0.0') {
               throw 'Production bootstrap contract identity mismatch.'
           }
-          if ([string]$contract.execution_control_head -ne $env:EXECUTION_CONTROL_HEAD -or [string]$contract.readiness_source_head -ne $env:READINESS_SOURCE_HEAD -or [string]$contract.producer_source_anchor -ne $env:PRODUCER_SOURCE_ANCHOR -or [string]$contract.final_release_commit -ne $env:FINAL_RELEASE_COMMIT) {
+          if ([string]$contract.execution_control_head -ne $env:EXECUTION_CONTROL_HEAD -or [string]$contract.control_source.source_head -ne $env:BOOTSTRAP_SOURCE_HEAD -or [string]$contract.readiness_source_head -ne $env:READINESS_SOURCE_HEAD -or [string]$contract.producer_source_anchor -ne $env:PRODUCER_SOURCE_ANCHOR -or [string]$contract.final_release_commit -ne $env:FINAL_RELEASE_COMMIT) {
               throw 'Production bootstrap frozen source identity mismatch.'
           }
-          $changed = @((git diff --name-only "$env:EXECUTION_CONTROL_HEAD..$head") | ForEach-Object { $_.Trim().Replace('\','/') } | Where-Object { $_ } | Sort-Object -Unique)
+          $changed = @((git diff --name-only "$env:EXECUTION_CONTROL_HEAD..$closureHead") | ForEach-Object { $_.Trim().Replace('\','/') } | Where-Object { $_ } | Sort-Object -Unique)
           $allowed = @($contract.control_source.changed_path_allowlist | ForEach-Object { ([string]$_).Replace('\','/') } | Sort-Object -Unique)
           if (@(Compare-Object -ReferenceObject $allowed -DifferenceObject $changed).Count -ne 0) {
               throw "Production bootstrap changed-path closure mismatch. changed=$($changed -join ',')"
@@ -99,7 +106,9 @@ jobs:
           if (@($contract.required_dispatch_workflow_paths).Count -ne 19) { throw 'Production bootstrap dispatch registration set is not exact 19.' }
           if (@($contract.legacy_phase_preflight_paths).Count -ne 4) { throw 'Legacy phase preflight set is not exact four.' }
           if (@($contract.bootstrap_sequence).Count -ne 10) { throw 'Production bootstrap sequence is not exact ten stages.' }
-          Write-Host "validated_exact_production_bootstrap_head=$head"
+          Write-Host "validated_exact_production_bootstrap_head=$closureHead"
+          Write-Host "observed_repository_head=$head"
+          Write-Host "post_publication_mode=$($postPublication.ToString().ToLowerInvariant())"
           Write-Host 'production_bootstrap_changed_paths=9'
           Write-Host 'runtime_source_changes=0'
           Write-Host 'required_dispatch_workflow_paths=19'

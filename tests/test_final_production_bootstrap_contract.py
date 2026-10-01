@@ -215,8 +215,17 @@ class FinalProductionBootstrapContractTests(unittest.TestCase):
             self.assertIn(item, promotion)
         self.assertNotIn("git push", promotion.lower())
 
+    def test_bootstrap_preflight_preserves_historical_closure_after_main_publication(self) -> None:
+        workflow = (ROOT / ".github/workflows/ga-final-production-bootstrap-source-preflight.yml").read_text(encoding="utf-8")
+        self.assertIn("BOOTSTRAP_SOURCE_HEAD: a4a0da2fd527a61b3757c186a27650ce7a55c3bd", workflow)
+        self.assertIn("$postPublication = $env:GITHUB_REF -eq 'refs/heads/main'", workflow)
+        self.assertIn("$closureHead = if ($postPublication) { $env:BOOTSTRAP_SOURCE_HEAD } else { $head }", workflow)
+        self.assertIn('git diff --name-only "$env:EXECUTION_CONTROL_HEAD..$closureHead"', workflow)
+        self.assertNotIn('git diff --name-only "$env:EXECUTION_CONTROL_HEAD..$head"', workflow)
+
     def test_repository_validator_accepts_source_without_claiming_dispatch_readiness(self) -> None:
         result = self.validator.validate(ROOT)
+        self.assertEqual(result["bootstrap_source_head"], "a4a0da2fd527a61b3757c186a27650ce7a55c3bd")
         self.assertEqual(result["status"], "PASS")
         self.assertEqual(result["required_dispatch_workflow_paths"], 19)
         self.assertEqual(result["legacy_phase_preflights"], 4)
@@ -248,6 +257,7 @@ class FinalProductionBootstrapContractTests(unittest.TestCase):
 
     def test_source_layer_is_exact_nine_paths_and_cannot_claim_production(self) -> None:
         source = self.contract["control_source"]
+        self.assertEqual(source["source_head"], "a4a0da2fd527a61b3757c186a27650ce7a55c3bd")
         self.assertIs(source["runtime_source_changes_allowed"], False)
         self.assertEqual(
             set(source["changed_path_allowlist"]),

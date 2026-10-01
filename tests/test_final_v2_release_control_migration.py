@@ -65,12 +65,16 @@ class FinalV2ReleaseControlMigrationTests(unittest.TestCase):
         )
         allowed = sorted(contract["control_source"]["changed_path_allowlist"])
         self.assertEqual(changed, allowed)
-        self.assertEqual(len(changed), 20)
+        self.assertEqual(len(changed), 22)
+        self.assertIn(".github/workflows/ga-final-production-bootstrap-source-preflight.yml", allowed)
+        self.assertIn("ga-packs/03-authoritative-windows/final-production-bootstrap-contract.json", allowed)
+        self.assertIn("tests/test_final_production_bootstrap_contract.py", allowed)
         self.assertFalse(any(path.startswith("src/psmatrix/") for path in changed))
 
     def test_source_preflight_targets_v2_source_branch(self):
         text = (ROOT / ".github/workflows/ga-windows-authority-final-release-lock-signing-source-preflight.yml").read_text(encoding="utf-8")
         self.assertIn('branches: ["final/2.0.0-release-candidate-anchor-v2"]', text)
+        self.assertIn('.github/workflows/ga-final-production-bootstrap-source-preflight.yml', text)
         self.assertIn("v2 control closure", text)
 
 
