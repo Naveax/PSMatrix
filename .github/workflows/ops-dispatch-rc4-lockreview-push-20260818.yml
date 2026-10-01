@@ -19,8 +19,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       TARGET_REF: release/2.0.0rc4-authority-rotation
       TARGET_SHA: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
-      ENROLLMENT_RUN_ID: '32136341027'
-      STAGING_RUN_ID: '32136540372'
+      ENROLLMENT_RUN_ID: '36850062892'
+      STAGING_RUN_ID: '36850839481'
     steps:
       - name: Verify source runs and dispatch lock review
         id: dispatch
@@ -88,3 +88,5 @@ jobs:
           git add ops/status/rc4-lockreview-dispatch.json
           git commit -m 'ops: publish RC4 lock-review dispatch receipt'
           git push origin HEAD:ops/ga-control-20260818
+
+# artifact-refresh-20261001 lockreview-fresh-runs
