@@ -31,7 +31,7 @@ jobs:
       REVIEW_CONTROL_HEAD: ${{ github.event.workflow_run.head_sha }}
       FINAL_CANDIDATE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
       FINAL_LOCK_CONTROL_BRANCH: release/2.0.0-final-lock-control
-      RC4_ENROLLMENT_RUN_ID: '32136341027'
+      RC4_ENROLLMENT_RUN_ID: '36850062892'
       HUMAN_GATE_ISSUE: '263'
       STATE_ISSUE: '262'
     steps:

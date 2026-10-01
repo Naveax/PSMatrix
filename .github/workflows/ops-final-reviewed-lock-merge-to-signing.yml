@@ -36,7 +36,7 @@ jobs:
       MERGED_BY: ${{ github.event.pull_request.merged_by.login }}
       LOCK_CONTROL_HEAD: ${{ github.event.pull_request.merge_commit_sha }}
       FINAL_CANDIDATE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
-      RC4_ENROLLMENT_RUN_ID: '32136341027'
+      RC4_ENROLLMENT_RUN_ID: '36850062892'
       FINAL_ACTIVE_BRANCH: release/2.0.0-final-active-lock
       STATE_ISSUE: '262'
     steps:

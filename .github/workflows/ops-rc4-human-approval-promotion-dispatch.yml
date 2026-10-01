@@ -25,9 +25,9 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       CANDIDATE_COMMIT: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
       REVIEW_BRANCH: release/2.0.0rc4-authority-rotation
-      REVIEW_RUN_ID: '32137455148'
+      REVIEW_RUN_ID: '36851144641'
       REVIEW_RUN_ATTEMPT: '1'
-      REVIEWED_DRAFT_SHA256: a2a97763f679b18562e19ec99f066374b097a50c44a3bea4d1208328e9b339d9
+      REVIEWED_DRAFT_SHA256: f609e5ab5968fd6f1d569a78921ede0fd61bfa991c50bcb831bf15e3a450e2da
       REVIEWED_PUBLIC_KEY_SHA256: ece4d7087449cb42cde9183b0b1e2b82db610d4ffffd726e6737d2ba09578a08
       REVIEW_ISSUE: '260'
       PROMOTION_WORKFLOW: ga-windows-authority-rc4-release-lock-promotion.yml

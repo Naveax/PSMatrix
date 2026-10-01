@@ -282,22 +282,22 @@ class WindowsAuthorityGAContractTests(unittest.TestCase):
         self.assertEqual(recovery["lock_review_completed_runs"], 1)
         observed = {
             "enrollment": (
-                32136341027,
+                36850062892,
                 1,
-                9324124650,
-                "8a74fd09d7e5b7488d21faf7c952dd9427c15c74e0c6740ec376ffaac3424f48",
+                11154883493,
+                "f3b36b32986ac7573683268979d3c44d529adb4159097b74b16e2254d7190c6b",
             ),
             "staging": (
-                32136540372,
-                2,
-                9324464084,
-                "03fffb4a4e24c585ea7b6ccd2bf97c43529f90694430926484fee72fc57a3e3d",
+                36850839481,
+                1,
+                11156175140,
+                "ca0014b9f057e05aae8cf064bbff7d3e5d7d3b2d8417c7e3d24e8263f59d280d",
             ),
             "lock_review": (
-                32137455148,
+                36851144641,
                 1,
-                9324675173,
-                "8002df656f40ab830c54eafe86915e57faea5654881468307c7180d3f86819aa",
+                11155403251,
+                "31a505014f57aec72384a3bf74307b394c38ee79ed04c084473fad50da820460",
             ),
         }
         for name, (run, attempt, artifact, digest) in observed.items():
@@ -310,7 +310,7 @@ class WindowsAuthorityGAContractTests(unittest.TestCase):
                 self.assertEqual(row["artifact_sha256"], digest)
         self.assertEqual(
             recovery["lock_review"]["review_draft_sha256"],
-            "a2a97763f679b18562e19ec99f066374b097a50c44a3bea4d1208328e9b339d9",
+            "f609e5ab5968fd6f1d569a78921ede0fd61bfa991c50bcb831bf15e3a450e2da",
         )
         self.assertEqual(
             recovery["lock_review"]["proposed_public_key_sha256"],
