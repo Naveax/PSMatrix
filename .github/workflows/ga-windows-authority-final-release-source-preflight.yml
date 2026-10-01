@@ -45,6 +45,10 @@ jobs:
     env:
       PYTHONPATH: ${{ github.workspace }}\src
       EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+      FINAL_SOURCE_HEAD: 43922a5544745c64165df4aedd9c57391bfe6c51
+      FINAL_SOURCE_BRANCH: final/2.0.0-release-candidate-anchor-v2
+      LOCK_CONTROL_BRANCH: final/2.0.0-lock-signing-controls-v2
+      OBSERVED_HEAD_REF: ${{ github.event.pull_request.head.ref || github.ref_name }}
 
     steps:
       - name: Verify trusted NAVEAX runner
@@ -83,11 +87,29 @@ jobs:
           if ([string]$contract.from_version -ne '2.0.0rc4' -or [string]$contract.to_version -ne '2.0.0') { throw 'Final source-promotion version boundary mismatch.' }
           if ([bool]$contract.promotion.rc4_evidence_may_be_relabelled_as_final -ne $false) { throw 'RC4 evidence relabelling boundary was weakened.' }
           $anchor = ([string]$contract.rc4_hardened_source_head).ToLowerInvariant()
-          if ($anchor -cnotmatch '^[0-9a-f]{40}$' -or $head -eq $anchor) { throw 'Final release requires a distinct valid RC4 anchor and final head.' }
-          git merge-base --is-ancestor $anchor $head
-          if ($LASTEXITCODE -ne 0) { throw 'Exact hardened RC4 source head is not an ancestor of final 2.0.0.' }
+          $sourceHead = $env:FINAL_SOURCE_HEAD.ToLowerInvariant()
+          if ($sourceHead -cnotmatch '^[0-9a-f]{40}$') { throw 'Frozen final source head is invalid.' }
+          git cat-file -e "$sourceHead^{commit}"
+          if ($LASTEXITCODE -ne 0) { throw "Frozen final source commit is unavailable: $sourceHead" }
 
-          $changed = @((git diff --name-only "$anchor..$head") | ForEach-Object { $_.Trim().Replace('\','/') } | Where-Object { $_ } | Sort-Object -Unique)
+          if ($env:OBSERVED_HEAD_REF -eq $env:FINAL_SOURCE_BRANCH) {
+              if ($head -ne $sourceHead) { throw "Frozen final source branch moved: $head / $sourceHead" }
+              $closureHead = $head
+              $downstreamControl = $false
+          } elseif ($env:OBSERVED_HEAD_REF -eq $env:LOCK_CONTROL_BRANCH) {
+              git merge-base --is-ancestor $sourceHead $head
+              if ($LASTEXITCODE -ne 0) { throw 'Frozen final source is not an ancestor of the lock/signing control head.' }
+              $closureHead = $sourceHead
+              $downstreamControl = $true
+          } else {
+              throw "Unexpected final-release source-preflight branch: $env:OBSERVED_HEAD_REF"
+          }
+
+          if ($anchor -cnotmatch '^[0-9a-f]{40}$' -or $closureHead -eq $anchor) { throw 'Final release requires a distinct valid RC4 anchor and final source head.' }
+          git merge-base --is-ancestor $anchor $closureHead
+          if ($LASTEXITCODE -ne 0) { throw 'Exact hardened RC4 source head is not an ancestor of frozen final 2.0.0 source.' }
+
+          $changed = @((git diff --name-only "$anchor..$closureHead") | ForEach-Object { $_.Trim().Replace('\','/') } | Where-Object { $_ } | Sort-Object -Unique)
           $allowed = @($contract.promotion.changed_path_allowlist | ForEach-Object { ([string]$_).Replace('\','/') } | Sort-Object -Unique)
           $delta = @(Compare-Object -ReferenceObject $allowed -DifferenceObject $changed)
           if ($delta.Count -ne 0) { throw "Final promotion changed-path closure mismatch: $($delta | Out-String)" }
@@ -99,7 +121,9 @@ jobs:
           foreach ($path in @('ga-packs\03-authoritative-windows\final-release-lock.json','release-assets\2.0.0\psmatrix-2.0.0-release-public.pem')) {
               if (Test-Path -LiteralPath $path -PathType Leaf) { throw "Final preparation contains active authority material: $path" }
           }
-          Write-Host "validated_exact_final_head=$head"
+          Write-Host "validated_exact_final_head=$closureHead"
+          Write-Host "observed_repository_head=$head"
+          Write-Host "downstream_control_mode=$($downstreamControl.ToString().ToLowerInvariant())"
           Write-Host "validated_rc4_anchor=$anchor"
           Write-Host "final_changed_paths=$($changed.Count)"
           Write-Host "final_runtime_changed_paths=$($runtime -join ',')"

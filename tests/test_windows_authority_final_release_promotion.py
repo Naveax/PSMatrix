@@ -76,6 +76,23 @@ class WindowsAuthorityFinalReleasePromotionTests(unittest.TestCase):
             with self.subTest(field=field):
                 self.assertFalse(state[field])
 
+    def test_source_preflight_freezes_source_closure_on_lock_control_branch(self) -> None:
+        text = PREFLIGHT.read_text(encoding="utf-8")
+        required = (
+            "FINAL_SOURCE_HEAD: 43922a5544745c64165df4aedd9c57391bfe6c51",
+            "FINAL_SOURCE_BRANCH: final/2.0.0-release-candidate-anchor-v2",
+            "LOCK_CONTROL_BRANCH: final/2.0.0-lock-signing-controls-v2",
+            "OBSERVED_HEAD_REF: ${{ github.event.pull_request.head.ref || github.ref_name }}",
+            "$closureHead = $sourceHead",
+            "Frozen final source is not an ancestor of the lock/signing control head.",
+            'git diff --name-only "$anchor..$closureHead"',
+            "Unexpected final-release source-preflight branch",
+        )
+        for item in required:
+            with self.subTest(item=item):
+                self.assertIn(item, text)
+        self.assertNotIn('git diff --name-only "$anchor..$head"', text)
+
     def test_final_builder_is_exact_anchor_bound_reproducible_and_unsigned(self) -> None:
         text = BUILDER.read_text(encoding="utf-8")
         required = (
