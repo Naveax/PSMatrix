@@ -128,7 +128,11 @@ jobs:
           if ([string]$report.status -ne 'READY_FOR_FINAL_RELEASE_LOCK_REVIEW') { throw 'Final staging report status mismatch.' }
           if ([string]$report.version -ne '2.0.0' -or [string]$report.release_commit -ne $env:RELEASE_COMMIT) { throw 'Final staging report identity mismatch.' }
           if ([bool]$report.rc4_anchor_is_ancestor -ne $true) { throw 'Final staging report lacks RC4 ancestry proof.' }
-          if (@($report.runtime_changed_paths).Count -ne 1 -or [string]$report.runtime_changed_paths[0] -ne 'src/psmatrix/__init__.py') { throw 'Final runtime-source change boundary mismatch.' }
+          $contract = Get-Content 'ga-packs\03-authoritative-windows\final-release-source-promotion-contract.json' -Raw | ConvertFrom-Json
+          $expectedRuntime = @($contract.promotion.runtime_source_change_allowlist | ForEach-Object { [string]$_ } | Sort-Object -Unique)
+          $actualRuntime = @($report.runtime_changed_paths | ForEach-Object { [string]$_ } | Sort-Object -Unique)
+          $runtimeDelta = @(Compare-Object -ReferenceObject $expectedRuntime -DifferenceObject $actualRuntime)
+          if ($runtimeDelta.Count -ne 0) { throw "Final runtime-source change boundary mismatch: $($runtimeDelta | Out-String)" }
           if (@($report.artifacts).Count -ne 6) { throw "Expected exactly six final release artifacts; found $(@($report.artifacts).Count)." }
           foreach ($field in @('private_key_read','release_artifacts_signed','final_release_lock_written','final_windows_evidence_rebound','final_ga_evaluator_invoked','rc4_evidence_relabelled_as_final','downloads_files','extracts_existing_operation_package','authoritative','ga_eligible')) {
               if ([bool]$report.$field) { throw "Unsafe final staging field is true: $field" }

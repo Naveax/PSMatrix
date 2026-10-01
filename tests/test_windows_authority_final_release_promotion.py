@@ -128,6 +128,9 @@ class WindowsAuthorityFinalReleasePromotionTests(unittest.TestCase):
             "scan_private_key_material_streaming.py",
             "size_limit_applied",
             "Expected exactly six final release artifacts",
+            "runtime_source_change_allowlist",
+            "Compare-Object -ReferenceObject $expectedRuntime -DifferenceObject $actualRuntime",
+            "Final runtime-source change boundary mismatch",
             "final_unsigned_prelock_staging=PASS",
             "final_release_lock_written=false",
             "release_artifacts_signed=false",
@@ -140,6 +143,8 @@ class WindowsAuthorityFinalReleasePromotionTests(unittest.TestCase):
         for item in required:
             with self.subTest(item=item):
                 self.assertIn(item, text)
+        self.assertNotIn("@($report.runtime_changed_paths).Count -ne 1", text)
+        self.assertNotIn("runtime_changed_paths[0] -ne 'src/psmatrix/__init__.py'", text)
         for forbidden in (
             "PSMATRIX_RELEASE_PRIVATE_KEY",
             "production-ga-release-signing",
