@@ -18,6 +18,8 @@ SHA40 = re.compile(r"^[0-9a-f]{40}$")
 EXPECTED_EXECUTION_ANCHOR = "3ffc6b6d7cd58d64224f780aa819b50f50f72491"
 EXPECTED_BOOTSTRAP_CONTROL_HEAD = "49080a038bcf02ea328d862904e43af4fcf540db"
 EXPECTED_FINAL_RELEASE_COMMIT = "02cef95d40cf524ce00f9d917188343dc49e6f2c"
+EXPECTED_LOCK_RELEASE_COMMIT = "43922a5544745c64165df4aedd9c57391bfe6c51"
+EXPECTED_LOCK_SOURCE_BRANCH = "final/2.0.0-release-candidate-anchor-v2"
 EXPECTED_EVALUATOR_GATES = {
     "validation-summary",
     "signed-release",
@@ -186,8 +188,10 @@ def _validate_bootstrap_contract(contract: dict[str, Any]) -> None:
 
 
 def _validate_lock_contract(contract: dict[str, Any]) -> None:
-    if contract.get("final_release_commit") != EXPECTED_FINAL_RELEASE_COMMIT:
-        raise FinalValidationEvidenceChainError("final-lock contract release commit drifted")
+    if contract.get("final_release_commit") != EXPECTED_LOCK_RELEASE_COMMIT:
+        raise FinalValidationEvidenceChainError("v2 final-lock candidate release commit drifted")
+    if contract.get("final_release_source_branch") != EXPECTED_LOCK_SOURCE_BRANCH:
+        raise FinalValidationEvidenceChainError("v2 final-lock candidate source branch drifted")
     safety = contract.get("safety")
     if not isinstance(safety, dict):
         raise FinalValidationEvidenceChainError("final-lock safety contract is missing")
@@ -196,6 +200,7 @@ def _validate_lock_contract(contract: dict[str, Any]) -> None:
         "reviewed_digests_required_for_promotion",
         "repository_commit_required_before_signing",
         "final_windows_evidence_rebind_required_after_signing",
+        "fresh_final_windows_certification_required_after_signing",
     ):
         if safety.get(name) is not True:
             raise FinalValidationEvidenceChainError(f"final-lock safety requirement is not fail-closed: {name}")
@@ -204,9 +209,13 @@ def _validate_lock_contract(contract: dict[str, Any]) -> None:
         "sign_without_exact_lock_match_allowed",
         "rc4_evidence_may_be_relabelled_as_final",
         "final_ga_evaluator_allowed_during_signing",
+        "legacy_rc4_campaign_rebind_allowed",
     ):
         if safety.get(name) is not False:
             raise FinalValidationEvidenceChainError(f"unsafe final-lock permission is enabled: {name}")
+    preparation = contract.get("preparation_state")
+    if not isinstance(preparation, dict) or not preparation or any(value is not False for value in preparation.values()):
+        raise FinalValidationEvidenceChainError("v2 final-lock candidate already claims production authority")
 
 
 def _validate_summary(
@@ -348,6 +357,10 @@ def build_plan(
         "control_head": control_head,
         "bootstrap_control_head": EXPECTED_BOOTSTRAP_CONTROL_HEAD,
         "final_release_commit": EXPECTED_FINAL_RELEASE_COMMIT,
+        "lock_signing_candidate_commit": EXPECTED_LOCK_RELEASE_COMMIT,
+        "lock_signing_candidate_source_branch": EXPECTED_LOCK_SOURCE_BRANCH,
+        "lock_signing_candidate_authoritative": False,
+        "fresh_final_windows_certification_required": True,
         "current_stage": stage,
         "environment_count": 12,
         "required_check_count": 41,
@@ -366,9 +379,13 @@ def build_plan(
         "protected_final_release_signing": {
             "workflow_path": ".github/workflows/ga-windows-authority-final-release-sign-from-lock.yml",
             "environment": "production-ga-release-signing",
+            "candidate_release_commit": EXPECTED_LOCK_RELEASE_COMMIT,
+            "candidate_source_branch": EXPECTED_LOCK_SOURCE_BRANCH,
             "requires_production_readiness_verified": True,
             "requires_final_lock_api_verification": True,
             "requires_final_lock_repository_content_verification": True,
+            "requires_fresh_final_windows_certification_after_signing": True,
+            "legacy_rc4_campaign_rebind_allowed": False,
         },
         "protected_final_validation": {
             "workflow_path": ".github/workflows/ga-final-validation-summary.yml",

@@ -11,7 +11,6 @@ concurrency:
 
 permissions:
   contents: read
-  actions: write
   issues: write
 
 jobs:
@@ -19,7 +18,7 @@ jobs:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'workflow_dispatch' &&
-      github.event.workflow_run.head_branch == 'release/2.0.0-final-active-lock' &&
+      github.event.workflow_run.head_branch == 'release/2.0.0-final-active-lock-v2' &&
       github.event.workflow_run.actor.login == 'github-actions[bot]' &&
       github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'
     runs-on: ubuntu-latest
@@ -29,8 +28,7 @@ jobs:
       FINAL_SIGNING_RUN_ID: ${{ github.event.workflow_run.id }}
       FINAL_SIGNING_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
       FINAL_CONTROL_HEAD: ${{ github.event.workflow_run.head_sha }}
-      FINAL_ACTIVE_BRANCH: release/2.0.0-final-active-lock
-      RC4_ACTIVE_BRANCH: release/2.0.0rc4-active-lock
+      FINAL_ACTIVE_BRANCH: release/2.0.0-final-active-lock-v2
       STATE_ISSUE: '262'
     steps:
       - name: Validate exact protected final release artifact
@@ -60,102 +58,20 @@ jobs:
           print(f'protected_final_release=PASS artifact_id={matches[0].get("id")} automated_dispatch=true')
           PY
 
-      - name: Recover exact RC4 campaign and closure provenance
-        id: rc4
+      - name: Record signed v2 release and hold downstream evidence gates fail-closed
         shell: bash
         run: |
           set -euo pipefail
-          rc4_head=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$RC4_ACTIVE_BRANCH" --jq '.object.sha')
-          [[ "$rc4_head" =~ ^[0-9a-f]{40}$ ]] || { echo 'RC4 active-lock head cannot be resolved.' >&2; exit 1; }
-          gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body' > "$RUNNER_TEMP/rc4-chain-state.txt"
-          RC4_HEAD="$rc4_head" python - <<'PY'
-          import os,re
-          from pathlib import Path
-          lines=Path(os.environ['RUNNER_TEMP'],'rc4-chain-state.txt').read_text(encoding='utf-8').splitlines()
-          rc4_head=os.environ['RC4_HEAD']
-          def latest(stage):
-              pat=re.compile(rf'^RC4_CHAIN_STATE stage={re.escape(stage)} run_id=([1-9][0-9]*) attempt=([1-9][0-9]*) control_head=([0-9a-f]{{40}})$')
-              rows=[]
-              for line in lines:
-                  m=pat.fullmatch(line.strip())
-                  if m: rows.append(m.groups())
-              if not rows: raise SystemExit(f'missing RC4 chain state: {stage}')
-              return rows[-1]
-          campaign=latest('campaign')
-          closure=latest('closure')
-          if campaign[2]!=rc4_head or closure[2]!=rc4_head:
-              raise SystemExit('RC4 campaign/closure state is not bound to current active RC4 control head')
-          if campaign[0]==closure[0]: raise SystemExit('RC4 campaign and closure run IDs must differ')
-          with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as out:
-              out.write(f'rc4_control_head={rc4_head}\n')
-              out.write(f'campaign_run_id={campaign[0]}\n')
-              out.write(f'closure_run_id={closure[0]}\n')
-          print(f'rc4_final_rebind_provenance=PASS campaign={campaign[0]} closure={closure[0]} control={rc4_head}')
-          PY
-
-      - name: Record final signing and dispatch exact downstream work once
-        env:
-          RC4_CONTROL_HEAD: ${{ steps.rc4.outputs.rc4_control_head }}
-          RC4_CAMPAIGN_RUN_ID: ${{ steps.rc4.outputs.campaign_run_id }}
-          RC4_CLOSURE_RUN_ID: ${{ steps.rc4.outputs.closure_run_id }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          marker="RC4_CHAIN_STATE stage=final_signing run_id=$FINAL_SIGNING_RUN_ID attempt=$FINAL_SIGNING_RUN_ATTEMPT control_head=$FINAL_CONTROL_HEAD"
+          marker="RC4_CHAIN_STATE stage=final_signing_v2_waiting_fresh_windows_certification run_id=$FINAL_SIGNING_RUN_ID attempt=$FINAL_SIGNING_RUN_ATTEMPT control_head=$FINAL_CONTROL_HEAD"
           if ! gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$STATE_ISSUE/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body' | grep -Fxq "$marker"; then
             gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" --body "$marker"
           fi
 
-          existing_count() {
-            local workflow="$1"
-            gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?branch=$FINAL_ACTIVE_BRANCH&event=workflow_dispatch&per_page=100" \
-              --jq ".workflow_runs | map(select(.head_sha == \"$FINAL_CONTROL_HEAD\")) | length"
-          }
-
-          assert_final_head() {
-            local current
-            current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FINAL_ACTIVE_BRANCH" --jq '.object.sha')
-            [[ "$current" == "$FINAL_CONTROL_HEAD" ]] || { echo "Final active control moved before downstream dispatch: $current != $FINAL_CONTROL_HEAD" >&2; return 1; }
-          }
-
-          assert_rc4_head() {
-            local current
-            current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$RC4_ACTIVE_BRANCH" --jq '.object.sha')
-            [[ "$current" == "$RC4_CONTROL_HEAD" ]] || { echo "RC4 active control moved before final Windows rebind dispatch: $current != $RC4_CONTROL_HEAD" >&2; return 1; }
-          }
-
-          dispatched=0
-          suppressed=0
-
-          if [[ "$(existing_count ga-windows-authority-final-windows-evidence-rebind.yml)" -eq 0 ]]; then
-            assert_final_head
-            assert_rc4_head
-            gh workflow run ga-windows-authority-final-windows-evidence-rebind.yml \
-              --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
-              -f rc4_control_head="$RC4_CONTROL_HEAD" \
-              -f rc4_closure_run_id="$RC4_CLOSURE_RUN_ID" \
-              -f rc4_campaign_run_id="$RC4_CAMPAIGN_RUN_ID" \
-              -f final_signing_run_id="$FINAL_SIGNING_RUN_ID"
-            dispatched=$((dispatched+1))
-            echo 'final_windows_evidence_rebind_dispatched=true'
-          else
-            suppressed=$((suppressed+1))
-            echo 'final_windows_evidence_rebind_duplicate_suppressed=true'
-          fi
-
-          if [[ "$(existing_count ga-final-security-review-packet.yml)" -eq 0 ]]; then
-            assert_final_head
-            gh workflow run ga-final-security-review-packet.yml \
-              --repo "$GITHUB_REPOSITORY" --ref "$FINAL_ACTIVE_BRANCH" \
-              -f release_signing_run_id="$FINAL_SIGNING_RUN_ID"
-            dispatched=$((dispatched+1))
-            echo 'final_security_review_packet_dispatched=true'
-          else
-            suppressed=$((suppressed+1))
-            echo 'final_security_review_packet_duplicate_suppressed=true'
-          fi
-
-          echo "final_signing_downstream_dispatch=PASS dispatched=$dispatched suppressed=$suppressed"
-          echo 'independent_review_completed=false'
+          echo 'final_signed_release_verified=true'
+          echo 'fresh_final_windows_certification_required=true'
+          echo 'legacy_rc4_campaign_rebind_allowed=false'
+          echo 'legacy_final_windows_rebind_dispatched=false'
+          echo 'final_security_review_packet_dispatched=false'
+          echo 'downstream_v2_evidence_controls_ready=false'
+          echo 'final_ga_evaluator_invoked=false'
           echo 'ga_eligible=false'

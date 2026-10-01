@@ -15,6 +15,8 @@ EXPECTED_EXECUTION_CONTROL_HEAD = "49080a038bcf02ea328d862904e43af4fcf540db"
 EXPECTED_READINESS_SOURCE_HEAD = "6bfedb4979d0832daf01f3f452144f7bb7f830d6"
 EXPECTED_PRODUCER_ANCHOR = "89372d9432433237abdf677900093b399c4d0868"
 EXPECTED_FINAL_RELEASE_COMMIT = "02cef95d40cf524ce00f9d917188343dc49e6f2c"
+EXPECTED_LOCK_RELEASE_COMMIT = "43922a5544745c64165df4aedd9c57391bfe6c51"
+EXPECTED_LOCK_SOURCE_BRANCH = "final/2.0.0-release-candidate-anchor-v2"
 EXPECTED_DEFAULT_BRANCH = "main"
 EXPECTED_CI_PATH = ".github/workflows/ci.yml"
 EXPECTED_DISPATCH_PATHS = [
@@ -202,8 +204,33 @@ def validate(
         raise ProductionBootstrapError("execution-control readiness head differs from bootstrap contract")
     if execution.get("producer_source_anchor") != EXPECTED_PRODUCER_ANCHOR or readiness.get("producer_source_anchor") != EXPECTED_PRODUCER_ANCHOR:
         raise ProductionBootstrapError("producer source anchor differs across bootstrap/execution/readiness")
-    if execution.get("final_release_commit") != EXPECTED_FINAL_RELEASE_COMMIT or readiness.get("final_release_commit") != EXPECTED_FINAL_RELEASE_COMMIT or lock_control.get("final_release_commit") != EXPECTED_FINAL_RELEASE_COMMIT:
-        raise ProductionBootstrapError("final release commit differs across production control contracts")
+    if execution.get("final_release_commit") != EXPECTED_FINAL_RELEASE_COMMIT or readiness.get("final_release_commit") != EXPECTED_FINAL_RELEASE_COMMIT:
+        raise ProductionBootstrapError("legacy production evidence commit differs across bootstrap/execution/readiness")
+    if lock_control.get("final_release_commit") != EXPECTED_LOCK_RELEASE_COMMIT:
+        raise ProductionBootstrapError("v2 lock/signing candidate commit differs from the recut final source")
+    if lock_control.get("final_release_source_branch") != EXPECTED_LOCK_SOURCE_BRANCH:
+        raise ProductionBootstrapError("v2 lock/signing candidate source branch differs from the recut final source")
+    lock_safety = lock_control.get("safety") or {}
+    for key in (
+        "review_required_before_promotion",
+        "reviewed_digests_required_for_promotion",
+        "repository_commit_required_before_signing",
+        "fresh_final_windows_certification_required_after_signing",
+    ):
+        if lock_safety.get(key) is not True:
+            raise ProductionBootstrapError(f"v2 lock/signing safety requirement is not fail-closed: {key}")
+    for key in (
+        "private_key_in_repository_allowed",
+        "sign_without_exact_lock_match_allowed",
+        "rc4_evidence_may_be_relabelled_as_final",
+        "final_ga_evaluator_allowed_during_signing",
+        "legacy_rc4_campaign_rebind_allowed",
+    ):
+        if lock_safety.get(key) is not False:
+            raise ProductionBootstrapError(f"unsafe v2 lock/signing permission is enabled: {key}")
+    lock_preparation = lock_control.get("preparation_state") or {}
+    if not lock_preparation or any(value is not False for value in lock_preparation.values()):
+        raise ProductionBootstrapError("v2 lock/signing candidate already claims production authority")
 
     insertion = contract.get("execution_insertion_point") or {}
     if insertion != {"after_stage": "readiness", "before_stage": "signed-release"}:
@@ -313,6 +340,10 @@ def validate(
         "version": "2.0.0",
         "execution_control_head": EXPECTED_EXECUTION_CONTROL_HEAD,
         "final_release_commit": EXPECTED_FINAL_RELEASE_COMMIT,
+        "lock_signing_candidate_commit": EXPECTED_LOCK_RELEASE_COMMIT,
+        "lock_signing_candidate_source_branch": EXPECTED_LOCK_SOURCE_BRANCH,
+        "lock_signing_candidate_authoritative": False,
+        "fresh_final_windows_certification_required": True,
         "required_dispatch_workflow_paths": 19,
         "legacy_phase_preflights": 4,
         "legacy_phase_preflight_default_branch_triggers": 0,

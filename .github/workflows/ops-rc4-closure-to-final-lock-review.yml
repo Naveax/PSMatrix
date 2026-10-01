@@ -34,9 +34,9 @@ jobs:
       COMPLETED_BRANCH: ${{ github.event.workflow_run.head_branch }}
       COMPLETED_AT: ${{ github.event.workflow_run.updated_at }}
       RC4_CONTROL_BRANCH: release/2.0.0rc4-active-lock
-      FINAL_SOURCE_BRANCH: final/2.0.0-release-candidate-anchor
-      FINAL_SOURCE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
-      FINAL_LOCK_CONTROL_BRANCH: release/2.0.0-final-lock-control
+      FINAL_SOURCE_BRANCH: final/2.0.0-release-candidate-anchor-v2
+      FINAL_SOURCE_COMMIT: 43922a5544745c64165df4aedd9c57391bfe6c51
+      FINAL_LOCK_CONTROL_BRANCH: release/2.0.0-final-lock-control-v2
       RC4_ENROLLMENT_RUN_ID: '36850062892'
       STATE_ISSUE: '262'
     steps:

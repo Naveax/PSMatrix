@@ -19,7 +19,7 @@ jobs:
     if: >-
       github.event.pull_request.merged == true &&
       github.event.pull_request.merged_by.login == 'Naveax' &&
-      github.event.pull_request.base.ref == 'release/2.0.0-final-lock-control' &&
+      github.event.pull_request.base.ref == 'release/2.0.0-final-lock-control-v2' &&
       github.event.pull_request.title == 'Promote human-reviewed final 2.0.0 release lock' &&
       startsWith(github.event.pull_request.head.ref, 'ops/final-lock-promotion-') &&
       github.event.pull_request.head.repo.full_name == github.repository &&
@@ -35,9 +35,9 @@ jobs:
       PR_AUTHOR: ${{ github.event.pull_request.user.login }}
       MERGED_BY: ${{ github.event.pull_request.merged_by.login }}
       LOCK_CONTROL_HEAD: ${{ github.event.pull_request.merge_commit_sha }}
-      FINAL_CANDIDATE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
+      FINAL_CANDIDATE_COMMIT: 43922a5544745c64165df4aedd9c57391bfe6c51
       RC4_ENROLLMENT_RUN_ID: '36850062892'
-      FINAL_ACTIVE_BRANCH: release/2.0.0-final-active-lock
+      FINAL_ACTIVE_BRANCH: release/2.0.0-final-active-lock-v2
       STATE_ISSUE: '262'
     steps:
       - name: Validate reviewed final-lock PR identity and exact file boundary
@@ -140,7 +140,7 @@ jobs:
           [[ "$(jq -r '.path' <<<"$promotion")" == '.github/workflows/ga-windows-authority-final-release-lock-promotion.yml' ]] || { echo 'Final promotion run path mismatch.' >&2; exit 1; }
           [[ "$(jq -r '.event' <<<"$promotion")" == 'workflow_dispatch' ]] || { echo 'Final promotion run event mismatch.' >&2; exit 1; }
           [[ "$(jq -r '.status' <<<"$promotion")" == 'completed' && "$(jq -r '.conclusion' <<<"$promotion")" == 'success' ]] || { echo 'Final promotion run is not successful.' >&2; exit 1; }
-          [[ "$(jq -r '.head_branch' <<<"$promotion")" == 'release/2.0.0-final-lock-control' && "$(jq -r '.head_sha' <<<"$promotion")" == "$PROMOTION_CONTROL_HEAD" ]] || { echo 'Final promotion run control provenance mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.head_branch' <<<"$promotion")" == 'release/2.0.0-final-lock-control-v2' && "$(jq -r '.head_sha' <<<"$promotion")" == "$PROMOTION_CONTROL_HEAD" ]] || { echo 'Final promotion run control provenance mismatch.' >&2; exit 1; }
           [[ "$(jq -r '.actor.login' <<<"$promotion")" == 'github-actions[bot]' && "$(jq -r '.triggering_actor.login' <<<"$promotion")" == 'github-actions[bot]' ]] || { echo 'Final promotion run was not created by the approved dispatcher bot.' >&2; exit 1; }
           artifact_count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROMOTION_RUN_ID/artifacts?per_page=100" --jq '[.artifacts[] | select(.name == "psmatrix-2.0.0-final-release-lock-promotion-candidate" and (.expired|not))] | length')
           [[ "$artifact_count" == '1' ]] || { echo "Final promotion artifact cardinality mismatch: $artifact_count" >&2; exit 1; }

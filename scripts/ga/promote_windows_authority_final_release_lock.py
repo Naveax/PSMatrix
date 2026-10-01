@@ -195,7 +195,11 @@ def promote(
         if safety.get(field) is not False:
             raise RuntimeError(f"Unsafe final reviewed lock safety field: {field}")
     if safety.get("final_windows_evidence_rebind_required_after_signing") is not True:
-        raise RuntimeError("Final reviewed lock must require Windows evidence rebind after signing")
+        raise RuntimeError("Final reviewed lock must require post-signing Windows evidence binding")
+    if safety.get("fresh_final_windows_certification_required_after_signing") is not True:
+        raise RuntimeError("Final reviewed lock must require fresh post-signing Windows certification")
+    if safety.get("legacy_rc4_campaign_rebind_allowed") is not False:
+        raise RuntimeError("Final reviewed lock permits legacy RC4 campaign rebind")
 
     source_runs = draft.get("source_runs")
     if not isinstance(source_runs, dict) or source_runs != review_report.get("source_runs"):

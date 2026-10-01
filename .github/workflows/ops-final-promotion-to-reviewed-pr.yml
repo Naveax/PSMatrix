@@ -20,7 +20,7 @@ jobs:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'workflow_dispatch' &&
-      github.event.workflow_run.head_branch == 'release/2.0.0-final-lock-control' &&
+      github.event.workflow_run.head_branch == 'release/2.0.0-final-lock-control-v2' &&
       github.event.workflow_run.actor.login == 'github-actions[bot]' &&
       github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'
     runs-on: ubuntu-latest
@@ -29,8 +29,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       PROMOTION_RUN_ID: ${{ github.event.workflow_run.id }}
       PROMOTION_CONTROL_HEAD: ${{ github.event.workflow_run.head_sha }}
-      FINAL_CANDIDATE_COMMIT: 02cef95d40cf524ce00f9d917188343dc49e6f2c
-      FINAL_LOCK_CONTROL_BRANCH: release/2.0.0-final-lock-control
+      FINAL_CANDIDATE_COMMIT: 43922a5544745c64165df4aedd9c57391bfe6c51
+      FINAL_LOCK_CONTROL_BRANCH: release/2.0.0-final-lock-control-v2
       HUMAN_GATE_ISSUE: '263'
     steps:
       - name: Verify frozen final control has not moved
@@ -184,7 +184,7 @@ jobs:
         if: steps.dedupe.outputs.duplicate != 'true'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
         with:
-          ref: release/2.0.0-final-lock-control
+          ref: release/2.0.0-final-lock-control-v2
           path: repo
           fetch-depth: 1
           persist-credentials: true

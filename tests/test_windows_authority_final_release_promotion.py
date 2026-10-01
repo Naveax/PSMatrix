@@ -18,6 +18,7 @@ GA_EVALUATOR = ROOT / "src" / "psmatrix" / "ga.py"
 FINAL_LOCK = ROOT / "ga-packs" / "03-authoritative-windows" / "final-release-lock.json"
 FINAL_PUBLIC = ROOT / "release-assets" / "2.0.0" / "psmatrix-2.0.0-release-public.pem"
 RC4_HEAD = "6019823c121752bb0660b306b95058d7a690172f"
+FINAL_SOURCE_HEAD = "43922a5544745c64165df4aedd9c57391bfe6c51"
 
 
 class WindowsAuthorityFinalReleasePromotionTests(unittest.TestCase):
@@ -41,10 +42,19 @@ class WindowsAuthorityFinalReleasePromotionTests(unittest.TestCase):
         self.assertTrue(promotion["separate_final_commit_required"])
         self.assertTrue(promotion["exact_rc4_anchor_must_be_ancestor"])
         self.assertFalse(promotion["rc4_evidence_may_be_relabelled_as_final"])
+        ancestry = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", FINAL_SOURCE_HEAD, "HEAD"],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(ancestry.returncode, 0, ancestry.stderr)
         changed = sorted(
             line.strip().replace("\\", "/")
             for line in subprocess.check_output(
-                ["git", "diff", "--name-only", f"{RC4_HEAD}..HEAD"],
+                ["git", "diff", "--name-only", f"{RC4_HEAD}..{FINAL_SOURCE_HEAD}"],
                 cwd=ROOT,
                 text=True,
             ).splitlines()

@@ -24,8 +24,9 @@ ACTIVE_LOCK = ROOT / "ga-packs" / "03-authoritative-windows" / "final-release-lo
 ACTIVE_PUBLIC = ROOT / "release-assets" / "2.0.0" / "psmatrix-2.0.0-release-public.pem"
 VERSION = "2.0.0"
 PACK = "03-authoritative-windows"
-FINAL_COMMIT = "02cef95d40cf524ce00f9d917188343dc49e6f2c"
+FINAL_COMMIT = "43922a5544745c64165df4aedd9c57391bfe6c51"
 RC4_AUTHORITY_HEAD = "0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63"
+NEW_SOURCE_BRANCH = "final/2.0.0-release-candidate-anchor-v2"
 
 
 def _load(path: Path, name: str):
@@ -48,6 +49,7 @@ class WindowsAuthorityFinalReleaseLockSigningTests(unittest.TestCase):
         self.assertEqual(value["pack"], PACK)
         self.assertEqual(value["version"], VERSION)
         self.assertEqual(value["final_release_commit"], FINAL_COMMIT)
+        self.assertEqual(value["final_release_source_branch"], NEW_SOURCE_BRANCH)
         continuity = value["rc4_authority_continuity"]
         self.assertEqual(continuity["version"], "2.0.0rc4")
         self.assertEqual(continuity["enrollment_control_head"], RC4_AUTHORITY_HEAD)
@@ -63,6 +65,8 @@ class WindowsAuthorityFinalReleaseLockSigningTests(unittest.TestCase):
         self.assertFalse(safety["sign_without_exact_lock_match_allowed"])
         self.assertFalse(safety["rc4_evidence_may_be_relabelled_as_final"])
         self.assertTrue(safety["final_windows_evidence_rebind_required_after_signing"])
+        self.assertTrue(safety["fresh_final_windows_certification_required_after_signing"])
+        self.assertFalse(safety["legacy_rc4_campaign_rebind_allowed"])
         self.assertFalse(safety["final_ga_evaluator_allowed_during_signing"])
 
     def test_preparation_branch_contains_no_active_final_lock_or_public_authority(self) -> None:
@@ -259,6 +263,8 @@ class WindowsAuthorityFinalReleaseLockSigningTests(unittest.TestCase):
                     "sign_without_exact_lock_match_allowed": False,
                     "rc4_evidence_may_be_relabelled_as_final": False,
                     "final_windows_evidence_rebind_required_after_signing": True,
+                    "fresh_final_windows_certification_required_after_signing": True,
+                    "legacy_rc4_campaign_rebind_allowed": False,
                     "final_ga_evaluator_allowed_during_signing": False,
                 },
                 "review_state": "DRAFT_REQUIRES_HUMAN_REVIEW",
@@ -386,6 +392,8 @@ class WindowsAuthorityFinalReleaseLockSigningTests(unittest.TestCase):
                         "sign_without_exact_lock_match_allowed": False,
                         "rc4_evidence_may_be_relabelled_as_final": False,
                         "final_windows_evidence_rebind_required_after_signing": True,
+                        "fresh_final_windows_certification_required_after_signing": True,
+                        "legacy_rc4_campaign_rebind_allowed": False,
                         "final_ga_evaluator_allowed_during_signing": False,
                     },
                     "promotion_state": "READY_FOR_EXACT_REPOSITORY_COMMIT",
@@ -444,9 +452,10 @@ class WindowsAuthorityFinalReleaseLockSigningTests(unittest.TestCase):
             "build_windows_authority_final_release_lock_draft.py",
             "promote_windows_authority_final_release_lock.py",
             "sign_windows_authority_final_release.py",
-            "ga-windows-authority-final-release-lock-review.yml",
-            "ga-windows-authority-final-release-lock-promotion.yml",
             "ga-windows-authority-final-release-sign-from-lock.yml",
+            "ops-final-human-approval-promotion-dispatch.yml",
+            "ops-final-signing-to-rebind-and-security-review.yml",
+            "tests/test_final_v2_release_control_migration.py",
             "tests.test_windows_authority_final_release_lock_signing",
             "final_lock_signing_source_contract=PASS",
             "active_final_lock_present=false",
