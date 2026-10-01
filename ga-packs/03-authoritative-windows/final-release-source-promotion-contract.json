@@ -527,6 +527,7 @@
       "tests/test_final_validation_evidence_chain_preflight.py",
       "tests/test_final_validation_summary_bundle_verifier.py",
       "tests/test_final_validation_summary_run_verification.py",
+      "tests/test_final_v2_release_control_migration.py",
       "tests/test_final_vulnerability_scanner_supply_chain.py",
       "tests/test_final_windows_rebind_bundle_verifier.py",
       "tests/test_full_matrix.py",
