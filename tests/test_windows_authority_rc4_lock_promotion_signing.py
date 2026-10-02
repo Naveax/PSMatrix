@@ -63,6 +63,7 @@ class WindowsAuthorityRC4LockPromotionSigningTests(unittest.TestCase):
         for value in required:
             with self.subTest(value=value):
                 self.assertIn(value, text)
+        self.assertEqual(text.count("ConvertFrom-Json -DateKind String"), 2)
         for forbidden in (
             "PSMATRIX_RELEASE_PRIVATE_KEY",
             "secrets.",
@@ -97,7 +98,6 @@ class WindowsAuthorityRC4LockPromotionSigningTests(unittest.TestCase):
                 self.assertIn(value, text)
         self.assertNotIn("sign_bytes", text)
         self.assertNotIn("generate_ed25519_keypair", text)
-        self.assertEqual(text.count("ConvertFrom-Json -DateKind String"), 2)
 
     def test_protected_signer_requires_committed_lock_and_four_run_provenance(self) -> None:
         text = SIGNING_WORKFLOW.read_text(encoding="utf-8")
