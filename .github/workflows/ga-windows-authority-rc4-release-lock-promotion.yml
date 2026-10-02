@@ -19,6 +19,11 @@ on:
         description: Human-reviewed SHA-256 of the proposed RC4 release public key
         required: true
         type: string
+      recover_failed_automated_run_id:
+        description: Optional exact failed bot-dispatched promotion run ID to recover; leave empty for normal promotion
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   group: production-ga-windows-authority-rc4-release-lock-promotion
@@ -30,7 +35,152 @@ permissions:
   issues: read
 
 jobs:
+  recover-failed-automated-dispatch:
+    name: Recover exact failed automated RC4 promotion dispatch
+    if: inputs.recover_failed_automated_run_id != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+      issues: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PROMOTION_WORKFLOW: ga-windows-authority-rc4-release-lock-promotion.yml
+      FAILED_PROMOTION_RUN_ID: ${{ inputs.recover_failed_automated_run_id }}
+      EXPECTED_FAILED_PROMOTION_RUN_ID: '37004497727'
+      FAILED_PROMOTION_CONTROL_HEAD: b3ce3fe44ca2e4f446257e806f67fd9d93a4147d
+      FIX_VALIDATION_RUN_ID: '37008295113'
+      FIX_VALIDATION_CONTROL_HEAD: c73f288d490080feb679570dd8fad3bf03b4474b
+      FIX_VALIDATION_ARTIFACT_DIGEST: sha256:55bc5c833c7118d3198b89a626cfda54dcb40d72d4cff2d8c8279aa8883a154c
+      APPROVAL_COMMENT_ID: '5951919294'
+      CANDIDATE_COMMIT: ${{ inputs.candidate_commit }}
+      REVIEW_RUN_ID: ${{ inputs.review_run_id }}
+      REVIEWED_DRAFT_SHA256: ${{ inputs.reviewed_draft_sha256 }}
+      REVIEWED_PUBLIC_KEY_SHA256: ${{ inputs.reviewed_public_key_sha256 }}
+    steps:
+      - name: Validate exact one-shot recovery request
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTOR" == 'Naveax' ]] || { echo 'RC4 recovery must be explicitly started by repository owner Naveax.' >&2; exit 1; }
+          [[ "$GITHUB_REF_NAME" == 'main' ]] || { echo 'RC4 recovery must run from main.' >&2; exit 1; }
+          [[ "$FAILED_PROMOTION_RUN_ID" == "$EXPECTED_FAILED_PROMOTION_RUN_ID" ]] || { echo 'Unexpected failed promotion run ID.' >&2; exit 1; }
+          [[ "$CANDIDATE_COMMIT" == '0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63' ]] || { echo 'RC4 recovery candidate mismatch.' >&2; exit 1; }
+          [[ "$REVIEW_RUN_ID" == '36851144641' ]] || { echo 'RC4 recovery review run mismatch.' >&2; exit 1; }
+          [[ "$REVIEWED_DRAFT_SHA256" == 'f609e5ab5968fd6f1d569a78921ede0fd61bfa991c50bcb831bf15e3a450e2da' ]] || { echo 'RC4 recovery reviewed draft mismatch.' >&2; exit 1; }
+          [[ "$REVIEWED_PUBLIC_KEY_SHA256" == 'ece4d7087449cb42cde9183b0b1e2b82db610d4ffffd726e6737d2ba09578a08' ]] || { echo 'RC4 recovery reviewed public key mismatch.' >&2; exit 1; }
+          echo 'rc4_recovery_request_identity=PASS'
+
+      - name: Revalidate failed bot run, fixed manual validation, approval, and source closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          [[ "$current" == "$GITHUB_SHA" ]] || { echo "main moved before RC4 recovery: $current != $GITHUB_SHA" >&2; exit 1; }
+
+          failed=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$FAILED_PROMOTION_RUN_ID")
+          [[ "$(jq -r '.name' <<<"$failed")" == 'production-ga-windows-authority-rc4-release-lock-promotion' ]] || { echo 'Failed promotion workflow name mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.path' <<<"$failed")" == '.github/workflows/ga-windows-authority-rc4-release-lock-promotion.yml' ]] || { echo 'Failed promotion workflow path mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.event' <<<"$failed")" == 'workflow_dispatch' ]] || { echo 'Failed promotion event mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.status' <<<"$failed")" == 'completed' && "$(jq -r '.conclusion' <<<"$failed")" == 'failure' ]] || { echo 'Bound failed promotion is not completed/failure.' >&2; exit 1; }
+          [[ "$(jq -r '.run_attempt' <<<"$failed")" == '1' ]] || { echo 'Bound failed promotion was rerun; recovery is no longer valid.' >&2; exit 1; }
+          [[ "$(jq -r '.head_sha' <<<"$failed")" == "$FAILED_PROMOTION_CONTROL_HEAD" ]] || { echo 'Bound failed promotion control head mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.head_branch' <<<"$failed")" == 'main' ]] || { echo 'Bound failed promotion branch mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.actor.login' <<<"$failed")" == 'github-actions[bot]' && "$(jq -r '.triggering_actor.login' <<<"$failed")" == 'github-actions[bot]' ]] || { echo 'Bound failed promotion was not canonical bot dispatch.' >&2; exit 1; }
+
+          validation=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$FIX_VALIDATION_RUN_ID")
+          [[ "$(jq -r '.name' <<<"$validation")" == 'production-ga-windows-authority-rc4-release-lock-promotion' ]] || { echo 'Fix validation workflow name mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.event' <<<"$validation")" == 'workflow_dispatch' ]] || { echo 'Fix validation event mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.status' <<<"$validation")" == 'completed' && "$(jq -r '.conclusion' <<<"$validation")" == 'success' ]] || { echo 'Fix validation run is not completed/success.' >&2; exit 1; }
+          [[ "$(jq -r '.run_attempt' <<<"$validation")" == '1' ]] || { echo 'Fix validation run attempt mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.head_sha' <<<"$validation")" == "$FIX_VALIDATION_CONTROL_HEAD" ]] || { echo 'Fix validation control head mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.actor.login' <<<"$validation")" == 'Naveax' && "$(jq -r '.triggering_actor.login' <<<"$validation")" == 'Naveax' ]] || { echo 'Fix validation actor mismatch.' >&2; exit 1; }
+
+          artifacts=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$FIX_VALIDATION_RUN_ID/artifacts?per_page=100")
+          artifact_count=$(jq --arg digest "$FIX_VALIDATION_ARTIFACT_DIGEST" '[.artifacts[] | select(.name == "psmatrix-2.0.0rc4-release-lock-promotion-candidate" and .expired == false and .digest == $digest)] | length' <<<"$artifacts")
+          [[ "$artifact_count" == '1' ]] || { echo 'Expected exactly one live fixed-validation promotion artifact.' >&2; exit 1; }
+
+          review=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$REVIEW_RUN_ID")
+          [[ "$(jq -r '.name' <<<"$review")" == 'production-ga-windows-authority-rc4-release-lock-review' ]] || { echo 'Bound RC4 review workflow name mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.head_sha' <<<"$review")" == "$CANDIDATE_COMMIT" ]] || { echo 'Bound RC4 review candidate mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.status' <<<"$review")" == 'completed' && "$(jq -r '.conclusion' <<<"$review")" == 'success' ]] || { echo 'Bound RC4 review is not completed/success.' >&2; exit 1; }
+
+          approval=$(gh api "repos/$GITHUB_REPOSITORY/issues/comments/$APPROVAL_COMMENT_ID")
+          expected_approval="RC4 HUMAN REVIEW APPROVED: $CANDIDATE_COMMIT"
+          [[ "$(jq -r '.user.login' <<<"$approval")" == 'Naveax' ]] || { echo 'Bound approval actor mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.author_association' <<<"$approval")" == 'OWNER' ]] || { echo 'Bound approval owner association mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.body' <<<"$approval")" == "$expected_approval" ]] || { echo 'Bound approval body mismatch.' >&2; exit 1; }
+          approval_at=$(jq -r '.created_at' <<<"$approval")
+          review_updated_at=$(jq -r '.updated_at' <<<"$review")
+          [[ "$approval_at" == "$review_updated_at" || "$approval_at" > "$review_updated_at" ]] || { echo 'Bound approval predates review completion.' >&2; exit 1; }
+
+          compare=$(gh api "repos/$GITHUB_REPOSITORY/compare/$FIX_VALIDATION_CONTROL_HEAD...$GITHUB_SHA")
+          [[ "$(jq -r '.status' <<<"$compare")" == 'ahead' && "$(jq -r '.ahead_by' <<<"$compare")" == '1' ]] || { echo 'Recovery control head is not exactly one commit ahead of the validated timestamp fix.' >&2; exit 1; }
+          mapfile -t changed < <(jq -r '.files[].filename' <<<"$compare" | sort)
+          expected=(
+            '.github/workflows/ga-windows-authority-rc4-release-lock-promotion.yml'
+            'tests/test_windows_authority_rc4_lock_promotion_signing.py'
+          )
+          [[ "${#changed[@]}" -eq 2 && "${changed[0]}" == "${expected[0]}" && "${changed[1]}" == "${expected[1]}" ]] || {
+            printf 'Unexpected RC4 recovery source closure:\n%s\n' "${changed[*]}" >&2
+            exit 1
+          }
+
+          if gh api "repos/$GITHUB_REPOSITORY/git/trees/$GITHUB_SHA?recursive=1" --jq '.tree[].path' | grep -Fxq 'ga-packs/03-authoritative-windows/rc4-release-lock.json'; then
+            echo 'An active RC4 lock already exists; recovery redispatch is forbidden.' >&2
+            exit 1
+          fi
+
+          runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$PROMOTION_WORKFLOW/runs?branch=main&event=workflow_dispatch&per_page=100")
+          bot_on_current=$(jq --arg head "$GITHUB_SHA" --arg current "$GITHUB_RUN_ID" '[.workflow_runs[] | select((.id|tostring) != $current and .head_sha == $head and .actor.login == "github-actions[bot]")] | length' <<<"$runs")
+          [[ "$bot_on_current" == '0' ]] || { echo 'A bot-dispatched RC4 promotion already exists on the recovery control head; refusing duplicate dispatch.' >&2; exit 1; }
+
+          echo 'rc4_recovery_provenance=PASS'
+          echo 'repository_mutated=false'
+          echo 'release_artifacts_signed=false'
+          echo 'authoritative=false'
+          echo 'ga_eligible=false'
+
+      - name: Redispatch canonical RC4 promotion through GitHub Actions identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          dispatched_after=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          gh workflow run "$PROMOTION_WORKFLOW"             --repo "$GITHUB_REPOSITORY"             --ref main             -f candidate_commit="$CANDIDATE_COMMIT"             -f review_run_id="$REVIEW_RUN_ID"             -f reviewed_draft_sha256="$REVIEWED_DRAFT_SHA256"             -f reviewed_public_key_sha256="$REVIEWED_PUBLIC_KEY_SHA256"
+
+          child_id=''
+          for _ in $(seq 1 15); do
+            runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$PROMOTION_WORKFLOW/runs?branch=main&event=workflow_dispatch&per_page=100")
+            mapfile -t matches < <(jq -r --arg head "$GITHUB_SHA" --arg after "$dispatched_after" --arg current "$GITHUB_RUN_ID" '
+              [.workflow_runs[]
+                | select((.id|tostring) != $current
+                    and .head_sha == $head
+                    and .actor.login == "github-actions[bot]"
+                    and .triggering_actor.login == "github-actions[bot]"
+                    and .created_at >= $after)
+                | .id] | .[]' <<<"$runs")
+            if [[ "${#matches[@]}" -gt 1 ]]; then
+              echo 'Multiple repaired bot promotion runs appeared; refusing ambiguous provenance.' >&2
+              exit 1
+            fi
+            if [[ "${#matches[@]}" -eq 1 ]]; then
+              child_id="${matches[0]}"
+              break
+            fi
+            sleep 2
+          done
+          [[ "$child_id" =~ ^[1-9][0-9]*$ ]] || { echo 'Repaired bot promotion dispatch was not observed.' >&2; exit 1; }
+          echo "rc4_recovery_bot_dispatch=PASS child_run_id=$child_id"
+          echo 'human_review_reused=true'
+          echo 'human_approval_created=false'
+          echo 'repository_mutated=false'
+          echo 'release_artifacts_signed=false'
+          echo 'authoritative=false'
+          echo 'ga_eligible=false'
+
   promote-lock-candidate:
+    if: inputs.recover_failed_automated_run_id == ''
     name: Build exact RC4 active-lock repository commit candidate
     runs-on: [self-hosted, Windows, X64, psmatrix-hyperv]
     timeout-minutes: 15
