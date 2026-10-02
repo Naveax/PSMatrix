@@ -13,15 +13,17 @@ class WindowsLabAuditFirstAttemptTests(unittest.TestCase):
         raw = OBSERVER.read_text(encoding="utf-8")
 
         self.assertIn("attempt=$(jq -r '.run_attempt // 0' <<<\"$run\")", raw)
+        self.assertIn("[[ \"$kind\" == 'audit' && \"$attempt\" != '1' ]]", raw)
+        self.assertIn("[[ \"$kind\" == 'audit' && \"$branch\" != 'main' ]]", raw)
         self.assertIn(
-            "if [[ \"$kind\" == 'audit' && ( \"$event\" != 'push' || \"$branch\" != 'main' || \"$attempt\" != '1' ) ]]; then",
+            "[[ \"$kind\" == 'audit' && \"$event\" != 'push' && \"$event\" != 'repository_dispatch' ]]",
             raw,
         )
         self.assertIn(
             "elif [[ \"$kind\" == 'scheduler' && ( \"$event\" != 'workflow_dispatch' || \"$attempt\" != '1' ) ]]; then",
             raw,
         )
-        self.assertIn("Only a first-attempt canonical source may prove recovery", raw)
+        self.assertIn("first-attempt main push or provisioning-bound repository_dispatch", raw)
 
     def test_attempt_is_exposed_in_human_and_machine_state(self) -> None:
         raw = OBSERVER.read_text(encoding="utf-8")
@@ -34,7 +36,7 @@ class WindowsLabAuditFirstAttemptTests(unittest.TestCase):
     def test_rerun_guard_precedes_recovered_state(self) -> None:
         raw = OBSERVER.read_text(encoding="utf-8")
 
-        attempt_guard = raw.index("\"$attempt\" != '1'")
+        attempt_guard = raw.index("[[ \"$kind\" == 'audit' && \"$attempt\" != '1' ]]")
         noncanonical = raw.index("machine_reason='audit_noncanonical_source'")
         recovered = raw.index("machine_status='RECOVERED'", noncanonical)
         self.assertLess(attempt_guard, noncanonical)

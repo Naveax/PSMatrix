@@ -50,15 +50,18 @@ class WindowsLabAuditObserverTests(unittest.TestCase):
         self.assertLess(accepted_index, failure_index)
         self.assertLess(failure_index, unresolved_index)
 
-    def test_recovery_requires_canonical_main_push_audit_source(self) -> None:
+    def test_recovery_requires_first_attempt_main_push_or_provisioning_dispatch(self) -> None:
         raw = OBSERVER.read_text(encoding="utf-8")
 
         self.assertIn("branch=$(jq -r '.head_branch // \"\"' <<<\"$run\")", raw)
         self.assertIn("attempt=$(jq -r '.run_attempt // 0' <<<\"$run\")", raw)
+        self.assertIn("[[ \"$kind\" == 'audit' && \"$attempt\" != '1' ]]", raw)
+        self.assertIn("[[ \"$kind\" == 'audit' && \"$branch\" != 'main' ]]", raw)
         self.assertIn(
-            "if [[ \"$kind\" == 'audit' && ( \"$event\" != 'push' || \"$branch\" != 'main' || \"$attempt\" != '1' ) ]]; then",
+            "[[ \"$kind\" == 'audit' && \"$event\" != 'push' && \"$event\" != 'repository_dispatch' ]]",
             raw,
         )
+        self.assertIn("first-attempt main push or provisioning-bound repository_dispatch", raw)
         self.assertIn("canonical_source=false", raw)
         self.assertIn("machine_canonical_source=\"$canonical_source\"", raw)
         self.assertIn("canonical_source=%s", raw)

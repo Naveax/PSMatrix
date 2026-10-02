@@ -74,5 +74,27 @@ class WindowsLabPrerequisiteWorkflowTests(unittest.TestCase):
         self.assertIn("audit_comment_idempotent=true", publish)
 
 
+    def test_provisioning_dispatch_is_exact_head_bound_and_manual_dispatch_stays_diagnostic(self) -> None:
+        raw = WORKFLOW.read_text(encoding="utf-8")
+
+        for fragment in (
+            "repository_dispatch:",
+            "types: [windows_lab_prereq_audit]",
+            "RECOVERY_DISPATCH_SCHEMA:",
+            "RECOVERY_DISPATCH_SOURCE:",
+            "RECOVERY_DISPATCH_EXPECTED_HEAD:",
+            "$env:RECOVERY_DISPATCH_SCHEMA -cne '1'",
+            "$env:RECOVERY_DISPATCH_SOURCE -cne 'windows-lab-operational-provisioning'",
+            "$env:RECOVERY_DISPATCH_EXPECTED_HEAD -cne $env:GITHUB_SHA",
+            "event=repository_dispatch exact_head_bound=true",
+            "event=workflow_dispatch diagnostic_only=true",
+        ):
+            self.assertIn(fragment, raw)
+
+        trigger_guard = raw.index("- name: Verify canonical recovery trigger provenance")
+        prerequisite_read = raw.index("- name: Audit value-free Windows lab prerequisites")
+        self.assertLess(trigger_guard, prerequisite_read)
+
+
 if __name__ == "__main__":
     unittest.main()

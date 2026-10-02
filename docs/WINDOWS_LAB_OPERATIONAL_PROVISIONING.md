@@ -90,10 +90,21 @@ The helper provisions exactly the four operational names listed above. It does n
 
 Do not rerun `ops-windows-lab-prereq-audit` as polling.
 
-The prepared formatter correction modifies that workflow path. Once the real environment inputs and host layout have materially changed, merging the correction provides the next single path-scoped `push` audit execution. Require that **fresh first attempt** to complete successfully before treating Windows-lab prerequisites or runner recovery as proven.
+Publishing the prerequisite-audit control itself may create a path-scoped `push` audit before real operator material is available. That publication run is still truthful evidence for the state it observed, but a failed publication audit is **not** reusable after the environment changes.
+
+GitHub environment variable/secret writes do not create a Git push. Therefore, after dry-run succeeds, the real material is independently checked, and live provisioning commits all four operational inputs successfully, the provisioning helper creates one `repository_dispatch` event of type `windows_lab_prereq_audit`.
+
+The dispatch is bound to the exact current `main` SHA in `client_payload.expected_head` and identifies its source as `windows-lab-operational-provisioning`. The audit workflow rejects a mismatched schema, source, branch, or expected head before examining prerequisites. If `main` advances between the helper's lookup and workflow start, the audit fails closed instead of silently certifying the wrong source.
+
+Before creating the event, the helper reads only value-free Actions metadata and suppresses a duplicate when the same workflow already has an active `repository_dispatch` on that exact `main` SHA. It does not rerun or cancel an existing run.
 
 The prerequisite audit independently rechecks the real NAVEAX/Windows/X64 runner identity, GA-root/repository disjointness, and absence of links/reparse points across the selected GA root plus the required `config` and `media\external` layout. These checks remain fail-closed even if the environment variable was configured outside the provisioning helper.
 
-The observer may inspect other scheduler/audit runs for diagnostics, but **only an `ops-windows-lab-prereq-audit` run whose event is `push`, whose head branch is `main`, and whose `run_attempt` is `1` may set the machine state to `RECOVERED`**. A rerun attempt, successful manual dispatch, or feature-branch audit may still provide diagnostic runner-assignment evidence, but it cannot prove canonical prerequisite recovery.
+Canonical recovery proof accepts only a **first attempt** on branch `main` from either:
+
+- the path-scoped `push` source used when the audit control itself is published; or
+- the provisioning-bound `repository_dispatch` source created after successful live operational provisioning.
+
+A manual `workflow_dispatch`, a rerun attempt, or a feature-branch audit may still provide diagnostic runner-assignment evidence, but it cannot prove canonical prerequisite recovery. Do not manually create repository-dispatch events as polling; the live provisioning helper owns that transition.
 
 RC4 human approval and External22 remain independent gates; operational lab provisioning does not bypass either one.

@@ -111,6 +111,36 @@ function Invoke-GhCaptured {
     }
 }
 
+function Invoke-GhJsonCaptured {
+    param(
+        [Parameter(Mandatory)] [string]$Executable,
+        [Parameter(Mandatory)] [string[]]$Arguments
+    )
+
+    $stdout = [IO.Path]::GetTempFileName()
+    $stderr = [IO.Path]::GetTempFileName()
+    try {
+        $process = Start-Process -FilePath $Executable -ArgumentList $Arguments -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+        if ($process.ExitCode -ne 0) {
+            throw "GitHub CLI metadata query failed with exit $($process.ExitCode)."
+        }
+
+        $raw = Get-Content -Raw -LiteralPath $stdout
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            throw 'GitHub CLI metadata query returned no JSON.'
+        }
+        try {
+            return ($raw | ConvertFrom-Json)
+        }
+        catch {
+            throw 'GitHub CLI metadata query returned invalid JSON.'
+        }
+    }
+    finally {
+        Remove-Item -LiteralPath $stdout, $stderr -Force -ErrorAction SilentlyContinue
+    }
+}
+
 $canonicalRepository = 'Naveax/PSMatrix'
 if ($Repository -cne $canonicalRepository) {
     throw 'Repository target is fixed to Naveax/PSMatrix for Windows-lab operational provisioning.'
@@ -238,6 +268,44 @@ try {
     Invoke-GhCaptured -Executable $gh -Arguments @('variable', 'set', 'PSMATRIX_WINDOWS_GA_ROOT', '--env', $Environment, '--repo', $Repository) -InputFile $sanitizedRootInput
     Write-Host 'provisioned=production-ga-windows-lab/var/PSMATRIX_WINDOWS_GA_ROOT'
     Write-Host 'windows_lab_root_commit_marker_valid=true'
+
+    # Environment writes do not produce a Git push. After the commit marker is valid,
+    # create exactly one provisioning-bound audit event for the exact current main head.
+    # If main moves between lookup and workflow start, the workflow's expected_head guard
+    # fails closed. Manual workflow_dispatch remains diagnostic-only.
+    $mainMetadata = Invoke-GhJsonCaptured -Executable $gh -Arguments @('api', "repos/$Repository/branches/main")
+    $mainSha = [string]$mainMetadata.commit.sha
+    if ($mainSha -cnotmatch '^[0-9a-f]{40}$') {
+        throw 'Current main SHA returned by GitHub is invalid.'
+    }
+
+    $auditRuns = Invoke-GhJsonCaptured -Executable $gh -Arguments @(
+        'api',
+        "repos/$Repository/actions/workflows/ops-windows-lab-prereq-audit.yml/runs?event=repository_dispatch&per_page=100"
+    )
+    $activeEquivalentRuns = @(
+        $auditRuns.workflow_runs | Where-Object {
+            ([string]$_.head_sha -ceq $mainSha) -and
+            ([string]$_.event -ceq 'repository_dispatch') -and
+            ([string]$_.status -in @('queued', 'waiting', 'in_progress', 'pending', 'requested'))
+        }
+    )
+
+    if ($activeEquivalentRuns.Count -gt 0) {
+        Write-Host 'windows_lab_prerequisite_audit_dispatch_created=false reason=active_equivalent_repository_dispatch'
+    }
+    else {
+        Invoke-GhCaptured -Executable $gh -Arguments @(
+            'api',
+            '--method', 'POST',
+            "repos/$Repository/dispatches",
+            '-f', 'event_type=windows_lab_prereq_audit',
+            '-f', 'client_payload[schema]=1',
+            '-f', 'client_payload[source]=windows-lab-operational-provisioning',
+            '-f', "client_payload[expected_head]=$mainSha"
+        )
+        Write-Host 'windows_lab_prerequisite_audit_dispatch_created=true event=repository_dispatch exact_main_head_bound=true'
+    }
 
     Write-Host 'windows_lab_operational_environment_provisioning_executed=true checks=4'
     Write-Host 'secret_values_logged=false'

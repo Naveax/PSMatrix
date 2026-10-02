@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - .github/workflows/ops-windows-lab-prereq-audit.yml
+  repository_dispatch:
+    types: [windows_lab_prereq_audit]
   workflow_dispatch:
 
 permissions:
@@ -27,6 +29,44 @@ jobs:
       PSMATRIX_WPS50_ADMIN_PASSWORD: ${{ secrets.PSMATRIX_WPS50_ADMIN_PASSWORD }}
       PSMATRIX_WPS51_ADMIN_PASSWORD: ${{ secrets.PSMATRIX_WPS51_ADMIN_PASSWORD }}
     steps:
+      - name: Verify canonical recovery trigger provenance
+        shell: pwsh
+        env:
+          RECOVERY_DISPATCH_SCHEMA: ${{ github.event.client_payload.schema || '' }}
+          RECOVERY_DISPATCH_SOURCE: ${{ github.event.client_payload.source || '' }}
+          RECOVERY_DISPATCH_EXPECTED_HEAD: ${{ github.event.client_payload.expected_head || '' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $eventName = '${{ github.event_name }}'
+
+          if ($eventName -eq 'repository_dispatch') {
+            if ($env:GITHUB_REF -cne 'refs/heads/main') {
+              throw 'Repository-dispatch prerequisite audit must execute on refs/heads/main.'
+            }
+            if ($env:RECOVERY_DISPATCH_SCHEMA -cne '1') {
+              throw 'Repository-dispatch prerequisite audit schema is invalid.'
+            }
+            if ($env:RECOVERY_DISPATCH_SOURCE -cne 'windows-lab-operational-provisioning') {
+              throw 'Repository-dispatch prerequisite audit source is invalid.'
+            }
+            if ($env:RECOVERY_DISPATCH_EXPECTED_HEAD -cne $env:GITHUB_SHA) {
+              throw 'Repository-dispatch prerequisite audit expected_head does not match GITHUB_SHA.'
+            }
+            Write-Host 'windows_lab_recovery_trigger=PASS canonical_candidate=true event=repository_dispatch exact_head_bound=true'
+          }
+          elseif ($eventName -eq 'push') {
+            if ($env:GITHUB_REF -cne 'refs/heads/main') {
+              throw 'Push prerequisite audit must execute on refs/heads/main.'
+            }
+            Write-Host 'windows_lab_recovery_trigger=PASS canonical_candidate=true event=push exact_head_bound=true'
+          }
+          elseif ($eventName -eq 'workflow_dispatch') {
+            Write-Host 'windows_lab_recovery_trigger=PASS canonical_candidate=false event=workflow_dispatch diagnostic_only=true'
+          }
+          else {
+            throw "Unsupported Windows-lab prerequisite audit event: $eventName"
+          }
+
       - name: Audit value-free Windows lab prerequisites
         id: audit
         shell: pwsh
