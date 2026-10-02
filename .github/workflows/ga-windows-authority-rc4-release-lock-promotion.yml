@@ -228,8 +228,8 @@ jobs:
           foreach ($path in @($reportPath,$lockPath,$publicPath)) {
               if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "RC4 promotion output is missing: $path" }
           }
-          $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
-          $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+          $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json -DateKind String
+          $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json -DateKind String
           if ([string]$report.status -ne 'READY_FOR_EXACT_REPOSITORY_COMMIT') { throw 'RC4 promotion report status mismatch.' }
           if ([string]$report.candidate_commit -ne $env:CANDIDATE_COMMIT) { throw 'RC4 promotion report candidate mismatch.' }
           if ([string]$report.promotion_control_head -ne $env:PSMATRIX_RC4_PROMOTION_CONTROL_HEAD) { throw 'RC4 promotion control-head mismatch.' }

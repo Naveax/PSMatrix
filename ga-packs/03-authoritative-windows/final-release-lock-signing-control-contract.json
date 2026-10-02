@@ -39,7 +39,9 @@
       "tests/test_windows_lab_audit_observer.py",
       "tests/test_windows_lab_audit_root_boundary.py",
       "tests/test_windows_lab_operational_provisioning.py",
-      "tests/test_windows_lab_prereq_workflow.py"
+      "tests/test_windows_lab_prereq_workflow.py",
+      ".github/workflows/ga-windows-authority-rc4-release-lock-promotion.yml",
+      "tests/test_windows_authority_rc4_lock_promotion_signing.py"
     ]
   },
   "rc4_authority_continuity": {
