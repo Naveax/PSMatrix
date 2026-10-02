@@ -30,7 +30,16 @@
       "scripts/ga/validate_final_production_bootstrap.py",
       "tests/test_final_production_bootstrap_contract.py",
       "scripts/ga/build_final_validation_evidence_chain_plan.py",
-      "tests/test_final_validation_evidence_chain_plan.py"
+      "tests/test_final_validation_evidence_chain_plan.py",
+      ".github/workflows/ops-windows-lab-audit-observer.yml",
+      ".github/workflows/ops-windows-lab-prereq-audit.yml",
+      "docs/WINDOWS_LAB_OPERATIONAL_PROVISIONING.md",
+      "scripts/ga/Invoke-WindowsLabOperationalEnvironmentProvisioning.ps1",
+      "tests/test_windows_lab_audit_first_attempt.py",
+      "tests/test_windows_lab_audit_observer.py",
+      "tests/test_windows_lab_audit_root_boundary.py",
+      "tests/test_windows_lab_operational_provisioning.py",
+      "tests/test_windows_lab_prereq_workflow.py"
     ]
   },
   "rc4_authority_continuity": {
