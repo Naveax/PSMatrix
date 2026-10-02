@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PROMOTER_PATH = ROOT / "scripts" / "ga" / "promote_windows_authority_rc4_release_lock.py"
 SIGNER_PATH = ROOT / "scripts" / "ga" / "sign_windows_authority_release_candidate.py"
 PROMOTION_WORKFLOW = ROOT / ".github" / "workflows" / "ga-windows-authority-rc4-release-lock-promotion.yml"
+PROMOTION_REVIEW_ROUTER = ROOT / ".github" / "workflows" / "ops-rc4-promotion-to-reviewed-pr.yml"
 SIGNING_WORKFLOW = ROOT / ".github" / "workflows" / "ga-windows-authority-rc4-release-sign-from-lock.yml"
 ACTIVE_LOCK = ROOT / "ga-packs" / "03-authoritative-windows" / "rc4-release-lock.json"
 ACTIVE_PUBLIC = ROOT / "release-assets" / "2.0.0rc4" / "psmatrix-2.0.0rc4-release-public.pem"
@@ -106,6 +107,34 @@ class WindowsAuthorityRC4LockPromotionSigningTests(unittest.TestCase):
         self.assertIn("if: inputs.recover_failed_automated_run_id == ''", text)
         self.assertIn("if: inputs.recover_failed_automated_run_id != ''", text)
         self.assertEqual(text.count('gh workflow run "$PROMOTION_WORKFLOW"'), 1)
+
+    def test_promotion_review_router_has_exact_orphan_recovery_dispatch(self) -> None:
+        text = PROMOTION_REVIEW_ROUTER.read_text(encoding="utf-8")
+        required = (
+            "recover_orphan_promotion_run_id",
+            "inputs.recover_orphan_promotion_run_id == '37028177102'",
+            "github.actor == 'Naveax'",
+            "github.triggering_actor == 'Naveax'",
+            "RECOVERY_EXPECTED_PROMOTION_RUN_ID: '37028177102'",
+            "RECOVERY_EXPECTED_ARTIFACT_DIGEST: sha256:d6459e297026b4735e29fffc82d7ab627b3345acee448d5acd115adb82555459",
+            "RECOVERY_CONTROL_PARENT: cd14b561d35b9b4c602b9696700275500242d53a",
+            "REPOSITORY_BASE_HEAD:",
+            "rc4_orphan_recovery_dispatch_closure=PASS",
+            'gh run download "$PROMOTION_RUN_ID"',
+            "Orphan-recovery source fix is not exactly one commit ahead of the recovered promotion control head.",
+            ".github/workflows/ops-rc4-promotion-to-reviewed-pr.yml",
+            "ga-packs/03-authoritative-windows/final-release-lock-signing-control-contract.json",
+            "tests/test_final_v2_release_control_migration.py",
+            "tests/test_windows_authority_rc4_lock_promotion_signing.py",
+            "Normal RC4 promotion route must materialize directly on the promotion control head.",
+            "github.event.workflow_run.actor.login == 'github-actions[bot]'",
+            "github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'",
+        )
+        for value in required:
+            with self.subTest(value=value):
+                self.assertIn(value, text)
+        self.assertEqual(text.count("recover_orphan_promotion_run_id:"), 1)
+        self.assertIn("run-id: ${{ github.event.workflow_run.id }}", text)
 
     def test_promotion_builder_freezes_review_and_promotion_provenance(self) -> None:
         text = PROMOTER_PATH.read_text(encoding="utf-8")
