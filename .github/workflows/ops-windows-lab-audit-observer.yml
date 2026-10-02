@@ -88,7 +88,11 @@ jobs:
             step_count=$(jq '[.jobs[] | (.steps // [])[]] | length' <<<"$jobs")
 
             canonical_source=true
-            if [[ "$kind" == 'audit' && ( "$event" != 'push' || "$branch" != 'main' || "$attempt" != '1' ) ]]; then
+            if [[ "$kind" == 'audit' && "$attempt" != '1' ]]; then
+              canonical_source=false
+            elif [[ "$kind" == 'audit' && "$branch" != 'main' ]]; then
+              canonical_source=false
+            elif [[ "$kind" == 'audit' && "$event" != 'push' && "$event" != 'repository_dispatch' ]]; then
               canonical_source=false
             elif [[ "$kind" == 'scheduler' && ( "$event" != 'workflow_dispatch' || "$attempt" != '1' ) ]]; then
               canonical_source=false
@@ -112,7 +116,7 @@ jobs:
 
             interpretation='The observed run is active or complete.'
             if [[ "$canonical_source" != 'true' ]]; then
-              interpretation='The observed run is not a canonical recovery source for this lane. Only a first-attempt canonical source may prove recovery; runner assignment may still be observable.'
+              interpretation='The observed run is not a canonical recovery source for this lane. Only a first-attempt main push or provisioning-bound repository_dispatch source may prove recovery; runner assignment may still be observable.'
             elif [[ "$status" == 'queued' ]]; then
               if (( age_minutes >= 10 )); then stale=true; fi
               interpretation='No eligible runner has accepted the job yet; this does not distinguish offline, busy, or registration/access causes.'

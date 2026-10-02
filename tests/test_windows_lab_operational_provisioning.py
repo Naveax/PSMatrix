@@ -188,6 +188,41 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         self.assertLess(wps50, wps51)
         self.assertLess(wps51, final_root)
 
+
+    def test_live_provisioning_creates_one_exact_main_bound_repository_dispatch(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+
+        for fragment in (
+            'repos/$Repository/branches/main',
+            'ops-windows-lab-prereq-audit.yml/runs?event=repository_dispatch&per_page=100',
+            "([string]$_.head_sha -ceq $mainSha)",
+            "([string]$_.event -ceq 'repository_dispatch')",
+            "'queued', 'waiting', 'in_progress', 'pending', 'requested'",
+            "'event_type=windows_lab_prereq_audit'",
+            "'client_payload[schema]=1'",
+            "'client_payload[source]=windows-lab-operational-provisioning'",
+            '"client_payload[expected_head]=$mainSha"',
+            "windows_lab_prerequisite_audit_dispatch_created=false reason=active_equivalent_repository_dispatch",
+            "windows_lab_prerequisite_audit_dispatch_created=true event=repository_dispatch exact_main_head_bound=true",
+        ):
+            self.assertIn(fragment, raw)
+
+        final_root_commit = raw.rindex("@('variable', 'set', 'PSMATRIX_WINDOWS_GA_ROOT'")
+        main_lookup = raw.index('repos/$Repository/branches/main')
+        dispatch = raw.index("'event_type=windows_lab_prereq_audit'")
+        self.assertLess(final_root_commit, main_lookup)
+        self.assertLess(main_lookup, dispatch)
+
+    def test_dry_run_exits_before_dispatch_metadata_or_mutation(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+
+        dry_run = raw.index("if ($DryRun)")
+        main_lookup = raw.index('repos/$Repository/branches/main')
+        dispatch = raw.index("'event_type=windows_lab_prereq_audit'")
+        self.assertLess(dry_run, main_lookup)
+        self.assertLess(dry_run, dispatch)
+
+
     def test_helper_declares_no_value_hash_length_path_or_cli_stderr_logging(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
 
@@ -220,6 +255,10 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
             "-DryRun",
             "commit marker",
             "Do not rerun `ops-windows-lab-prereq-audit` as polling.",
+            "`repository_dispatch` event of type `windows_lab_prereq_audit`",
+            "`client_payload.expected_head`",
+            "manual `workflow_dispatch`",
+            "live provisioning helper owns that transition",
         ):
             self.assertIn(fragment, raw)
 
