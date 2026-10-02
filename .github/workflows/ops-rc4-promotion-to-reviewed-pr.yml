@@ -4,6 +4,13 @@ on:
   workflow_run:
     workflows: [production-ga-windows-authority-rc4-release-lock-promotion]
     types: [completed]
+  workflow_dispatch:
+    inputs:
+      recover_orphan_promotion_run_id:
+        description: Exact successful bot promotion run whose workflow_run event was suppressed by GITHUB_TOKEN recursion protection
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   group: ops-rc4-promotion-to-reviewed-pr
@@ -18,17 +25,32 @@ permissions:
 jobs:
   materialize-reviewed-change:
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'workflow_dispatch' &&
-      github.event.workflow_run.head_branch == 'main' &&
-      github.event.workflow_run.actor.login == 'github-actions[bot]' &&
-      github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'
+      (
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'workflow_dispatch' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.actor.login == 'github-actions[bot]' &&
+        github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'
+      ) ||
+      (
+        github.event_name == 'workflow_dispatch' &&
+        github.ref_name == 'main' &&
+        github.actor == 'Naveax' &&
+        github.triggering_actor == 'Naveax' &&
+        inputs.recover_orphan_promotion_run_id == '37028177102'
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
-      PROMOTION_RUN_ID: ${{ github.event.workflow_run.id }}
-      PROMOTION_CONTROL_HEAD: ${{ github.event.workflow_run.head_sha }}
+      PROMOTION_RUN_ID: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || inputs.recover_orphan_promotion_run_id }}
+      PROMOTION_CONTROL_HEAD: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || 'cd14b561d35b9b4c602b9696700275500242d53a' }}
+      REPOSITORY_BASE_HEAD: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+      RECOVERY_MODE: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
+      RECOVERY_EXPECTED_PROMOTION_RUN_ID: '37028177102'
+      RECOVERY_EXPECTED_ARTIFACT_DIGEST: sha256:d6459e297026b4735e29fffc82d7ab627b3345acee448d5acd115adb82555459
+      RECOVERY_CONTROL_PARENT: cd14b561d35b9b4c602b9696700275500242d53a
       CANDIDATE_COMMIT: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
       REVIEW_RUN_ID: '36851144641'
       REVIEWED_DRAFT_SHA256: f609e5ab5968fd6f1d569a78921ede0fd61bfa991c50bcb831bf15e3a450e2da
@@ -64,6 +86,44 @@ jobs:
           [[ "$approval_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] || { echo 'Exact post-review RC4 owner approval is missing.' >&2; exit 1; }
           [[ "$promotion_created_at" == "$approval_at" || "$promotion_created_at" > "$approval_at" ]] || { echo "RC4 promotion predates owner approval: promotion=$promotion_created_at approval=$approval_at" >&2; exit 1; }
           echo "rc4_first_human_gate_provenance=PASS approval_at=$approval_at review_updated_at=$review_updated_at promotion_run=$PROMOTION_RUN_ID created_at=$promotion_created_at automated_dispatch=true"
+
+      - name: Validate explicit orphan-recovery dispatch closure
+        if: env.RECOVERY_MODE == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$PROMOTION_RUN_ID" == "$RECOVERY_EXPECTED_PROMOTION_RUN_ID" ]] || { echo 'Unexpected orphan-recovery promotion run ID.' >&2; exit 1; }
+          [[ "$PROMOTION_CONTROL_HEAD" == "$RECOVERY_CONTROL_PARENT" ]] || { echo 'Orphan-recovery promotion control head mismatch.' >&2; exit 1; }
+          [[ "$GITHUB_ACTOR" == 'Naveax' && "$GITHUB_TRIGGERING_ACTOR" == 'Naveax' ]] || { echo 'Orphan recovery must be explicitly dispatched by Naveax.' >&2; exit 1; }
+          [[ "$GITHUB_REF_NAME" == 'main' ]] || { echo 'Orphan recovery must execute from main.' >&2; exit 1; }
+
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          [[ "$current" == "$REPOSITORY_BASE_HEAD" && "$GITHUB_SHA" == "$REPOSITORY_BASE_HEAD" ]] || {
+            echo "main moved before orphan recovery validation: current=$current workflow=$GITHUB_SHA expected=$REPOSITORY_BASE_HEAD" >&2
+            exit 1
+          }
+
+          compare=$(gh api "repos/$GITHUB_REPOSITORY/compare/$RECOVERY_CONTROL_PARENT...$REPOSITORY_BASE_HEAD")
+          [[ "$(jq -r '.status' <<<"$compare")" == 'ahead' && "$(jq -r '.ahead_by' <<<"$compare")" == '1' && "$(jq -r '.behind_by' <<<"$compare")" == '0' ]] || {
+            echo 'Orphan-recovery source fix is not exactly one commit ahead of the recovered promotion control head.' >&2
+            exit 1
+          }
+          mapfile -t changed < <(jq -r '.files[].filename' <<<"$compare" | sort)
+          expected=(
+            '.github/workflows/ops-rc4-promotion-to-reviewed-pr.yml'
+            'ga-packs/03-authoritative-windows/final-release-lock-signing-control-contract.json'
+            'tests/test_final_v2_release_control_migration.py'
+            'tests/test_windows_authority_rc4_lock_promotion_signing.py'
+          )
+          if [[ "${#changed[@]}" -ne 4 || "${changed[0]}" != "${expected[0]}" || "${changed[1]}" != "${expected[1]}" || "${changed[2]}" != "${expected[2]}" || "${changed[3]}" != "${expected[3]}" ]]; then
+            printf 'Unexpected orphan-recovery source-fix closure:\n%s\n' "${changed[*]}" >&2
+            exit 1
+          fi
+
+          artifacts=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROMOTION_RUN_ID/artifacts?per_page=100")
+          matches=$(jq --arg digest "$RECOVERY_EXPECTED_ARTIFACT_DIGEST" '[.artifacts[] | select(.name == "psmatrix-2.0.0rc4-release-lock-promotion-candidate" and .expired == false and .digest == $digest)] | length' <<<"$artifacts")
+          [[ "$matches" == '1' ]] || { echo "Recovered promotion artifact digest/cardinality mismatch: $matches" >&2; exit 1; }
+          echo "rc4_orphan_recovery_dispatch_closure=PASS run_id=$PROMOTION_RUN_ID artifact_digest=$RECOVERY_EXPECTED_ARTIFACT_DIGEST repository_base=$REPOSITORY_BASE_HEAD"
 
       - name: Suppress duplicate PR or detect recoverable orphan branch
         id: dedupe
@@ -102,7 +162,7 @@ jobs:
           fi
 
       - name: Download exact promotion candidate artifact
-        if: steps.dedupe.outputs.duplicate != 'true'
+        if: steps.dedupe.outputs.duplicate != 'true' && github.event_name == 'workflow_run'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: psmatrix-2.0.0rc4-release-lock-promotion-candidate
@@ -110,6 +170,16 @@ jobs:
           repository: Naveax/PSMatrix
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ github.token }}
+
+      - name: Download exact orphan-recovery promotion artifact
+        if: steps.dedupe.outputs.duplicate != 'true' && env.RECOVERY_MODE == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf promotion
+          mkdir -p promotion
+          gh run download "$PROMOTION_RUN_ID" --repo "$GITHUB_REPOSITORY" --name 'psmatrix-2.0.0rc4-release-lock-promotion-candidate' --dir promotion
+          echo 'rc4_orphan_recovery_artifact_download=PASS'
 
       - name: Validate promotion artifact and exact human-review binding
         if: steps.dedupe.outputs.duplicate != 'true'
@@ -303,8 +373,11 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
           current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
-          [[ "$current" == "$PROMOTION_CONTROL_HEAD" ]] || { echo "main moved before RC4 promotion PR recovery/create: $current != $PROMOTION_CONTROL_HEAD" >&2; exit 1; }
-          [[ "$(git rev-parse HEAD)" == "$PROMOTION_CONTROL_HEAD" ]] || { echo "RC4 promotion checkout is not the promotion control head: $(git rev-parse HEAD) != $PROMOTION_CONTROL_HEAD" >&2; exit 1; }
+          [[ "$current" == "$REPOSITORY_BASE_HEAD" ]] || { echo "main moved before RC4 promotion PR recovery/create: $current != repository_base=$REPOSITORY_BASE_HEAD promotion_control=$PROMOTION_CONTROL_HEAD" >&2; exit 1; }
+          [[ "$(git rev-parse HEAD)" == "$REPOSITORY_BASE_HEAD" ]] || { echo "RC4 promotion checkout is not the repository base head: $(git rev-parse HEAD) != $REPOSITORY_BASE_HEAD" >&2; exit 1; }
+          if [[ "$RECOVERY_MODE" != true ]]; then
+            [[ "$REPOSITORY_BASE_HEAD" == "$PROMOTION_CONTROL_HEAD" ]] || { echo 'Normal RC4 promotion route must materialize directly on the promotion control head.' >&2; exit 1; }
+          fi
 
           if [[ "$BRANCH_EXISTS" == true ]]; then
             branch_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$branch" --jq '.object.sha')
@@ -314,7 +387,7 @@ jobs:
             [[ "$message" == 'Promote human-reviewed RC4 release lock' ]] || { echo 'Orphan RC4 promotion branch commit message mismatch.' >&2; exit 1; }
             parent_count=$(jq '.parents | length' <<<"$commit_json")
             parent_sha=$(jq -r '.parents[0].sha // empty' <<<"$commit_json")
-            [[ "$parent_count" -eq 1 && "$parent_sha" == "$PROMOTION_CONTROL_HEAD" ]] || { echo "Orphan RC4 promotion branch is not a single commit directly on the promotion control head: parent=$parent_sha expected=$PROMOTION_CONTROL_HEAD count=$parent_count" >&2; exit 1; }
+            [[ "$parent_count" -eq 1 && "$parent_sha" == "$REPOSITORY_BASE_HEAD" ]] || { echo "Orphan RC4 promotion branch is not a single commit directly on the promotion control head: parent=$parent_sha expected_repository_base=$REPOSITORY_BASE_HEAD promotion_control=$PROMOTION_CONTROL_HEAD count=$parent_count" >&2; exit 1; }
             mapfile -t branch_files < <(jq -r '.files[].filename' <<<"$commit_json" | sort)
             if [[ ${#branch_files[@]} -ne 2 || "${branch_files[0]}" != "${expected[0]}" || "${branch_files[1]}" != "${expected[1]}" ]]; then
               printf 'Orphan RC4 promotion branch changed unexpected files:\n%s\n' "${branch_files[*]}" >&2
@@ -369,7 +442,7 @@ jobs:
             echo 'rc4_promotion_pr_create_race_suppressed=true'
           else
             current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
-            [[ "$current" == "$PROMOTION_CONTROL_HEAD" ]] || { echo "main moved immediately before RC4 promotion PR create: $current != $PROMOTION_CONTROL_HEAD" >&2; exit 1; }
+            [[ "$current" == "$REPOSITORY_BASE_HEAD" ]] || { echo "main moved immediately before RC4 promotion PR create: $current != repository_base=$REPOSITORY_BASE_HEAD promotion_control=$PROMOTION_CONTROL_HEAD" >&2; exit 1; }
             gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$branch" --draft --title 'Promote human-reviewed RC4 release lock' --body "$body"
             echo 'rc4_exact_repository_change_pr_created=true'
           fi
