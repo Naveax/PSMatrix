@@ -75,6 +75,38 @@ class WindowsAuthorityRC4LockPromotionSigningTests(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, text)
 
+    def test_promotion_workflow_has_fail_closed_one_shot_bot_redispatch_recovery(self) -> None:
+        text = PROMOTION_WORKFLOW.read_text(encoding="utf-8")
+        required = (
+            "recover_failed_automated_run_id",
+            "Recover exact failed automated RC4 promotion dispatch",
+            "EXPECTED_FAILED_PROMOTION_RUN_ID: '37004497727'",
+            "FAILED_PROMOTION_CONTROL_HEAD: b3ce3fe44ca2e4f446257e806f67fd9d93a4147d",
+            "FIX_VALIDATION_RUN_ID: '37008295113'",
+            "FIX_VALIDATION_CONTROL_HEAD: c73f288d490080feb679570dd8fad3bf03b4474b",
+            "sha256:55bc5c833c7118d3198b89a626cfda54dcb40d72d4cff2d8c8279aa8883a154c",
+            "APPROVAL_COMMENT_ID: '5951919294'",
+            "github-actions[bot]",
+            "Bound failed promotion was rerun; recovery is no longer valid.",
+            "Expected exactly one live fixed-validation promotion artifact.",
+            "Recovery control head is not exactly one commit ahead of the validated timestamp fix.",
+            "A bot-dispatched RC4 promotion already exists on the recovery control head",
+            "Redispatch canonical RC4 promotion through GitHub Actions identity",
+            'gh workflow run "$PROMOTION_WORKFLOW"',
+            "rc4_recovery_bot_dispatch=PASS",
+            "human_review_reused=true",
+            "human_approval_created=false",
+            "authoritative=false",
+            "ga_eligible=false",
+        )
+        for value in required:
+            with self.subTest(value=value):
+                self.assertIn(value, text)
+        self.assertIn("actions: write", text)
+        self.assertIn("if: inputs.recover_failed_automated_run_id == ''", text)
+        self.assertIn("if: inputs.recover_failed_automated_run_id != ''", text)
+        self.assertEqual(text.count('gh workflow run "$PROMOTION_WORKFLOW"'), 1)
+
     def test_promotion_builder_freezes_review_and_promotion_provenance(self) -> None:
         text = PROMOTER_PATH.read_text(encoding="utf-8")
         required = (
