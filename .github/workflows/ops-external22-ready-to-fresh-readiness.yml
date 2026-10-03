@@ -98,7 +98,7 @@ jobs:
           readiness_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$READINESS_BRANCH" --jq '.object.sha')
           [[ "$readiness_sha" == "$READINESS_HEAD" ]] || { echo "Readiness anchor moved: $readiness_sha != $READINESS_HEAD" >&2; exit 1; }
 
-          ready_comments=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/$EXTERNAL_ISSUE/comments?per_page=100" --jq 'add')
+          ready_comments=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$EXTERNAL_ISSUE/comments?per_page=100" --slurp | jq 'add')
           ready_at=$(jq -r '[.[] | select(.user.login == "Naveax" and .author_association == "OWNER" and .body == "EXTERNAL22 MATERIAL READY") | .created_at] | sort | .[0] // empty' <<<"$ready_comments")
           [[ "$ready_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] || { echo 'Canonical EXTERNAL22 MATERIAL READY event timestamp cannot be resolved.' >&2; exit 1; }
 
