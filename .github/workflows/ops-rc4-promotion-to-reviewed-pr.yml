@@ -104,18 +104,21 @@ jobs:
           }
 
           compare=$(gh api "repos/$GITHUB_REPOSITORY/compare/$RECOVERY_CONTROL_PARENT...$REPOSITORY_BASE_HEAD")
-          [[ "$(jq -r '.status' <<<"$compare")" == 'ahead' && "$(jq -r '.ahead_by' <<<"$compare")" == '1' && "$(jq -r '.behind_by' <<<"$compare")" == '0' ]] || {
-            echo 'Orphan-recovery source fix is not exactly one commit ahead of the recovered promotion control head.' >&2
+          [[ "$(jq -r '.status' <<<"$compare")" == 'ahead' && "$(jq -r '.ahead_by' <<<"$compare")" == '3' && "$(jq -r '.behind_by' <<<"$compare")" == '0' ]] || {
+            echo 'Orphan-recovery source closure is not exactly three audited recovery-source commits ahead of the recovered promotion control head.' >&2
             exit 1
           }
           mapfile -t changed < <(jq -r '.files[].filename' <<<"$compare" | sort)
           expected=(
+            '.github/workflows/ops-final-promotion-to-reviewed-pr.yml'
+            '.github/workflows/ops-final-reviewed-lock-merge-to-signing.yml'
             '.github/workflows/ops-rc4-promotion-to-reviewed-pr.yml'
+            '.github/workflows/ops-rc4-reviewed-lock-merge-to-signing.yml'
             'ga-packs/03-authoritative-windows/final-release-lock-signing-control-contract.json'
             'tests/test_final_v2_release_control_migration.py'
             'tests/test_windows_authority_rc4_lock_promotion_signing.py'
           )
-          if [[ "${#changed[@]}" -ne 4 || "${changed[0]}" != "${expected[0]}" || "${changed[1]}" != "${expected[1]}" || "${changed[2]}" != "${expected[2]}" || "${changed[3]}" != "${expected[3]}" ]]; then
+          if [[ "${#changed[@]}" -ne 7 || "${changed[0]}" != "${expected[0]}" || "${changed[1]}" != "${expected[1]}" || "${changed[2]}" != "${expected[2]}" || "${changed[3]}" != "${expected[3]}" || "${changed[4]}" != "${expected[4]}" || "${changed[5]}" != "${expected[5]}" || "${changed[6]}" != "${expected[6]}" ]]; then
             printf 'Unexpected orphan-recovery source-fix closure:\n%s\n' "${changed[*]}" >&2
             exit 1
           fi
