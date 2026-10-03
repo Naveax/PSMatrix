@@ -104,8 +104,8 @@ jobs:
           }
 
           compare=$(gh api "repos/$GITHUB_REPOSITORY/compare/$RECOVERY_CONTROL_PARENT...$REPOSITORY_BASE_HEAD")
-          [[ "$(jq -r '.status' <<<"$compare")" == 'ahead' && "$(jq -r '.ahead_by' <<<"$compare")" == '3' && "$(jq -r '.behind_by' <<<"$compare")" == '0' ]] || {
-            echo 'Orphan-recovery source closure is not exactly three audited recovery-source commits ahead of the recovered promotion control head.' >&2
+          [[ "$(jq -r '.status' <<<"$compare")" == 'ahead' && "$(jq -r '.ahead_by' <<<"$compare")" == '4' && "$(jq -r '.behind_by' <<<"$compare")" == '0' ]] || {
+            echo 'Orphan-recovery source closure is not exactly four audited recovery-source commits ahead of the recovered promotion control head.' >&2
             exit 1
           }
           mapfile -t changed < <(jq -r '.files[].filename' <<<"$compare" | sort)
@@ -346,7 +346,7 @@ jobs:
           cp promotion/ga-packs/03-authoritative-windows/rc4-release-lock.json repo/ga-packs/03-authoritative-windows/rc4-release-lock.json
           cp promotion/release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem repo/release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem
           cd repo
-          mapfile -t changed < <(git status --porcelain | sed -E 's/^...//' | sort)
+          mapfile -t changed < <(git status --porcelain --untracked-files=all | sed -E 's/^...//' | sort)
           expected=(
             'ga-packs/03-authoritative-windows/rc4-release-lock.json'
             'release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem'
