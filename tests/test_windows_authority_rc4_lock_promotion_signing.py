@@ -121,7 +121,7 @@ class WindowsAuthorityRC4LockPromotionSigningTests(unittest.TestCase):
             "REPOSITORY_BASE_HEAD:",
             "rc4_orphan_recovery_dispatch_closure=PASS",
             'gh run download "$PROMOTION_RUN_ID"',
-            "Orphan-recovery source closure is not exactly three audited recovery-source commits ahead of the recovered promotion control head.",
+            "Orphan-recovery source closure is not exactly four audited recovery-source commits ahead of the recovered promotion control head.",
             ".github/workflows/ops-final-promotion-to-reviewed-pr.yml",
             ".github/workflows/ops-final-reviewed-lock-merge-to-signing.yml",
             ".github/workflows/ops-rc4-promotion-to-reviewed-pr.yml",
@@ -129,6 +129,7 @@ class WindowsAuthorityRC4LockPromotionSigningTests(unittest.TestCase):
             "ga-packs/03-authoritative-windows/final-release-lock-signing-control-contract.json",
             "tests/test_final_v2_release_control_migration.py",
             "tests/test_windows_authority_rc4_lock_promotion_signing.py",
+            "git status --porcelain --untracked-files=all",
             "Normal RC4 promotion route must materialize directly on the promotion control head.",
             "github.event.workflow_run.actor.login == 'github-actions[bot]'",
             "github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'",
@@ -136,6 +137,7 @@ class WindowsAuthorityRC4LockPromotionSigningTests(unittest.TestCase):
         for value in required:
             with self.subTest(value=value):
                 self.assertIn(value, text)
+        self.assertNotIn("git status --porcelain | sed -E", text)
         self.assertEqual(text.count("recover_orphan_promotion_run_id:"), 1)
         self.assertIn("run-id: ${{ github.event.workflow_run.id }}", text)
 
