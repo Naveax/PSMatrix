@@ -4,6 +4,12 @@ on:
   workflow_run:
     workflows: [production-ga-windows-authority-rc4-release-intake-selfhosted]
     types: [completed]
+  workflow_dispatch:
+    inputs:
+      recover_intake_run_id:
+        description: Canonical repaired RC4 protected-intake run to recover after workflow_run suppression
+        required: false
+        type: string
 
 concurrency:
   group: ops-rc4-intake-to-media-readiness
@@ -16,21 +22,80 @@ permissions:
 jobs:
   dispatch-media-readiness:
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'workflow_dispatch' &&
-      github.event.workflow_run.head_branch == 'release/2.0.0rc4-active-lock' &&
-      github.event.workflow_run.actor.login == 'github-actions[bot]' &&
-      github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'
+      (
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'workflow_dispatch' &&
+        github.event.workflow_run.head_branch == 'release/2.0.0rc4-active-lock' &&
+        github.event.workflow_run.actor.login == 'github-actions[bot]' &&
+        github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'
+      ) || (
+        github.event_name == 'workflow_dispatch' &&
+        github.ref_name == 'main' &&
+        github.actor == 'Naveax' &&
+        github.triggering_actor == 'Naveax' &&
+        inputs.recover_intake_run_id != ''
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
       GH_TOKEN: ${{ github.token }}
+      RECOVERY_MODE: ${{ github.event_name == 'workflow_dispatch' }}
       RELEASE_COMMIT: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
-      INTAKE_RUN_ID: ${{ github.event.workflow_run.id }}
+      INTAKE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.recover_intake_run_id || github.event.workflow_run.id }}
       INTAKE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+      INTAKE_RUN_HEAD: ${{ github.event.workflow_run.head_sha }}
       CONTROL_HEAD: ${{ github.event.workflow_run.head_sha }}
       FROZEN_CONTROL_BRANCH: release/2.0.0rc4-active-lock
     steps:
+      - name: Resolve explicit repaired-intake recovery
+        if: env.RECOVERY_MODE == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTOR" == 'Naveax' && "$GITHUB_TRIGGERING_ACTOR" == 'Naveax' ]] || { echo 'RC4 intake recovery must be explicitly dispatched by Naveax.' >&2; exit 1; }
+          [[ "$GITHUB_REF_NAME" == 'main' ]] || { echo 'RC4 intake recovery must execute from main.' >&2; exit 1; }
+          [[ "$INTAKE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo 'RC4 repaired intake run ID is invalid.' >&2; exit 1; }
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$INTAKE_RUN_ID")
+          [[ "$(jq -r '.name' <<<"$run")" == 'production-ga-windows-authority-rc4-release-intake-selfhosted' ]] || { echo 'Recovered intake workflow name mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.path' <<<"$run")" == '.github/workflows/ga-windows-authority-rc4-release-intake-selfhosted.yml' ]] || { echo 'Recovered intake workflow path mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.event' <<<"$run")" == 'workflow_dispatch' && "$(jq -r '.status' <<<"$run")" == 'completed' && "$(jq -r '.conclusion' <<<"$run")" == 'success' ]] || { echo 'Recovered intake run is not completed/success.' >&2; exit 1; }
+          [[ "$(jq -r '.head_branch' <<<"$run")" == 'main' ]] || { echo 'Repaired intake must execute from main workflow code.' >&2; exit 1; }
+          [[ "$(jq -r '.actor.login' <<<"$run")" == 'github-actions[bot]' && "$(jq -r '.triggering_actor.login' <<<"$run")" == 'github-actions[bot]' ]] || { echo 'Repaired intake is not bot/bot provenance.' >&2; exit 1; }
+          attempt=$(jq -r '.run_attempt' <<<"$run")
+          run_head=$(jq -r '.head_sha' <<<"$run")
+          [[ "$attempt" =~ ^[1-9][0-9]*$ && "$run_head" =~ ^[0-9a-f]{40}$ ]] || { echo 'Recovered intake attempt/head is invalid.' >&2; exit 1; }
+
+          workflow_text=$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/workflows/ga-windows-authority-rc4-release-intake-selfhosted.yml?ref=$run_head" --jq '.content' | tr -d '\n' | base64 -d)
+          grep -Fq "path.name != inventory_path.name" <<<"$workflow_text" || { echo 'Recovered intake head lacks bundle self-inventory coverage fix.' >&2; exit 1; }
+          grep -Fq "path.name == inventory_path.name" <<<"$workflow_text" || { echo 'Recovered intake head lacks bundle self-inventory hash-loop fix.' >&2; exit 1; }
+
+          evidence="$RUNNER_TEMP/rc4-repaired-intake-$INTAKE_RUN_ID-$attempt"
+          rm -rf "$evidence"
+          mkdir -p "$evidence"
+          gh run download "$INTAKE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name windows-authority-rc4-protected-release-intake --dir "$evidence"
+          status_file=$(find "$evidence" -type f -name 'intake-status.json' -print -quit)
+          [[ -n "$status_file" && -f "$status_file" ]] || { echo 'Repaired intake status artifact is missing.' >&2; exit 1; }
+          [[ "$(jq -r '.kind' "$status_file")" == 'psmatrix.windows-authority-rc4-protected-release-intake-workflow-status' ]] || { echo 'Repaired intake status kind mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.status' "$status_file")" == 'PASS' && "$(jq -r '.version' "$status_file")" == '2.0.0rc4' ]] || { echo 'Repaired intake status/version mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.release_commit' "$status_file")" == "$RELEASE_COMMIT" ]] || { echo 'Repaired intake release commit mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.private_key_material_absent' "$status_file")" == 'true' && "$(jq -r '.authoritative' "$status_file")" == 'false' && "$(jq -r '.ga_eligible' "$status_file")" == 'false' ]] || { echo 'Repaired intake crossed private-key/authority boundary.' >&2; exit 1; }
+          control=$(jq -r '.signing_control_head' "$status_file")
+          signing_run_id=$(jq -r '.signing_run_id' "$status_file")
+          [[ "$control" =~ ^[0-9a-f]{40}$ && "$signing_run_id" =~ ^[1-9][0-9]*$ ]] || { echo 'Repaired intake signing binding is invalid.' >&2; exit 1; }
+          signing=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$signing_run_id")
+          [[ "$(jq -r '.name' <<<"$signing")" == 'production-ga-windows-authority-rc4-release-sign-from-lock' ]] || { echo 'Repaired intake signing workflow mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.event' <<<"$signing")" == 'workflow_dispatch' && "$(jq -r '.status' <<<"$signing")" == 'completed' && "$(jq -r '.conclusion' <<<"$signing")" == 'success' ]] || { echo 'Repaired intake signing run is not completed/success.' >&2; exit 1; }
+          [[ "$(jq -r '.head_branch' <<<"$signing")" == "$FROZEN_CONTROL_BRANCH" && "$(jq -r '.head_sha' <<<"$signing")" == "$control" ]] || { echo 'Repaired intake signing control provenance mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.actor.login' <<<"$signing")" == 'github-actions[bot]' && "$(jq -r '.triggering_actor.login' <<<"$signing")" == 'github-actions[bot]' ]] || { echo 'Repaired intake signing run is not canonical bot/bot provenance.' >&2; exit 1; }
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FROZEN_CONTROL_BRANCH" --jq '.object.sha')
+          [[ "$current" == "$control" ]] || { echo 'Frozen RC4 active-lock moved after repaired intake.' >&2; exit 1; }
+
+          echo "INTAKE_RUN_ATTEMPT=$attempt" >> "$GITHUB_ENV"
+          echo "INTAKE_RUN_HEAD=$run_head" >> "$GITHUB_ENV"
+          echo "CONTROL_HEAD=$control" >> "$GITHUB_ENV"
+          echo "rc4_repaired_intake_recovery=PASS run_id=$INTAKE_RUN_ID attempt=$attempt run_head=$run_head control_head=$control signing_run_id=$signing_run_id"
+
       - name: Validate automated intake provenance and frozen control
         shell: bash
         run: |
@@ -46,7 +111,11 @@ jobs:
           [[ "$(jq -r '.event' <<<"$run")" == 'workflow_dispatch' ]] || { echo 'RC4 intake event mismatch.' >&2; exit 1; }
           [[ "$(jq -r '.status' <<<"$run")" == 'completed' && "$(jq -r '.conclusion' <<<"$run")" == 'success' ]] || { echo 'RC4 intake run is not completed/success.' >&2; exit 1; }
           [[ "$(jq -r '.run_attempt' <<<"$run")" == "$INTAKE_RUN_ATTEMPT" ]] || { echo 'RC4 intake attempt mismatch.' >&2; exit 1; }
-          [[ "$(jq -r '.head_branch' <<<"$run")" == "$FROZEN_CONTROL_BRANCH" && "$(jq -r '.head_sha' <<<"$run")" == "$CONTROL_HEAD" ]] || { echo 'RC4 intake control provenance mismatch.' >&2; exit 1; }
+          if [[ "$RECOVERY_MODE" == 'true' ]]; then
+            [[ "$(jq -r '.head_branch' <<<"$run")" == 'main' && "$(jq -r '.head_sha' <<<"$run")" == "$INTAKE_RUN_HEAD" ]] || { echo 'Repaired RC4 intake workflow-code provenance mismatch.' >&2; exit 1; }
+          else
+            [[ "$(jq -r '.head_branch' <<<"$run")" == "$FROZEN_CONTROL_BRANCH" && "$(jq -r '.head_sha' <<<"$run")" == "$CONTROL_HEAD" ]] || { echo 'RC4 intake control provenance mismatch.' >&2; exit 1; }
+          fi
           [[ "$(jq -r '.actor.login' <<<"$run")" == 'github-actions[bot]' && "$(jq -r '.triggering_actor.login' <<<"$run")" == 'github-actions[bot]' ]] || { echo 'RC4 intake was not dispatched by the protected-signing automation.' >&2; exit 1; }
           echo 'protected_rc4_intake_provenance=PASS automated_dispatch=true'
 

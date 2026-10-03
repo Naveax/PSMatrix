@@ -46,6 +46,8 @@
       ".github/workflows/ops-rc4-reviewed-lock-merge-to-signing.yml",
       "tests/test_windows_authority_rc4_lock_promotion_signing.py",
       ".github/workflows/ops-rc4-signing-to-intake.yml",
+      ".github/workflows/ops-rc4-intake-to-media-readiness.yml",
+      ".github/workflows/ops-rc4-post-intake-canonical-chain.yml",
       "ga-packs/03-authoritative-windows/rc4-release-lock.json",
       "release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem"
     ]
