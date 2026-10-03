@@ -60,7 +60,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          reviews=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews?per_page=100" --jq 'add')
+          reviews=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews?per_page=100" | jq -c 'add')
           decisive=$(jq -c --arg sha "$PR_HEAD_SHA" '[.[] | select(.user.login == "Naveax" and .author_association == "OWNER" and .commit_id == $sha and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED"))] | sort_by(.submitted_at // "") | last // empty' <<<"$reviews")
           [[ -n "$decisive" ]] || { echo 'No decisive Naveax OWNER review exists for the exact RC4 PR head.' >&2; exit 1; }
           state=$(jq -r '.state' <<<"$decisive")

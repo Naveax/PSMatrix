@@ -81,7 +81,7 @@ jobs:
           [[ "$(jq -r '.status' <<<"$review")" == 'completed' && "$(jq -r '.conclusion' <<<"$review")" == 'success' ]] || { echo 'RC4 review run is not successful.' >&2; exit 1; }
 
           approval="RC4 HUMAN REVIEW APPROVED: $CANDIDATE_COMMIT"
-          comments=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/$HUMAN_GATE_ISSUE/comments?per_page=100" --jq 'add')
+          comments=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/$HUMAN_GATE_ISSUE/comments?per_page=100" | jq -c 'add')
           approval_at=$(jq -r --arg approval "$approval" --arg review_updated_at "$review_updated_at" '[.[] | select(.user.login == "Naveax" and .author_association == "OWNER" and .body == $approval and .created_at >= $review_updated_at) | .created_at] | sort | .[0] // empty' <<<"$comments")
           [[ "$approval_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] || { echo 'Exact post-review RC4 owner approval is missing.' >&2; exit 1; }
           [[ "$promotion_created_at" == "$approval_at" || "$promotion_created_at" > "$approval_at" ]] || { echo "RC4 promotion predates owner approval: promotion=$promotion_created_at approval=$approval_at" >&2; exit 1; }
