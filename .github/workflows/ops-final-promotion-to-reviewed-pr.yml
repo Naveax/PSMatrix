@@ -72,7 +72,7 @@ jobs:
           PY
           )
           [[ -n "$expected_approval" ]] || { echo 'Expected final owner approval could not be reconstructed.' >&2; exit 1; }
-          comments=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/$HUMAN_GATE_ISSUE/comments?per_page=100" --jq 'add')
+          comments=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$HUMAN_GATE_ISSUE/comments?per_page=100" --slurp | jq 'add')
           approval_at=$(jq -r --arg approval "$expected_approval" '[.[] | select(.user.login == "Naveax" and .author_association == "OWNER" and .body == $approval) | .created_at] | sort | .[0] // empty' <<<"$comments")
           [[ "$approval_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] || { echo 'Exact final owner approval is missing.' >&2; exit 1; }
           [[ "$promotion_created_at" == "$approval_at" || "$promotion_created_at" > "$approval_at" ]] || { echo "Final promotion predates owner approval: promotion=$promotion_created_at approval=$approval_at" >&2; exit 1; }
