@@ -113,16 +113,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          dispatch_ref="$FROZEN_CONTROL_BRANCH"
+          dispatch_head="$SIGNING_CONTROL_HEAD"
+          if [[ "$RECOVERY_MODE" == 'true' ]]; then
+            dispatch_ref='main'
+            dispatch_head=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          fi
           existing=$(gh api --method GET \
             "repos/$GITHUB_REPOSITORY/actions/workflows/ga-windows-authority-rc4-release-intake-selfhosted.yml/runs" \
-            -f branch="$FROZEN_CONTROL_BRANCH" \
+            -f branch="$dispatch_ref" \
             -f event='workflow_dispatch' \
             -f per_page=100 \
-            --jq ".workflow_runs[] | select(.head_sha == \"$SIGNING_CONTROL_HEAD\") | .id" \
+            --jq ".workflow_runs[] | select(.head_sha == \"$dispatch_head\" and (.status == \"queued\" or .status == \"in_progress\" or .status == \"waiting\" or .conclusion == \"success\")) | .id" \
             | head -n 1)
+          echo "dispatch_ref=$dispatch_ref" >> "$GITHUB_OUTPUT"
+          echo "dispatch_head=$dispatch_head" >> "$GITHUB_OUTPUT"
           if [[ -n "$existing" ]]; then
             echo 'already_dispatched=true' >> "$GITHUB_OUTPUT"
-            echo "duplicate_protected_rc4_intake_suppressed=true existing_run_id=$existing"
+            echo "duplicate_protected_rc4_intake_suppressed=true existing_run_id=$existing dispatch_ref=$dispatch_ref"
           else
             echo 'already_dispatched=false' >> "$GITHUB_OUTPUT"
           fi
@@ -134,12 +142,14 @@ jobs:
           set -euo pipefail
           current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FROZEN_CONTROL_BRANCH" --jq '.object.sha')
           [[ "$current" == "$SIGNING_CONTROL_HEAD" ]] || { echo 'Frozen RC4 active-lock moved before intake dispatch.' >&2; exit 1; }
+          dispatch_ref='${{ steps.dedup.outputs.dispatch_ref }}'
+          [[ -n "$dispatch_ref" ]] || { echo 'RC4 intake dispatch ref was not resolved.' >&2; exit 1; }
           gh workflow run ga-windows-authority-rc4-release-intake-selfhosted.yml \
             --repo "$GITHUB_REPOSITORY" \
-            --ref "$FROZEN_CONTROL_BRANCH" \
+            --ref "$dispatch_ref" \
             -f release_commit="$RELEASE_COMMIT" \
             -f signing_run_id="$SIGNING_RUN_ID" \
             -f signing_control_head="$SIGNING_CONTROL_HEAD"
-          echo 'protected_rc4_intake_dispatched=true'
+          echo "protected_rc4_intake_dispatched=true dispatch_ref=$dispatch_ref repaired_workflow=$RECOVERY_MODE"
           echo 'authoritative=false'
           echo 'ga_eligible=false'

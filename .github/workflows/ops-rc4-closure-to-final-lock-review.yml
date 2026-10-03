@@ -6,6 +6,12 @@ on:
       - production-ga-windows-authority-rc4-candidate-closure-selfhosted
       - production-ga-windows-authority-final-staging-candidate-selfhosted
     types: [completed]
+  workflow_dispatch:
+    inputs:
+      recover_completed_run_id:
+        description: Canonical bot-dispatched RC4 closure or final-staging run to recover after workflow_run suppression
+        required: false
+        type: string
 
 concurrency:
   group: ops-rc4-closure-to-final-lock-review
@@ -19,16 +25,26 @@ permissions:
 jobs:
   advance:
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'workflow_dispatch' &&
-      github.event.workflow_run.actor.login == 'github-actions[bot]' &&
-      github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'
+      (
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'workflow_dispatch' &&
+        github.event.workflow_run.actor.login == 'github-actions[bot]' &&
+        github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'
+      ) || (
+        github.event_name == 'workflow_dispatch' &&
+        github.ref_name == 'main' &&
+        github.actor == 'Naveax' &&
+        github.triggering_actor == 'Naveax' &&
+        inputs.recover_completed_run_id != ''
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
+      RECOVERY_MODE: ${{ github.event_name == 'workflow_dispatch' }}
       COMPLETED_WORKFLOW: ${{ github.event.workflow_run.name }}
-      COMPLETED_RUN_ID: ${{ github.event.workflow_run.id }}
+      COMPLETED_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.recover_completed_run_id || github.event.workflow_run.id }}
       COMPLETED_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
       COMPLETED_HEAD: ${{ github.event.workflow_run.head_sha }}
       COMPLETED_BRANCH: ${{ github.event.workflow_run.head_branch }}
@@ -40,6 +56,34 @@ jobs:
       RC4_ENROLLMENT_RUN_ID: '36850062892'
       STATE_ISSUE: '262'
     steps:
+      - name: Resolve explicit RC4-to-final recovery
+        if: env.RECOVERY_MODE == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTOR" == 'Naveax' && "$GITHUB_TRIGGERING_ACTOR" == 'Naveax' ]] || { echo 'RC4-to-final recovery must be explicitly dispatched by Naveax.' >&2; exit 1; }
+          [[ "$GITHUB_REF_NAME" == 'main' ]] || { echo 'RC4-to-final recovery must execute from main.' >&2; exit 1; }
+          [[ "$COMPLETED_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo 'RC4-to-final recovery run ID is invalid.' >&2; exit 1; }
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$COMPLETED_RUN_ID")
+          name=$(jq -r '.name' <<<"$run")
+          case "$name" in
+            production-ga-windows-authority-rc4-candidate-closure-selfhosted|production-ga-windows-authority-final-staging-candidate-selfhosted) ;;
+            *) echo "Recovered workflow is not an RC4-to-final chain stage: $name" >&2; exit 1 ;;
+          esac
+          [[ "$(jq -r '.event' <<<"$run")" == 'workflow_dispatch' && "$(jq -r '.status' <<<"$run")" == 'completed' && "$(jq -r '.conclusion' <<<"$run")" == 'success' ]] || { echo 'Recovered RC4-to-final run is not completed/success.' >&2; exit 1; }
+          [[ "$(jq -r '.actor.login' <<<"$run")" == 'github-actions[bot]' && "$(jq -r '.triggering_actor.login' <<<"$run")" == 'github-actions[bot]' ]] || { echo 'Recovered RC4-to-final run is not canonical bot/bot provenance.' >&2; exit 1; }
+          attempt=$(jq -r '.run_attempt' <<<"$run")
+          head=$(jq -r '.head_sha' <<<"$run")
+          branch=$(jq -r '.head_branch' <<<"$run")
+          updated=$(jq -r '.updated_at' <<<"$run")
+          [[ "$attempt" =~ ^[1-9][0-9]*$ && "$head" =~ ^[0-9a-f]{40}$ && "$updated" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] || { echo 'Recovered RC4-to-final run metadata is invalid.' >&2; exit 1; }
+          echo "COMPLETED_WORKFLOW=$name" >> "$GITHUB_ENV"
+          echo "COMPLETED_RUN_ATTEMPT=$attempt" >> "$GITHUB_ENV"
+          echo "COMPLETED_HEAD=$head" >> "$GITHUB_ENV"
+          echo "COMPLETED_BRANCH=$branch" >> "$GITHUB_ENV"
+          echo "COMPLETED_AT=$updated" >> "$GITHUB_ENV"
+          echo "rc4_to_final_workflow_run_recovery=PASS workflow=$name run_id=$COMPLETED_RUN_ID attempt=$attempt head=$head branch=$branch"
+
       - name: Validate exact automated successful upstream artifact
         shell: bash
         run: |

@@ -10,6 +10,12 @@ on:
       - production-ga-windows-authority-rc4-image-identity-measurement-selfhosted
       - production-ga-windows-authority-rc4-certification-campaign-selfhosted
     types: [completed]
+  workflow_dispatch:
+    inputs:
+      recover_completed_run_id:
+        description: Canonical bot-dispatched RC4 stage run to recover after workflow_run suppression
+        required: false
+        type: string
 
 concurrency:
   group: ops-rc4-post-intake-canonical-chain
@@ -23,23 +29,60 @@ permissions:
 jobs:
   advance:
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'workflow_dispatch' &&
-      github.event.workflow_run.head_branch == 'release/2.0.0rc4-active-lock' &&
-      github.event.workflow_run.actor.login == 'github-actions[bot]' &&
-      github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'
+      (
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'workflow_dispatch' &&
+        github.event.workflow_run.head_branch == 'release/2.0.0rc4-active-lock' &&
+        github.event.workflow_run.actor.login == 'github-actions[bot]' &&
+        github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'
+      ) || (
+        github.event_name == 'workflow_dispatch' &&
+        github.ref_name == 'main' &&
+        github.actor == 'Naveax' &&
+        github.triggering_actor == 'Naveax' &&
+        inputs.recover_completed_run_id != ''
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
+      RECOVERY_MODE: ${{ github.event_name == 'workflow_dispatch' }}
       COMPLETED_WORKFLOW: ${{ github.event.workflow_run.name }}
-      COMPLETED_RUN_ID: ${{ github.event.workflow_run.id }}
+      COMPLETED_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.recover_completed_run_id || github.event.workflow_run.id }}
       COMPLETED_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
       CONTROL_HEAD: ${{ github.event.workflow_run.head_sha }}
       RELEASE_COMMIT: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
       CONTROL_BRANCH: release/2.0.0rc4-active-lock
       STATE_ISSUE: '262'
     steps:
+      - name: Resolve explicit canonical-stage recovery
+        if: env.RECOVERY_MODE == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTOR" == 'Naveax' && "$GITHUB_TRIGGERING_ACTOR" == 'Naveax' ]] || { echo 'RC4 stage recovery must be explicitly dispatched by Naveax.' >&2; exit 1; }
+          [[ "$GITHUB_REF_NAME" == 'main' ]] || { echo 'RC4 stage recovery must execute from main.' >&2; exit 1; }
+          [[ "$COMPLETED_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo 'RC4 stage recovery run ID is invalid.' >&2; exit 1; }
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$COMPLETED_RUN_ID")
+          name=$(jq -r '.name' <<<"$run")
+          case "$name" in
+            production-ga-windows-authority-rc4-media-readiness-selfhosted|production-ga-windows-authority-rc4-provisioning-manifest-selfhosted|production-ga-windows-authority-rc4-operation-package-selfhosted|production-ga-windows-authority-rc4-provision-selfhosted|production-ga-windows-authority-rc4-image-identity-measurement-selfhosted|production-ga-windows-authority-rc4-certification-campaign-selfhosted) ;;
+            *) echo "Recovered workflow is not a canonical RC4 post-intake stage: $name" >&2; exit 1 ;;
+          esac
+          [[ "$(jq -r '.event' <<<"$run")" == 'workflow_dispatch' && "$(jq -r '.status' <<<"$run")" == 'completed' && "$(jq -r '.conclusion' <<<"$run")" == 'success' ]] || { echo 'Recovered RC4 stage run is not completed/success.' >&2; exit 1; }
+          [[ "$(jq -r '.head_branch' <<<"$run")" == "$CONTROL_BRANCH" ]] || { echo 'Recovered RC4 stage branch mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.actor.login' <<<"$run")" == 'github-actions[bot]' && "$(jq -r '.triggering_actor.login' <<<"$run")" == 'github-actions[bot]' ]] || { echo 'Recovered RC4 stage is not canonical bot/bot provenance.' >&2; exit 1; }
+          attempt=$(jq -r '.run_attempt' <<<"$run")
+          head=$(jq -r '.head_sha' <<<"$run")
+          [[ "$attempt" =~ ^[1-9][0-9]*$ && "$head" =~ ^[0-9a-f]{40}$ ]] || { echo 'Recovered RC4 stage attempt/head is invalid.' >&2; exit 1; }
+          branch_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$CONTROL_BRANCH" --jq '.object.sha')
+          [[ "$branch_sha" == "$head" ]] || { echo 'Frozen RC4 control moved before stage recovery.' >&2; exit 1; }
+          echo "COMPLETED_WORKFLOW=$name" >> "$GITHUB_ENV"
+          echo "COMPLETED_RUN_ATTEMPT=$attempt" >> "$GITHUB_ENV"
+          echo "CONTROL_HEAD=$head" >> "$GITHUB_ENV"
+          echo "rc4_stage_workflow_run_recovery=PASS workflow=$name run_id=$COMPLETED_RUN_ID attempt=$attempt head=$head"
+
       - name: Validate automated canonical chain event identity
         shell: bash
         run: |
