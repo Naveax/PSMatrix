@@ -198,8 +198,8 @@ jobs:
               ready=$(jq -r '.ready_for_provisioning_manifest_materialization // false' "$status_file")
               release_commit=$(jq -r '.release_commit // ""' "$status_file")
               control_head=$(jq -r '.control_head // ""' "$status_file")
-              authoritative=$(jq -r '.authoritative // true' "$status_file")
-              ga_eligible=$(jq -r '.ga_eligible // true' "$status_file")
+              authoritative=$(jq -r 'if has("authoritative") then .authoritative else true end' "$status_file")
+              ga_eligible=$(jq -r 'if has("ga_eligible") then .ga_eligible else true end' "$status_file")
 
               [[ "$release_commit" == "$RELEASE_COMMIT" ]] || { echo 'RC4 media-readiness release_commit mismatch.' >&2; exit 1; }
               [[ "$control_head" == "$CONTROL_HEAD" ]] || { echo 'RC4 media-readiness control_head mismatch.' >&2; exit 1; }

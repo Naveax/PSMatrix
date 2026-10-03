@@ -116,6 +116,11 @@ class FinalV2ReleaseControlMigrationTests(unittest.TestCase):
         self.assertIn("signing_control_head", intake)
         self.assertIn("path.name != inventory_path.name", intake)
         self.assertIn("path.name == inventory_path.name", intake)
+        post_intake = (ROOT / ".github/workflows/ops-rc4-post-intake-canonical-chain.yml").read_text(encoding="utf-8")
+        self.assertIn('if has("authoritative") then .authoritative else true end', post_intake)
+        self.assertIn('if has("ga_eligible") then .ga_eligible else true end', post_intake)
+        self.assertNotIn(".authoritative // true", post_intake)
+        self.assertNotIn(".ga_eligible // true", post_intake)
 
     def test_critical_paginated_gh_api_calls_are_cli_compatible(self):
         paths = (
