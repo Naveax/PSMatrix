@@ -42,7 +42,10 @@
       "tests/test_windows_lab_prereq_workflow.py",
       ".github/workflows/ga-windows-authority-rc4-release-lock-promotion.yml",
       ".github/workflows/ops-rc4-promotion-to-reviewed-pr.yml",
-      "tests/test_windows_authority_rc4_lock_promotion_signing.py"
+      "tests/test_windows_authority_rc4_lock_promotion_signing.py",
+      ".github/workflows/ops-external22-ready-to-fresh-readiness.yml",
+      ".github/workflows/ops-fresh-readiness-to-external-evidence.yml",
+      ".github/workflows/ops-rc4-reviewed-lock-merge-to-signing.yml"
     ]
   },
   "rc4_authority_continuity": {

@@ -121,8 +121,13 @@ class WindowsAuthorityRC4LockPromotionSigningTests(unittest.TestCase):
             "REPOSITORY_BASE_HEAD:",
             "rc4_orphan_recovery_dispatch_closure=PASS",
             'gh run download "$PROMOTION_RUN_ID"',
-            "Orphan-recovery source fix is not exactly one commit ahead of the recovered promotion control head.",
+            "Orphan-recovery source fix is not exactly two commits ahead of the recovered promotion control head.",
+            ".github/workflows/ops-external22-ready-to-fresh-readiness.yml",
+            ".github/workflows/ops-final-promotion-to-reviewed-pr.yml",
+            ".github/workflows/ops-final-reviewed-lock-merge-to-signing.yml",
+            ".github/workflows/ops-fresh-readiness-to-external-evidence.yml",
             ".github/workflows/ops-rc4-promotion-to-reviewed-pr.yml",
+            ".github/workflows/ops-rc4-reviewed-lock-merge-to-signing.yml",
             "ga-packs/03-authoritative-windows/final-release-lock-signing-control-contract.json",
             "tests/test_final_v2_release_control_migration.py",
             "tests/test_windows_authority_rc4_lock_promotion_signing.py",
@@ -135,6 +140,21 @@ class WindowsAuthorityRC4LockPromotionSigningTests(unittest.TestCase):
                 self.assertIn(value, text)
         self.assertEqual(text.count("recover_orphan_promotion_run_id:"), 1)
         self.assertIn("run-id: ${{ github.event.workflow_run.id }}", text)
+
+    def test_canonical_workflows_use_gh_api_slurp_compatibly(self) -> None:
+        paths = (
+            ".github/workflows/ops-external22-ready-to-fresh-readiness.yml",
+            ".github/workflows/ops-final-promotion-to-reviewed-pr.yml",
+            ".github/workflows/ops-final-reviewed-lock-merge-to-signing.yml",
+            ".github/workflows/ops-fresh-readiness-to-external-evidence.yml",
+            ".github/workflows/ops-rc4-promotion-to-reviewed-pr.yml",
+            ".github/workflows/ops-rc4-reviewed-lock-merge-to-signing.yml",
+        )
+        for relative in paths:
+            workflow = (ROOT / relative).read_text(encoding="utf-8")
+            with self.subTest(relative=relative):
+                self.assertNotRegex(workflow, r"gh api[^\n]*--slurp[^\n]*--jq")
+                self.assertIn("--slurp | jq 'add'", workflow)
 
     def test_promotion_builder_freezes_review_and_promotion_provenance(self) -> None:
         text = PROMOTER_PATH.read_text(encoding="utf-8")
