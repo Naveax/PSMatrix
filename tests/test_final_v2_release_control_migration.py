@@ -65,7 +65,7 @@ class FinalV2ReleaseControlMigrationTests(unittest.TestCase):
         )
         allowed = sorted(contract["control_source"]["changed_path_allowlist"])
         self.assertEqual(changed, allowed)
-        self.assertEqual(len(changed), 35)
+        self.assertEqual(len(changed), 38)
         self.assertIn(".github/workflows/ga-final-production-bootstrap-source-preflight.yml", allowed)
         self.assertIn(".github/workflows/ga-windows-authority-final-release-source-preflight.yml", allowed)
         self.assertIn("ga-packs/03-authoritative-windows/final-production-bootstrap-contract.json", allowed)
@@ -75,6 +75,9 @@ class FinalV2ReleaseControlMigrationTests(unittest.TestCase):
         self.assertIn("tests/test_windows_lab_operational_provisioning.py", allowed)
         self.assertIn(".github/workflows/ga-windows-authority-rc4-release-lock-promotion.yml", allowed)
         self.assertIn(".github/workflows/ops-rc4-promotion-to-reviewed-pr.yml", allowed)
+        self.assertIn(".github/workflows/ops-rc4-reviewed-lock-merge-to-signing.yml", allowed)
+        self.assertIn(".github/workflows/ops-external22-ready-to-fresh-readiness.yml", allowed)
+        self.assertIn(".github/workflows/ops-fresh-readiness-to-external-evidence.yml", allowed)
         self.assertIn("tests/test_windows_authority_rc4_lock_promotion_signing.py", allowed)
         self.assertFalse(any(path.startswith("src/psmatrix/") for path in changed))
 
