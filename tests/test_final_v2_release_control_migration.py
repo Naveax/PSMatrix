@@ -65,7 +65,7 @@ class FinalV2ReleaseControlMigrationTests(unittest.TestCase):
         )
         allowed = sorted(contract["control_source"]["changed_path_allowlist"])
         self.assertEqual(changed, allowed)
-        self.assertEqual(len(changed), 39)
+        self.assertEqual(len(changed), 40)
         self.assertIn(".github/workflows/ga-final-production-bootstrap-source-preflight.yml", allowed)
         self.assertIn(".github/workflows/ga-windows-authority-final-release-source-preflight.yml", allowed)
         self.assertIn("ga-packs/03-authoritative-windows/final-production-bootstrap-contract.json", allowed)
@@ -74,6 +74,7 @@ class FinalV2ReleaseControlMigrationTests(unittest.TestCase):
         self.assertIn("scripts/ga/Invoke-WindowsLabOperationalEnvironmentProvisioning.ps1", allowed)
         self.assertIn("tests/test_windows_lab_operational_provisioning.py", allowed)
         self.assertIn(".github/workflows/ga-windows-authority-rc4-release-lock-promotion.yml", allowed)
+        self.assertIn(".github/workflows/ga-windows-authority-rc4-release-intake-selfhosted.yml", allowed)
         self.assertIn(".github/workflows/ops-rc4-promotion-to-reviewed-pr.yml", allowed)
         self.assertIn(".github/workflows/ops-rc4-reviewed-lock-merge-to-signing.yml", allowed)
         self.assertIn(".github/workflows/ops-rc4-signing-to-intake.yml", allowed)
@@ -81,6 +82,13 @@ class FinalV2ReleaseControlMigrationTests(unittest.TestCase):
         self.assertIn("release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem", allowed)
         self.assertIn("tests/test_windows_authority_rc4_lock_promotion_signing.py", allowed)
         self.assertFalse(any(path.startswith("src/psmatrix/") for path in changed))
+
+    def test_rc4_intake_bundle_inventory_excludes_its_own_manifest(self):
+        text = (ROOT / ".github/workflows/ga-windows-authority-rc4-release-intake-selfhosted.yml").read_text(encoding="utf-8")
+        self.assertIn("path.name != inventory_path.name", text)
+        self.assertIn("path.name == inventory_path.name", text)
+        self.assertIn("if set(expected) != actual_names:", text)
+        self.assertIn("digest, size = expected[path.name]", text)
 
     def test_critical_paginated_gh_api_calls_are_cli_compatible(self):
         paths = (
