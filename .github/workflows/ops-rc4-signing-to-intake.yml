@@ -4,6 +4,12 @@ on:
   workflow_run:
     workflows: [production-ga-windows-authority-rc4-release-sign-from-lock]
     types: [completed]
+  workflow_dispatch:
+    inputs:
+      recover_signing_run_id:
+        description: Canonical bot-dispatched protected RC4 signing run to recover after workflow_run suppression
+        required: false
+        type: string
 
 concurrency:
   group: ops-rc4-signing-to-intake
@@ -16,21 +22,47 @@ permissions:
 jobs:
   dispatch-intake:
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'workflow_dispatch' &&
-      github.event.workflow_run.head_branch == 'release/2.0.0rc4-active-lock' &&
-      github.event.workflow_run.actor.login == 'github-actions[bot]' &&
-      github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'
+      (
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'workflow_dispatch' &&
+        github.event.workflow_run.head_branch == 'release/2.0.0rc4-active-lock' &&
+        github.event.workflow_run.actor.login == 'github-actions[bot]' &&
+        github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'
+      ) || (
+        github.event_name == 'workflow_dispatch' &&
+        github.ref_name == 'main' &&
+        github.actor == 'Naveax' &&
+        github.triggering_actor == 'Naveax' &&
+        inputs.recover_signing_run_id != ''
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
       GH_TOKEN: ${{ github.token }}
-      SIGNING_RUN_ID: ${{ github.event.workflow_run.id }}
+      RECOVERY_MODE: ${{ github.event_name == 'workflow_dispatch' }}
+      SIGNING_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.recover_signing_run_id || github.event.workflow_run.id }}
       SIGNING_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
       SIGNING_CONTROL_HEAD: ${{ github.event.workflow_run.head_sha }}
       RELEASE_COMMIT: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
       FROZEN_CONTROL_BRANCH: release/2.0.0rc4-active-lock
     steps:
+      - name: Resolve explicit protected-signing recovery
+        if: env.RECOVERY_MODE == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTOR" == 'Naveax' && "$GITHUB_TRIGGERING_ACTOR" == 'Naveax' ]] || { echo 'RC4 signing recovery must be explicitly dispatched by Naveax.' >&2; exit 1; }
+          [[ "$GITHUB_REF_NAME" == 'main' ]] || { echo 'RC4 signing recovery must execute from main.' >&2; exit 1; }
+          [[ "$SIGNING_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo 'RC4 signing recovery run ID is invalid.' >&2; exit 1; }
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SIGNING_RUN_ID")
+          attempt=$(jq -r '.run_attempt' <<<"$run")
+          head=$(jq -r '.head_sha' <<<"$run")
+          [[ "$attempt" =~ ^[1-9][0-9]*$ && "$head" =~ ^[0-9a-f]{40}$ ]] || { echo 'Recovered RC4 signing attempt/head is invalid.' >&2; exit 1; }
+          echo "SIGNING_RUN_ATTEMPT=$attempt" >> "$GITHUB_ENV"
+          echo "SIGNING_CONTROL_HEAD=$head" >> "$GITHUB_ENV"
+          echo "rc4_signing_workflow_run_recovery=PASS run_id=$SIGNING_RUN_ID attempt=$attempt head=$head"
+
       - name: Validate automated protected signing artifact and frozen control
         shell: bash
         run: |
