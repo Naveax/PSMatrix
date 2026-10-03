@@ -1,0 +1,113 @@
+{
+  "artifacts": [
+    {
+      "name": "psmatrix-2.0.0rc4-py3-none-any.whl",
+      "sha256": "8b22033d38cff0f95d7c17081fcfea043b646a5d140377c1ea6d43774233d443",
+      "size": 350190
+    },
+    {
+      "name": "psmatrix-2.0.0rc4-source.tar.gz",
+      "sha256": "f972270d448af774664cbaf967af88fee5f2824a493ec2306a7ab2c5022ddba3",
+      "size": 7560106
+    },
+    {
+      "name": "psmatrix-2.0.0rc4-source.zip",
+      "sha256": "072dcd5cd238a22744e664ff7a38a7e721ce96e89b8304f9a22c7d5e056657b1",
+      "size": 7842190
+    },
+    {
+      "name": "psmatrix-2.0.0rc4-windows-certification-kit.zip",
+      "sha256": "f38b3f7ed46cd44fdb25b0c02e9f42bbcf0daca436f9760ce04e40406eced29d",
+      "size": 7436
+    },
+    {
+      "name": "psmatrix-2.0.0rc4-windows-provisioning-kit.zip",
+      "sha256": "7db6864e58bb58e7bc3bafa89a36f6168a1e785f4c9c6ceb5ccb5d766e6d7604",
+      "size": 13622
+    },
+    {
+      "name": "psmatrix-2.0.0rc4-windows-workers.zip",
+      "sha256": "2b0129e0132ebf41543a2c530d5daf495604e97ef473fe960c109379077b99fb",
+      "size": 357869
+    }
+  ],
+  "authoritative": false,
+  "authority_rotation": {
+    "existing_candidate_mutated": false,
+    "new_candidate": true,
+    "previous_key_id": "sha256:d908350cbb62dbeaf0155bc72e2928a27d710887762a5f73667adca2f978e2aa",
+    "previous_public_key_sha256": "ebe3041f5e24b3d9fc21d50a3a33585e399ae505271fdf8900a0b49750188b83",
+    "proposed_key_id": "sha256:1cbc9ea0cb81d118c13f33c99e11c7de69da4ab9fdafcd29d0f43b638983d55d",
+    "proposed_public_key_sha256": "ece4d7087449cb42cde9183b0b1e2b82db610d4ffffd726e6737d2ba09578a08",
+    "reason": "lost_previous_private_authority",
+    "review_required": true
+  },
+  "ga_eligible": false,
+  "kind": "psmatrix.windows-authority-release-staging-lock",
+  "pack": "03-authoritative-windows",
+  "promotion_evidence": {
+    "human_review": {
+      "actor": "Naveax",
+      "approval_body_sha256": "2bcf279865a80cefb9f01e9fd2e70fa23d31a9ca475279c939be43d90cd44553",
+      "approval_not_before_review_run_update": true,
+      "author_association": "OWNER",
+      "comment_id": 5951919294,
+      "created_at": "2026-10-02T12:03:44Z",
+      "issue_number": 260,
+      "review_run_updated_at": "2026-10-01T10:46:55Z"
+    },
+    "human_review_bound": true,
+    "promotion_artifact": "psmatrix-2.0.0rc4-release-lock-promotion-candidate",
+    "promotion_candidate_only": true,
+    "promotion_control_head": "cd14b561d35b9b4c602b9696700275500242d53a",
+    "promotion_run_id": "37028177102",
+    "promotion_workflow": "production-ga-windows-authority-rc4-release-lock-promotion",
+    "repository_commit_required": true,
+    "review_artifact": "psmatrix-2.0.0rc4-release-lock-review",
+    "review_run_id": "36851144641",
+    "review_workflow": "production-ga-windows-authority-rc4-release-lock-review",
+    "reviewed_draft_sha256": "f609e5ab5968fd6f1d569a78921ede0fd61bfa991c50bcb831bf15e3a450e2da",
+    "reviewed_public_key_sha256": "ece4d7087449cb42cde9183b0b1e2b82db610d4ffffd726e6737d2ba09578a08"
+  },
+  "promotion_state": "READY_FOR_EXACT_REPOSITORY_COMMIT",
+  "release_artifacts_signed": false,
+  "release_commit": "0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63",
+  "release_public_key": {
+    "path": "release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem",
+    "sha256": "ece4d7087449cb42cde9183b0b1e2b82db610d4ffffd726e6737d2ba09578a08"
+  },
+  "review_evidence": {
+    "all_reproducible": true,
+    "artifact_count": 6,
+    "authoritative": false,
+    "builder_status": "READY_FOR_PROTECTED_SIGNING",
+    "downloads_files": false,
+    "extracts_existing_operation_package": false,
+    "ga_eligible": false,
+    "package_verification": true,
+    "private_key_read": false,
+    "signed_release_manifest_written": false
+  },
+  "safety": {
+    "private_key_in_repository_allowed": false,
+    "release_authority_rotation_allowed": false,
+    "sign_without_exact_hash_match_allowed": false,
+    "stale_rc2_operation_package_allowed": false
+  },
+  "schema": 1,
+  "source_date_epoch": 0,
+  "source_runs": {
+    "authority_enrollment": {
+      "artifact": "psmatrix-2.0.0rc4-release-authority-enrollment",
+      "run_id": "36850062892",
+      "workflow": "production-ga-windows-authority-rc4-release-authority-enrollment"
+    },
+    "control_head": "0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63",
+    "unsigned_staging": {
+      "artifact": "windows-authority-rc4-unlocked-staging-candidate",
+      "run_id": "36850839481",
+      "workflow": "production-ga-windows-authority-rc4-staging-candidate-selfhosted"
+    }
+  },
+  "version": "2.0.0rc4"
+}
