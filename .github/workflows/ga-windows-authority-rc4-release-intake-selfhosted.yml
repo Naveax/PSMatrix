@@ -185,11 +185,11 @@ jobs:
           if inventory.get('authoritative') is not False or inventory.get('ga_eligible') is not False:
               raise SystemExit('protected RC4 bundle improperly claims Windows GA authority')
           expected = {item['name']: (item['sha256'], item['size']) for item in inventory.get('files', [])}
-          actual_names = {path.name for path in root.iterdir() if path.is_file()}
+          actual_names = {path.name for path in root.iterdir() if path.is_file() and path.name != inventory_path.name}
           if set(expected) != actual_names:
               raise SystemExit('protected RC4 bundle inventory file coverage mismatch')
           for path in root.iterdir():
-              if not path.is_file():
+              if not path.is_file() or path.name == inventory_path.name:
                   continue
               digest, size = expected[path.name]
               data = path.read_bytes()

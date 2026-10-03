@@ -41,6 +41,7 @@
       "tests/test_windows_lab_operational_provisioning.py",
       "tests/test_windows_lab_prereq_workflow.py",
       ".github/workflows/ga-windows-authority-rc4-release-lock-promotion.yml",
+      ".github/workflows/ga-windows-authority-rc4-release-intake-selfhosted.yml",
       ".github/workflows/ops-rc4-promotion-to-reviewed-pr.yml",
       ".github/workflows/ops-rc4-reviewed-lock-merge-to-signing.yml",
       "tests/test_windows_authority_rc4_lock_promotion_signing.py",
