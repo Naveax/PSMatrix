@@ -41,9 +41,33 @@ def _head() -> str:
 
 
 class WindowsAuthorityRC4LockPromotionSigningTests(unittest.TestCase):
-    def test_preparation_branch_does_not_smuggle_an_active_lock_or_public_key(self) -> None:
-        self.assertFalse(ACTIVE_LOCK.exists())
-        self.assertFalse(ACTIVE_PUBLIC.exists())
+    def test_promoted_active_lock_and_public_key_remain_review_bound_and_non_ga(self) -> None:
+        self.assertTrue(ACTIVE_LOCK.is_file())
+        self.assertTrue(ACTIVE_PUBLIC.is_file())
+
+        lock = json.loads(ACTIVE_LOCK.read_text(encoding="utf-8"))
+        self.assertEqual(lock["kind"], "psmatrix.windows-authority-release-staging-lock")
+        self.assertEqual(lock["version"], VERSION)
+        self.assertEqual(lock["pack"], PACK)
+        self.assertEqual(lock["release_commit"], "0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63")
+        self.assertFalse(lock["authoritative"])
+        self.assertFalse(lock["ga_eligible"])
+        self.assertFalse(lock["release_artifacts_signed"])
+
+        promotion = lock["promotion_evidence"]
+        self.assertTrue(promotion["human_review_bound"])
+        self.assertTrue(promotion["repository_commit_required"])
+        self.assertEqual(promotion["promotion_run_id"], "37028177102")
+        self.assertEqual(promotion["human_review"]["author_association"], "OWNER")
+        self.assertEqual(promotion["human_review"]["issue_number"], 260)
+
+        public_sha256 = _sha256(ACTIVE_PUBLIC)
+        self.assertEqual(lock["release_public_key"]["path"], ACTIVE_PUBLIC.relative_to(ROOT).as_posix())
+        self.assertEqual(public_sha256, lock["release_public_key"]["sha256"])
+        self.assertEqual(public_sha256, promotion["reviewed_public_key_sha256"])
+        self.assertEqual(public_sha256, lock["authority_rotation"]["proposed_public_key_sha256"])
+        self.assertNotIn("PRIVATE KEY", ACTIVE_PUBLIC.read_text(encoding="utf-8"))
+        self.assertFalse(lock["safety"]["private_key_in_repository_allowed"])
 
     def test_promotion_workflow_is_read_only_review_bound_and_private_key_free(self) -> None:
         text = PROMOTION_WORKFLOW.read_text(encoding="utf-8")
