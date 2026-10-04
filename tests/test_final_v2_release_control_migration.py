@@ -65,7 +65,7 @@ class FinalV2ReleaseControlMigrationTests(unittest.TestCase):
         )
         allowed = sorted(contract["control_source"]["changed_path_allowlist"])
         self.assertEqual(changed, allowed)
-        self.assertEqual(len(changed), 45)
+        self.assertEqual(len(changed), 47)
         self.assertIn(".github/workflows/ga-final-production-bootstrap-source-preflight.yml", allowed)
         self.assertIn(".github/workflows/ga-windows-authority-final-release-source-preflight.yml", allowed)
         self.assertIn("ga-packs/03-authoritative-windows/final-production-bootstrap-contract.json", allowed)
@@ -77,6 +77,8 @@ class FinalV2ReleaseControlMigrationTests(unittest.TestCase):
         self.assertIn(".github/workflows/ga-windows-authority-rc4-release-intake-selfhosted.yml", allowed)
         self.assertIn(".github/workflows/ops-rc4-promotion-to-reviewed-pr.yml", allowed)
         self.assertIn(".github/workflows/ops-rc4-reviewed-lock-merge-to-signing.yml", allowed)
+        self.assertIn(".github/workflows/ops-external22-ready-to-fresh-readiness.yml", allowed)
+        self.assertIn(".github/workflows/ops-fresh-readiness-to-external-evidence.yml", allowed)
         self.assertIn(".github/workflows/ops-rc4-signing-to-intake.yml", allowed)
         self.assertIn(".github/workflows/ops-rc4-intake-to-media-readiness.yml", allowed)
         self.assertIn(".github/workflows/ops-rc4-post-intake-canonical-chain.yml", allowed)
@@ -177,6 +179,8 @@ class FinalV2ReleaseControlMigrationTests(unittest.TestCase):
             ".github/workflows/ops-rc4-reviewed-lock-merge-to-signing.yml",
             ".github/workflows/ops-final-promotion-to-reviewed-pr.yml",
             ".github/workflows/ops-final-reviewed-lock-merge-to-signing.yml",
+            ".github/workflows/ops-external22-ready-to-fresh-readiness.yml",
+            ".github/workflows/ops-fresh-readiness-to-external-evidence.yml",
         )
         for relative in paths:
             text = (ROOT / relative).read_text(encoding="utf-8")
