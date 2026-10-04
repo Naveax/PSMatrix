@@ -10,6 +10,10 @@ on:
         description: Canonical repaired RC4 protected-intake run to recover after workflow_run suppression
         required: false
         type: string
+      recover_media_control_head:
+        description: Frozen RC4 control head to bind a repaired current-main media-readiness run
+        required: false
+        type: string
 
 concurrency:
   group: ops-rc4-intake-to-media-readiness
@@ -154,3 +158,77 @@ jobs:
           echo 'rc4_media_readiness_dispatched=true'
           echo 'operator_selection_may_still_be_required=true'
           echo 'ga_eligible=false'
+
+  dispatch-repaired-media:
+    if: >-
+      (
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'workflow_dispatch' &&
+        github.event.workflow_run.actor.login == 'github-actions[bot]' &&
+        github.event.workflow_run.triggering_actor.login == 'github-actions[bot]' &&
+        inputs.recover_media_control_head != ''
+      ) || (
+        github.event_name == 'workflow_dispatch' &&
+        github.ref_name == 'main' &&
+        github.actor == 'Naveax' &&
+        github.triggering_actor == 'Naveax' &&
+        inputs.recover_media_control_head != ''
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: \${{ github.token }}
+      CONTROL_HEAD: \${{ inputs.recover_media_control_head }}
+      RELEASE_COMMIT: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
+      FROZEN_CONTROL_BRANCH: release/2.0.0rc4-active-lock
+    steps:
+      - name: Validate explicit repaired-media dispatch
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]] || { echo 'Repaired media control head is invalid.' >&2; exit 1; }
+          frozen=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$FROZEN_CONTROL_BRANCH" --jq '.object.sha')
+          [[ "$frozen" == "$CONTROL_HEAD" ]] || { echo 'Frozen RC4 active-lock moved before repaired-media dispatch.' >&2; exit 1; }
+          workflow_text=$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/workflows/ga-windows-authority-rc4-media-readiness-selfhosted.yml?ref=$GITHUB_SHA" --jq '.content' | tr -d '\n' | base64 -d)
+          inventory_text=$(gh api "repos/$GITHUB_REPOSITORY/contents/scripts/ga/Get-PSMatrixWindowsAuthorityMediaInventory.ps1?ref=$GITHUB_SHA" --jq '.content' | tr -d '\n' | base64 -d)
+          grep -Fq 'repair_from_main:' <<<"$workflow_text" || { echo 'Current media workflow lacks repaired-main mode.' >&2; exit 1; }
+          grep -Fq 'repaired_rc4_media_control_binding=PASS' <<<"$workflow_text" || { echo 'Current media workflow lacks frozen-control binding.' >&2; exit 1; }
+          grep -Fq 'function Get-DismWimField' <<<"$inventory_text" || { echo 'Current media inventory lacks DISM metadata repair.' >&2; exit 1; }
+          grep -Fq 'Out-Null' <<<"$inventory_text" || { echo 'Current media inventory lacks dismount output suppression.' >&2; exit 1; }
+          echo "repaired_media_dispatch_guard=PASS workflow_code_head=$GITHUB_SHA control_head=$CONTROL_HEAD"
+
+      - name: Check repaired-media dispatch budget
+        id: dedup_repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          existing=$(gh api --method GET \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ga-windows-authority-rc4-media-readiness-selfhosted.yml/runs" \
+            -f branch='main' \
+            -f event='workflow_dispatch' \
+            -f per_page=100 \
+            --jq ".workflow_runs[] | select(.head_sha == \"$GITHUB_SHA\" and (.status == \"queued\" or .status == \"in_progress\" or .status == \"waiting\" or .conclusion == \"success\")) | .id" \
+            | head -n 1)
+          if [[ -n "$existing" ]]; then
+            echo 'already_dispatched=true' >> "$GITHUB_OUTPUT"
+            echo "duplicate_repaired_media_suppressed=true existing_run_id=$existing"
+          else
+            echo 'already_dispatched=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Dispatch repaired RC4 media readiness from current main
+        if: steps.dedup_repair.outputs.already_dispatched != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run ga-windows-authority-rc4-media-readiness-selfhosted.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f release_commit="$RELEASE_COMMIT" \
+            -f control_head="$CONTROL_HEAD" \
+            -f inspect_iso_images=true \
+            -f repair_from_main=true
+          echo "repaired_rc4_media_dispatched=true control_head=$CONTROL_HEAD"
+          echo 'ga_eligible=false'
+

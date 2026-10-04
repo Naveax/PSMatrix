@@ -51,6 +51,7 @@ jobs:
       COMPLETED_WORKFLOW: ${{ github.event.workflow_run.name }}
       COMPLETED_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.recover_completed_run_id || github.event.workflow_run.id }}
       COMPLETED_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+      COMPLETED_RUN_HEAD: ${{ github.event.workflow_run.head_sha }}
       CONTROL_HEAD: ${{ github.event.workflow_run.head_sha }}
       RELEASE_COMMIT: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
       CONTROL_BRANCH: release/2.0.0rc4-active-lock
@@ -71,17 +72,49 @@ jobs:
             *) echo "Recovered workflow is not a canonical RC4 post-intake stage: $name" >&2; exit 1 ;;
           esac
           [[ "$(jq -r '.event' <<<"$run")" == 'workflow_dispatch' && "$(jq -r '.status' <<<"$run")" == 'completed' && "$(jq -r '.conclusion' <<<"$run")" == 'success' ]] || { echo 'Recovered RC4 stage run is not completed/success.' >&2; exit 1; }
-          [[ "$(jq -r '.head_branch' <<<"$run")" == "$CONTROL_BRANCH" ]] || { echo 'Recovered RC4 stage branch mismatch.' >&2; exit 1; }
           [[ "$(jq -r '.actor.login' <<<"$run")" == 'github-actions[bot]' && "$(jq -r '.triggering_actor.login' <<<"$run")" == 'github-actions[bot]' ]] || { echo 'Recovered RC4 stage is not canonical bot/bot provenance.' >&2; exit 1; }
           attempt=$(jq -r '.run_attempt' <<<"$run")
           head=$(jq -r '.head_sha' <<<"$run")
+          run_branch=$(jq -r '.head_branch' <<<"$run")
           [[ "$attempt" =~ ^[1-9][0-9]*$ && "$head" =~ ^[0-9a-f]{40}$ ]] || { echo 'Recovered RC4 stage attempt/head is invalid.' >&2; exit 1; }
+
+          repaired_media=false
+          control="$head"
+          if [[ "$name" == 'production-ga-windows-authority-rc4-media-readiness-selfhosted' && "$run_branch" == 'main' ]]; then
+            workflow_text=$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/workflows/ga-windows-authority-rc4-media-readiness-selfhosted.yml?ref=$head" --jq '.content' | tr -d '\n' | base64 -d)
+            inventory_text=$(gh api "repos/$GITHUB_REPOSITORY/contents/scripts/ga/Get-PSMatrixWindowsAuthorityMediaInventory.ps1?ref=$head" --jq '.content' | tr -d '\n' | base64 -d)
+            grep -Fq 'repair_from_main:' <<<"$workflow_text" || { echo 'Recovered media workflow lacks repaired-main mode.' >&2; exit 1; }
+            grep -Fq 'function Get-DismWimField' <<<"$inventory_text" || { echo 'Recovered media inventory lacks DISM metadata repair.' >&2; exit 1; }
+
+            evidence="$RUNNER_TEMP/rc4-repaired-media-$COMPLETED_RUN_ID-$attempt"
+            rm -rf "$evidence"
+            mkdir -p "$evidence"
+            gh run download "$COMPLETED_RUN_ID" --repo "$GITHUB_REPOSITORY" --name windows-authority-rc4-media-readiness --dir "$evidence"
+            status_file=$(find "$evidence" -type f -name 'media-readiness-status.json' -print -quit)
+            [[ -n "$status_file" && -f "$status_file" ]] || { echo 'Repaired media-readiness status artifact is missing.' >&2; exit 1; }
+            [[ "$(jq -r '.kind' "$status_file")" == 'psmatrix.windows-authority-rc4-media-readiness-workflow-status' ]] || { echo 'Repaired media-readiness status kind mismatch.' >&2; exit 1; }
+            [[ "$(jq -r '.release_commit' "$status_file")" == "$RELEASE_COMMIT" ]] || { echo 'Repaired media-readiness release commit mismatch.' >&2; exit 1; }
+            [[ "$(jq -r '.workflow_code_recovery' "$status_file")" == 'true' && "$(jq -r '.workflow_code_head' "$status_file")" == "$head" ]] || { echo 'Repaired media workflow-code provenance mismatch.' >&2; exit 1; }
+            [[ "$(jq -r '.authoritative' "$status_file")" == 'false' && "$(jq -r '.ga_eligible' "$status_file")" == 'false' ]] || { echo 'Repaired media artifact crossed forbidden authority/GA boundary.' >&2; exit 1; }
+            control=$(jq -r '.control_head' "$status_file")
+            [[ "$control" =~ ^[0-9a-f]{40}$ ]] || { echo 'Repaired media control head is invalid.' >&2; exit 1; }
+            repaired_media=true
+          else
+            [[ "$run_branch" == "$CONTROL_BRANCH" ]] || { echo 'Recovered RC4 stage branch mismatch.' >&2; exit 1; }
+          fi
+
           branch_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$CONTROL_BRANCH" --jq '.object.sha')
-          [[ "$branch_sha" == "$head" ]] || { echo 'Frozen RC4 control moved before stage recovery.' >&2; exit 1; }
+          [[ "$branch_sha" == "$control" ]] || { echo 'Frozen RC4 control moved before stage recovery.' >&2; exit 1; }
           echo "COMPLETED_WORKFLOW=$name" >> "$GITHUB_ENV"
           echo "COMPLETED_RUN_ATTEMPT=$attempt" >> "$GITHUB_ENV"
-          echo "CONTROL_HEAD=$head" >> "$GITHUB_ENV"
-          echo "rc4_stage_workflow_run_recovery=PASS workflow=$name run_id=$COMPLETED_RUN_ID attempt=$attempt head=$head"
+          echo "COMPLETED_RUN_HEAD=$head" >> "$GITHUB_ENV"
+          echo "CONTROL_HEAD=$control" >> "$GITHUB_ENV"
+          echo "REPAIRED_MEDIA_MODE=$repaired_media" >> "$GITHUB_ENV"
+          if [[ "$repaired_media" == 'true' ]]; then
+            echo "repaired_rc4_media_stage_recovery=PASS run_id=$COMPLETED_RUN_ID attempt=$attempt workflow_code_head=$head control_head=$control"
+          else
+            echo "rc4_stage_workflow_run_recovery=PASS workflow=$name run_id=$COMPLETED_RUN_ID attempt=$attempt head=$head"
+          fi
 
       - name: Validate automated canonical chain event identity
         shell: bash
@@ -89,6 +122,7 @@ jobs:
           set -euo pipefail
           [[ "$COMPLETED_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$COMPLETED_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          [[ "$COMPLETED_RUN_HEAD" =~ ^[0-9a-f]{40}$ ]]
           [[ "$CONTROL_HEAD" =~ ^[0-9a-f]{40}$ ]]
           branch_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$CONTROL_BRANCH" --jq '.object.sha')
           [[ "$branch_sha" == "$CONTROL_HEAD" ]] || { echo "Frozen RC4 control branch moved: $branch_sha != $CONTROL_HEAD" >&2; exit 1; }
@@ -107,7 +141,12 @@ jobs:
           [[ "$(jq -r '.event' <<<"$run")" == 'workflow_dispatch' ]] || { echo 'RC4 canonical stage event mismatch.' >&2; exit 1; }
           [[ "$(jq -r '.status' <<<"$run")" == 'completed' && "$(jq -r '.conclusion' <<<"$run")" == 'success' ]] || { echo 'RC4 canonical stage is not completed/success.' >&2; exit 1; }
           [[ "$(jq -r '.run_attempt' <<<"$run")" == "$COMPLETED_RUN_ATTEMPT" ]] || { echo 'RC4 canonical stage attempt mismatch.' >&2; exit 1; }
-          [[ "$(jq -r '.head_branch' <<<"$run")" == "$CONTROL_BRANCH" && "$(jq -r '.head_sha' <<<"$run")" == "$CONTROL_HEAD" ]] || { echo 'RC4 canonical stage control provenance mismatch.' >&2; exit 1; }
+          if [[ "${REPAIRED_MEDIA_MODE:-false}" == 'true' ]]; then
+            [[ "$COMPLETED_WORKFLOW" == 'production-ga-windows-authority-rc4-media-readiness-selfhosted' ]] || { echo 'Repaired-media mode is only valid for media readiness.' >&2; exit 1; }
+            [[ "$(jq -r '.head_branch' <<<"$run")" == 'main' && "$(jq -r '.head_sha' <<<"$run")" == "$COMPLETED_RUN_HEAD" ]] || { echo 'Repaired RC4 media workflow-code provenance mismatch.' >&2; exit 1; }
+          else
+            [[ "$(jq -r '.head_branch' <<<"$run")" == "$CONTROL_BRANCH" && "$(jq -r '.head_sha' <<<"$run")" == "$CONTROL_HEAD" ]] || { echo 'RC4 canonical stage control provenance mismatch.' >&2; exit 1; }
+          fi
           [[ "$(jq -r '.actor.login' <<<"$run")" == 'github-actions[bot]' && "$(jq -r '.triggering_actor.login' <<<"$run")" == 'github-actions[bot]' ]] || { echo 'RC4 canonical stage was not dispatched by the canonical automation chain.' >&2; exit 1; }
           echo "rc4_chain_event=PASS workflow=$COMPLETED_WORKFLOW run=$COMPLETED_RUN_ID attempt=$COMPLETED_RUN_ATTEMPT automated_dispatch=true path=$expected_path"
 

@@ -126,6 +126,31 @@ function Get-CandidateRoles {
     return @($roles | Select-Object -Unique)
 }
 
+function Get-DismWimField {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string[]]$Lines,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Field
+    )
+
+    $pattern = '^\s*{0}\s*:\s*(.+?)\s*$' -f [regex]::Escape($Field)
+
+    $value = ''
+
+    foreach ($line in $Lines) {
+        $text = [string]$line
+
+        if ($text -match $pattern) {
+            $value = ([string]$Matches[1]).Trim()
+        }
+    }
+
+    return $value
+}
+
 function Get-IsoImageInventory {
     param(
         [Parameter(Mandatory = $true)]
@@ -135,12 +160,7 @@ function Get-IsoImageInventory {
     $mounted = $null
 
     try {
-        $mounted = Mount-DiskImage `
-            -ImagePath $IsoPath `
-            -PassThru `
-            -Access ReadOnly `
-            -ErrorAction Stop
-
+        $mounted = Mount-DiskImage -ImagePath $IsoPath -PassThru -Access ReadOnly -ErrorAction Stop
         $volumes = @($mounted | Get-Volume -ErrorAction Stop)
         $volume = @($volumes | Where-Object { $_.DriveLetter }) | Select-Object -First 1
 
@@ -159,48 +179,63 @@ function Get-IsoImageInventory {
             throw 'ISO does not contain sources\install.wim or sources\install.esd.'
         }
 
-        $images = @()
+        $listOutput = @(& dism.exe /English /Get-WimInfo ('/WimFile:{0}' -f $imagePath) 2>&1)
 
-        if (Get-Command -Name Get-WindowsImage -ErrorAction SilentlyContinue) {
-            $images = @(
-                Get-WindowsImage -ImagePath $imagePath -ErrorAction Stop |
-                    ForEach-Object {
-                        [ordered]@{
-                            image_index = [int]$_.ImageIndex
-                            image_name = [string]$_.ImageName
-                            image_description = [string]$_.ImageDescription
-                            version = [string]$_.Version
-                            architecture = [string]$_.Architecture
-                            installation_type = [string]$_.InstallationType
-                        }
+        if ($LASTEXITCODE -ne 0) {
+            throw ('DISM /Get-WimInfo failed: {0}' -f ($listOutput -join ' '))
+        }
+
+        $indexes = @(
+            $listOutput |
+                ForEach-Object {
+                    $text = [string]$_
+
+                    if ($text -match '^\s*Index\s*:\s*([0-9]+)\s*$') {
+                        [int]$Matches[1]
                     }
-            )
+                } |
+                Sort-Object -Unique
+        )
+
+        if ($indexes.Count -eq 0) {
+            throw 'DISM did not report any install image indexes.'
         }
-        else {
-            $dismOutput = & dism.exe `
-                /English `
-                /Get-WimInfo `
-                ('/WimFile:{0}' -f $imagePath) 2>&1
 
-            if ($LASTEXITCODE -ne 0) {
-                throw ('DISM /Get-WimInfo failed: {0}' -f ($dismOutput -join ' '))
-            }
+        $images = @(
+            foreach ($index in $indexes) {
+                $detailOutput = @(& dism.exe /English /Get-WimInfo ('/WimFile:{0}' -f $imagePath) ('/Index:{0}' -f $index) 2>&1)
 
-            $rawDismOutput = $dismOutput -join [Environment]::NewLine
-
-            if ($rawDismOutput.Length -gt 4096) {
-                $rawDismOutput = $rawDismOutput.Substring(
-                    $rawDismOutput.Length - 4096
-                )
-            }
-
-            $images = @(
-                [ordered]@{
-                    parser = 'dism-text-fallback'
-                    raw_output = $rawDismOutput
+                if ($LASTEXITCODE -ne 0) {
+                    throw ('DISM /Get-WimInfo /Index:{0} failed: {1}' -f $index, ($detailOutput -join ' '))
                 }
-            )
-        }
+
+                $imageName = Get-DismWimField -Lines $detailOutput -Field 'Name'
+                $imageDescription = Get-DismWimField -Lines $detailOutput -Field 'Description'
+                $version = Get-DismWimField -Lines $detailOutput -Field 'Version'
+                $architecture = Get-DismWimField -Lines $detailOutput -Field 'Architecture'
+                $installationType = Get-DismWimField -Lines $detailOutput -Field 'Installation'
+
+                foreach ($required in @(
+                    @{Name='Name';Value=$imageName},
+                    @{Name='Version';Value=$version},
+                    @{Name='Architecture';Value=$architecture},
+                    @{Name='Installation';Value=$installationType}
+                )) {
+                    if ([string]::IsNullOrWhiteSpace([string]$required.Value)) {
+                        throw ('DISM image {0} did not report required field {1}.' -f $index, $required.Name)
+                    }
+                }
+
+                [ordered]@{
+                    image_index = [int]$index
+                    image_name = $imageName
+                    image_description = $imageDescription
+                    version = $version
+                    architecture = $architecture
+                    installation_type = $installationType
+                }
+            }
+        )
 
         return [ordered]@{
             inspected = $true
@@ -219,9 +254,7 @@ function Get-IsoImageInventory {
     }
     finally {
         if ($null -ne $mounted) {
-            Dismount-DiskImage `
-                -ImagePath $IsoPath `
-                -ErrorAction SilentlyContinue
+            Dismount-DiskImage -ImagePath $IsoPath -ErrorAction SilentlyContinue | Out-Null
         }
     }
 }

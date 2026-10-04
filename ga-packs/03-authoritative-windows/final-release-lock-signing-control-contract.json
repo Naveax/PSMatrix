@@ -49,7 +49,10 @@
       ".github/workflows/ops-rc4-intake-to-media-readiness.yml",
       ".github/workflows/ops-rc4-post-intake-canonical-chain.yml",
       "ga-packs/03-authoritative-windows/rc4-release-lock.json",
-      "release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem"
+      "release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem",
+      "scripts/ga/Get-PSMatrixWindowsAuthorityMediaInventory.ps1",
+      ".github/workflows/ga-windows-authority-rc4-media-readiness-selfhosted.yml",
+      "tests/test_windows_authority_media_inventory.py"
     ]
   },
   "rc4_authority_continuity": {
