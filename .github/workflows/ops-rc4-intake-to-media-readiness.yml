@@ -161,11 +161,20 @@ jobs:
 
   dispatch-repaired-media:
     if: >-
-      github.event_name == 'workflow_dispatch' &&
-      github.ref_name == 'main' &&
-      github.actor == 'Naveax' &&
-      github.triggering_actor == 'Naveax' &&
-      inputs.recover_media_control_head != ''
+      (
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'workflow_dispatch' &&
+        github.event.workflow_run.actor.login == 'github-actions[bot]' &&
+        github.event.workflow_run.triggering_actor.login == 'github-actions[bot]' &&
+        inputs.recover_media_control_head != ''
+      ) || (
+        github.event_name == 'workflow_dispatch' &&
+        github.ref_name == 'main' &&
+        github.actor == 'Naveax' &&
+        github.triggering_actor == 'Naveax' &&
+        inputs.recover_media_control_head != ''
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
