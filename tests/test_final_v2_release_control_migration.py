@@ -122,6 +122,14 @@ class FinalV2ReleaseControlMigrationTests(unittest.TestCase):
         self.assertNotIn(".authoritative // true", post_intake)
         self.assertNotIn(".ga_eligible // true", post_intake)
 
+    def test_rc4_media_blocked_state_can_be_superseded_by_a_new_successful_run(self):
+        text = (ROOT / ".github/workflows/ops-rc4-post-intake-canonical-chain.yml").read_text(encoding="utf-8")
+        self.assertIn("if stage_exists media_readiness; then", text)
+        self.assertIn("rc4_chain_previous_blocked_state_supersedable=true", text)
+        self.assertNotIn("stage_exists media_readiness || stage_exists media_readiness_blocked", text)
+        self.assertIn("record_state_once media_readiness_blocked", text)
+        self.assertIn("record_state_once media_readiness", text)
+
     def test_critical_paginated_gh_api_calls_are_cli_compatible(self):
         paths = (
             ".github/workflows/ops-rc4-promotion-to-reviewed-pr.yml",
