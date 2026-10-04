@@ -105,7 +105,7 @@ jobs:
                   'release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem'
               )) {
                   $currentBlob = (git hash-object -- $relative).Trim()
-                  $frozenBlob = (& gh api "repos/$env:GITHUB_REPOSITORY/contents/$relative?ref=$env:CONTROL_HEAD" --jq '.sha').Trim()
+                  $frozenBlob = (& gh api "repos/$env:GITHUB_REPOSITORY/contents/${relative}?ref=$env:CONTROL_HEAD" --jq '.sha').Trim()
                   if ($currentBlob -ne $frozenBlob) { throw "Repaired media workflow changed frozen RC4 authority material: $relative" }
               }
               $inventoryScript = Get-Content -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'scripts\ga\Get-PSMatrixWindowsAuthorityMediaInventory.ps1') -Raw
