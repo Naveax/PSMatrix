@@ -178,8 +178,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      GH_TOKEN: \${{ github.token }}
-      CONTROL_HEAD: \${{ inputs.recover_media_control_head }}
+      GH_TOKEN: ${{ github.token }}
+      CONTROL_HEAD: ${{ inputs.recover_media_control_head }}
       RELEASE_COMMIT: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
       FROZEN_CONTROL_BRANCH: release/2.0.0rc4-active-lock
     steps:
