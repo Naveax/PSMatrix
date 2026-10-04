@@ -8,6 +8,7 @@
   "control_source": {
     "runtime_source_changes_allowed": false,
     "changed_path_allowlist": [
+      ".github/workflows/ci.yml",
       "ga-packs/03-authoritative-windows/final-production-bootstrap-contract.json",
       ".github/workflows/ga-final-production-bootstrap-source-preflight.yml",
       ".github/workflows/ga-windows-authority-final-release-source-preflight.yml",
@@ -26,6 +27,7 @@
       "scripts/ga/build_windows_authority_final_release_lock_draft.py",
       "scripts/ga/promote_windows_authority_final_release_lock.py",
       "scripts/ga/sign_windows_authority_final_release.py",
+      "tests/test_ci_exact_event_sha_checkout.py",
       "tests/test_final_v2_release_control_migration.py",
       "tests/test_windows_authority_final_release_lock_signing.py",
       "tests/test_windows_authority_final_release_promotion.py",
