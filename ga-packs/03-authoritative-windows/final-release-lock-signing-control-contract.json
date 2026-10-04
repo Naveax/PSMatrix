@@ -18,6 +18,8 @@
       ".github/workflows/ops-final-lock-review-human-gate.yml",
       ".github/workflows/ops-final-promotion-to-reviewed-pr.yml",
       ".github/workflows/ops-final-reviewed-lock-merge-to-signing.yml",
+      ".github/workflows/ops-external22-ready-to-fresh-readiness.yml",
+      ".github/workflows/ops-fresh-readiness-to-external-evidence.yml",
       ".github/workflows/ops-final-signing-to-rebind-and-security-review.yml",
       ".github/workflows/ops-rc4-closure-to-final-lock-review.yml",
       "ga-packs/03-authoritative-windows/final-release-lock-signing-control-contract.json",
