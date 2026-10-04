@@ -97,22 +97,50 @@ jobs:
               $env:GIT_CONFIG_COUNT = '1'
               $env:GIT_CONFIG_KEY_0 = 'http.https://github.com/.extraheader'
               $env:GIT_CONFIG_VALUE_0 = "AUTHORIZATION: basic $basic"
+              $env:GIT_HTTP_LOW_SPEED_LIMIT = '1024'
+              $env:GIT_HTTP_LOW_SPEED_TIME = '30'
               try {
-                  & git fetch --no-tags --prune origin '+refs/heads/*:refs/remotes/origin/*'
-                  if ($LASTEXITCODE -ne 0) {
-                      throw "Frozen branch-object fetch failed: $LASTEXITCODE"
+                  $branchFetchSucceeded = $false
+                  for ($attempt = 1; $attempt -le 3; $attempt++) {
+                      & git fetch --no-tags --prune origin '+refs/heads/*:refs/remotes/origin/*'
+                      if ($LASTEXITCODE -eq 0) {
+                          $branchFetchSucceeded = $true
+                          break
+                      }
+                      $branchFetchExit = $LASTEXITCODE
+                      if ($attempt -lt 3) {
+                          Write-Warning "Frozen branch-object fetch attempt $attempt failed with exit $branchFetchExit; retrying."
+                          Start-Sleep -Seconds (2 * $attempt)
+                      }
+                  }
+                  if (-not $branchFetchSucceeded) {
+                      throw "Frozen branch-object fetch failed: after 3 attempts, exit $branchFetchExit"
                   }
                   # PR merge refs are mutable and may advance while a queued run waits.
                   # Fetch the immutable event snapshot commit recorded in GITHUB_SHA instead.
-                  & git fetch --no-tags origin $expected
-                  if ($LASTEXITCODE -ne 0) {
-                      throw "Exact event SHA fetch failed: $LASTEXITCODE"
+                  $eventFetchSucceeded = $false
+                  for ($attempt = 1; $attempt -le 3; $attempt++) {
+                      & git fetch --no-tags origin $expected
+                      if ($LASTEXITCODE -eq 0) {
+                          $eventFetchSucceeded = $true
+                          break
+                      }
+                      $eventFetchExit = $LASTEXITCODE
+                      if ($attempt -lt 3) {
+                          Write-Warning "Exact event SHA fetch attempt $attempt failed with exit $eventFetchExit; retrying."
+                          Start-Sleep -Seconds (2 * $attempt)
+                      }
+                  }
+                  if (-not $eventFetchSucceeded) {
+                      throw "Exact event SHA fetch failed: after 3 attempts, exit $eventFetchExit"
                   }
               }
               finally {
                   Remove-Item Env:GIT_CONFIG_COUNT -ErrorAction SilentlyContinue
                   Remove-Item Env:GIT_CONFIG_KEY_0 -ErrorAction SilentlyContinue
                   Remove-Item Env:GIT_CONFIG_VALUE_0 -ErrorAction SilentlyContinue
+                  Remove-Item Env:GIT_HTTP_LOW_SPEED_LIMIT -ErrorAction SilentlyContinue
+                  Remove-Item Env:GIT_HTTP_LOW_SPEED_TIME -ErrorAction SilentlyContinue
                   $basic = $null
               }
               $fetched = (git rev-parse FETCH_HEAD).Trim().ToLowerInvariant()
