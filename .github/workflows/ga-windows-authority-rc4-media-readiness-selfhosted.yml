@@ -16,6 +16,11 @@ on:
         required: true
         default: true
         type: boolean
+      repair_from_main:
+        description: Use audited current-main workflow/script code while preserving the frozen RC4 control head
+        required: true
+        default: false
+        type: boolean
 
 concurrency:
   group: production-ga-windows-authority-rc4-media-readiness-selfhosted
@@ -33,10 +38,13 @@ jobs:
     permissions:
       contents: read
     env:
+      GH_TOKEN: ${{ github.token }}
       PSMATRIX_WINDOWS_GA_ROOT: ${{ vars.PSMATRIX_WINDOWS_GA_ROOT }}
       RELEASE_COMMIT: ${{ inputs.release_commit }}
       CONTROL_HEAD: ${{ inputs.control_head }}
       INSPECT_ISO_IMAGES: ${{ inputs.inspect_iso_images }}
+      REPAIR_FROM_MAIN: ${{ inputs.repair_from_main }}
+      FROZEN_CONTROL_BRANCH: release/2.0.0rc4-active-lock
 
     steps:
       - name: Initialize isolated RC4 media-readiness workspace
@@ -56,7 +64,14 @@ jobs:
           foreach ($item in @(@{Name='release_commit';Value=$env:RELEASE_COMMIT},@{Name='control_head';Value=$env:CONTROL_HEAD})) {
               if ([string]$item.Value -cnotmatch '^[0-9a-f]{40}$') { throw "$($item.Name) must contain exactly 40 lowercase hexadecimal characters." }
           }
-          if ($env:CONTROL_HEAD -ne $env:GITHUB_SHA.ToLowerInvariant()) { throw 'control_head must equal the exact workflow control head.' }
+          if ($env:REPAIR_FROM_MAIN -notin @('true','false')) { throw 'repair_from_main must resolve to true or false.' }
+          if ($env:REPAIR_FROM_MAIN -eq 'true') {
+              if ($env:GITHUB_REF_NAME -ne 'main') { throw 'Repaired RC4 media readiness must execute from main workflow code.' }
+              if ($env:GITHUB_ACTOR -ne 'github-actions[bot]' -or $env:GITHUB_TRIGGERING_ACTOR -ne 'github-actions[bot]') { throw 'Repaired RC4 media readiness must preserve bot/bot dispatch provenance.' }
+          }
+          elseif ($env:CONTROL_HEAD -ne $env:GITHUB_SHA.ToLowerInvariant()) {
+              throw 'control_head must equal the exact workflow control head outside repaired-media mode.'
+          }
           if ($env:INSPECT_ISO_IMAGES -notin @('true','false')) { throw 'inspect_iso_images must resolve to true or false.' }
 
           $releaseRoot = Join-Path $gaRoot 'media\release\2.0.0rc4'
@@ -69,7 +84,7 @@ jobs:
       - name: Check out exact RC4 media-readiness controls
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
         with:
-          ref: ${{ inputs.control_head }}
+          ref: ${{ inputs.repair_from_main && github.sha || inputs.control_head }}
           fetch-depth: 1
           persist-credentials: false
 
@@ -78,8 +93,27 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
-          if ($LASTEXITCODE -ne 0 -or $head -ne $env:CONTROL_HEAD) { throw 'RC4 media-readiness checkout does not equal control_head.' }
+          $expectedCheckout = if ($env:REPAIR_FROM_MAIN -eq 'true') { $env:GITHUB_SHA.ToLowerInvariant() } else { $env:CONTROL_HEAD }
+          if ($LASTEXITCODE -ne 0 -or $head -ne $expectedCheckout) { throw 'RC4 media-readiness checkout does not equal the expected workflow-code head.' }
           if (-not [string]::IsNullOrWhiteSpace((git status --porcelain))) { throw 'RC4 media-readiness checkout is dirty.' }
+
+          if ($env:REPAIR_FROM_MAIN -eq 'true') {
+              $frozen = (& gh api "repos/$env:GITHUB_REPOSITORY/git/ref/heads/$env:FROZEN_CONTROL_BRANCH" --jq '.object.sha').Trim().ToLowerInvariant()
+              if ($frozen -ne $env:CONTROL_HEAD) { throw 'Frozen RC4 active-lock moved before repaired media readiness.' }
+              foreach ($relative in @(
+                  'ga-packs/03-authoritative-windows/rc4-release-lock.json',
+                  'release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem'
+              )) {
+                  $currentBlob = (git hash-object -- $relative).Trim()
+                  $frozenBlob = (& gh api "repos/$env:GITHUB_REPOSITORY/contents/$relative?ref=$env:CONTROL_HEAD" --jq '.sha').Trim()
+                  if ($currentBlob -ne $frozenBlob) { throw "Repaired media workflow changed frozen RC4 authority material: $relative" }
+              }
+              $inventoryScript = Get-Content -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'scripts\ga\Get-PSMatrixWindowsAuthorityMediaInventory.ps1') -Raw
+              foreach ($marker in @('function Get-DismWimField','/Get-WimInfo','Dismount-DiskImage','Out-Null')) {
+                  if (-not $inventoryScript.Contains($marker)) { throw "Repaired media inventory script is missing required marker: $marker" }
+              }
+              Write-Host "repaired_rc4_media_control_binding=PASS workflow_code_head=$head control_head=$env:CONTROL_HEAD"
+          }
 
           $lockPath = Join-Path $env:GITHUB_WORKSPACE 'ga-packs\03-authoritative-windows\rc4-release-lock.json'
           $publicPath = Join-Path $env:GITHUB_WORKSPACE 'release-assets\2.0.0rc4\psmatrix-2.0.0rc4-release-public.pem'
@@ -222,6 +256,8 @@ jobs:
               release_version = '2.0.0rc4'
               release_commit = $env:RELEASE_COMMIT
               control_head = $env:CONTROL_HEAD
+              workflow_code_recovery = ($env:REPAIR_FROM_MAIN -eq 'true')
+              workflow_code_head = $env:GITHUB_SHA.ToLowerInvariant()
               inspect_iso_images = ($env:INSPECT_ISO_IMAGES -eq 'true')
               isolated_search_root_count = 2
               release_authority_status = [string]$canonical.canonicalization.release_authority_status
@@ -260,6 +296,8 @@ jobs:
               release_version = '2.0.0rc4'
               release_commit = $env:RELEASE_COMMIT
               control_head = $env:CONTROL_HEAD
+              workflow_code_recovery = ($env:REPAIR_FROM_MAIN -eq 'true')
+              workflow_code_head = $env:GITHUB_SHA.ToLowerInvariant()
               ready_for_provisioning_manifest_materialization = $false
               provisioning_manifest_materialized = $false
               ready_for_hyper_v_provisioning = $false

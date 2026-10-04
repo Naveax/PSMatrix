@@ -65,7 +65,7 @@ class FinalV2ReleaseControlMigrationTests(unittest.TestCase):
         )
         allowed = sorted(contract["control_source"]["changed_path_allowlist"])
         self.assertEqual(changed, allowed)
-        self.assertEqual(len(changed), 42)
+        self.assertEqual(len(changed), 44)
         self.assertIn(".github/workflows/ga-final-production-bootstrap-source-preflight.yml", allowed)
         self.assertIn(".github/workflows/ga-windows-authority-final-release-source-preflight.yml", allowed)
         self.assertIn("ga-packs/03-authoritative-windows/final-production-bootstrap-contract.json", allowed)
@@ -80,6 +80,8 @@ class FinalV2ReleaseControlMigrationTests(unittest.TestCase):
         self.assertIn(".github/workflows/ops-rc4-signing-to-intake.yml", allowed)
         self.assertIn(".github/workflows/ops-rc4-intake-to-media-readiness.yml", allowed)
         self.assertIn(".github/workflows/ops-rc4-post-intake-canonical-chain.yml", allowed)
+        self.assertIn(".github/workflows/ga-windows-authority-rc4-media-readiness-selfhosted.yml", allowed)
+        self.assertIn("scripts/ga/Get-PSMatrixWindowsAuthorityMediaInventory.ps1", allowed)
         self.assertIn("ga-packs/03-authoritative-windows/rc4-release-lock.json", allowed)
         self.assertIn("release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem", allowed)
         self.assertIn("tests/test_windows_authority_rc4_lock_promotion_signing.py", allowed)
@@ -129,6 +131,44 @@ class FinalV2ReleaseControlMigrationTests(unittest.TestCase):
         self.assertNotIn("stage_exists media_readiness || stage_exists media_readiness_blocked", text)
         self.assertIn("record_state_once media_readiness_blocked", text)
         self.assertIn("record_state_once media_readiness", text)
+
+    def test_rc4_media_iso_inventory_repair_is_explicit_and_frozen_control_bound(self):
+        inventory = (ROOT / "scripts/ga/Get-PSMatrixWindowsAuthorityMediaInventory.ps1").read_text(encoding="utf-8")
+        self.assertIn("function Get-DismWimField", inventory)
+        self.assertIn("& dism.exe", inventory)
+        self.assertIn("/English", inventory)
+        self.assertIn("('/Index:{0}' -f $index)", inventory)
+        self.assertIn("Out-Null", inventory)
+        self.assertNotIn("version = [string]$_.Version", inventory)
+
+        media = (ROOT / ".github/workflows/ga-windows-authority-rc4-media-readiness-selfhosted.yml").read_text(encoding="utf-8")
+        for marker in (
+            "repair_from_main:",
+            "REPAIR_FROM_MAIN:",
+            "FROZEN_CONTROL_BRANCH: release/2.0.0rc4-active-lock",
+            "repaired_rc4_media_control_binding=PASS",
+            "workflow_code_recovery",
+            "workflow_code_head",
+        ):
+            self.assertIn(marker, media)
+
+        intake_router = (ROOT / ".github/workflows/ops-rc4-intake-to-media-readiness.yml").read_text(encoding="utf-8")
+        for marker in (
+            "recover_media_control_head:",
+            "dispatch-repaired-media:",
+            "repaired_media_dispatch_guard=PASS",
+            "-f repair_from_main=true",
+        ):
+            self.assertIn(marker, intake_router)
+
+        post_router = (ROOT / ".github/workflows/ops-rc4-post-intake-canonical-chain.yml").read_text(encoding="utf-8")
+        for marker in (
+            "REPAIRED_MEDIA_MODE",
+            "repaired_rc4_media_stage_recovery=PASS",
+            "workflow_code_recovery",
+            "workflow_code_head",
+        ):
+            self.assertIn(marker, post_router)
 
     def test_critical_paginated_gh_api_calls_are_cli_compatible(self):
         paths = (
