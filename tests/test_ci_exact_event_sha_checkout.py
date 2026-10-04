@@ -13,6 +13,12 @@ class CIExactEventShaCheckoutTests(unittest.TestCase):
         self.assertIn("& git fetch --no-tags origin $expected", source)
         self.assertNotIn("& git fetch --no-tags origin $eventRef", source)
         self.assertIn("Exact event SHA fetch failed:", source)
+        self.assertIn("for ($attempt = 1; $attempt -le 3; $attempt++)", source)
+        self.assertIn("Frozen branch-object fetch attempt $attempt failed", source)
+        self.assertIn("Exact event SHA fetch attempt $attempt failed", source)
+        self.assertIn("Start-Sleep -Seconds (2 * $attempt)", source)
+        self.assertIn("GIT_HTTP_LOW_SPEED_LIMIT", source)
+        self.assertIn("GIT_HTTP_LOW_SPEED_TIME", source)
         self.assertIn("Fetched event SHA $fetched does not match GITHUB_SHA $expected.", source)
 
     def test_event_ref_is_still_validated_but_not_used_as_checkout_identity(self) -> None:
