@@ -138,15 +138,17 @@ function Get-DismWimField {
 
     $pattern = '^\s*{0}\s*:\s*(.+?)\s*$' -f [regex]::Escape($Field)
 
+    $value = ''
+
     foreach ($line in $Lines) {
         $text = [string]$line
 
         if ($text -match $pattern) {
-            return ([string]$Matches[1]).Trim()
+            $value = ([string]$Matches[1]).Trim()
         }
     }
 
-    return ''
+    return $value
 }
 
 function Get-IsoImageInventory {
