@@ -8,6 +8,7 @@
   "control_source": {
     "runtime_source_changes_allowed": false,
     "changed_path_allowlist": [
+      ".github/workflows/ci.yml",
       "ga-packs/03-authoritative-windows/final-production-bootstrap-contract.json",
       ".github/workflows/ga-final-production-bootstrap-source-preflight.yml",
       ".github/workflows/ga-windows-authority-final-release-source-preflight.yml",
@@ -18,12 +19,15 @@
       ".github/workflows/ops-final-lock-review-human-gate.yml",
       ".github/workflows/ops-final-promotion-to-reviewed-pr.yml",
       ".github/workflows/ops-final-reviewed-lock-merge-to-signing.yml",
+      ".github/workflows/ops-external22-ready-to-fresh-readiness.yml",
+      ".github/workflows/ops-fresh-readiness-to-external-evidence.yml",
       ".github/workflows/ops-final-signing-to-rebind-and-security-review.yml",
       ".github/workflows/ops-rc4-closure-to-final-lock-review.yml",
       "ga-packs/03-authoritative-windows/final-release-lock-signing-control-contract.json",
       "scripts/ga/build_windows_authority_final_release_lock_draft.py",
       "scripts/ga/promote_windows_authority_final_release_lock.py",
       "scripts/ga/sign_windows_authority_final_release.py",
+      "tests/test_ci_exact_event_sha_checkout.py",
       "tests/test_final_v2_release_control_migration.py",
       "tests/test_windows_authority_final_release_lock_signing.py",
       "tests/test_windows_authority_final_release_promotion.py",
