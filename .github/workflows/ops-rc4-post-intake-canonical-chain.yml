@@ -179,9 +179,12 @@ jobs:
 
           case "$COMPLETED_WORKFLOW" in
             production-ga-windows-authority-rc4-media-readiness-selfhosted)
-              if stage_exists media_readiness || stage_exists media_readiness_blocked; then
-                echo 'rc4_chain_duplicate_suppressed=true stage=media_readiness reason=ledger'
+              if stage_exists media_readiness; then
+                echo 'rc4_chain_duplicate_suppressed=true stage=media_readiness reason=successful_ledger'
                 exit 0
+              fi
+              if stage_exists media_readiness_blocked; then
+                echo 'rc4_chain_previous_blocked_state_supersedable=true'
               fi
 
               evidence="$RUNNER_TEMP/rc4-media-readiness-$COMPLETED_RUN_ID-$COMPLETED_RUN_ATTEMPT"
