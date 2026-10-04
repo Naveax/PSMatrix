@@ -129,6 +129,7 @@ function Get-CandidateRoles {
 function Get-DismWimField {
     param(
         [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
         [string[]]$Lines,
 
         [Parameter(Mandatory = $true)]
