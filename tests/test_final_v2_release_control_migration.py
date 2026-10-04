@@ -165,6 +165,9 @@ class FinalV2ReleaseControlMigrationTests(unittest.TestCase):
             "-f repair_from_main=true",
         ):
             self.assertIn(marker, intake_router)
+        self.assertIn("CONTROL_HEAD: ${{ inputs.recover_media_control_head }}", intake_router)
+        self.assertIn("GH_TOKEN: ${{ github.token }}", intake_router)
+        self.assertNotIn("\\${{", intake_router)
 
         post_router = (ROOT / ".github/workflows/ops-rc4-post-intake-canonical-chain.yml").read_text(encoding="utf-8")
         for marker in (
