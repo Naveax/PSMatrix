@@ -154,6 +154,8 @@ class FinalV2ReleaseControlMigrationTests(unittest.TestCase):
             "repaired_rc4_media_control_binding=PASS",
             "workflow_code_recovery",
             "workflow_code_head",
+            "reviewed_media_inventory_reuse=PASS",
+            "reviewed_canonical_inventory_reuse=PASS",
         ):
             self.assertIn(marker, media)
         self.assertIn(
