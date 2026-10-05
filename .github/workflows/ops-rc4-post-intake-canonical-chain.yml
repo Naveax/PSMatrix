@@ -20,6 +20,10 @@ on:
         description: Failed canonical bot/bot RC4 provisioning-manifest run to safely redispatch after external host state is repaired
         required: false
         type: string
+      recover_failed_provision_run_id:
+        description: Failed canonical bot/bot RC4 Hyper-V provisioning run to safely redispatch only when mutation never started
+        required: false
+        type: string
 
 concurrency:
   group: ops-rc4-post-intake-canonical-chain
@@ -47,7 +51,8 @@ jobs:
         github.triggering_actor == 'Naveax' &&
         (
           inputs.recover_completed_run_id != '' ||
-          inputs.recover_failed_provisioning_manifest_run_id != ''
+          inputs.recover_failed_provisioning_manifest_run_id != '' ||
+          inputs.recover_failed_provision_run_id != ''
         )
       )
     runs-on: ubuntu-latest
@@ -58,6 +63,7 @@ jobs:
       COMPLETED_WORKFLOW: ${{ github.event.workflow_run.name }}
       COMPLETED_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.recover_completed_run_id || github.event.workflow_run.id }}
       FAILED_PROVISIONING_RUN_ID: ${{ inputs.recover_failed_provisioning_manifest_run_id }}
+      FAILED_HYPERV_PROVISION_RUN_ID: ${{ inputs.recover_failed_provision_run_id }}
       COMPLETED_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
       COMPLETED_RUN_HEAD: ${{ github.event.workflow_run.head_sha }}
       CONTROL_HEAD: ${{ github.event.workflow_run.head_sha }}
@@ -72,6 +78,12 @@ jobs:
           set -euo pipefail
           [[ "$GITHUB_ACTOR" == 'Naveax' && "$GITHUB_TRIGGERING_ACTOR" == 'Naveax' ]] || { echo 'RC4 stage recovery must be explicitly dispatched by Naveax.' >&2; exit 1; }
           [[ "$GITHUB_REF_NAME" == 'main' ]] || { echo 'RC4 stage recovery must execute from main.' >&2; exit 1; }
+          recovery_count=0
+          for recovery_value in "$COMPLETED_RUN_ID" "$FAILED_PROVISIONING_RUN_ID" "$FAILED_HYPERV_PROVISION_RUN_ID"; do
+            [[ -n "$recovery_value" ]] && recovery_count=$((recovery_count + 1))
+          done
+          [[ "$recovery_count" -eq 1 ]] || { echo 'Exactly one RC4 recovery input must be supplied. RC4 recovery inputs are mutually exclusive.' >&2; exit 1; }
+
           if [[ -n "$FAILED_PROVISIONING_RUN_ID" ]]; then
             [[ -z "$COMPLETED_RUN_ID" ]] || { echo 'RC4 recovery inputs are mutually exclusive.' >&2; exit 1; }
             FAILED_RUN_ID="$FAILED_PROVISIONING_RUN_ID"
@@ -154,6 +166,109 @@ jobs:
             exit 0
           fi
 
+          if [[ -n "$FAILED_HYPERV_PROVISION_RUN_ID" ]]; then
+            FAILED_RUN_ID="$FAILED_HYPERV_PROVISION_RUN_ID"
+            [[ "$FAILED_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo 'Failed Hyper-V provisioning run ID is invalid.' >&2; exit 1; }
+
+            failed_run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$FAILED_RUN_ID")
+            [[ "$(jq -r '.name' <<<"$failed_run")" == 'production-ga-windows-authority-rc4-provision-selfhosted' ]] || { echo 'Failed recovery only supports RC4 Hyper-V provisioning.' >&2; exit 1; }
+            [[ "$(jq -r '.path' <<<"$failed_run")" == '.github/workflows/ga-windows-authority-rc4-provision-selfhosted.yml' ]] || { echo 'Failed Hyper-V provisioning workflow path mismatch.' >&2; exit 1; }
+            [[ "$(jq -r '.event' <<<"$failed_run")" == 'workflow_dispatch' && "$(jq -r '.status' <<<"$failed_run")" == 'completed' && "$(jq -r '.conclusion' <<<"$failed_run")" == 'failure' ]] || { echo 'Recovered Hyper-V provisioning run is not completed/failure.' >&2; exit 1; }
+            [[ "$(jq -r '.actor.login' <<<"$failed_run")" == 'github-actions[bot]' && "$(jq -r '.triggering_actor.login' <<<"$failed_run")" == 'github-actions[bot]' ]] || { echo 'Failed Hyper-V provisioning run is not canonical bot/bot provenance.' >&2; exit 1; }
+
+            failed_attempt=$(jq -r '.run_attempt' <<<"$failed_run")
+            failed_head=$(jq -r '.head_sha' <<<"$failed_run")
+            failed_branch=$(jq -r '.head_branch' <<<"$failed_run")
+            [[ "$failed_attempt" =~ ^[1-9][0-9]*$ && "$failed_head" =~ ^[0-9a-f]{40}$ ]] || { echo 'Failed Hyper-V provisioning attempt/head is invalid.' >&2; exit 1; }
+
+            evidence="$RUNNER_TEMP/rc4-failed-hyperv-provision-$FAILED_RUN_ID-$failed_attempt"
+            rm -rf "$evidence"
+            mkdir -p "$evidence"
+            gh run download "$FAILED_RUN_ID" --repo "$GITHUB_REPOSITORY" --name windows-authority-rc4-hyperv-provisioning-status --dir "$evidence"
+            failure_file=$(find "$evidence" -type f -name 'hyperv-provisioning-failure.json' -print -quit)
+            [[ -n "$failure_file" && -f "$failure_file" ]] || { echo 'Failed Hyper-V provisioning evidence is missing.' >&2; exit 1; }
+            [[ "$(jq -r '.schema' "$failure_file")" == '1' && "$(jq -r '.kind' "$failure_file")" == 'psmatrix.windows-authority-hyperv-provisioning-status' && "$(jq -r '.status' "$failure_file")" == 'FAIL' ]] || { echo 'Failed Hyper-V provisioning evidence identity mismatch.' >&2; exit 1; }
+            [[ "$(jq -r '.release_commit' "$failure_file")" == "$RELEASE_COMMIT" ]] || { echo 'Failed Hyper-V provisioning release commit mismatch.' >&2; exit 1; }
+            [[ "$(jq -r '.authoritative' "$failure_file")" == 'false' && "$(jq -r '.ga_eligible' "$failure_file")" == 'false' ]] || { echo 'Failed Hyper-V provisioning crossed forbidden authority/GA boundary.' >&2; exit 1; }
+            mutation_started=$(jq -r 'if has("mutation_started") then .mutation_started else true end' "$failure_file")
+            [[ "$mutation_started" == 'false' ]] || { echo 'Failed Hyper-V provisioning mutation_started=true or missing; automated retry is forbidden.' >&2; exit 1; }
+
+            failed_control=$(jq -r '.control_head // ""' "$failure_file")
+            operation_run_id=$(jq -r '.operation_run_id // ""' "$failure_file")
+            operation_run_attempt=$(jq -r '.operation_run_attempt // ""' "$failure_file")
+            [[ "$failed_control" =~ ^[0-9a-f]{40}$ ]] || { echo 'Failed Hyper-V provisioning control head is invalid.' >&2; exit 1; }
+            [[ "$operation_run_id" =~ ^[1-9][0-9]*$ && "$operation_run_attempt" =~ ^[1-9][0-9]*$ ]] || { echo 'Failed Hyper-V provisioning operation provenance is invalid.' >&2; exit 1; }
+
+            frozen_control=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$CONTROL_BRANCH" --jq '.object.sha')
+            [[ "$frozen_control" == "$failed_control" ]] || { echo 'Frozen RC4 control moved before failed Hyper-V provisioning recovery.' >&2; exit 1; }
+            if [[ "$failed_branch" == "$CONTROL_BRANCH" ]]; then
+              [[ "$failed_head" == "$failed_control" ]] || { echo 'Failed frozen-branch Hyper-V provisioning head mismatch.' >&2; exit 1; }
+            elif [[ "$failed_branch" == 'main' ]]; then
+              [[ "$(jq -r '.workflow_code_recovery // false' "$failure_file")" == 'true' && "$(jq -r '.workflow_code_head // ""' "$failure_file")" == "$failed_head" ]] || { echo 'Failed repaired Hyper-V provisioning workflow-code provenance mismatch.' >&2; exit 1; }
+            else
+              echo "Failed Hyper-V provisioning branch is not canonical: $failed_branch" >&2
+              exit 1
+            fi
+
+            workflow_text=$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/workflows/ga-windows-authority-rc4-provision-selfhosted.yml?ref=$GITHUB_SHA" --jq '.content' | tr -d '\n' | base64 -d)
+            grep -Fq 'repair_from_main:' <<<"$workflow_text" || { echo 'Current-main Hyper-V provisioning workflow lacks repaired-main mode.' >&2; exit 1; }
+            grep -Fq 'hyperv_storage_capacity_preflight=PASS' <<<"$workflow_text" || { echo 'Current-main Hyper-V provisioning workflow lacks storage-capacity preflight.' >&2; exit 1; }
+
+            runs=$(gh api --method GET \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/ga-windows-authority-rc4-provision-selfhosted.yml/runs" \
+              -f branch='main' \
+              -f event='workflow_dispatch' \
+              -f per_page=100)
+            existing=$(jq -r --arg head "$GITHUB_SHA" --argjson failed "$FAILED_RUN_ID" '
+              .workflow_runs[]
+              | select(.head_sha == $head and .id > $failed)
+              | select(.status == "queued" or .status == "in_progress" or .status == "waiting" or (.status == "completed" and .conclusion == "success"))
+              | .id
+            ' <<<"$runs" | head -n 1)
+            if [[ -n "$existing" ]]; then
+              echo "rc4_failed_provision_recovery_duplicate_suppressed=true failed_run_id=$FAILED_RUN_ID existing_run_id=$existing reason=repaired_provision_run"
+              exit 0
+            fi
+            newer_failed=$(jq -r --arg head "$GITHUB_SHA" --argjson failed "$FAILED_RUN_ID" '
+              .workflow_runs[]
+              | select(.head_sha == $head and .id > $failed and .status == "completed" and .conclusion == "failure")
+              | .id
+            ' <<<"$runs" | head -n 1)
+            [[ -z "$newer_failed" ]] || { echo "A newer failed repaired Hyper-V provisioning run exists; recover that exact run instead: $newer_failed" >&2; exit 1; }
+            baseline=$(jq -r --arg head "$GITHUB_SHA" '[.workflow_runs[] | select(.head_sha == $head) | .id] | max // 0' <<<"$runs")
+            [[ "$baseline" =~ ^[0-9]+$ ]] || { echo 'Hyper-V provisioning recovery baseline is invalid.' >&2; exit 1; }
+
+            gh workflow run ga-windows-authority-rc4-provision-selfhosted.yml \
+              --repo "$GITHUB_REPOSITORY" --ref main \
+              -f release_commit="$RELEASE_COMMIT" \
+              -f control_head="$failed_control" \
+              -f operation_run_id="$operation_run_id" \
+              -f operation_run_attempt="$operation_run_attempt" \
+              -f provision_timeout_seconds=7200 \
+              -f repair_from_main=true
+
+            child=''
+            for _ in {1..10}; do
+              sleep 2
+              runs=$(gh api --method GET \
+                "repos/$GITHUB_REPOSITORY/actions/workflows/ga-windows-authority-rc4-provision-selfhosted.yml/runs" \
+                -f branch='main' \
+                -f event='workflow_dispatch' \
+                -f per_page=100)
+              child=$(jq -r --arg head "$GITHUB_SHA" --argjson baseline "$baseline" '
+                .workflow_runs[]
+                | select(.head_sha == $head and .id > $baseline)
+                | .id
+              ' <<<"$runs" | head -n 1)
+              [[ -n "$child" ]] && break
+            done
+            [[ -n "$child" ]] || { echo 'Failed Hyper-V provisioning recovery dispatch did not materialize a child run.' >&2; exit 1; }
+            gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" \
+              --body "RC4_CHAIN_RECOVERY_DISPATCH stage=provisioning failed_run_id=$FAILED_RUN_ID child_run_id=$child control_head=$failed_control authoritative=false ga_eligible=false"
+            echo "rc4_failed_provision_recovery_dispatch=PASS failed_run_id=$FAILED_RUN_ID child_run_id=$child control_head=$failed_control"
+            exit 0
+          fi
+
           [[ "$COMPLETED_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo 'RC4 stage recovery run ID is invalid.' >&2; exit 1; }
           run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$COMPLETED_RUN_ID")
           name=$(jq -r '.name' <<<"$run")
@@ -169,6 +284,7 @@ jobs:
           [[ "$attempt" =~ ^[1-9][0-9]*$ && "$head" =~ ^[0-9a-f]{40}$ ]] || { echo 'Recovered RC4 stage attempt/head is invalid.' >&2; exit 1; }
 
           repaired_media=false
+          repaired_provision=false
           control="$head"
           if [[ "$name" == 'production-ga-windows-authority-rc4-media-readiness-selfhosted' && "$run_branch" == 'main' ]]; then
             workflow_text=$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/workflows/ga-windows-authority-rc4-media-readiness-selfhosted.yml?ref=$head" --jq '.content' | tr -d '\n' | base64 -d)
@@ -189,6 +305,25 @@ jobs:
             control=$(jq -r '.control_head' "$status_file")
             [[ "$control" =~ ^[0-9a-f]{40}$ ]] || { echo 'Repaired media control head is invalid.' >&2; exit 1; }
             repaired_media=true
+          elif [[ "$name" == 'production-ga-windows-authority-rc4-provision-selfhosted' && "$run_branch" == 'main' ]]; then
+            workflow_text=$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/workflows/ga-windows-authority-rc4-provision-selfhosted.yml?ref=$head" --jq '.content' | tr -d '\n' | base64 -d)
+            grep -Fq 'repair_from_main:' <<<"$workflow_text" || { echo 'Recovered Hyper-V provisioning workflow lacks repaired-main mode.' >&2; exit 1; }
+            grep -Fq 'hyperv_storage_capacity_preflight=PASS' <<<"$workflow_text" || { echo 'Recovered Hyper-V provisioning workflow lacks storage-capacity preflight.' >&2; exit 1; }
+
+            evidence="$RUNNER_TEMP/rc4-repaired-provision-$COMPLETED_RUN_ID-$attempt"
+            rm -rf "$evidence"
+            mkdir -p "$evidence"
+            gh run download "$COMPLETED_RUN_ID" --repo "$GITHUB_REPOSITORY" --name windows-authority-rc4-hyperv-provisioning-status --dir "$evidence"
+            status_file=$(find "$evidence" -type f -name 'hyperv-provisioning-status.json' -print -quit)
+            [[ -n "$status_file" && -f "$status_file" ]] || { echo 'Repaired Hyper-V provisioning status artifact is missing.' >&2; exit 1; }
+            [[ "$(jq -r '.kind' "$status_file")" == 'psmatrix.windows-authority-hyperv-provisioning-status' && "$(jq -r '.status' "$status_file")" == 'VM_SET_PROVISIONED_OS_MEASUREMENT_PENDING' ]] || { echo 'Repaired Hyper-V provisioning status identity mismatch.' >&2; exit 1; }
+            [[ "$(jq -r '.release_commit' "$status_file")" == "$RELEASE_COMMIT" ]] || { echo 'Repaired Hyper-V provisioning release commit mismatch.' >&2; exit 1; }
+            [[ "$(jq -r '.workflow_code_recovery' "$status_file")" == 'true' && "$(jq -r '.workflow_code_head' "$status_file")" == "$head" ]] || { echo 'Repaired Hyper-V provisioning workflow-code provenance mismatch.' >&2; exit 1; }
+            [[ "$(jq -r '.mutation_started' "$status_file")" == 'true' ]] || { echo 'Successful repaired Hyper-V provisioning did not cross the recorded mutation boundary.' >&2; exit 1; }
+            [[ "$(jq -r '.authoritative' "$status_file")" == 'false' && "$(jq -r '.ga_eligible' "$status_file")" == 'false' ]] || { echo 'Repaired Hyper-V provisioning artifact crossed forbidden authority/GA boundary.' >&2; exit 1; }
+            control=$(jq -r '.control_head // ""' "$status_file")
+            [[ "$control" =~ ^[0-9a-f]{40}$ ]] || { echo 'Repaired Hyper-V provisioning control head is invalid.' >&2; exit 1; }
+            repaired_provision=true
           else
             [[ "$run_branch" == "$CONTROL_BRANCH" ]] || { echo 'Recovered RC4 stage branch mismatch.' >&2; exit 1; }
           fi
@@ -200,14 +335,17 @@ jobs:
           echo "COMPLETED_RUN_HEAD=$head" >> "$GITHUB_ENV"
           echo "CONTROL_HEAD=$control" >> "$GITHUB_ENV"
           echo "REPAIRED_MEDIA_MODE=$repaired_media" >> "$GITHUB_ENV"
+          echo "REPAIRED_PROVISION_MODE=$repaired_provision" >> "$GITHUB_ENV"
           if [[ "$repaired_media" == 'true' ]]; then
             echo "repaired_rc4_media_stage_recovery=PASS run_id=$COMPLETED_RUN_ID attempt=$attempt workflow_code_head=$head control_head=$control"
+          elif [[ "$repaired_provision" == 'true' ]]; then
+            echo "repaired_rc4_provision_stage_recovery=PASS run_id=$COMPLETED_RUN_ID attempt=$attempt workflow_code_head=$head control_head=$control reason=repaired_provision_run"
           else
             echo "rc4_stage_workflow_run_recovery=PASS workflow=$name run_id=$COMPLETED_RUN_ID attempt=$attempt head=$head"
           fi
 
       - name: Validate automated canonical chain event identity
-        if: env.FAILED_PROVISIONING_RUN_ID == ''
+        if: env.FAILED_PROVISIONING_RUN_ID == '' && env.FAILED_HYPERV_PROVISION_RUN_ID == ''
         shell: bash
         run: |
           set -euo pipefail
@@ -235,6 +373,9 @@ jobs:
           if [[ "${REPAIRED_MEDIA_MODE:-false}" == 'true' ]]; then
             [[ "$COMPLETED_WORKFLOW" == 'production-ga-windows-authority-rc4-media-readiness-selfhosted' ]] || { echo 'Repaired-media mode is only valid for media readiness.' >&2; exit 1; }
             [[ "$(jq -r '.head_branch' <<<"$run")" == 'main' && "$(jq -r '.head_sha' <<<"$run")" == "$COMPLETED_RUN_HEAD" ]] || { echo 'Repaired RC4 media workflow-code provenance mismatch.' >&2; exit 1; }
+          elif [[ "${REPAIRED_PROVISION_MODE:-false}" == 'true' ]]; then
+            [[ "$COMPLETED_WORKFLOW" == 'production-ga-windows-authority-rc4-provision-selfhosted' ]] || { echo 'Repaired-provision mode is only valid for Hyper-V provisioning.' >&2; exit 1; }
+            [[ "$(jq -r '.head_branch' <<<"$run")" == 'main' && "$(jq -r '.head_sha' <<<"$run")" == "$COMPLETED_RUN_HEAD" ]] || { echo 'Repaired RC4 Hyper-V provisioning workflow-code provenance mismatch.' >&2; exit 1; }
           else
             [[ "$(jq -r '.head_branch' <<<"$run")" == "$CONTROL_BRANCH" && "$(jq -r '.head_sha' <<<"$run")" == "$CONTROL_HEAD" ]] || { echo 'RC4 canonical stage control provenance mismatch.' >&2; exit 1; }
           fi
@@ -242,7 +383,7 @@ jobs:
           echo "rc4_chain_event=PASS workflow=$COMPLETED_WORKFLOW run=$COMPLETED_RUN_ID attempt=$COMPLETED_RUN_ATTEMPT automated_dispatch=true path=$expected_path"
 
       - name: Advance exact canonical RC4 stage once
-        if: env.FAILED_PROVISIONING_RUN_ID == ''
+        if: env.FAILED_PROVISIONING_RUN_ID == '' && env.FAILED_HYPERV_PROVISION_RUN_ID == ''
         shell: bash
         run: |
           set -euo pipefail

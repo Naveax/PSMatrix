@@ -11,10 +11,16 @@
     "control_head_required": true,
     "operation_run_id_required": true,
     "operation_run_attempt_required": true,
-    "provision_timeout_seconds_required": true
+    "provision_timeout_seconds_required": true,
+    "repair_from_main_required": true
   },
   "provenance": {
-    "control_head_must_equal_workflow_sha": true,
+    "control_head_must_equal_workflow_sha_outside_repair": true,
+    "repair_from_main_preserves_frozen_control_head": true,
+    "repair_from_main_bot_dispatch_required": true,
+    "repair_from_main_authority_blob_equivalence_required": true,
+    "repair_from_main_workflow_code_head_recorded": true,
+    "repair_from_main_success_artifact_recovery_required": true,
     "active_rc4_release_lock_required": true,
     "active_lock_sha256_recomputed": true,
     "active_lock_release_commit_must_match": true,
@@ -66,5 +72,22 @@
     "runs_authoritative_campaign": false,
     "authoritative": false,
     "ga_eligible": false
+  },
+  "preflight": {
+    "all_images_validated_before_first_vhd": true,
+    "artifact_integrity_required_before_first_vhd": true,
+    "admin_secret_presence_required_before_first_vhd": true,
+    "hyperv_switch_presence_required_before_first_vhd": true,
+    "output_absence_required_before_first_vhd": true,
+    "local_target_volume_required": true,
+    "mutation_boundary_recorded_before_product_provision": true,
+    "storage_capacity_lower_bound": "sum-selected-expanded-windows-image-bytes-per-target-volume"
+  },
+  "recovery": {
+    "failure_artifact_records_mutation_started": true,
+    "failed_pre_mutation_retry_only": true,
+    "failed_recovery_owner_dispatch_required": true,
+    "failed_recovery_preserves_frozen_control_head": true,
+    "failed_recovery_child_uses_repaired_main_mode": true
   }
 }

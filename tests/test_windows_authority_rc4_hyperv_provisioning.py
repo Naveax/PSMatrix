@@ -8,6 +8,7 @@ WORKFLOW = ROOT / ".github" / "workflows" / "ga-windows-authority-rc4-provision-
 RC3_WORKFLOW = ROOT / ".github" / "workflows" / "ga-windows-authority-provision-selfhosted.yml"
 CONTRACT = ROOT / "ga-packs" / "03-authoritative-windows" / "rc4-hyperv-provisioning-workflow-contract.json"
 PREFLIGHT = ROOT / ".github" / "workflows" / "ga-windows-authority-rc4-source-preflight.yml"
+POST_INTAKE = ROOT / ".github" / "workflows" / "ops-rc4-post-intake-canonical-chain.yml"
 
 
 class WindowsAuthorityRC4HyperVProvisioningTests(unittest.TestCase):
@@ -36,7 +37,12 @@ class WindowsAuthorityRC4HyperVProvisioningTests(unittest.TestCase):
         value = json.loads(CONTRACT.read_text(encoding="utf-8"))
         provenance = value["provenance"]
         for key in (
-            "control_head_must_equal_workflow_sha",
+            "control_head_must_equal_workflow_sha_outside_repair",
+            "repair_from_main_preserves_frozen_control_head",
+            "repair_from_main_bot_dispatch_required",
+            "repair_from_main_authority_blob_equivalence_required",
+            "repair_from_main_workflow_code_head_recorded",
+            "repair_from_main_success_artifact_recovery_required",
             "active_rc4_release_lock_required",
             "active_lock_sha256_recomputed",
             "active_lock_release_commit_must_match",
@@ -51,6 +57,7 @@ class WindowsAuthorityRC4HyperVProvisioningTests(unittest.TestCase):
         self.assertFalse(provenance["release_authority_rotated_during_signing"])
         self.assertEqual(provenance["operation_metadata_status_required"], "READY_FOR_WINDOWS_HOST")
         self.assertEqual(provenance["operation_binding_status_required"], "PASS")
+        self.assertTrue(value["inputs"]["repair_from_main_required"])
         self.assertTrue(value["product_execution"]["signed_release_wheel_installed_offline"])
         self.assertTrue(value["product_execution"]["exact_release_source_checkout_required"])
         self.assertTrue(value["product_execution"]["lab_plan_command_required"])
@@ -58,6 +65,86 @@ class WindowsAuthorityRC4HyperVProvisioningTests(unittest.TestCase):
         self.assertFalse(value["safety"]["release_private_key_required"])
         self.assertFalse(value["safety"]["windows_lab_private_key_required"])
         self.assertFalse(value["safety"]["detailed_provisioning_report_uploaded"])
+
+    def test_contract_requires_fail_closed_preflight_before_first_vhd(self) -> None:
+        value = json.loads(CONTRACT.read_text(encoding="utf-8"))
+        preflight = value["preflight"]
+        self.assertTrue(preflight["all_images_validated_before_first_vhd"])
+        self.assertTrue(preflight["artifact_integrity_required_before_first_vhd"])
+        self.assertTrue(preflight["admin_secret_presence_required_before_first_vhd"])
+        self.assertTrue(preflight["hyperv_switch_presence_required_before_first_vhd"])
+        self.assertTrue(preflight["output_absence_required_before_first_vhd"])
+        self.assertTrue(preflight["local_target_volume_required"])
+        self.assertTrue(preflight["mutation_boundary_recorded_before_product_provision"])
+        self.assertEqual(
+            preflight["storage_capacity_lower_bound"],
+            "sum-selected-expanded-windows-image-bytes-per-target-volume",
+        )
+
+        text = WORKFLOW.read_text(encoding="utf-8")
+        preflight_pos = text.index("Preflight exact RC4 Hyper-V provisioning plan")
+        provision_pos = text.index("Provision exact RC4 Hyper-V VM set")
+        self.assertLess(preflight_pos, provision_pos)
+        for marker in (
+            "Assert-PreflightArtifact",
+            "Import-Module Dism -ErrorAction Stop",
+            "Get-WindowsImage -ImagePath",
+            "Get-Volume -DriveLetter",
+            ".SizeRemaining",
+            "Required protected provisioning secret is missing:",
+            "Hyper-V switch is missing or ambiguous before RC4 preflight:",
+            "Output VHDX already exists before RC4 preflight:",
+            "RC4 Hyper-V output must use a local target volume:",
+            "hyperv_storage_capacity_preflight=PASS",
+            "hyperv_plan_preflight=PASS",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, text)
+
+    def test_repaired_main_provisioning_is_explicit_and_frozen_control_bound(self) -> None:
+        value = json.loads(CONTRACT.read_text(encoding="utf-8"))
+        recovery = value["recovery"]
+        for key in (
+            "failure_artifact_records_mutation_started",
+            "failed_pre_mutation_retry_only",
+            "failed_recovery_owner_dispatch_required",
+            "failed_recovery_preserves_frozen_control_head",
+            "failed_recovery_child_uses_repaired_main_mode",
+        ):
+            self.assertTrue(recovery[key])
+
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        router = POST_INTAKE.read_text(encoding="utf-8")
+        for marker in (
+            "repair_from_main:",
+            "Repaired RC4 Hyper-V provisioning must execute from main workflow code.",
+            "Frozen RC4 active-lock moved before repaired Hyper-V provisioning.",
+            "Repaired provisioning workflow changed frozen RC4 authority material:",
+            "repaired_rc4_provision_control_binding=PASS",
+            "workflow_code_recovery",
+            "workflow_code_head",
+            "PSMATRIX_PROVISION_MUTATION_STARTED",
+            "Mark RC4 Hyper-V mutation boundary",
+            "mutation_started",
+        ):
+            with self.subTest(workflow_marker=marker):
+                self.assertIn(marker, workflow)
+        for marker in (
+            "--ref main",
+            "-f repair_from_main=true",
+            "hyperv_storage_capacity_preflight=PASS",
+            "REPAIRED_PROVISION_MODE",
+            "repaired_rc4_provision_stage_recovery=PASS",
+            "reason=repaired_provision_run",
+            "recover_failed_provision_run_id:",
+            "Exactly one RC4 recovery input must be supplied.",
+            "mutation_started",
+            "automated retry is forbidden.",
+            "rc4_failed_provision_recovery_dispatch=PASS",
+        ):
+            with self.subTest(router_marker=marker):
+                self.assertIn(marker, router)
+        self.assertIn("control_head=$CONTROL_HEAD", router)
 
     def test_workflow_preserves_real_product_provisioning_entrypoint(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")
