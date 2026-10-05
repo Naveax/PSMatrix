@@ -173,6 +173,14 @@ class FinalV2ReleaseControlMigrationTests(unittest.TestCase):
         self.assertIn("CONTROL_HEAD: ${{ inputs.recover_media_control_head }}", intake_router)
         self.assertIn("GH_TOKEN: ${{ github.token }}", intake_router)
         self.assertNotIn("\\${{", intake_router)
+        self.assertIn("repaired_media_prior_success_nonterminal=true", intake_router)
+        self.assertIn("READY_FOR_PROVISIONING_MANIFEST_MATERIALIZATION", intake_router)
+        self.assertIn("reason=terminal_success", intake_router)
+        self.assertIn("reason=active_run", intake_router)
+        self.assertNotIn(
+            '.status == \\"waiting\\" or .conclusion == \\"success\\"',
+            intake_router,
+        )
 
         post_router = (ROOT / ".github/workflows/ops-rc4-post-intake-canonical-chain.yml").read_text(encoding="utf-8")
         for marker in (
