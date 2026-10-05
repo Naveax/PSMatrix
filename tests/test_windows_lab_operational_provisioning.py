@@ -25,6 +25,7 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
             "windows_lab_admin_credential_policy=PASS complexity=true distinct=true broad_acl=false",
             "IndependentReviewAttestationFile",
             "windows_lab_material_review_attestation=PASS independent_check_recorded=true",
+            "windows_lab_reviewed_material_temporal_binding=PASS post_review_source_change=false",
             "windows_lab_operational_environment_provisioning_executed=true checks=4",
         ):
             self.assertIn(fragment, raw)
@@ -156,7 +157,12 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
             "secret_lengths_not_recorded",
             "Windows-lab independent material review attestation fields are not exact.",
             "Windows-lab independent material review attestation is stale or from the future.",
+            "Windows-lab operator material changed after the independent review timestamp.",
+            "ReviewedAtUtc",
+            "LastWriteTimeUtc",
+            "windows_lab_reviewed_material_temporal_binding=PASS post_review_source_change=false",
             "review_attestation_path_logged=false",
+            "reviewed_material_timestamps_logged=false",
         ):
             self.assertIn(fragment, raw)
 

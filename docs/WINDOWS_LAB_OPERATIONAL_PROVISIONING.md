@@ -105,7 +105,7 @@ Required shape:
 }
 ```
 
-The attestation must be no older than 24 hours, must be outside the repository, and must not be a link/reparse path. This file is a review gate only; it is not authority evidence and must not be fabricated by automation or by the release owner merely to satisfy the gate.
+The attestation must be no older than 24 hours, must be outside the repository, and must not be a link/reparse path. The helper also requires the review timestamp to be at or after the last-write time of all four reviewed material files; a post-review source change therefore fails closed without storing credential hashes or lengths. This file is a review gate only; it is not authority evidence and must not be fabricated by automation or by the release owner merely to satisfy the gate.
 
 ## Provision the environment
 

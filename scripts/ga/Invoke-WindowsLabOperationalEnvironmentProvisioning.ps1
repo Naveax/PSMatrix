@@ -285,7 +285,10 @@ function Assert-IndependentMaterialReviewAttestation {
         }
     }
 
-    return $resolved
+    return [pscustomobject]@{
+        Path = $resolved
+        ReviewedAtUtc = $reviewedAt.UtcDateTime
+    }
 }
 
 function Invoke-GhCaptured {
@@ -443,8 +446,16 @@ try {
         throw 'IndependentReviewAttestationFile is required for live Windows-lab operational provisioning.'
     }
     $reviewAttestation = Assert-IndependentMaterialReviewAttestation -Path $IndependentReviewAttestationFile -RepoRoot $repoRoot -ExpectedRepository $canonicalRepository -ExpectedEnvironment $Environment
+    foreach ($reviewedMaterial in @($rootExternal, $wps40External, $wps50External, $wps51External)) {
+        $lastWriteUtc = (Get-Item -LiteralPath $reviewedMaterial -Force -ErrorAction Stop).LastWriteTimeUtc
+        if ($lastWriteUtc -gt $reviewAttestation.ReviewedAtUtc.AddSeconds(5)) {
+            throw 'Windows-lab operator material changed after the independent review timestamp.'
+        }
+    }
     Write-Host 'windows_lab_material_review_attestation=PASS independent_check_recorded=true'
+    Write-Host 'windows_lab_reviewed_material_temporal_binding=PASS post_review_source_change=false'
     Write-Host 'review_attestation_path_logged=false'
+    Write-Host 'reviewed_material_timestamps_logged=false'
 
     # Live provisioning resolves only the GitHub CLI application from PATH. There is
     # deliberately no operator-supplied executable override because the three secret
