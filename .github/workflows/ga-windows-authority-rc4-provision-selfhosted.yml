@@ -25,6 +25,11 @@ on:
         required: true
         default: "7200"
         type: string
+      repair_from_main:
+        description: Use audited current-main workflow code while preserving the frozen RC4 control head
+        required: true
+        default: false
+        type: boolean
 
 concurrency:
   group: production-ga-windows-authority-rc4-provision-selfhosted
@@ -42,12 +47,15 @@ jobs:
     permissions:
       contents: read
     env:
+      GH_TOKEN: ${{ github.token }}
       PSMATRIX_WINDOWS_GA_ROOT: ${{ vars.PSMATRIX_WINDOWS_GA_ROOT }}
       RELEASE_COMMIT: ${{ inputs.release_commit }}
       CONTROL_HEAD: ${{ inputs.control_head }}
       OPERATION_RUN_ID: ${{ inputs.operation_run_id }}
       OPERATION_RUN_ATTEMPT: ${{ inputs.operation_run_attempt }}
       PROVISION_TIMEOUT_SECONDS: ${{ inputs.provision_timeout_seconds }}
+      REPAIR_FROM_MAIN: ${{ inputs.repair_from_main }}
+      FROZEN_CONTROL_BRANCH: release/2.0.0rc4-active-lock
       PSMATRIX_WPS40_ADMIN_PASSWORD: ${{ secrets.PSMATRIX_WPS40_ADMIN_PASSWORD }}
       PSMATRIX_WPS50_ADMIN_PASSWORD: ${{ secrets.PSMATRIX_WPS50_ADMIN_PASSWORD }}
       PSMATRIX_WPS51_ADMIN_PASSWORD: ${{ secrets.PSMATRIX_WPS51_ADMIN_PASSWORD }}
@@ -61,6 +69,8 @@ jobs:
           if (Test-Path -LiteralPath $evidence) { Remove-Item -LiteralPath $evidence -Recurse -Force }
           New-Item -ItemType Directory -Path $evidence -Force | Out-Null
           "PSMATRIX_PROVISION_EVIDENCE=$evidence" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_PROVISION_MUTATION_STARTED=false" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_PROVISION_WORKFLOW_CODE_HEAD=$($env:GITHUB_SHA.ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
           if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_NAME -ne 'NAVEAX') { throw "Expected NAVEAX Windows runner; got $env:RUNNER_NAME / $env:RUNNER_OS" }
           if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_WINDOWS_GA_ROOT)) { throw 'PSMATRIX_WINDOWS_GA_ROOT is missing from production-ga-windows-lab.' }
@@ -70,7 +80,14 @@ jobs:
           foreach ($item in @(@{Name='release_commit';Value=$env:RELEASE_COMMIT},@{Name='control_head';Value=$env:CONTROL_HEAD})) {
               if ([string]$item.Value -cnotmatch '^[0-9a-f]{40}$') { throw "$($item.Name) must contain exactly 40 lowercase hexadecimal characters." }
           }
-          if ($env:CONTROL_HEAD -ne $env:GITHUB_SHA.ToLowerInvariant()) { throw 'control_head must equal the exact workflow control head.' }
+          if ($env:REPAIR_FROM_MAIN -notin @('true','false')) { throw 'repair_from_main must resolve to true or false.' }
+          if ($env:REPAIR_FROM_MAIN -eq 'true') {
+              if ($env:GITHUB_REF_NAME -ne 'main') { throw 'Repaired RC4 Hyper-V provisioning must execute from main workflow code.' }
+              if ($env:GITHUB_ACTOR -ne 'github-actions[bot]' -or $env:GITHUB_TRIGGERING_ACTOR -ne 'github-actions[bot]') { throw 'Repaired RC4 Hyper-V provisioning must preserve bot/bot dispatch provenance.' }
+          }
+          elseif ($env:CONTROL_HEAD -ne $env:GITHUB_SHA.ToLowerInvariant()) {
+              throw 'control_head must equal the exact workflow control head outside repaired-provision mode.'
+          }
           if ($env:OPERATION_RUN_ID -notmatch '^[1-9][0-9]*$' -or $env:OPERATION_RUN_ATTEMPT -notmatch '^[1-9][0-9]*$') { throw 'operation_run_id and operation_run_attempt must contain positive decimal integers.' }
           $timeout = 0
           if (-not [int]::TryParse($env:PROVISION_TIMEOUT_SECONDS,[ref]$timeout) -or $timeout -lt 300 -or $timeout -gt 21600) { throw 'provision_timeout_seconds must be an integer between 300 and 21600.' }
@@ -110,7 +127,7 @@ jobs:
       - name: Check out exact RC4 provisioning controls
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
         with:
-          ref: ${{ inputs.control_head }}
+          ref: ${{ inputs.repair_from_main && github.sha || inputs.control_head }}
           path: control
           fetch-depth: 1
           persist-credentials: false
@@ -134,12 +151,27 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $controlRoot = Join-Path $env:GITHUB_WORKSPACE 'control'
           $releaseSource = Join-Path $env:GITHUB_WORKSPACE 'release-source'
-          $controlHead = (git -C $controlRoot rev-parse HEAD).Trim().ToLowerInvariant()
+          $workflowCodeHead = (git -C $controlRoot rev-parse HEAD).Trim().ToLowerInvariant()
           $releaseHead = (git -C $releaseSource rev-parse HEAD).Trim().ToLowerInvariant()
-          if ($controlHead -ne $env:CONTROL_HEAD) { throw 'Exact RC4 provisioning control checkout mismatch.' }
+          $expectedControlCheckout = if ($env:REPAIR_FROM_MAIN -eq 'true') { $env:GITHUB_SHA.ToLowerInvariant() } else { $env:CONTROL_HEAD }
+          if ($workflowCodeHead -ne $expectedControlCheckout) { throw 'Exact RC4 provisioning workflow-code checkout mismatch.' }
           if ($releaseHead -ne $env:RELEASE_COMMIT) { throw 'Exact RC4 product source checkout mismatch.' }
           if (-not [string]::IsNullOrWhiteSpace((git -C $controlRoot status --porcelain))) { throw 'RC4 provisioning control checkout is not clean.' }
           if (-not [string]::IsNullOrWhiteSpace((git -C $releaseSource status --porcelain))) { throw 'Exact RC4 product source checkout is not clean.' }
+
+          if ($env:REPAIR_FROM_MAIN -eq 'true') {
+              $frozen = (& gh api "repos/$env:GITHUB_REPOSITORY/git/ref/heads/$env:FROZEN_CONTROL_BRANCH" --jq '.object.sha').Trim().ToLowerInvariant()
+              if ($frozen -ne $env:CONTROL_HEAD) { throw 'Frozen RC4 active-lock moved before repaired Hyper-V provisioning.' }
+              foreach ($relative in @(
+                  'ga-packs/03-authoritative-windows/rc4-release-lock.json',
+                  'release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem'
+              )) {
+                  $currentBlob = (git -C $controlRoot hash-object -- $relative).Trim()
+                  $frozenBlob = (& gh api "repos/$env:GITHUB_REPOSITORY/contents/${relative}?ref=$env:CONTROL_HEAD" --jq '.sha').Trim()
+                  if ($currentBlob -ne $frozenBlob) { throw "Repaired provisioning workflow changed frozen RC4 authority material: $relative" }
+              }
+              Write-Host "repaired_rc4_provision_control_binding=PASS workflow_code_head=$workflowCodeHead control_head=$env:CONTROL_HEAD"
+          }
 
           $lockPath = Join-Path $controlRoot 'ga-packs\03-authoritative-windows\rc4-release-lock.json'
           $committedPublic = Join-Path $controlRoot 'release-assets\2.0.0rc4\psmatrix-2.0.0rc4-release-public.pem'
@@ -162,7 +194,8 @@ jobs:
 
           "PSMATRIX_PROVISION_CONTROL_ROOT=$controlRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "PSMATRIX_PROVISION_RELEASE_SOURCE=$releaseSource" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "PSMATRIX_PROVISION_CONTROL_HEAD=$controlHead" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_PROVISION_CONTROL_HEAD=$env:CONTROL_HEAD" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PSMATRIX_PROVISION_WORKFLOW_CODE_HEAD=$workflowCodeHead" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "PSMATRIX_PROVISION_LOCK_SHA=$lockSha" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "active_rc4_release_lock_sha256=$lockSha"
 
@@ -239,6 +272,154 @@ jobs:
           if (-not (Test-Path -LiteralPath $plan -PathType Leaf) -or (Get-Item -LiteralPath $plan).Length -le 0) { throw 'PSMatrix lab plan did not write a non-empty protected plan.' }
           "PSMATRIX_PROVISION_PLAN=$plan" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
+      - name: Preflight exact RC4 Hyper-V provisioning plan
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module Hyper-V -ErrorAction Stop
+          Import-Module Dism -ErrorAction Stop
+
+          $plan = Get-Content -LiteralPath $env:PSMATRIX_PROVISION_PLAN -Raw | ConvertFrom-Json
+          if ([int]$plan.schema -ne 1 -or [string]$plan.kind -ne 'psmatrix.windows-hyperv-provision-plan') { throw 'RC4 Hyper-V provisioning plan identity is invalid.' }
+          if (@($plan.images).Count -ne 3) { throw 'RC4 Hyper-V provisioning plan must contain exactly three images.' }
+
+          $validatedArtifacts = @{}
+          function Assert-PreflightArtifact {
+              param([object]$Artifact,[string]$Label)
+              if ($null -eq $Artifact) { throw "Required provisioning artifact is missing from plan: $Label" }
+              $path = [System.IO.Path]::GetFullPath([string]$Artifact.path)
+              $expectedSha = ([string]$Artifact.sha256).ToLowerInvariant()
+              $expectedSize = [int64]$Artifact.size
+              if ($expectedSha -cnotmatch '^[0-9a-f]{64}$' -or $expectedSize -le 0) { throw "Provisioning artifact metadata is invalid: $Label" }
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Provisioning artifact is missing: $Label :: $path" }
+              $cacheKey = "$path|$expectedSha|$expectedSize"
+              if (-not $validatedArtifacts.ContainsKey($cacheKey)) {
+                  $actualSize = [int64](Get-Item -LiteralPath $path).Length
+                  $actualSha = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+                  if ($actualSize -ne $expectedSize -or $actualSha -ne $expectedSha) { throw "Provisioning artifact integrity mismatch: $Label :: $path" }
+                  $validatedArtifacts[$cacheKey] = $true
+              }
+              return $path
+          }
+
+          $requiredByDrive = @{}
+          $imageSizeCache = @{}
+          $preflightImages = @()
+          foreach ($image in @($plan.images)) {
+              $runtime = [string]$image.runtime_id
+              $secretName = [string]$image.admin_password_env
+              if ([string]::IsNullOrWhiteSpace($secretName) -or [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($secretName,'Process'))) {
+                  throw "Required protected provisioning secret is missing: $secretName"
+              }
+
+              $switchName = [string]$image.switch_name
+              $switches = @(Get-VMSwitch -Name $switchName -ErrorAction SilentlyContinue)
+              if ($switches.Count -ne 1) { throw "Hyper-V switch is missing or ambiguous before RC4 preflight: $switchName" }
+
+              $vmName = [string]$image.image_id
+              if (@(Get-VM -Name $vmName -ErrorAction SilentlyContinue).Count -ne 0) { throw "Hyper-V VM already exists before RC4 preflight: $vmName" }
+
+              $output = [System.IO.Path]::GetFullPath([string]$image.output_vhdx)
+              if (Test-Path -LiteralPath $output) { throw "Output VHDX already exists before RC4 preflight: $output" }
+              $root = [System.IO.Path]::GetPathRoot($output)
+              if ([string]::IsNullOrWhiteSpace($root) -or $root -notmatch '^[A-Za-z]:\\$') {
+                  throw "RC4 Hyper-V output must use a local target volume: $output"
+              }
+              $driveLetter = $root.Substring(0,1).ToUpperInvariant()
+              $targetVolumes = @(Get-Volume -DriveLetter $driveLetter -ErrorAction SilentlyContinue)
+              if ($targetVolumes.Count -ne 1) { throw "RC4 Hyper-V output must use a local target volume: $output" }
+
+              $isoPath = Assert-PreflightArtifact $image.source_iso "$runtime Windows ISO"
+              [void](Assert-PreflightArtifact $image.worker_package "$runtime worker package")
+              [void](Assert-PreflightArtifact $image.python_installer "$runtime Python installer")
+              [void](Assert-PreflightArtifact $image.credential_bundle "$runtime credential bundle")
+              [void](Assert-PreflightArtifact $image.signing_bundle "$runtime signing bundle")
+              if ($null -ne $image.wmf_package) { [void](Assert-PreflightArtifact $image.wmf_package "$runtime WMF package") }
+
+              $editionIndex = [int]$image.edition_index
+              $imageCacheKey = "$isoPath|$editionIndex"
+              if ($imageSizeCache.ContainsKey($imageCacheKey)) {
+                  $expandedBytes = [int64]$imageSizeCache[$imageCacheKey]
+              }
+              else {
+                  $diskImage = Get-DiskImage -ImagePath $isoPath -ErrorAction SilentlyContinue
+                  $mountedHere = $false
+                  if ($null -eq $diskImage -or -not [bool]$diskImage.Attached) {
+                      $diskImage = Mount-DiskImage -ImagePath $isoPath -PassThru -ErrorAction Stop
+                      $mountedHere = $true
+                  }
+                  try {
+                      $isoVolumes = @($diskImage | Get-Volume -ErrorAction Stop | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.DriveLetter) })
+                      if ($isoVolumes.Count -ne 1) { throw "Selected Windows ISO did not expose exactly one readable volume for $runtime." }
+                      $isoRoot = ([string]$isoVolumes[0].DriveLetter + ':\')
+                      $installImage = Join-Path $isoRoot 'sources\install.wim'
+                      if (-not (Test-Path -LiteralPath $installImage -PathType Leaf)) { $installImage = Join-Path $isoRoot 'sources\install.esd' }
+                      if (-not (Test-Path -LiteralPath $installImage -PathType Leaf)) { throw "Selected Windows ISO has no install.wim/install.esd for $runtime." }
+                      $windowsImage = Get-WindowsImage -ImagePath $installImage -Index $editionIndex -ErrorAction Stop
+                      $expandedBytes = [int64]$windowsImage.ImageSize
+                      if ($expandedBytes -le 0) { throw "Selected Windows image has an invalid expanded size for $runtime." }
+                      $imageSizeCache[$imageCacheKey] = $expandedBytes
+                  }
+                  finally {
+                      if ($mountedHere) { Dismount-DiskImage -ImagePath $isoPath -ErrorAction SilentlyContinue | Out-Null }
+                  }
+              }
+
+              if (-not $requiredByDrive.ContainsKey($driveLetter)) { $requiredByDrive[$driveLetter] = [int64]0 }
+              $requiredByDrive[$driveLetter] = [int64]$requiredByDrive[$driveLetter] + $expandedBytes
+              $preflightImages += [ordered]@{
+                  runtime_id = $runtime
+                  output_vhdx = $output
+                  target_drive = $driveLetter
+                  expanded_windows_image_bytes = $expandedBytes
+              }
+          }
+
+          $storage = @()
+          foreach ($driveLetter in @($requiredByDrive.Keys | Sort-Object)) {
+              $volumes = @(Get-Volume -DriveLetter $driveLetter -ErrorAction Stop)
+              if ($volumes.Count -ne 1) { throw "RC4 Hyper-V target volume became ambiguous during storage preflight: $driveLetter" }
+              $requiredBytes = [int64]$requiredByDrive[$driveLetter]
+              $availableBytes = [int64]$volumes[0].SizeRemaining
+              if ($availableBytes -lt $requiredBytes) {
+                  throw "Insufficient RC4 Hyper-V storage on ${driveLetter}: required lower bound $requiredBytes bytes, available $availableBytes bytes."
+              }
+              $storage += [ordered]@{
+                  drive = $driveLetter
+                  required_lower_bound_bytes = $requiredBytes
+                  available_bytes = $availableBytes
+              }
+              Write-Host "hyperv_storage_capacity_preflight=PASS drive=$driveLetter required_lower_bound_bytes=$requiredBytes available_bytes=$availableBytes"
+          }
+
+          $preflightPath = Join-Path $env:PSMATRIX_PROVISION_RUN_ROOT 'windows-hyperv-provision-preflight.json'
+          $preflight = [ordered]@{
+              schema = 1
+              kind = 'psmatrix.windows-authority-hyperv-provisioning-preflight'
+              status = 'PASS'
+              release_version = '2.0.0rc4'
+              release_commit = $env:RELEASE_COMMIT
+              control_head = $env:CONTROL_HEAD
+              workflow_code_recovery = ($env:REPAIR_FROM_MAIN -eq 'true')
+              workflow_code_head = $env:PSMATRIX_PROVISION_WORKFLOW_CODE_HEAD
+              plan_sha256 = [string]$plan.plan_sha256
+              mutation_started = $false
+              storage_capacity_lower_bound = 'sum-selected-expanded-windows-image-bytes-per-target-volume'
+              images = $preflightImages
+              storage = $storage
+          }
+          [System.IO.File]::WriteAllText($preflightPath,(($preflight | ConvertTo-Json -Depth 10)+[Environment]::NewLine),[System.Text.UTF8Encoding]::new($false))
+          "PSMATRIX_PROVISION_PREFLIGHT=$preflightPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host 'hyperv_plan_preflight=PASS'
+
+      - name: Mark RC4 Hyper-V mutation boundary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path -LiteralPath $env:PSMATRIX_PROVISION_PREFLIGHT -PathType Leaf)) { throw 'Protected RC4 Hyper-V preflight evidence is missing before mutation.' }
+          "PSMATRIX_PROVISION_MUTATION_STARTED=true" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host 'rc4_hyperv_mutation_boundary=STARTED'
+
       - name: Provision exact RC4 Hyper-V VM set
         shell: pwsh
         run: |
@@ -292,6 +473,9 @@ jobs:
               release_version = '2.0.0rc4'
               release_commit = $env:RELEASE_COMMIT
               control_head = $env:CONTROL_HEAD
+              workflow_code_recovery = ($env:REPAIR_FROM_MAIN -eq 'true')
+              workflow_code_head = $env:PSMATRIX_PROVISION_WORKFLOW_CODE_HEAD
+              mutation_started = $true
               active_release_lock_sha256 = $env:PSMATRIX_PROVISION_LOCK_SHA
               operation_run_id = [int64]$env:OPERATION_RUN_ID
               operation_run_attempt = [int]$env:OPERATION_RUN_ATTEMPT
@@ -327,6 +511,7 @@ jobs:
           $ErrorActionPreference = 'Continue'
           if ([string]::IsNullOrWhiteSpace($env:PSMATRIX_PROVISION_EVIDENCE)) { exit 0 }
           New-Item -ItemType Directory -Path $env:PSMATRIX_PROVISION_EVIDENCE -Force | Out-Null
+          $mutationStarted = ($env:PSMATRIX_PROVISION_MUTATION_STARTED -eq 'true')
           $failure = [ordered]@{
               schema = 1
               kind = 'psmatrix.windows-authority-hyperv-provisioning-status'
@@ -334,10 +519,13 @@ jobs:
               release_version = '2.0.0rc4'
               release_commit = $env:RELEASE_COMMIT
               control_head = $env:CONTROL_HEAD
+              workflow_code_recovery = ($env:REPAIR_FROM_MAIN -eq 'true')
+              workflow_code_head = $env:PSMATRIX_PROVISION_WORKFLOW_CODE_HEAD
+              mutation_started = $mutationStarted
               operation_run_id = $env:OPERATION_RUN_ID
               operation_run_attempt = $env:OPERATION_RUN_ATTEMPT
-              creates_virtual_machines = $true
-              creates_checkpoints = $true
+              creates_virtual_machines = $mutationStarted
+              creates_checkpoints = $mutationStarted
               actual_os_identity_measured = $false
               runs_authoritative_campaign = $false
               authoritative = $false

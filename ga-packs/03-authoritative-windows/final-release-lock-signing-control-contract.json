@@ -24,6 +24,7 @@
       ".github/workflows/ops-final-signing-to-rebind-and-security-review.yml",
       ".github/workflows/ops-rc4-closure-to-final-lock-review.yml",
       "ga-packs/03-authoritative-windows/final-release-lock-signing-control-contract.json",
+      "ga-packs/03-authoritative-windows/rc4-hyperv-provisioning-workflow-contract.json",
       "scripts/ga/build_windows_authority_final_release_lock_draft.py",
       "scripts/ga/promote_windows_authority_final_release_lock.py",
       "scripts/ga/sign_windows_authority_final_release.py",
@@ -57,9 +58,11 @@
       "release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem",
       "scripts/ga/Get-PSMatrixWindowsAuthorityMediaInventory.ps1",
       ".github/workflows/ga-windows-authority-rc4-media-readiness-selfhosted.yml",
+      ".github/workflows/ga-windows-authority-rc4-provision-selfhosted.yml",
       "tests/test_windows_authority_media_inventory.py",
       "scripts/ga/build_windows_authority_provisioning_manifest.py",
-      "tests/test_windows_authority_rc4_provisioning_manifest.py"
+      "tests/test_windows_authority_rc4_provisioning_manifest.py",
+      "tests/test_windows_authority_rc4_hyperv_provisioning.py"
     ]
   },
   "rc4_authority_continuity": {
