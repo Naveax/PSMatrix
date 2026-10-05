@@ -67,6 +67,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--report", type=Path)
     parser.add_argument("--write-profile-template", action="store_true")
     parser.add_argument("--require-complete", action="store_true")
+    parser.add_argument("--validate-profile-only", action="store_true")
     return parser.parse_args()
 
 
@@ -293,6 +294,34 @@ def main() -> int:
     output_path = (args.output or ga_root / "config" / "windows-lab-media.json").resolve()
     template_path = (args.profile_template or ga_root / "config" / "windows-lab-provisioning-profile.example.json").resolve()
     report_path = (args.report or ga_root / "windows-authority-provisioning-manifest-materialization.json").resolve()
+
+    if args.validate_profile_only:
+        valid = False
+        try:
+            profile = read_json(profile_path)
+            validate_profile(profile, release_commit)
+            valid = True
+        except Exception:
+            valid = False
+        print(
+            json.dumps(
+                {
+                    "schema": 1,
+                    "kind": "psmatrix.windows-authority-provisioning-profile-validation",
+                    "status": "PASS" if valid else "FAIL",
+                    "release_version": release_version,
+                    "release_commit": release_commit,
+                    "profile_valid": valid,
+                    "writes_files": False,
+                    "creates_virtual_machines": False,
+                    "creates_checkpoints": False,
+                    "authoritative": False,
+                    "ga_eligible": False,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0 if valid else 1
 
     if args.write_profile_template or not template_path.is_file():
         atomic_json(template_path, profile_template(release_commit))

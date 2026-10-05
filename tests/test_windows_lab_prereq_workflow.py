@@ -20,7 +20,7 @@ class WindowsLabPrerequisiteWorkflowTests(unittest.TestCase):
             "Enforce required Windows lab prerequisites",
             "windows_lab_prereq_audit=PASS fail_closed=true",
             "external_iso_count_gate=false",
-            "No secret values, hashes, lengths, or configured paths were emitted.",
+            "No secret values, secret hashes, secret lengths, or configured paths were emitted.",
         )
         for fragment in required_fragments:
             self.assertIn(fragment, raw)
@@ -47,6 +47,26 @@ class WindowsLabPrerequisiteWorkflowTests(unittest.TestCase):
         )
         self.assertIn("if (-not [bool]$v.audit_pass -or $failed.Count -ne 0)", raw)
         self.assertIn('throw "Windows-lab prerequisite audit failed required checks: $failedText"', raw)
+
+    def test_profile_and_storage_observation_is_value_free_and_not_an_early_gate(self) -> None:
+        raw = WORKFLOW.read_text(encoding="utf-8")
+        for fragment in (
+            "Check out exact prerequisite-audit source",
+            "--validate-profile-only",
+            "provisioning_profile_present = $profilePresent",
+            "provisioning_profile_valid = $profileValid",
+            "provisioning_profile_gate = $false",
+            "provisioning_target_local_fixed = $profileTargetLocalFixed",
+            "provisioning_target_min_free_bytes = $profileTargetMinFreeBytes",
+            "max_fixed_local_free_bytes = $maxFixedLocalFreeBytes",
+            "provisioning_storage_capacity_gate = $false",
+            "exact selected-image capacity remains enforced by the RC4 Hyper-V mutation-boundary preflight",
+        ):
+            self.assertIn(fragment, raw)
+        self.assertNotIn("Name = 'provisioning_profile_present'", raw)
+        self.assertNotIn("Name = 'provisioning_profile_valid'", raw)
+        self.assertNotIn("Name = 'provisioning_target_local_fixed'", raw)
+        self.assertNotIn("Name = 'provisioning_storage_capacity'", raw)
 
     def test_iso_count_is_not_an_early_prerequisite_gate(self) -> None:
         raw = WORKFLOW.read_text(encoding="utf-8")

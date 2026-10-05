@@ -28,6 +28,7 @@ jobs:
       PSMATRIX_WPS40_ADMIN_PASSWORD: ${{ secrets.PSMATRIX_WPS40_ADMIN_PASSWORD }}
       PSMATRIX_WPS50_ADMIN_PASSWORD: ${{ secrets.PSMATRIX_WPS50_ADMIN_PASSWORD }}
       PSMATRIX_WPS51_ADMIN_PASSWORD: ${{ secrets.PSMATRIX_WPS51_ADMIN_PASSWORD }}
+      RC4_RELEASE_COMMIT: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
     steps:
       - name: Verify canonical recovery trigger provenance
         shell: pwsh
@@ -66,6 +67,13 @@ jobs:
           else {
             throw "Unsupported Windows-lab prerequisite audit event: $eventName"
           }
+
+      - name: Check out exact prerequisite-audit source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
 
       - name: Audit value-free Windows lab prerequisites
         id: audit
@@ -121,6 +129,19 @@ jobs:
           $mediaExternalExists = $false
           $isoCount = 0
           $configExists = $false
+          $profilePresent = $false
+          $profileNoReparsePoints = $false
+          $profileValid = $false
+          $profileTargetLocalFixed = $false
+          $profileTargetVolumeCount = 0
+          $profileTargetMinFreeBytes = [int64]0
+          $pythonAvailable = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
+          $fixedLocalVolumes = @([System.IO.DriveInfo]::GetDrives() | Where-Object { $_.IsReady -and $_.DriveType -eq [System.IO.DriveType]::Fixed })
+          $fixedLocalVolumeCount = $fixedLocalVolumes.Count
+          $maxFixedLocalFreeBytes = [int64]0
+          if ($fixedLocalVolumeCount -gt 0) {
+            $maxFixedLocalFreeBytes = [int64](($fixedLocalVolumes | Measure-Object -Property AvailableFreeSpace -Maximum).Maximum)
+          }
           $hypervCmd = $null -ne (Get-Command Get-VM -ErrorAction SilentlyContinue)
           $vmmsRunning = $false
 
@@ -146,6 +167,63 @@ jobs:
               }
               if ($mediaExternalExists) {
                 $isoCount = @(Get-ChildItem -LiteralPath $external -File -Filter '*.iso' -ErrorAction SilentlyContinue).Count
+              }
+
+              if ($configExists) {
+                $profilePath = Join-Path $config 'windows-lab-provisioning-profile.json'
+                $profilePresent = Test-Path -LiteralPath $profilePath -PathType Leaf
+                if ($profilePresent) {
+                  $profileNoReparsePoints = Test-NoLinkOrReparsePath -Path $profilePath
+                  if ($profileNoReparsePoints -and $pythonAvailable) {
+                    $validator = Join-Path $env:GITHUB_WORKSPACE 'scripts\gauild_windows_authority_provisioning_manifest.py'
+                    $contract = Join-Path $env:GITHUB_WORKSPACE 'ga-packs-authoritative-windows
+c4-provisioning-manifest-contract.json'
+                    & python $validator `
+                      --source-root $env:GITHUB_WORKSPACE `
+                      --product-source-root $env:GITHUB_WORKSPACE `
+                      --ga-root $root `
+                      --release-commit $env:RC4_RELEASE_COMMIT `
+                      --contract $contract `
+                      --profile $profilePath `
+                      --validate-profile-only *> $null
+                    $profileValid = ($LASTEXITCODE -eq 0)
+
+                    if ($profileValid) {
+                      $profile = Get-Content -LiteralPath $profilePath -Raw | ConvertFrom-Json
+                      $targetPaths = @([string]$profile.hyperv_host.lab_root)
+                      $targetPaths += @($profile.images | ForEach-Object { [string]$_.output_vhdx })
+                      $targetRoots = @(
+                        $targetPaths | ForEach-Object {
+                          $full = [System.IO.Path]::GetFullPath($_)
+                          [System.IO.Path]::GetPathRoot($full)
+                        } | Sort-Object -Unique
+                      )
+                      $profileTargetVolumeCount = $targetRoots.Count
+                      $profileTargetLocalFixed = ($profileTargetVolumeCount -gt 0)
+                      $targetFree = @()
+                      foreach ($targetRoot in $targetRoots) {
+                        if ([string]::IsNullOrWhiteSpace($targetRoot) -or $targetRoot -notmatch '^[A-Za-z]:\$') {
+                          $profileTargetLocalFixed = $false
+                          continue
+                        }
+                        try {
+                          $driveInfo = [System.IO.DriveInfo]::new($targetRoot)
+                          if (-not $driveInfo.IsReady -or $driveInfo.DriveType -ne [System.IO.DriveType]::Fixed) {
+                            $profileTargetLocalFixed = $false
+                            continue
+                          }
+                          $targetFree += [int64]$driveInfo.AvailableFreeSpace
+                        }
+                        catch {
+                          $profileTargetLocalFixed = $false
+                        }
+                      }
+                      if ($profileTargetLocalFixed -and $targetFree.Count -eq $profileTargetVolumeCount) {
+                        $profileTargetMinFreeBytes = [int64](($targetFree | Measure-Object -Minimum).Minimum)
+                      }
+                    }
+                  }
+                }
               }
             }
           }
@@ -195,6 +273,17 @@ jobs:
             ga_layout_no_reparse_points = $layoutNoReparsePoints
             external_iso_count = $isoCount
             external_iso_count_gate = $false
+            provisioning_profile_present = $profilePresent
+            provisioning_profile_no_reparse_points = $profileNoReparsePoints
+            provisioning_profile_valid = $profileValid
+            provisioning_profile_gate = $false
+            provisioning_target_local_fixed = $profileTargetLocalFixed
+            provisioning_target_volume_count = $profileTargetVolumeCount
+            provisioning_target_min_free_bytes = $profileTargetMinFreeBytes
+            fixed_local_volume_count = $fixedLocalVolumeCount
+            max_fixed_local_free_bytes = $maxFixedLocalFreeBytes
+            provisioning_storage_capacity_gate = $false
+            python_available = $pythonAvailable
             hyperv_cmd_available = $hypervCmd
             vmms_running = $vmmsRunning
             wps40_admin_secret_present = $wps40
@@ -243,6 +332,15 @@ jobs:
           External media directory exists: $($v.media_external_dir_exists)
           GA layout has no links/reparse points: $($v.ga_layout_no_reparse_points)
           External ISO count (informational, not a prerequisite gate): $($v.external_iso_count)
+          Provisioning profile present (informational): $($v.provisioning_profile_present)
+          Provisioning profile no links/reparse points (informational): $($v.provisioning_profile_no_reparse_points)
+          Provisioning profile valid for frozen RC4 release (informational): $($v.provisioning_profile_valid)
+          Provisioning target local/fixed (informational): $($v.provisioning_target_local_fixed)
+          Provisioning target volume count (informational): $($v.provisioning_target_volume_count)
+          Provisioning target minimum free bytes (informational): $($v.provisioning_target_min_free_bytes)
+          Fixed local volume count (informational): $($v.fixed_local_volume_count)
+          Maximum fixed local free bytes (informational): $($v.max_fixed_local_free_bytes)
+          Python available (informational): $($v.python_available)
           Hyper-V cmdlets available: $($v.hyperv_cmd_available)
           VMMS running: $($v.vmms_running)
           WinPS 4.0 admin secret present: $($v.wps40_admin_secret_present)
@@ -250,7 +348,8 @@ jobs:
           WinPS 5.1 admin secret present: $($v.wps51_admin_secret_present)
 
           The raw ISO count is intentionally informational; canonical RC4 media completeness is enforced later by the reviewed media inventory/selection workflow.
-          No secret values, hashes, lengths, or configured paths were emitted.
+          Provisioning profile and storage observations are informational here; exact selected-image capacity remains enforced by the RC4 Hyper-V mutation-boundary preflight.
+          No secret values, secret hashes, secret lengths, or configured paths were emitted.
           "@
 
           $commentId = @(
@@ -286,4 +385,6 @@ jobs:
           }
           Write-Host 'windows_lab_prereq_audit=PASS fail_closed=true'
           Write-Host 'external_iso_count_gate=false'
+          Write-Host 'provisioning_profile_gate=false'
+          Write-Host 'provisioning_storage_capacity_gate=false'
           Write-Host 'secret_values_logged=false'

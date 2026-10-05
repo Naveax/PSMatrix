@@ -45,7 +45,7 @@ class WindowsLabAuditRootBoundaryTests(unittest.TestCase):
             "GA root/repository disjoint: $($v.ga_root_repository_disjoint)",
             "GA root has no links/reparse points: $($v.ga_root_no_reparse_points)",
             "GA layout has no links/reparse points: $($v.ga_layout_no_reparse_points)",
-            "No secret values, hashes, lengths, or configured paths were emitted.",
+            "No secret values, secret hashes, secret lengths, or configured paths were emitted.",
         ):
             self.assertIn(fragment, publish)
 
