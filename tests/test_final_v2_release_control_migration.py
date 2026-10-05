@@ -128,6 +128,21 @@ class FinalV2ReleaseControlMigrationTests(unittest.TestCase):
         self.assertIn('if has("ga_eligible") then .ga_eligible else true end', post_intake)
         self.assertNotIn(".authoritative // true", post_intake)
         self.assertNotIn(".ga_eligible // true", post_intake)
+        for marker in (
+            "recover_failed_provisioning_manifest_run_id:",
+            "FAILED_PROVISIONING_RUN_ID:",
+            "if: env.FAILED_PROVISIONING_RUN_ID == ''",
+            "Failed recovery only supports provisioning-manifest.",
+            "RC4 recovery inputs are mutually exclusive.",
+            "A newer failed provisioning-manifest run exists; recover that exact run instead",
+            "--argjson baseline",
+            "windows-authority-rc4-provisioning-manifest-status",
+            "provisioning-manifest-failure.json",
+            "creates_virtual_machines creates_checkpoints authoritative ga_eligible",
+            "rc4_failed_provisioning_manifest_recovery_guard=PASS",
+            "rc4_failed_provisioning_manifest_recovery_dispatch=PASS",
+        ):
+            self.assertIn(marker, post_intake)
 
     def test_rc4_media_blocked_state_can_be_superseded_by_a_new_successful_run(self):
         text = (ROOT / ".github/workflows/ops-rc4-post-intake-canonical-chain.yml").read_text(encoding="utf-8")
