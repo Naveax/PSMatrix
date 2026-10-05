@@ -79,6 +79,23 @@ class WindowsAuthorityRC4ProvisioningManifestTests(unittest.TestCase):
         self.assertNotIn('selection.get("release_version") != "2.0.0rc3"', text)
         self.assertNotIn('"release_version": "2.0.0rc3",\n        "release_commit": release_commit', text)
 
+    def test_validate_profile_only_mode_is_non_mutating_and_value_free(self) -> None:
+        text = BUILDER.read_text(encoding="utf-8")
+        self.assertIn('parser.add_argument("--validate-profile-only", action="store_true")', text)
+        branch = text.split("if args.validate_profile_only:", 1)[1].split("if args.write_profile_template", 1)[0]
+        for marker in (
+            '"kind": "psmatrix.windows-authority-provisioning-profile-validation"',
+            '"writes_files": False',
+            '"creates_virtual_machines": False',
+            '"creates_checkpoints": False',
+            '"authoritative": False',
+            '"ga_eligible": False',
+        ):
+            self.assertIn(marker, branch)
+        self.assertNotIn("atomic_json(", branch)
+        self.assertNotIn("profile_path", branch.split("print(", 1)[1])
+        self.assertNotIn('"errors"', branch)
+
     def test_profile_template_does_not_assume_a_d_drive(self) -> None:
         module = _load_builder()
         value = module.profile_template("a" * 40)
