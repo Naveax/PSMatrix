@@ -175,9 +175,8 @@ jobs:
                 if ($profilePresent) {
                   $profileNoReparsePoints = Test-NoLinkOrReparsePath -Path $profilePath
                   if ($profileNoReparsePoints -and $pythonAvailable) {
-                    $validator = Join-Path $env:GITHUB_WORKSPACE 'scripts\gauild_windows_authority_provisioning_manifest.py'
-                    $contract = Join-Path $env:GITHUB_WORKSPACE 'ga-packs-authoritative-windows
-c4-provisioning-manifest-contract.json'
+                    $validator = Join-Path $env:GITHUB_WORKSPACE 'scripts/ga/build_windows_authority_provisioning_manifest.py'
+                    $contract = Join-Path $env:GITHUB_WORKSPACE 'ga-packs/03-authoritative-windows/rc4-provisioning-manifest-contract.json'
                     & python $validator `
                       --source-root $env:GITHUB_WORKSPACE `
                       --product-source-root $env:GITHUB_WORKSPACE `

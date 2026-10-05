@@ -50,6 +50,10 @@ class WindowsLabPrerequisiteWorkflowTests(unittest.TestCase):
 
     def test_profile_and_storage_observation_is_value_free_and_not_an_early_gate(self) -> None:
         raw = WORKFLOW.read_text(encoding="utf-8")
+        forbidden_controls = [chr(value) for value in range(32) if value not in (9, 10, 13)]
+        self.assertFalse(any(value in raw for value in forbidden_controls))
+        self.assertIn("scripts/ga/build_windows_authority_provisioning_manifest.py", raw)
+        self.assertIn("ga-packs/03-authoritative-windows/rc4-provisioning-manifest-contract.json", raw)
         for fragment in (
             "Check out exact prerequisite-audit source",
             "--validate-profile-only",
