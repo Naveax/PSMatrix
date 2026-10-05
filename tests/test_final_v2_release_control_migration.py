@@ -130,7 +130,8 @@ class FinalV2ReleaseControlMigrationTests(unittest.TestCase):
         self.assertNotIn(".ga_eligible // true", post_intake)
         for marker in (
             "recover_failed_provisioning_manifest_run_id:",
-            "recover-failed-provisioning-manifest:",
+            "FAILED_PROVISIONING_RUN_ID:",
+            "if: env.FAILED_PROVISIONING_RUN_ID == ''",
             "Failed recovery only supports provisioning-manifest.",
             "RC4 recovery inputs are mutually exclusive.",
             "A newer failed provisioning-manifest run exists; recover that exact run instead",
