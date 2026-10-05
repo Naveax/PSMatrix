@@ -203,20 +203,67 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          existing=$(gh api --method GET \
+          active=$(gh api --method GET \
             "repos/$GITHUB_REPOSITORY/actions/workflows/ga-windows-authority-rc4-media-readiness-selfhosted.yml/runs" \
             -f branch='main' \
             -f event='workflow_dispatch' \
             -f per_page=100 \
-            --jq ".workflow_runs[] | select(.head_sha == \"$GITHUB_SHA\" and (.status == \"queued\" or .status == \"in_progress\" or .status == \"waiting\" or .conclusion == \"success\")) | .id" \
+            --jq ".workflow_runs[] | select(.head_sha == \"$GITHUB_SHA\" and (.status == \"queued\" or .status == \"in_progress\" or .status == \"waiting\")) | .id" \
             | head -n 1)
-          if [[ -n "$existing" ]]; then
+          if [[ -n "$active" ]]; then
             echo 'already_dispatched=true' >> "$GITHUB_OUTPUT"
-            echo "duplicate_repaired_media_suppressed=true existing_run_id=$existing"
+            echo "duplicate_repaired_media_suppressed=true reason=active_run existing_run_id=$active"
+            exit 0
+          fi
+
+          terminal_success=''
+          while IFS= read -r success; do
+            [[ -n "$success" ]] || continue
+            evidence="$RUNNER_TEMP/rc4-repaired-media-dedup-$success"
+            rm -rf "$evidence"
+            mkdir -p "$evidence"
+            if ! gh run download "$success" \
+              --repo "$GITHUB_REPOSITORY" \
+              --name windows-authority-rc4-media-readiness \
+              --dir "$evidence"; then
+              echo "Cannot inspect prior successful repaired-media run artifact: $success" >&2
+              exit 1
+            fi
+            status_file=$(find "$evidence" -type f -name 'media-readiness-status.json' -print -quit)
+            [[ -n "$status_file" && -f "$status_file" ]] || { echo "Prior repaired-media status artifact is missing: $success" >&2; exit 1; }
+            [[ "$(jq -r '.kind // ""' "$status_file")" == 'psmatrix.windows-authority-rc4-media-readiness-workflow-status' ]] || { echo "Prior repaired-media status kind mismatch: $success" >&2; exit 1; }
+            [[ "$(jq -r '.workflow_code_head // ""' "$status_file")" == "$GITHUB_SHA" ]] || { echo "Prior repaired-media workflow-code head mismatch: $success" >&2; exit 1; }
+            [[ "$(jq -r '.control_head // ""' "$status_file")" == "$CONTROL_HEAD" ]] || { echo "Prior repaired-media control head mismatch: $success" >&2; exit 1; }
+            status=$(jq -r '.status // ""' "$status_file")
+            ready=$(jq -r '.ready_for_provisioning_manifest_materialization // false' "$status_file")
+            if [[ "$status" == 'READY_FOR_PROVISIONING_MANIFEST_MATERIALIZATION' && "$ready" == 'true' ]]; then
+              terminal_success="$success"
+              break
+            fi
+            case "$status" in
+              READY_FOR_OPERATOR_SELECTION|EXTERNAL_MEDIA_INCOMPLETE)
+                echo "repaired_media_prior_success_nonterminal=true existing_run_id=$success status=$status"
+                ;;
+              *)
+                echo "Unknown successful repaired-media status: run=$success status=$status" >&2
+                exit 1
+                ;;
+            esac
+          done < <(
+            gh api --method GET \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/ga-windows-authority-rc4-media-readiness-selfhosted.yml/runs" \
+              -f branch='main' \
+              -f event='workflow_dispatch' \
+              -f per_page=100 \
+              --jq ".workflow_runs[] | select(.head_sha == \"$GITHUB_SHA\" and .conclusion == \"success\") | .id"
+          )
+
+          if [[ -n "$terminal_success" ]]; then
+            echo 'already_dispatched=true' >> "$GITHUB_OUTPUT"
+            echo "duplicate_repaired_media_suppressed=true reason=terminal_success existing_run_id=$terminal_success"
           else
             echo 'already_dispatched=false' >> "$GITHUB_OUTPUT"
           fi
-
       - name: Dispatch repaired RC4 media readiness from current main
         if: steps.dedup_repair.outputs.already_dispatched != 'true'
         shell: bash

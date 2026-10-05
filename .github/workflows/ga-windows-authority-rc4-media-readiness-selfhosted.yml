@@ -151,6 +151,26 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $gaRoot = [System.IO.Path]::GetFullPath($env:PSMATRIX_WINDOWS_GA_ROOT)
           $inventoryPath = Join-Path $gaRoot 'windows-authority-media-inventory.json'
+          $canonicalPath = Join-Path $gaRoot 'windows-authority-media-inventory.canonical.json'
+          $selectionInput = Join-Path $gaRoot 'media\windows-lab-media-selection.json'
+          if (Test-Path -LiteralPath $selectionInput -PathType Leaf) {
+              if (-not (Test-Path -LiteralPath $canonicalPath -PathType Leaf)) {
+                  throw 'Reviewed media selection exists but its canonical inventory binding is missing.'
+              }
+              $reviewedSelection = Get-Content -LiteralPath $selectionInput -Raw | ConvertFrom-Json
+              $reviewedInventorySha = ([string]$reviewedSelection.inventory_sha256).ToLowerInvariant()
+              if ($reviewedInventorySha -notmatch '^[0-9a-f]{64}$') {
+                  throw 'Reviewed media selection inventory SHA-256 is invalid.'
+              }
+              $canonicalSha = (Get-FileHash -LiteralPath $canonicalPath -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($canonicalSha -ne $reviewedInventorySha) {
+                  throw "Reviewed media selection no longer matches the preserved canonical inventory: $canonicalSha != $reviewedInventorySha"
+              }
+              "PSMATRIX_REUSE_REVIEWED_MEDIA_INVENTORY=true" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+              Write-Host "reviewed_media_inventory_reuse=PASS canonical_sha256=$canonicalSha"
+              return
+          }
+          "PSMATRIX_REUSE_REVIEWED_MEDIA_INVENTORY=false" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $resolvedSearchRoots = @(
               [System.IO.Path]::GetFullPath($env:PSMATRIX_MEDIA_RELEASE_ROOT),
               [System.IO.Path]::GetFullPath($env:PSMATRIX_MEDIA_EXTERNAL_ROOT)
@@ -185,11 +205,13 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $inventoryPath = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'windows-authority-media-inventory.json'
           $canonicalPath = Join-Path $env:PSMATRIX_WINDOWS_GA_ROOT 'windows-authority-media-inventory.canonical.json'
-          & "$env:GITHUB_WORKSPACE\scripts\ga\Resolve-PSMatrixWindowsAuthorityMediaInventory.ps1" `
-              -SourceRoot $env:GITHUB_WORKSPACE `
-              -GaRoot $env:PSMATRIX_WINDOWS_GA_ROOT `
-              -InventoryPath $inventoryPath `
-              -OutputPath $canonicalPath
+          if ($env:PSMATRIX_REUSE_REVIEWED_MEDIA_INVENTORY -eq 'true') {
+              if (-not (Test-Path -LiteralPath $canonicalPath -PathType Leaf)) { throw 'Reviewed canonical media inventory disappeared before materialization.' }
+              Write-Host 'reviewed_canonical_inventory_reuse=PASS'
+          }
+          else {
+              & "$env:GITHUB_WORKSPACE\scripts\ga\Resolve-PSMatrixWindowsAuthorityMediaInventory.ps1" -SourceRoot $env:GITHUB_WORKSPACE -GaRoot $env:PSMATRIX_WINDOWS_GA_ROOT -InventoryPath $inventoryPath -OutputPath $canonicalPath
+          }
           if (-not (Test-Path -LiteralPath $canonicalPath -PathType Leaf)) { throw 'Canonical Windows authority media inventory was not written.' }
           $canonical = Get-Content -LiteralPath $canonicalPath -Raw | ConvertFrom-Json
           if ([string]$canonical.canonicalization.release_authority_status -ne 'READY') { throw 'Canonical release authority is not READY after protected RC4 intake.' }
