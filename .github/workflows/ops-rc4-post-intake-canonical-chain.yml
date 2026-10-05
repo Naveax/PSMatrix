@@ -16,6 +16,10 @@ on:
         description: Canonical bot-dispatched RC4 stage run to recover after workflow_run suppression
         required: false
         type: string
+      recover_failed_provisioning_manifest_run_id:
+        description: Failed canonical bot/bot RC4 provisioning-manifest run to safely redispatch after external host state is repaired
+        required: false
+        type: string
 
 concurrency:
   group: ops-rc4-post-intake-canonical-chain
@@ -41,6 +45,7 @@ jobs:
         github.ref_name == 'main' &&
         github.actor == 'Naveax' &&
         github.triggering_actor == 'Naveax' &&
+        inputs.recover_failed_provisioning_manifest_run_id == '' &&
         inputs.recover_completed_run_id != ''
       )
     runs-on: ubuntu-latest
@@ -355,3 +360,109 @@ jobs:
 
           echo 'rc4_chain_advanced=true'
           echo 'ga_eligible=false'
+
+  recover-failed-provisioning-manifest:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref_name == 'main' &&
+      github.actor == 'Naveax' &&
+      github.triggering_actor == 'Naveax' &&
+      inputs.recover_failed_provisioning_manifest_run_id != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FAILED_RUN_ID: ${{ inputs.recover_failed_provisioning_manifest_run_id }}
+      COMPLETED_RECOVERY_RUN_ID: ${{ inputs.recover_completed_run_id }}
+      RELEASE_COMMIT: 0b4e77d5e5cf142e2cdb47f5cc4b8dd81353ae63
+      CONTROL_BRANCH: release/2.0.0rc4-active-lock
+      STATE_ISSUE: '262'
+    steps:
+      - name: Validate failed RC4 provisioning-manifest recovery boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTOR" == 'Naveax' && "$GITHUB_TRIGGERING_ACTOR" == 'Naveax' ]] || { echo 'Failed provisioning-manifest recovery must be explicitly dispatched by Naveax.' >&2; exit 1; }
+          [[ -z "$COMPLETED_RECOVERY_RUN_ID" ]] || { echo 'RC4 recovery inputs are mutually exclusive.' >&2; exit 1; }
+          [[ "$GITHUB_REF_NAME" == 'main' ]] || { echo 'Failed provisioning-manifest recovery must execute from main.' >&2; exit 1; }
+          [[ "$FAILED_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo 'Failed provisioning-manifest run ID is invalid.' >&2; exit 1; }
+
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$FAILED_RUN_ID")
+          [[ "$(jq -r '.name' <<<"$run")" == 'production-ga-windows-authority-rc4-provisioning-manifest-selfhosted' ]] || { echo 'Failed recovery only supports provisioning-manifest.' >&2; exit 1; }
+          [[ "$(jq -r '.path' <<<"$run")" == '.github/workflows/ga-windows-authority-rc4-provisioning-manifest-selfhosted.yml' ]] || { echo 'Failed provisioning-manifest workflow path mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.event' <<<"$run")" == 'workflow_dispatch' && "$(jq -r '.status' <<<"$run")" == 'completed' && "$(jq -r '.conclusion' <<<"$run")" == 'failure' ]] || { echo 'Recovered provisioning-manifest run is not completed/failure.' >&2; exit 1; }
+          [[ "$(jq -r '.actor.login' <<<"$run")" == 'github-actions[bot]' && "$(jq -r '.triggering_actor.login' <<<"$run")" == 'github-actions[bot]' ]] || { echo 'Failed provisioning-manifest run is not canonical bot/bot provenance.' >&2; exit 1; }
+          attempt=$(jq -r '.run_attempt' <<<"$run")
+          head=$(jq -r '.head_sha' <<<"$run")
+          branch=$(jq -r '.head_branch' <<<"$run")
+          [[ "$attempt" =~ ^[1-9][0-9]*$ && "$head" =~ ^[0-9a-f]{40}$ ]] || { echo 'Failed provisioning-manifest attempt/head is invalid.' >&2; exit 1; }
+          [[ "$branch" == "$CONTROL_BRANCH" ]] || { echo 'Failed provisioning-manifest branch mismatch.' >&2; exit 1; }
+          control=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$CONTROL_BRANCH" --jq '.object.sha')
+          [[ "$control" == "$head" ]] || { echo 'Frozen RC4 control moved before failed provisioning-manifest recovery.' >&2; exit 1; }
+
+          evidence="$RUNNER_TEMP/rc4-failed-provisioning-manifest-$FAILED_RUN_ID-$attempt"
+          rm -rf "$evidence"
+          mkdir -p "$evidence"
+          gh run download "$FAILED_RUN_ID" --repo "$GITHUB_REPOSITORY" --name windows-authority-rc4-provisioning-manifest-status --dir "$evidence"
+          failure_file=$(find "$evidence" -type f -name 'provisioning-manifest-failure.json' -print -quit)
+          [[ -n "$failure_file" && -f "$failure_file" ]] || { echo 'Failed provisioning-manifest evidence is missing.' >&2; exit 1; }
+          [[ "$(jq -r '.schema' "$failure_file")" == '1' && "$(jq -r '.kind' "$failure_file")" == 'psmatrix.windows-authority-rc4-provisioning-manifest-workflow-status' && "$(jq -r '.status' "$failure_file")" == 'FAIL' ]] || { echo 'Failed provisioning-manifest evidence identity mismatch.' >&2; exit 1; }
+          [[ "$(jq -r '.release_commit' "$failure_file")" == "$RELEASE_COMMIT" && "$(jq -r '.control_head' "$failure_file")" == "$control" ]] || { echo 'Failed provisioning-manifest release/control binding mismatch.' >&2; exit 1; }
+          for field in complete ready_for_hyper_v_provisioning actual_os_identity_measured creates_virtual_machines creates_checkpoints authoritative ga_eligible; do
+            [[ "$(jq -r --arg field "$field" '.[$field]' "$failure_file")" == 'false' ]] || { echo "Failed provisioning-manifest evidence crossed fail-closed boundary: $field" >&2; exit 1; }
+          done
+          echo "rc4_failed_provisioning_manifest_recovery_guard=PASS failed_run_id=$FAILED_RUN_ID attempt=$attempt control_head=$control"
+          echo "CONTROL_HEAD=$control" >> "$GITHUB_ENV"
+
+      - name: Deduplicate and redispatch RC4 provisioning-manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          runs=$(gh api --method GET \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ga-windows-authority-rc4-provisioning-manifest-selfhosted.yml/runs" \
+            -f branch="$CONTROL_BRANCH" \
+            -f event='workflow_dispatch' \
+            -f per_page=100)
+          existing=$(jq -r --arg head "$CONTROL_HEAD" --argjson failed "$FAILED_RUN_ID" '
+            .workflow_runs[]
+            | select(.head_sha == $head and .id > $failed)
+            | select(.status == "queued" or .status == "in_progress" or .status == "waiting" or (.status == "completed" and .conclusion == "success"))
+            | .id
+          ' <<<"$runs" | head -n 1)
+          if [[ -n "$existing" ]]; then
+            echo "rc4_failed_provisioning_manifest_recovery_duplicate_suppressed=true failed_run_id=$FAILED_RUN_ID existing_run_id=$existing"
+            exit 0
+          fi
+          newer_failed=$(jq -r --arg head "$CONTROL_HEAD" --argjson failed "$FAILED_RUN_ID" '
+            .workflow_runs[]
+            | select(.head_sha == $head and .id > $failed and .status == "completed" and .conclusion == "failure")
+            | .id
+          ' <<<"$runs" | head -n 1)
+          [[ -z "$newer_failed" ]] || { echo "A newer failed provisioning-manifest run exists; recover that exact run instead: $newer_failed" >&2; exit 1; }
+          baseline=$(jq -r --arg head "$CONTROL_HEAD" '[.workflow_runs[] | select(.head_sha == $head) | .id] | max // 0' <<<"$runs")
+          [[ "$baseline" =~ ^[0-9]+$ ]] || { echo 'Provisioning-manifest recovery baseline is invalid.' >&2; exit 1; }
+
+          gh workflow run ga-windows-authority-rc4-provisioning-manifest-selfhosted.yml \
+            --repo "$GITHUB_REPOSITORY" --ref "$CONTROL_BRANCH" \
+            -f release_commit="$RELEASE_COMMIT" \
+            -f control_head="$CONTROL_HEAD"
+
+          child=''
+          for _ in {1..10}; do
+            sleep 2
+            runs=$(gh api --method GET \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/ga-windows-authority-rc4-provisioning-manifest-selfhosted.yml/runs" \
+              -f branch="$CONTROL_BRANCH" \
+              -f event='workflow_dispatch' \
+              -f per_page=100)
+            child=$(jq -r --arg head "$CONTROL_HEAD" --argjson baseline "$baseline" '
+              .workflow_runs[]
+              | select(.head_sha == $head and .id > $baseline)
+              | .id
+            ' <<<"$runs" | head -n 1)
+            [[ -n "$child" ]] && break
+          done
+          [[ -n "$child" ]] || { echo 'Failed provisioning-manifest recovery dispatch did not materialize a child run.' >&2; exit 1; }
+          gh issue comment "$STATE_ISSUE" --repo "$GITHUB_REPOSITORY" \
+            --body "RC4_CHAIN_RECOVERY_DISPATCH stage=provisioning_manifest failed_run_id=$FAILED_RUN_ID child_run_id=$child control_head=$CONTROL_HEAD authoritative=false ga_eligible=false"
+          echo "rc4_failed_provisioning_manifest_recovery_dispatch=PASS failed_run_id=$FAILED_RUN_ID child_run_id=$child control_head=$CONTROL_HEAD"
