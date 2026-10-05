@@ -31,17 +31,20 @@ Do not configure GitHub protection against the workflow names or the historical 
 
 It is intentionally separate from the always-hosted governance baseline. Making self-hosted CI a required merge check is a fail-closed operational choice: if the trusted runner is unavailable, merges will be blocked. Enable that requirement only when the runner availability/recovery policy is explicitly accepted and fresh PR evidence confirms the exact context name.
 
-## Recommended `main` protection
+## Active `main` Phase-1 protection
 
-After the hosted check set is admitted on published `main`, repository administration should require:
+Repository ruleset `24501412` (`PSMatrix main hosted governance`) was created on 2026-10-05 for the default branch with active enforcement and no bypass actors.
+
+It requires:
 
 1. changes through pull requests;
 2. conversation resolution before merge;
-3. the four stable hosted checks listed above;
-4. force-push protection;
-5. branch deletion protection.
+3. exactly the four stable hosted checks listed above;
+4. strict required-status synchronization with the current base branch;
+5. force-push protection;
+6. branch deletion protection.
 
-Do not create a routine administrator bypass that silently defeats the rule.
+The active Phase-1 ruleset intentionally does **not** require self-hosted CI, CODEOWNERS approval, signed commits, or linear history. Those remain separate later-phase decisions. The ruleset reports `current_user_can_bypass=never`, so routine owner/admin bypass is not part of the admitted configuration.
 
 Mandatory code-owner approval is a separate phase. Do not enable it while the only owner for protected workflow paths is the PR author unless the repository intentionally accepts the resulting self-review deadlock or has first added a distinct trusted reviewer/team.
 
