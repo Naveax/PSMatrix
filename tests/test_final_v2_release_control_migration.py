@@ -156,6 +156,11 @@ class FinalV2ReleaseControlMigrationTests(unittest.TestCase):
             "workflow_code_head",
         ):
             self.assertIn(marker, media)
+        self.assertIn(
+            'contents/${relative}?ref=$env:CONTROL_HEAD',
+            media,
+        )
+        self.assertNotIn('contents/$relative?ref=$env:CONTROL_HEAD', media)
 
         intake_router = (ROOT / ".github/workflows/ops-rc4-intake-to-media-readiness.yml").read_text(encoding="utf-8")
         for marker in (
