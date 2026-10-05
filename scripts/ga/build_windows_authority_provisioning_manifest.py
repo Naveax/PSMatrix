@@ -147,7 +147,7 @@ def profile_template(release_commit: str) -> dict[str, Any]:
         "release_commit": release_commit,
         "hyperv_host": {
             "host_id": "REPLACE-WITH-HYPER-V-HOST-ID",
-            "lab_root": r"D:\PSMatrix\WindowsAuthorityLab",
+            "lab_root": "REPLACE-WITH-ABSOLUTE-WRITABLE-LAB-ROOT",
         },
         "defaults": {
             "switch_name": "REPLACE-WITH-HYPER-V-SWITCH-NAME",
@@ -162,7 +162,7 @@ def profile_template(release_commit: str) -> dict[str, Any]:
                 "image_id": image_id,
                 "worker_id": worker_id,
                 "computer_name": computer_name,
-                "output_vhdx": rf"D:\PSMatrix\WindowsAuthorityLab\vhdx\{runtime_id}.vhdx",
+                "output_vhdx": rf"REPLACE-WITH-ABSOLUTE-WRITABLE-LAB-ROOT\vhdx\{runtime_id}.vhdx",
                 "admin_password_env": password_env,
                 "worker_port": port,
             }

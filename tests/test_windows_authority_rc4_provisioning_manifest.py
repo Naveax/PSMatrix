@@ -79,6 +79,18 @@ class WindowsAuthorityRC4ProvisioningManifestTests(unittest.TestCase):
         self.assertNotIn('selection.get("release_version") != "2.0.0rc3"', text)
         self.assertNotIn('"release_version": "2.0.0rc3",\n        "release_commit": release_commit', text)
 
+    def test_profile_template_does_not_assume_a_d_drive(self) -> None:
+        module = _load_builder()
+        value = module.profile_template("a" * 40)
+        self.assertTrue(module.is_placeholder(value["hyperv_host"]["lab_root"]))
+        self.assertNotIn(r"D:\PSMatrix", value["hyperv_host"]["lab_root"])
+        self.assertEqual(len(value["images"]), 3)
+        for row in value["images"]:
+            with self.subTest(runtime_id=row["runtime_id"]):
+                self.assertTrue(module.is_placeholder(row["output_vhdx"]))
+                self.assertNotIn(r"D:\PSMatrix", row["output_vhdx"])
+                self.assertIn(str(row["runtime_id"]), row["output_vhdx"])
+
     def test_wrapper_passes_explicit_contract_without_changing_default(self) -> None:
         text = WRAPPER.read_text(encoding="utf-8")
         self.assertIn("[string]$ContractPath = ''", text)

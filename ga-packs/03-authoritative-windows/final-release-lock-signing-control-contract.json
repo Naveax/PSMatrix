@@ -57,7 +57,9 @@
       "release-assets/2.0.0rc4/psmatrix-2.0.0rc4-release-public.pem",
       "scripts/ga/Get-PSMatrixWindowsAuthorityMediaInventory.ps1",
       ".github/workflows/ga-windows-authority-rc4-media-readiness-selfhosted.yml",
-      "tests/test_windows_authority_media_inventory.py"
+      "tests/test_windows_authority_media_inventory.py",
+      "scripts/ga/build_windows_authority_provisioning_manifest.py",
+      "tests/test_windows_authority_rc4_provisioning_manifest.py"
     ]
   },
   "rc4_authority_continuity": {
