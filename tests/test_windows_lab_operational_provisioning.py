@@ -22,6 +22,9 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
             "PSMATRIX_WPS50_ADMIN_PASSWORD",
             "PSMATRIX_WPS51_ADMIN_PASSWORD",
             "windows_lab_operational_material_validation=PASS checks=4",
+            "windows_lab_admin_credential_policy=PASS complexity=true distinct=true broad_acl=false",
+            "IndependentReviewAttestationFile",
+            "windows_lab_material_review_attestation=PASS independent_check_recorded=true",
             "windows_lab_operational_environment_provisioning_executed=true checks=4",
         ):
             self.assertIn(fragment, raw)
@@ -127,6 +130,57 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         self.assertLess(dry_run, auth)
         self.assertLess(dry_run, first_mutation)
         self.assertIn("windows_lab_operational_environment_provisioning_executed=false dry_run=true", raw)
+
+    def test_live_mode_requires_external_fresh_independent_material_review_before_gh_resolution(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+
+        dry_run = raw.index("if ($DryRun)")
+        review_required = raw.index("IndependentReviewAttestationFile is required for live Windows-lab operational provisioning.")
+        review_pass = raw.index("windows_lab_material_review_attestation=PASS independent_check_recorded=true")
+        gh_resolution = raw.index("Get-Command gh -CommandType Application -ErrorAction Stop")
+        first_mutation = raw.index("@('variable', 'set', 'PSMATRIX_WINDOWS_GA_ROOT'")
+
+        self.assertLess(dry_run, review_required)
+        self.assertLess(review_required, review_pass)
+        self.assertLess(review_pass, gh_resolution)
+        self.assertLess(gh_resolution, first_mutation)
+        for fragment in (
+            "Assert-IndependentMaterialReviewAttestation",
+            "psmatrix.windows-lab-operational-material-review",
+            "reviewed_at_utc",
+            "review_complete",
+            "dry_run_observed",
+            "operator_material_is_real",
+            "secret_values_not_recorded",
+            "secret_hashes_not_recorded",
+            "secret_lengths_not_recorded",
+            "Windows-lab independent material review attestation fields are not exact.",
+            "Windows-lab independent material review attestation is stale or from the future.",
+            "review_attestation_path_logged=false",
+        ):
+            self.assertIn(fragment, raw)
+
+    def test_secret_policy_is_value_free_and_enforces_complexity_distinctness_and_acl(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+
+        for fragment in (
+            "Assert-RestrictedSecretFileAcl",
+            "Assert-WindowsLabCredentialPolicy",
+            "S-1-1-0",
+            "S-1-5-11",
+            "S-1-5-32-545",
+            "S-1-5-32-546",
+            "Windows-lab administrator credentials must be mutually distinct.",
+            "material does not satisfy the credential policy.",
+            "material must be BOM-free printable ASCII with no whitespace or control bytes.",
+            "ReadAllBytes",
+            "[Array]::Clear",
+            "material contains a prohibited predictable token.",
+            "broad_acl=false",
+        ):
+            self.assertIn(fragment, raw)
+
+        self.assertNotIn("Get-FileHash", raw)
 
     def test_live_mode_checks_auth_environment_and_repository_before_mutation(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
@@ -254,6 +308,9 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
             "Invoke-WindowsLabOperationalEnvironmentProvisioning.ps1",
             "-DryRun",
             "commit marker",
+            "Independent material review attestation",
+            "-IndependentReviewAttestationFile",
+            "must not be fabricated by automation",
             "Do not rerun `ops-windows-lab-prereq-audit` as polling.",
             "`repository_dispatch` event of type `windows_lab_prereq_audit`",
             "`client_payload.expected_head`",
