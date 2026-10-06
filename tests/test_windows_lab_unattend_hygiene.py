@@ -43,6 +43,21 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
                         text.index("    Checkpoint-VM -Name $vmName"))
         self.assertIn("Dismount-VHD -Path $VhdPath", text)
 
+    def test_guest_removes_redundant_staging_archives_before_pass(self):
+        text = GUEST.read_text(encoding="utf-8")
+        self.assertIn("function Remove-GuestBootstrapStagingSecrets", text)
+        for name in ("credential-bundle.zip", "signing-bundle.zip"):
+            self.assertIn(name, text)
+        self.assertLess(text.index("Remove-GuestBootstrapStagingSecrets -Root $bootstrapRoot"),
+                        text.index("Write-Result 'PASS' 'Guest bootstrap completed.' $identity"))
+
+    def test_host_rejects_redundant_staging_archives_before_checkpoint(self):
+        text = HOST.read_text(encoding="utf-8")
+        self.assertIn("function Assert-NoGuestBootstrapStagingSecrets", text)
+        self.assertIn("Guest bootstrap credential/signing staging archive remains; refusing checkpoint.", text)
+        self.assertLess(text.index("Assert-NoGuestBootstrapStagingSecrets -WindowsRoot $root"),
+                        text.index("    Checkpoint-VM -Name $vmName"))
+
     def test_missing_setup_root_is_fail_closed(self):
         guest = GUEST.read_text(encoding="utf-8")
         host = HOST.read_text(encoding="utf-8")

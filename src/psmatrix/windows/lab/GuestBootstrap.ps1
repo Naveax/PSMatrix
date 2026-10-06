@@ -91,6 +91,30 @@ function Remove-GuestSetupAnswerFiles([string]$WindowsRoot = ($env:SystemDrive +
     }
 }
 
+function Remove-GuestBootstrapStagingSecrets([string]$Root) {
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
+        throw 'Guest bootstrap staging directory is missing.'
+    }
+    if (((Get-Item -LiteralPath $Root -Force -ErrorAction Stop).Attributes -band
+        [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'Guest bootstrap staging directory is a reparse point.'
+    }
+    foreach ($name in @('credential-bundle.zip', 'signing-bundle.zip')) {
+        $path = Join-Path $Root $name
+        if (Test-Path -LiteralPath $path) {
+            $file = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+            if ($file.PSIsContainer -or
+                (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                throw 'Guest bootstrap staging material is an unsafe file type.'
+            }
+            Remove-Item -LiteralPath $path -Force -ErrorAction Stop
+        }
+        if (Test-Path -LiteralPath $path) {
+            throw 'Guest bootstrap staging material remains after cleanup.'
+        }
+    }
+}
+
 try {
     if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) { throw 'Bootstrap configuration is missing.' }
     $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
@@ -157,6 +181,7 @@ try {
         worker_config_sha256 = (Get-FileHash -LiteralPath $workerConfig -Algorithm SHA256).Hash.ToLowerInvariant()
         service_name = ('PSMatrixWorker-' + [string]$config.worker_id)
     }
+    Remove-GuestBootstrapStagingSecrets -Root $bootstrapRoot
     Remove-GuestSetupAnswerFiles
     Write-Result 'PASS' 'Guest bootstrap completed.' $identity
 }

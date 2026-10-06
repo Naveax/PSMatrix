@@ -147,6 +147,22 @@ function Assert-NoGuestSetupAnswerFiles([string]$WindowsRoot) {
     }
 }
 
+function Assert-NoGuestBootstrapStagingSecrets([string]$WindowsRoot) {
+    $staging = Join-Path $WindowsRoot 'ProgramData\PSMatrix\Bootstrap'
+    if (-not (Test-Path -LiteralPath $staging -PathType Container)) {
+        throw 'Guest bootstrap staging directory is missing; refusing checkpoint.'
+    }
+    if (((Get-Item -LiteralPath $staging -Force -ErrorAction Stop).Attributes -band
+        [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'Guest bootstrap staging directory is a reparse point; refusing checkpoint.'
+    }
+    foreach ($name in @('credential-bundle.zip', 'signing-bundle.zip')) {
+        if (Test-Path -LiteralPath (Join-Path $staging $name)) {
+            throw 'Guest bootstrap credential/signing staging archive remains; refusing checkpoint.'
+        }
+    }
+}
+
 function Read-BootstrapResult([string]$VhdPath) {
     $mounted = Mount-VHD -Path $VhdPath -PassThru
     try {
@@ -154,6 +170,7 @@ function Read-BootstrapResult([string]$VhdPath) {
         $path = Join-Path $root 'ProgramData\PSMatrix\bootstrap-result.json'
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'Guest bootstrap result is missing.' }
         $result = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+        Assert-NoGuestBootstrapStagingSecrets -WindowsRoot $root
         Assert-NoGuestSetupAnswerFiles -WindowsRoot $root
         return $result
     }

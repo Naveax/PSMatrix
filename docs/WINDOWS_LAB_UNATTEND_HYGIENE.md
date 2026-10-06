@@ -22,6 +22,12 @@ rejects directory reparse points while enumerating the setup tree without follow
 junctions or symlinks. The scan is repeated after cleanup and the host checks the
 shutdown guest disk independently.
 
+The guest now removes the redundant credential-bundle.zip and signing-bundle.zip
+bootstrap copies only after the worker is installed and the probe succeeds.
+The host independently rejects either leftover ZIP before checkpoint.
+Extracted runtime Credentials and Signing directories remain available.
+This is file-presence hygiene, not secure erasure of VHDX sectors.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted
