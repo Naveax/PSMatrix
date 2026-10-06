@@ -4,6 +4,7 @@ param(
     [Parameter(Mandatory)] [string]$Wps40AdminPasswordFile,
     [Parameter(Mandatory)] [string]$Wps50AdminPasswordFile,
     [Parameter(Mandatory)] [string]$Wps51AdminPasswordFile,
+    [Parameter()] [string]$IndependentReviewAttestationFile,
     [Parameter()] [ValidateSet('Naveax/PSMatrix')] [string]$Repository = 'Naveax/PSMatrix',
     [Parameter()] [ValidateSet('production-ga-windows-lab')] [string]$Environment = 'production-ga-windows-lab',
     [Parameter()] [switch]$DryRun
@@ -76,6 +77,218 @@ function Assert-ExternalMaterialFile {
         throw "$Label source file is empty."
     }
     return $resolved
+}
+
+
+function Assert-RestrictedSecretFileAcl {
+    param(
+        [Parameter(Mandatory)] [string]$Path,
+        [Parameter(Mandatory)] [string]$Label
+    )
+
+    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    $broadSids = @(
+        'S-1-1-0',
+        'S-1-5-11',
+        'S-1-5-32-545',
+        'S-1-5-32-546'
+    )
+    $readMask = [Security.AccessControl.FileSystemRights]::ReadData -bor
+        [Security.AccessControl.FileSystemRights]::Read -bor
+        [Security.AccessControl.FileSystemRights]::ReadAndExecute -bor
+        [Security.AccessControl.FileSystemRights]::FullControl -bor
+        [Security.AccessControl.FileSystemRights]::Modify
+
+    foreach ($rule in @($acl.Access)) {
+        if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) {
+            continue
+        }
+        try {
+            $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+        }
+        catch {
+            throw "$Label ACL contains an identity that cannot be resolved safely."
+        }
+        if (($broadSids -contains $sid) -and (($rule.FileSystemRights -band $readMask) -ne 0)) {
+            throw "$Label ACL grants readable access to a broad principal."
+        }
+    }
+}
+
+function Assert-WindowsLabCredentialPolicy {
+    param(
+        [Parameter(Mandatory)] [string]$Wps40Path,
+        [Parameter(Mandatory)] [string]$Wps50Path,
+        [Parameter(Mandatory)] [string]$Wps51Path
+    )
+
+    $values = New-Object System.Collections.Generic.List[string]
+    try {
+        foreach ($entry in @(
+            @{ Path = $Wps40Path; Label = 'PSMATRIX_WPS40_ADMIN_PASSWORD' },
+            @{ Path = $Wps50Path; Label = 'PSMATRIX_WPS50_ADMIN_PASSWORD' },
+            @{ Path = $Wps51Path; Label = 'PSMATRIX_WPS51_ADMIN_PASSWORD' }
+        )) {
+            $bytes = [IO.File]::ReadAllBytes([string]$entry.Path)
+            try {
+                if ($bytes.Length -lt 16 -or $bytes.Length -gt 127) {
+                    throw "$($entry.Label) material does not satisfy the credential policy."
+                }
+                foreach ($byte in $bytes) {
+                    if ($byte -lt 0x21 -or $byte -gt 0x7E) {
+                        throw "$($entry.Label) material must be BOM-free printable ASCII with no whitespace or control bytes."
+                    }
+                }
+                $value = [Text.Encoding]::ASCII.GetString($bytes)
+            }
+            finally {
+                if ($null -ne $bytes -and $bytes.Length -gt 0) {
+                    [Array]::Clear($bytes, 0, $bytes.Length)
+                }
+            }
+            if ([string]::IsNullOrEmpty($value)) {
+                throw "$($entry.Label) material is empty."
+            }
+            if (
+                $value -cnotmatch '[A-Z]' -or
+                $value -cnotmatch '[a-z]' -or
+                $value -notmatch '[0-9]' -or
+                $value -notmatch '[^A-Za-z0-9]'
+            ) {
+                throw "$($entry.Label) material does not satisfy the credential policy."
+            }
+            if ($value -match '(?i)(password|changeme|replace|example|psmatrix|naveax)') {
+                throw "$($entry.Label) material contains a prohibited predictable token."
+            }
+            [void]$values.Add($value)
+        }
+
+        if (
+            [string]::Equals($values[0], $values[1], [StringComparison]::Ordinal) -or
+            [string]::Equals($values[0], $values[2], [StringComparison]::Ordinal) -or
+            [string]::Equals($values[1], $values[2], [StringComparison]::Ordinal)
+        ) {
+            throw 'Windows-lab administrator credentials must be mutually distinct.'
+        }
+    }
+    finally {
+        $value = ''
+        for ($i = 0; $i -lt $values.Count; $i++) {
+            $values[$i] = ''
+        }
+        $values.Clear()
+    }
+}
+
+function Assert-IndependentMaterialReviewAttestation {
+    param(
+        [Parameter(Mandatory)] [string]$Path,
+        [Parameter(Mandatory)] [string]$RepoRoot,
+        [Parameter(Mandatory)] [string]$ExpectedRepository,
+        [Parameter(Mandatory)] [string]$ExpectedEnvironment
+    )
+
+    $resolved = Assert-ExternalMaterialFile -Path $Path -RepoRoot $RepoRoot -Label 'Windows-lab independent material review attestation'
+    $raw = Get-Content -Raw -LiteralPath $resolved
+    try {
+        $review = $raw | ConvertFrom-Json
+    }
+    catch {
+        throw 'Windows-lab independent material review attestation is not valid JSON.'
+    }
+
+    $expectedFields = @(
+        'schema',
+        'kind',
+        'repository',
+        'environment',
+        'reviewed_by',
+        'reviewed_at_utc',
+        'review_complete',
+        'dry_run_observed',
+        'operator_material_is_real',
+        'secret_values_not_recorded',
+        'secret_hashes_not_recorded',
+        'secret_lengths_not_recorded',
+        'scope'
+    )
+    $actualFields = @($review.PSObject.Properties.Name)
+    $fieldDifference = @(Compare-Object -ReferenceObject $expectedFields -DifferenceObject $actualFields)
+    if ($fieldDifference.Count -ne 0) {
+        throw 'Windows-lab independent material review attestation fields are not exact.'
+    }
+
+    if (
+        [int]$review.schema -ne 1 -or
+        [string]$review.kind -cne 'psmatrix.windows-lab-operational-material-review' -or
+        [string]$review.repository -cne $ExpectedRepository -or
+        [string]$review.environment -cne $ExpectedEnvironment
+    ) {
+        throw 'Windows-lab independent material review attestation identity is invalid.'
+    }
+
+    $reviewedBy = ([string]$review.reviewed_by).Trim()
+    if (
+        [string]::IsNullOrWhiteSpace($reviewedBy) -or
+        $reviewedBy.Length -gt 160 -or
+        $reviewedBy -match '(?i)(replace|example|placeholder|todo|tbd)' -or
+        $reviewedBy -match '[\x00-\x1F\x7F]'
+    ) {
+        throw 'Windows-lab independent material reviewer identity is invalid.'
+    }
+
+    $reviewedAtText = ([string]$review.reviewed_at_utc).Trim()
+    if ($reviewedAtText -cnotmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$') {
+        throw 'Windows-lab independent material review timestamp must be an exact UTC timestamp.'
+    }
+    try {
+        $reviewedAt = [DateTimeOffset]::Parse(
+            $reviewedAtText,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::RoundtripKind
+        )
+    }
+    catch {
+        throw 'Windows-lab independent material review timestamp is invalid.'
+    }
+    $now = [DateTimeOffset]::UtcNow
+    if ($reviewedAt -gt $now.AddMinutes(5) -or $reviewedAt -lt $now.AddHours(-24)) {
+        throw 'Windows-lab independent material review attestation is stale or from the future.'
+    }
+
+    foreach ($flag in @(
+        'review_complete',
+        'dry_run_observed',
+        'operator_material_is_real',
+        'secret_values_not_recorded',
+        'secret_hashes_not_recorded',
+        'secret_lengths_not_recorded'
+    )) {
+        if ($review.$flag -ne $true) {
+            throw "Windows-lab independent material review attestation requires $flag=true."
+        }
+    }
+
+    $expectedScope = @(
+        'ga_root_layout',
+        'wps40_admin_credential',
+        'wps50_admin_credential',
+        'wps51_admin_credential'
+    )
+    $actualScope = @($review.scope | ForEach-Object { [string]$_ })
+    if ($actualScope.Count -ne $expectedScope.Count) {
+        throw 'Windows-lab independent material review scope is incomplete.'
+    }
+    for ($i = 0; $i -lt $expectedScope.Count; $i++) {
+        if ($actualScope[$i] -cne $expectedScope[$i]) {
+            throw 'Windows-lab independent material review scope is not exact.'
+        }
+    }
+
+    return [pscustomobject]@{
+        Path = $resolved
+        ReviewedAtUtc = $reviewedAt.UtcDateTime
+    }
 }
 
 function Invoke-GhCaptured {
@@ -208,7 +421,13 @@ try {
         Assert-NoLinkOrReparsePath -Path $requiredPath -Label 'Windows-lab layout'
     }
 
+    Assert-RestrictedSecretFileAcl -Path $wps40External -Label 'PSMATRIX_WPS40_ADMIN_PASSWORD'
+    Assert-RestrictedSecretFileAcl -Path $wps50External -Label 'PSMATRIX_WPS50_ADMIN_PASSWORD'
+    Assert-RestrictedSecretFileAcl -Path $wps51External -Label 'PSMATRIX_WPS51_ADMIN_PASSWORD'
+    Assert-WindowsLabCredentialPolicy -Wps40Path $wps40Source -Wps50Path $wps50Source -Wps51Path $wps51Source
+
     Write-Host 'windows_lab_operational_material_validation=PASS checks=4'
+    Write-Host 'windows_lab_admin_credential_policy=PASS complexity=true distinct=true broad_acl=false'
     Write-Host 'windows_lab_root_layout_validation=PASS'
     Write-Host 'staged_bytes_validated_and_reused=true'
     Write-Host "target_repository=$canonicalRepository"
@@ -222,6 +441,21 @@ try {
         Write-Host 'windows_lab_operational_environment_provisioning_executed=false dry_run=true'
         return
     }
+
+    if ([string]::IsNullOrWhiteSpace($IndependentReviewAttestationFile)) {
+        throw 'IndependentReviewAttestationFile is required for live Windows-lab operational provisioning.'
+    }
+    $reviewAttestation = Assert-IndependentMaterialReviewAttestation -Path $IndependentReviewAttestationFile -RepoRoot $repoRoot -ExpectedRepository $canonicalRepository -ExpectedEnvironment $Environment
+    foreach ($reviewedMaterial in @($rootExternal, $wps40External, $wps50External, $wps51External)) {
+        $lastWriteUtc = (Get-Item -LiteralPath $reviewedMaterial -Force -ErrorAction Stop).LastWriteTimeUtc
+        if ($lastWriteUtc -gt $reviewAttestation.ReviewedAtUtc.AddSeconds(5)) {
+            throw 'Windows-lab operator material changed after the independent review timestamp.'
+        }
+    }
+    Write-Host 'windows_lab_material_review_attestation=PASS independent_check_recorded=true'
+    Write-Host 'windows_lab_reviewed_material_temporal_binding=PASS post_review_source_change=false'
+    Write-Host 'review_attestation_path_logged=false'
+    Write-Host 'reviewed_material_timestamps_logged=false'
 
     # Live provisioning resolves only the GitHub CLI application from PATH. There is
     # deliberately no operator-supplied executable override because the three secret

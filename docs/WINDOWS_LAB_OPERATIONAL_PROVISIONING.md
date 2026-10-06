@@ -74,11 +74,53 @@ pwsh -NoProfile -File .\scripts\ga\Invoke-WindowsLabOperationalEnvironmentProvis
   -DryRun
 ```
 
-The helper reports only value-free validation state. It does not print configured paths, secret values, secret hashes or secret lengths.
+The helper reports only value-free validation state. It does not print configured paths, secret values, secret hashes or secret lengths. Dry-run also rejects broad readable ACLs on the three credential files, weak or predictable credential material, credential files that are not BOM-free printable ASCII byte sequences, and credentials that are not mutually distinct.
+
+## Independent material review attestation
+
+Live provisioning requires a separate JSON attestation file outside the repository. The attestation is a value-free record that a human independently checked the real operator material after dry-run. It must not contain credential values, hashes or lengths.
+
+Required shape:
+
+```json
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-lab-operational-material-review",
+  "repository": "Naveax/PSMatrix",
+  "environment": "production-ga-windows-lab",
+  "reviewed_by": "<human reviewer identity>",
+  "reviewed_at_utc": "<UTC ISO-8601 timestamp ending in Z>",
+  "review_complete": true,
+  "dry_run_observed": true,
+  "operator_material_is_real": true,
+  "secret_values_not_recorded": true,
+  "secret_hashes_not_recorded": true,
+  "secret_lengths_not_recorded": true,
+  "scope": [
+    "ga_root_layout",
+    "wps40_admin_credential",
+    "wps50_admin_credential",
+    "wps51_admin_credential"
+  ]
+}
+```
+
+The attestation must be no older than 24 hours, must be outside the repository, and must not be a link/reparse path. The helper also requires the review timestamp to be at or after the last-write time of all four reviewed material files; a post-review source change therefore fails closed without storing credential hashes or lengths. This file is a review gate only; it is not authority evidence and must not be fabricated by automation or by the release owner merely to satisfy the gate.
 
 ## Provision the environment
 
-After dry-run succeeds and the real material has been independently checked, run the same command without `-DryRun`.
+After dry-run succeeds and the real material has been independently checked, run the same command without `-DryRun` and provide the reviewed attestation with `-IndependentReviewAttestationFile`.
+
+Example live apply:
+
+```powershell
+pwsh -NoProfile -File .\scripts\ga\Invoke-WindowsLabOperationalEnvironmentProvisioning.ps1 `
+  -GaRootValueFile '<absolute-external-root-value-file>' `
+  -Wps40AdminPasswordFile '<absolute-external-wps40-secret-file>' `
+  -Wps50AdminPasswordFile '<absolute-external-wps50-secret-file>' `
+  -Wps51AdminPasswordFile '<absolute-external-wps51-secret-file>' `
+  -IndependentReviewAttestationFile '<absolute-external-review-attestation-json>'
+```
 
 Live mode first verifies that the target is still exactly `Naveax/PSMatrix`, verifies GitHub CLI authentication, and checks that `production-ga-windows-lab` exists. It then invalidates the GA-root **commit marker** by temporarily setting `PSMATRIX_WINDOWS_GA_ROOT` to a deliberately relative sentinel value. Because the prerequisite audit requires an absolute existing root, any failure after this point remains fail-closed even when the environment had been successfully provisioned before.
 
