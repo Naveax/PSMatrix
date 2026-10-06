@@ -36,6 +36,29 @@ function Find-File([string]$Root, [string]$Name) {
     return $item.FullName
 }
 
+function Remove-GuestSetupAnswerFiles([string]$WindowsRoot = ($env:SystemDrive + '\')) {
+    # Called from SetupComplete: remove known credential-bearing answer files without
+    # reading or logging any password or answer-file content.
+    foreach ($relativeRoot in @('Windows\Panther', 'Windows\System32\Sysprep')) {
+        $searchRoot = Join-Path $WindowsRoot $relativeRoot
+        if (-not (Test-Path -LiteralPath $searchRoot -PathType Container)) { continue }
+        $candidates = @(Get-ChildItem -LiteralPath $searchRoot -Recurse -Force -File -ErrorAction Stop |
+            Where-Object { $_.Name -match '^(?:Auto)?Unattend\.xml$' })
+        foreach ($candidate in $candidates) {
+            if (($candidate.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'A setup answer-file path is a reparse point.'
+            }
+            Remove-Item -LiteralPath $candidate.FullName -Force -ErrorAction Stop
+            if (Test-Path -LiteralPath $candidate.FullName) {
+                throw 'A setup answer file could not be removed.'
+            }
+        }
+        $remaining = @(Get-ChildItem -LiteralPath $searchRoot -Recurse -Force -File -ErrorAction Stop |
+            Where-Object { $_.Name -match '^(?:Auto)?Unattend\.xml$' })
+        if ($remaining.Count -gt 0) { throw 'A setup answer file remains after cleanup.' }
+    }
+}
+
 try {
     if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) { throw 'Bootstrap configuration is missing.' }
     $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
@@ -102,6 +125,7 @@ try {
         worker_config_sha256 = (Get-FileHash -LiteralPath $workerConfig -Algorithm SHA256).Hash.ToLowerInvariant()
         service_name = ('PSMatrixWorker-' + [string]$config.worker_id)
     }
+    Remove-GuestSetupAnswerFiles
     Write-Result 'PASS' 'Guest bootstrap completed.' $identity
 }
 catch {

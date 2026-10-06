@@ -117,13 +117,27 @@ exit /b %ERRORLEVEL%
     }
     return $output
 }
+function Assert-NoGuestSetupAnswerFiles([string]$WindowsRoot) {
+    # Fail closed before creating the reusable Hyper-V checkpoint.
+    foreach ($relativeRoot in @('Windows\Panther', 'Windows\System32\Sysprep')) {
+        $searchRoot = Join-Path $WindowsRoot $relativeRoot
+        if (-not (Test-Path -LiteralPath $searchRoot -PathType Container)) { continue }
+        $remaining = @(Get-ChildItem -LiteralPath $searchRoot -Recurse -Force -File -ErrorAction Stop |
+            Where-Object { $_.Name -match '^(?:Auto)?Unattend\.xml$' })
+        if ($remaining.Count -gt 0) {
+            throw 'Guest setup answer file remains on the VHDX; refusing checkpoint.'
+        }
+    }
+}
 function Read-BootstrapResult([string]$VhdPath) {
     $mounted = Mount-VHD -Path $VhdPath -PassThru
     try {
         $root = Get-WindowsPartitionRoot $mounted.DiskNumber
         $path = Join-Path $root 'ProgramData\PSMatrix\bootstrap-result.json'
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'Guest bootstrap result is missing.' }
-        return (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json)
+        $result = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+        Assert-NoGuestSetupAnswerFiles -WindowsRoot $root
+        return $result
     }
     finally { Dismount-VHD -Path $VhdPath -ErrorAction SilentlyContinue }
 }
