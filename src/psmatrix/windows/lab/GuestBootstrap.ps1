@@ -37,25 +37,57 @@ function Find-File([string]$Root, [string]$Name) {
 }
 
 function Remove-GuestSetupAnswerFiles([string]$WindowsRoot = ($env:SystemDrive + '\')) {
-    # Called from SetupComplete: remove known credential-bearing answer files without
-    # reading or logging any password or answer-file content.
+    # A missing Panther directory is not proof that the setup secrets were removed.
+    $panther = Join-Path $WindowsRoot 'Windows\Panther'
+    if (-not (Test-Path -LiteralPath $panther -PathType Container)) {
+        throw 'Windows Panther setup directory is missing.'
+    }
     foreach ($relativeRoot in @('Windows\Panther', 'Windows\System32\Sysprep')) {
         $searchRoot = Join-Path $WindowsRoot $relativeRoot
         if (-not (Test-Path -LiteralPath $searchRoot -PathType Container)) { continue }
-        $candidates = @(Get-ChildItem -LiteralPath $searchRoot -Recurse -Force -File -ErrorAction Stop |
-            Where-Object { $_.Name -match '^(?:Auto)?Unattend\.xml$' })
-        foreach ($candidate in $candidates) {
-            if (($candidate.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-                throw 'A setup answer-file path is a reparse point.'
-            }
-            Remove-Item -LiteralPath $candidate.FullName -Force -ErrorAction Stop
-            if (Test-Path -LiteralPath $candidate.FullName) {
-                throw 'A setup answer file could not be removed.'
+        if (((Get-Item -LiteralPath $searchRoot -Force -ErrorAction Stop).Attributes -band
+                [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Setup directory is a reparse point.'
+        }
+        $pending = New-Object System.Collections.Stack
+        $pending.Push($searchRoot)
+        while ($pending.Count -gt 0) {
+            $current = [string]$pending.Pop()
+            $entries = @(Get-ChildItem -LiteralPath $current -Force -ErrorAction Stop)
+            foreach ($entry in $entries) {
+                if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    throw 'Setup file scan encountered a reparse point.'
+                }
+                if ($entry.PSIsContainer) {
+                    $pending.Push($entry.FullName)
+                }
+                elseif ($entry.Name -match '^(?:Auto)?Unattend\.xml$') {
+                    Remove-Item -LiteralPath $entry.FullName -Force -ErrorAction Stop
+                    if (Test-Path -LiteralPath $entry.FullName) {
+                        throw 'A setup answer file could not be removed.'
+                    }
+                }
             }
         }
-        $remaining = @(Get-ChildItem -LiteralPath $searchRoot -Recurse -Force -File -ErrorAction Stop |
-            Where-Object { $_.Name -match '^(?:Auto)?Unattend\.xml$' })
-        if ($remaining.Count -gt 0) { throw 'A setup answer file remains after cleanup.' }
+    }
+    # Validate post-cleanup state through an independent directory scan.
+    foreach ($relativeRoot in @('Windows\Panther', 'Windows\System32\Sysprep')) {
+        $searchRoot = Join-Path $WindowsRoot $relativeRoot
+        if (-not (Test-Path -LiteralPath $searchRoot -PathType Container)) { continue }
+        $pending = New-Object System.Collections.Stack
+        $pending.Push($searchRoot)
+        while ($pending.Count -gt 0) {
+            $current = [string]$pending.Pop()
+            foreach ($entry in @(Get-ChildItem -LiteralPath $current -Force -ErrorAction Stop)) {
+                if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    throw 'Post-cleanup setup scan encountered a reparse point.'
+                }
+                if ($entry.PSIsContainer) { $pending.Push($entry.FullName) }
+                elseif ($entry.Name -match '^(?:Auto)?Unattend\.xml$') {
+                    throw 'A setup answer file remains after cleanup.'
+                }
+            }
+        }
     }
 }
 

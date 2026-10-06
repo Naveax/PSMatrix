@@ -118,17 +118,35 @@ exit /b %ERRORLEVEL%
     return $output
 }
 function Assert-NoGuestSetupAnswerFiles([string]$WindowsRoot) {
-    # Fail closed before creating the reusable Hyper-V checkpoint.
+    # A missing Panther directory must not yield a false-clean checkpoint.
+    $panther = Join-Path $WindowsRoot 'Windows\Panther'
+    if (-not (Test-Path -LiteralPath $panther -PathType Container)) {
+        throw 'Guest Windows Panther setup directory is missing; refusing checkpoint.'
+    }
     foreach ($relativeRoot in @('Windows\Panther', 'Windows\System32\Sysprep')) {
         $searchRoot = Join-Path $WindowsRoot $relativeRoot
         if (-not (Test-Path -LiteralPath $searchRoot -PathType Container)) { continue }
-        $remaining = @(Get-ChildItem -LiteralPath $searchRoot -Recurse -Force -File -ErrorAction Stop |
-            Where-Object { $_.Name -match '^(?:Auto)?Unattend\.xml$' })
-        if ($remaining.Count -gt 0) {
-            throw 'Guest setup answer file remains on the VHDX; refusing checkpoint.'
+        if (((Get-Item -LiteralPath $searchRoot -Force -ErrorAction Stop).Attributes -band
+                [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Guest setup directory is a reparse point; refusing checkpoint.'
+        }
+        $pending = New-Object System.Collections.Stack
+        $pending.Push($searchRoot)
+        while ($pending.Count -gt 0) {
+            $current = [string]$pending.Pop()
+            foreach ($entry in @(Get-ChildItem -LiteralPath $current -Force -ErrorAction Stop)) {
+                if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    throw 'Guest setup directory tree contains a reparse point; refusing checkpoint.'
+                }
+                if ($entry.PSIsContainer) { $pending.Push($entry.FullName) }
+                elseif ($entry.Name -match '^(?:Auto)?Unattend\.xml$') {
+                    throw 'Guest setup answer file remains on the VHDX; refusing checkpoint.'
+                }
+            }
         }
     }
 }
+
 function Read-BootstrapResult([string]$VhdPath) {
     $mounted = Mount-VHD -Path $VhdPath -PassThru
     try {

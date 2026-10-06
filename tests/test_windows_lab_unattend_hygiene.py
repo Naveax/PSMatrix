@@ -18,8 +18,9 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
             "'Windows\\Panther'",
             "'Windows\\System32\\Sysprep'",
             "^(?:Auto)?Unattend\\.xml$",
-            "Remove-Item -LiteralPath $candidate.FullName -Force -ErrorAction Stop",
-            "if ($remaining.Count -gt 0)",
+            "Remove-Item -LiteralPath $entry.FullName -Force -ErrorAction Stop",
+            "Windows Panther setup directory is missing.",
+            "New-Object System.Collections.Stack",
         ):
             self.assertIn(expected, text)
         self.assertLess(text.index("    Remove-GuestSetupAnswerFiles\n"),
@@ -27,7 +28,8 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
 
     def test_guest_cleanup_is_fail_closed_and_never_reads_secret_contents(self):
         text = GUEST.read_text(encoding="utf-8")
-        self.assertIn("A setup answer-file path is a reparse point.", text)
+        self.assertIn("Setup file scan encountered a reparse point.", text)
+        self.assertIn("Post-cleanup setup scan encountered a reparse point.", text)
         self.assertIn("A setup answer file remains after cleanup.", text)
         self.assertIn("catch {\n    Write-Result 'FAIL'", text)
         self.assertNotIn("Get-Content -LiteralPath $candidate.FullName", text)
@@ -40,6 +42,20 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
         self.assertLess(text.index("Assert-NoGuestSetupAnswerFiles -WindowsRoot $root"),
                         text.index("    Checkpoint-VM -Name $vmName"))
         self.assertIn("Dismount-VHD -Path $VhdPath", text)
+
+    def test_missing_setup_root_is_fail_closed(self):
+        guest = GUEST.read_text(encoding="utf-8")
+        host = HOST.read_text(encoding="utf-8")
+        self.assertIn("Windows Panther setup directory is missing.", guest)
+        self.assertIn("Guest Windows Panther setup directory is missing; refusing checkpoint.", host)
+
+    def test_directory_reparse_rejected_without_recursive_traversal(self):
+        for path in (HOST, GUEST):
+            with self.subTest(path=path):
+                text = path.read_text(encoding="utf-8")
+                self.assertIn("New-Object System.Collections.Stack", text)
+                self.assertIn("ReparsePoint", text)
+                self.assertNotIn("Get-ChildItem -LiteralPath $searchRoot -Recurse", text)
 
     def test_cleanup_checks_panther_and_sysprep_in_both_scripts(self):
         for path in (HOST, GUEST):

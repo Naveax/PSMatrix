@@ -17,6 +17,11 @@ The source-level mitigation adds two fail-closed checks:
    VHDX before it calls `Checkpoint-VM`. A remaining answer file is a hard
    provisioning failure, not a valid clean checkpoint.
 
+Additional fail-closed hardening rejects a missing Windows Panther directory and
+rejects directory reparse points while enumerating the setup tree without following
+junctions or symlinks. The scan is repeated after cleanup and the host checks the
+shutdown guest disk independently.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted
