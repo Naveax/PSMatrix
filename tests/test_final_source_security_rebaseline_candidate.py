@@ -42,6 +42,14 @@ class FinalSourceSecurityRebaselineCandidateTests(unittest.TestCase):
         self.assertEqual(paths, sorted(paths))
         self.assertEqual(len(paths), 4)
         self.assertEqual(value["security_source_candidate"]["changed_path_count"], 4)
+        self.assertEqual(value["security_source_candidate"]["baseline_tests"], {"passed": 18, "total": 18})
+        synthetic = value["security_source_candidate"]["windows_powershell_51_security_synthetic"]
+        self.assertEqual((synthetic["passed"], synthetic["total"]), (16, 16))
+        self.assertTrue(synthetic["elevated_recursive_acl_acceptance_required"])
+        self.assertEqual(
+            value["security_source_candidate"]["supersedes"]["commit"],
+            "472f05f9afcdce270d26596710159980c6aeae36",
+        )
         self.assertIn("src/psmatrix/windows/lab/GuestBootstrap.ps1", paths)
         self.assertIn("src/psmatrix/windows/lab/Invoke-PSMatrixHyperVLab.ps1", paths)
 

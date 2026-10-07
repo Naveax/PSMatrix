@@ -9,9 +9,9 @@
     "immutable": true
   },
   "security_source_candidate": {
-    "branch": "security/2.0.0-unattend-hygiene-source-candidate-20261007",
-    "commit": "472f05f9afcdce270d26596710159980c6aeae36",
-    "tree": "c2286a725d905de469ce83e1015dbe3016340014",
+    "branch": "security/2.0.0-unattend-hygiene-source-candidate-v2-20261007",
+    "commit": "355dd26e0dc586b01ec2ba422194dbaada53d935",
+    "tree": "33a8fb6a34d73fc5959cc759c971fe43d3525f21",
     "parent_commit": "43922a5544745c64165df4aedd9c57391bfe6c51",
     "changed_path_count": 4,
     "changed_paths": [
@@ -21,22 +21,29 @@
       "tests/test_windows_lab_unattend_hygiene.py"
     ],
     "baseline_tests": {
-      "passed": 17,
-      "total": 17
-    },
-    "windows_powershell_51_security_synthetic": {
       "passed": 18,
       "total": 18
+    },
+    "windows_powershell_51_security_synthetic": {
+      "passed": 16,
+      "total": 16,
+      "elevated_recursive_acl_acceptance_required": true
     },
     "repository_private_material_scan": {
       "files": 998,
       "findings": 0,
-      "receipt_sha256": "aba6d2202826254c67252dd5711151a9224583eadd88dc5e9fb07d750c15471a"
+      "receipt_sha256": "05c9cc37c47d62b4aac9f3826eb5b4ef016638ab31fdfe65ea36c576a66dab0e"
+    },
+    "supersedes": {
+      "branch": "security/2.0.0-unattend-hygiene-source-candidate-20261007",
+      "commit": "472f05f9afcdce270d26596710159980c6aeae36",
+      "tree": "c2286a725d905de469ce83e1015dbe3016340014",
+      "reason": "recursive sensitive ACL application and recursive host-side ACL verification"
     }
   },
   "review_evidence": {
-    "patch_sha256": "9c18d70a64045fe706c821042f4b6e5dfe63eef745b6484982d17807f45e05ea",
-    "control_rebaseline_plan_sha256": "c977b4038c4a99a98c301faede4ebfc409006b7f85545d6240f94ce672c5c811"
+    "patch_sha256": "c030e1701c25670d2336c43f0b0fe74173deadc4642892760e42e36ab4fdd56a",
+    "control_rebaseline_plan_sha256": "e4cffc21ff20bd5fc09d6dec0cee38837577832795ec6c3c69c9cf06b2086185"
   },
   "human_review": {
     "required": true,
