@@ -43,6 +43,16 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
                         text.index("    Checkpoint-VM -Name $vmName"))
         self.assertIn("Dismount-VHD -Path $VhdPath", text)
 
+    def test_worker_config_is_written_before_recursive_acl_lock(self):
+        text = GUEST.read_text(encoding="utf-8")
+        create = text.index("$workerConfig = Join-Path $configRoot 'worker.json'")
+        write = text.index("$text | Set-Content -LiteralPath $workerConfig -Encoding UTF8")
+        restrict = text.index("Set-RestrictedDirectoryAcl $configRoot")
+        install = text.index("$installScript = Find-File $workerRoot 'install-worker.ps1'")
+        self.assertLess(create, write)
+        self.assertLess(write, restrict)
+        self.assertLess(restrict, install)
+
     def test_sensitive_acl_controls_cover_entire_tree(self):
         guest = GUEST.read_text(encoding="utf-8")
         host = HOST.read_text(encoding="utf-8")

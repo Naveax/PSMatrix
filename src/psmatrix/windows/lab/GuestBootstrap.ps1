@@ -167,7 +167,6 @@ try {
     $template = Find-File $credentialRoot 'worker.json'
     $configRoot = 'C:\ProgramData\PSMatrix\WorkerConfig'
     New-Item -ItemType Directory -Path $configRoot -Force | Out-Null
-    Set-RestrictedDirectoryAcl $configRoot
     $workerConfig = Join-Path $configRoot 'worker.json'
     $text = Get-Content -LiteralPath $template -Raw
     $text = $text.Replace('{{WORKER_ID}}',[string]$config.worker_id)
@@ -177,6 +176,7 @@ try {
     $text = $text.Replace('{{SIGNING_ROOT}}',$signingRoot.Replace('\','\\'))
     $text = $text.Replace('{{WORKSPACE_ROOT}}','C:\\ProgramData\\PSMatrix\\Workspace')
     $text | Set-Content -LiteralPath $workerConfig -Encoding UTF8
+    Set-RestrictedDirectoryAcl $configRoot
 
     $installScript = Find-File $workerRoot 'install-worker.ps1'
     & $installScript -WorkerId ([string]$config.worker_id) -PowerShellVersion $expected -PythonExecutable $python.Source -ConfigPath $workerConfig -StartService
