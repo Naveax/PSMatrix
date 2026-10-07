@@ -36,6 +36,16 @@ function Find-File([string]$Root, [string]$Name) {
     return $item.FullName
 }
 
+function Set-RestrictedDirectoryAcl([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        throw ('Restricted directory is missing: ' + $Path)
+    }
+    & icacls.exe $Path /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw ('Unable to restrict directory ACL: ' + $Path)
+    }
+}
+
 function Remove-GuestSetupAnswerFiles([string]$WindowsRoot = ($env:SystemDrive + '\')) {
     # A missing Panther directory is not proof that the setup secrets were removed.
     $panther = Join-Path $WindowsRoot 'Windows\Panther'
@@ -134,6 +144,8 @@ try {
     Expand-Zip (Join-Path $bootstrapRoot 'worker-package.zip') $workerRoot
     Expand-Zip (Join-Path $bootstrapRoot 'credential-bundle.zip') $credentialRoot
     Expand-Zip (Join-Path $bootstrapRoot 'signing-bundle.zip') $signingRoot
+    Set-RestrictedDirectoryAcl $credentialRoot
+    Set-RestrictedDirectoryAcl $signingRoot
 
     $pythonInstaller = Join-Path $bootstrapRoot 'python-installer.exe'
     $python = Get-Command python.exe -ErrorAction SilentlyContinue
@@ -155,6 +167,7 @@ try {
     $template = Find-File $credentialRoot 'worker.json'
     $configRoot = 'C:\ProgramData\PSMatrix\WorkerConfig'
     New-Item -ItemType Directory -Path $configRoot -Force | Out-Null
+    Set-RestrictedDirectoryAcl $configRoot
     $workerConfig = Join-Path $configRoot 'worker.json'
     $text = Get-Content -LiteralPath $template -Raw
     $text = $text.Replace('{{WORKER_ID}}',[string]$config.worker_id)

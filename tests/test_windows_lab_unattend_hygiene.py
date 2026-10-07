@@ -43,6 +43,33 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
                         text.index("    Checkpoint-VM -Name $vmName"))
         self.assertIn("Dismount-VHD -Path $VhdPath", text)
 
+    def test_sensitive_directories_use_localization_independent_restricted_acls(self):
+        guest = GUEST.read_text(encoding="utf-8")
+        host = HOST.read_text(encoding="utf-8")
+        for text in (guest, host):
+            self.assertIn("function Set-RestrictedDirectoryAcl", text)
+            self.assertIn("*S-1-5-18:(OI)(CI)F", text)
+            self.assertIn("*S-1-5-32-544:(OI)(CI)F", text)
+            self.assertIn("if ($LASTEXITCODE -ne 0)", text)
+        for variable in ("$credentialRoot", "$signingRoot", "$configRoot"):
+            self.assertIn("Set-RestrictedDirectoryAcl " + variable, guest)
+        self.assertIn("Set-RestrictedDirectoryAcl $bootstrap", host)
+        self.assertNotIn("'Administrators:(OI)(CI)F'", host)
+
+    def test_admin_password_process_environment_is_cleared_after_unattend_write(self):
+        text = HOST.read_text(encoding="utf-8")
+        read = text.index("$password = [Environment]::GetEnvironmentVariable($secretName,'Process')")
+        write = text.index("New-Unattend (Join-Path $panther 'Unattend.xml')")
+        clear_ref = text.index("$password = $null", write)
+        clear_env = text.index("[Environment]::SetEnvironmentVariable($secretName,$null,'Process')", write)
+        acl = text.index("Set-RestrictedDirectoryAcl $bootstrap", write)
+        self.assertLess(read, write)
+        self.assertLess(write, clear_ref)
+        self.assertLess(clear_ref, clear_env)
+        self.assertLess(clear_env, acl)
+        self.assertIn("$secret = $null", text)
+        self.assertIn("$xml = $null", text)
+
     def test_guest_removes_redundant_staging_archives_before_pass(self):
         text = GUEST.read_text(encoding="utf-8")
         self.assertIn("function Remove-GuestBootstrapStagingSecrets", text)

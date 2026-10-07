@@ -23,6 +23,16 @@ function Invoke-Checked([string]$File, [string[]]$Arguments) {
     if ($LASTEXITCODE -ne 0) { throw ($File + ' failed with exit code ' + $LASTEXITCODE) }
 }
 function Escape-Xml([string]$Value) { return [Security.SecurityElement]::Escape($Value) }
+function Set-RestrictedDirectoryAcl([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        throw ('Restricted directory is missing: ' + $Path)
+    }
+    & icacls.exe $Path /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw ('Unable to restrict directory ACL: ' + $Path)
+    }
+}
+
 function Get-WindowsPartitionRoot([int]$DiskNumber) {
     foreach ($partition in Get-Partition -DiskNumber $DiskNumber) {
         if ($partition.DriveLetter) {
@@ -51,7 +61,13 @@ function New-Unattend([string]$Path, [string]$ComputerName, [string]$Password) {
   </settings>
 </unattend>
 "@
-    $xml | Set-Content -LiteralPath $Path -Encoding UTF8
+    try {
+        $xml | Set-Content -LiteralPath $Path -Encoding UTF8
+    }
+    finally {
+        $secret = $null
+        $xml = $null
+    }
 }
 function New-LabVhd($Image, [string]$GuestBootstrap) {
     Assert-Artifact $Image.source_iso 'Windows ISO'
@@ -106,10 +122,17 @@ exit /b %ERRORLEVEL%
 ' | Set-Content -LiteralPath (Join-Path $setupDir 'SetupComplete.cmd') -Encoding ASCII
         $panther = Join-Path $windowsRoot 'Windows\Panther'
         New-Item -ItemType Directory -Path $panther -Force | Out-Null
-        $password = [Environment]::GetEnvironmentVariable([string]$Image.admin_password_env,'Process')
-        if ([string]::IsNullOrWhiteSpace($password)) { throw ('Required secret environment variable is missing: ' + [string]$Image.admin_password_env) }
-        New-Unattend (Join-Path $panther 'Unattend.xml') ([string]$Image.computer_name) $password
-        & icacls.exe $bootstrap /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' | Out-Null
+        $secretName = [string]$Image.admin_password_env
+        $password = [Environment]::GetEnvironmentVariable($secretName,'Process')
+        if ([string]::IsNullOrWhiteSpace($password)) { throw ('Required secret environment variable is missing: ' + $secretName) }
+        try {
+            New-Unattend (Join-Path $panther 'Unattend.xml') ([string]$Image.computer_name) $password
+        }
+        finally {
+            $password = $null
+            [Environment]::SetEnvironmentVariable($secretName,$null,'Process')
+        }
+        Set-RestrictedDirectoryAcl $bootstrap
     }
     finally {
         if ($vhdMounted) { Dismount-VHD -Path $output -ErrorAction SilentlyContinue }

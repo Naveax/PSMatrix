@@ -28,6 +28,14 @@ The host independently rejects either leftover ZIP before checkpoint.
 Extracted runtime Credentials and Signing directories remain available.
 This is file-presence hygiene, not secure erasure of VHDX sectors.
 
+Sensitive guest runtime directories (Credentials, Signing, and WorkerConfig) and
+the bootstrap staging directory are assigned explicit SYSTEM/Administrators ACLs
+using well-known SIDs, so localized Windows group names cannot silently weaken the
+restriction. ACL command failure is fatal. After writing Unattend.xml the host also
+removes the corresponding administrator password environment variable from its
+process and drops local string references; this shortens plaintext lifetime but is
+not a memory-erasure guarantee.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted
