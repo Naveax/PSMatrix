@@ -9,10 +9,13 @@ The candidate contract binds the exact review branch, commit, tree, four-path de
 packet hashes, private-material scan receipt, and the still-incomplete independent human-review
 gate. It is deliberately non-authoritative and not GA eligible.
 
-The current V3 source candidate supersedes V2 because V2 recursively hardened the sensitive
-ACL trees but locked WorkerConfig before worker.json was created. V3 writes the generated
-worker configuration first and then applies the recursive ACL lock, ensuring that the generated
-file itself is covered by inheritance removal and the host's recursive checkpoint verification.
+The current V4 source candidate supersedes V3. V3 fixed WorkerConfig ordering but still relied
+on recursive icacls inheritance behavior. V4 enumerates each sensitive entry without following
+reparse points, disables inheritance, purges existing trustees, and rebuilds each DACL directly
+from the SYSTEM and built-in Administrators well-known SIDs. Files receive direct FullControl;
+directories receive inheritable FullControl for those two trustees only. Elevated recursive ACL
+acceptance on the actual supported Windows guest/host boundary remains a mandatory pre-promotion
+test rather than a claim supplied by this review contract.
 
 After independent review approves the exact candidate commit/tree, the release process must
 create a new immutable final-source ref. The old v2 final source remains untouched. The new ref

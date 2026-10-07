@@ -9,9 +9,9 @@
     "immutable": true
   },
   "security_source_candidate": {
-    "branch": "security/2.0.0-unattend-hygiene-source-candidate-v3-20261007",
-    "commit": "adfa7610c31813818ff532cfdc9f98fbddc01832",
-    "tree": "c286e6ea3da016753488ab5b2d1af362bd93abe9",
+    "branch": "security/2.0.0-unattend-hygiene-source-candidate-v4-20261007",
+    "commit": "af90094d9104c0ae4d932462f45bdc020ea35b14",
+    "tree": "e6966e2bb84815c647ea91eb1e41aa2c6c661f98",
     "parent_commit": "43922a5544745c64165df4aedd9c57391bfe6c51",
     "changed_path_count": 4,
     "changed_paths": [
@@ -21,29 +21,29 @@
       "tests/test_windows_lab_unattend_hygiene.py"
     ],
     "baseline_tests": {
-      "passed": 19,
-      "total": 19
+      "passed": 20,
+      "total": 20
     },
     "windows_powershell_51_security_synthetic": {
-      "passed": 17,
-      "total": 17,
+      "passed": 19,
+      "total": 19,
       "elevated_recursive_acl_acceptance_required": true
     },
     "repository_private_material_scan": {
       "files": 998,
       "findings": 0,
-      "receipt_sha256": "b5d478a02bf7b2d532436f546f7a49839c2aa217f61447045d4d1e6a7823a898"
+      "receipt_sha256": "a26d6c5e35df3217cd57b04ebfa57df035392cc919d3a9e306052708752b15cf"
     },
     "supersedes": {
-      "branch": "security/2.0.0-unattend-hygiene-source-candidate-v2-20261007",
-      "commit": "355dd26e0dc586b01ec2ba422194dbaada53d935",
-      "tree": "33a8fb6a34d73fc5959cc759c971fe43d3525f21",
-      "reason": "generated WorkerConfig is materialized before the recursive ACL lock so worker.json is included in inheritance removal"
+      "branch": "security/2.0.0-unattend-hygiene-source-candidate-v3-20261007",
+      "commit": "adfa7610c31813818ff532cfdc9f98fbddc01832",
+      "tree": "c286e6ea3da016753488ab5b2d1af362bd93abe9",
+      "reason": "exact per-entry DACL rebuild for SYSTEM and built-in Administrators replaces recursive icacls inheritance assumptions"
     }
   },
   "review_evidence": {
-    "patch_sha256": "264de2f2cbeaf0742bbe33d1a56bc9e69ca4fc97822391ffca0e18cec1ad42fc",
-    "control_rebaseline_plan_sha256": "ef77ce3b2fe4a5d577facf7bdb3420c4888b181b861fcde59693c4ab27c8c980"
+    "patch_sha256": "860f8a8c1afeb904b84606c4863850c7ba9889fa6dc050ee106cfc242c5f3040",
+    "control_rebaseline_plan_sha256": "0941d23fe9ef4989fce34d5a30930e9fa1b3822824e1538f717f78bcfe655426"
   },
   "human_review": {
     "required": true,

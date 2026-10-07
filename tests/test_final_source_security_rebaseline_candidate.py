@@ -44,23 +44,23 @@ class FinalSourceSecurityRebaselineCandidateTests(unittest.TestCase):
         self.assertEqual(value["security_source_candidate"]["changed_path_count"], 4)
         self.assertEqual(
             value["security_source_candidate"]["branch"],
-            "security/2.0.0-unattend-hygiene-source-candidate-v3-20261007",
+            "security/2.0.0-unattend-hygiene-source-candidate-v4-20261007",
         )
         self.assertEqual(
             value["security_source_candidate"]["commit"],
-            "adfa7610c31813818ff532cfdc9f98fbddc01832",
+            "af90094d9104c0ae4d932462f45bdc020ea35b14",
         )
         self.assertEqual(
             value["security_source_candidate"]["tree"],
-            "c286e6ea3da016753488ab5b2d1af362bd93abe9",
+            "e6966e2bb84815c647ea91eb1e41aa2c6c661f98",
         )
-        self.assertEqual(value["security_source_candidate"]["baseline_tests"], {"passed": 19, "total": 19})
+        self.assertEqual(value["security_source_candidate"]["baseline_tests"], {"passed": 20, "total": 20})
         synthetic = value["security_source_candidate"]["windows_powershell_51_security_synthetic"]
-        self.assertEqual((synthetic["passed"], synthetic["total"]), (17, 17))
+        self.assertEqual((synthetic["passed"], synthetic["total"]), (19, 19))
         self.assertTrue(synthetic["elevated_recursive_acl_acceptance_required"])
         self.assertEqual(
             value["security_source_candidate"]["supersedes"]["commit"],
-            "355dd26e0dc586b01ec2ba422194dbaada53d935",
+            "adfa7610c31813818ff532cfdc9f98fbddc01832",
         )
         self.assertIn("src/psmatrix/windows/lab/GuestBootstrap.ps1", paths)
         self.assertIn("src/psmatrix/windows/lab/Invoke-PSMatrixHyperVLab.ps1", paths)
