@@ -7,6 +7,7 @@ param(
     [Parameter()] [string]$IndependentReviewAttestationFile,
     [Parameter()] [ValidateSet('Naveax/PSMatrix')] [string]$Repository = 'Naveax/PSMatrix',
     [Parameter()] [ValidateSet('production-ga-windows-lab')] [string]$Environment = 'production-ga-windows-lab',
+    [Parameter()] [switch]$SecretRepairOnly,
     [Parameter()] [switch]$DryRun
 )
 
@@ -407,18 +408,29 @@ try {
     if ($gaRootInsideRepository -or $repositoryInsideGaRoot) {
         throw 'PSMATRIX_WINDOWS_GA_ROOT and the repository must be disjoint paths.'
     }
-    if (-not (Test-Path -LiteralPath $gaRoot -PathType Container)) {
-        throw 'PSMATRIX_WINDOWS_GA_ROOT directory does not exist.'
+    if ($SecretRepairOnly) {
+        # In repair mode the credential material may intentionally live on a different
+        # operator host than NAVEAX. Local filesystem layout validation would therefore
+        # validate the wrong machine. Live mode instead verifies the already-committed
+        # GitHub environment root exactly before the first mutation, while the canonical
+        # prerequisite audit independently revalidates the real NAVEAX layout afterward.
+        $rootLayoutStatus = 'windows_lab_root_layout_validation=DEFERRED secret_repair_only=true'
     }
-    Assert-NoLinkOrReparsePath -Path $gaRoot -Label 'PSMATRIX_WINDOWS_GA_ROOT'
-
-    $configRoot = Join-Path $gaRoot 'config'
-    $externalRoot = Join-Path $gaRoot 'media\external'
-    foreach ($requiredPath in @($configRoot, $externalRoot)) {
-        if (-not (Test-Path -LiteralPath $requiredPath -PathType Container)) {
-            throw 'PSMATRIX_WINDOWS_GA_ROOT does not contain the required Windows-lab layout.'
+    else {
+        if (-not (Test-Path -LiteralPath $gaRoot -PathType Container)) {
+            throw 'PSMATRIX_WINDOWS_GA_ROOT directory does not exist.'
         }
-        Assert-NoLinkOrReparsePath -Path $requiredPath -Label 'Windows-lab layout'
+        Assert-NoLinkOrReparsePath -Path $gaRoot -Label 'PSMATRIX_WINDOWS_GA_ROOT'
+
+        $configRoot = Join-Path $gaRoot 'config'
+        $externalRoot = Join-Path $gaRoot 'media\external'
+        foreach ($requiredPath in @($configRoot, $externalRoot)) {
+            if (-not (Test-Path -LiteralPath $requiredPath -PathType Container)) {
+                throw 'PSMATRIX_WINDOWS_GA_ROOT does not contain the required Windows-lab layout.'
+            }
+            Assert-NoLinkOrReparsePath -Path $requiredPath -Label 'Windows-lab layout'
+        }
+        $rootLayoutStatus = 'windows_lab_root_layout_validation=PASS'
     }
 
     Assert-RestrictedSecretFileAcl -Path $wps40External -Label 'PSMATRIX_WPS40_ADMIN_PASSWORD'
@@ -428,7 +440,7 @@ try {
 
     Write-Host 'windows_lab_operational_material_validation=PASS checks=4'
     Write-Host 'windows_lab_admin_credential_policy=PASS complexity=true distinct=true broad_acl=false'
-    Write-Host 'windows_lab_root_layout_validation=PASS'
+    Write-Host $rootLayoutStatus
     Write-Host 'staged_bytes_validated_and_reused=true'
     Write-Host "target_repository=$canonicalRepository"
     Write-Host "target_environment=$Environment"
@@ -438,6 +450,9 @@ try {
     Write-Host 'secret_lengths_logged=false'
 
     if ($DryRun) {
+        if ($SecretRepairOnly) {
+            Write-Host 'windows_lab_secret_repair_existing_root_verification=DEFERRED dry_run=true'
+        }
         Write-Host 'windows_lab_operational_environment_provisioning_executed=false dry_run=true'
         return
     }
@@ -476,6 +491,32 @@ try {
     Invoke-GhCaptured -Executable $gh -Arguments @('auth', 'status', '--hostname', 'github.com')
     Invoke-GhCaptured -Executable $gh -Arguments @('api', "repos/$Repository/environments/$Environment")
 
+    if ($SecretRepairOnly) {
+        $existingRootMetadata = Invoke-GhJsonCaptured -Executable $gh -Arguments @(
+            'api',
+            "repos/$Repository/environments/$Environment/variables/PSMATRIX_WINDOWS_GA_ROOT"
+        )
+        if ([string]$existingRootMetadata.name -cne 'PSMATRIX_WINDOWS_GA_ROOT') {
+            throw 'Existing Windows-lab GA-root variable identity is invalid.'
+        }
+        $existingRootValue = ([string]$existingRootMetadata.value).Trim()
+        if (
+            [string]::IsNullOrWhiteSpace($existingRootValue) -or
+            $existingRootValue.Contains("`r") -or
+            $existingRootValue.Contains("`n") -or
+            -not [IO.Path]::IsPathRooted($existingRootValue)
+        ) {
+            throw 'Existing Windows-lab GA-root variable is not a valid absolute path.'
+        }
+        $existingRoot = [IO.Path]::GetFullPath($existingRootValue).TrimEnd('\', '/')
+        $expectedExistingRoot = $gaRoot.TrimEnd('\', '/')
+        if (-not $existingRoot.Equals($expectedExistingRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Existing Windows-lab GA-root variable does not match the reviewed repair target.'
+        }
+        Write-Host 'windows_lab_secret_repair_existing_root_verification=PASS expected_root_matches_environment=true'
+        Write-Host 'existing_root_value_logged=false'
+    }
+
     # A prior successful provisioning may already have committed a valid root variable.
     # Invalidate that commit marker before touching any secret so every partial rerun remains
     # fail-closed. The sentinel is deliberately relative, so the prerequisite audit must fail
@@ -502,6 +543,9 @@ try {
     Invoke-GhCaptured -Executable $gh -Arguments @('variable', 'set', 'PSMATRIX_WINDOWS_GA_ROOT', '--env', $Environment, '--repo', $Repository) -InputFile $sanitizedRootInput
     Write-Host 'provisioned=production-ga-windows-lab/var/PSMATRIX_WINDOWS_GA_ROOT'
     Write-Host 'windows_lab_root_commit_marker_valid=true'
+    if ($SecretRepairOnly) {
+        Write-Host 'windows_lab_secret_repair_only=PASS existing_root_preserved=true fail_closed_marker_restored=true'
+    }
 
     # Environment writes do not produce a Git push. After the commit marker is valid,
     # create exactly one provisioning-bound audit event for the exact current main head.

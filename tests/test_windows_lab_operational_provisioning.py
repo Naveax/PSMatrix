@@ -33,6 +33,31 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         self.assertNotIn("final-production-readiness-contract.json", raw)
         self.assertNotIn("PSMATRIX_WINDOWS_LAB_PRIVATE_KEY", raw)
         self.assertNotIn("PSMATRIX_WINDOWS_LAB_PUBLIC_KEY", raw)
+        self.assertIn("[switch]$SecretRepairOnly", raw)
+
+    def test_secret_repair_only_defers_local_layout_and_verifies_existing_root_before_mutation(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+
+        for fragment in (
+            "windows_lab_root_layout_validation=DEFERRED secret_repair_only=true",
+            "windows_lab_secret_repair_existing_root_verification=DEFERRED dry_run=true",
+            "environments/$Environment/variables/PSMATRIX_WINDOWS_GA_ROOT",
+            "Existing Windows-lab GA-root variable identity is invalid.",
+            "Existing Windows-lab GA-root variable is not a valid absolute path.",
+            "Existing Windows-lab GA-root variable does not match the reviewed repair target.",
+            "windows_lab_secret_repair_existing_root_verification=PASS expected_root_matches_environment=true",
+            "existing_root_value_logged=false",
+            "windows_lab_secret_repair_only=PASS existing_root_preserved=true fail_closed_marker_restored=true",
+        ):
+            self.assertIn(fragment, raw)
+
+        repair_verify = raw.index("environments/$Environment/variables/PSMATRIX_WINDOWS_GA_ROOT")
+        first_mutation = raw.index("@('variable', 'set', 'PSMATRIX_WINDOWS_GA_ROOT'")
+        self.assertLess(repair_verify, first_mutation)
+
+        self.assertEqual(raw.count("@('secret', 'set', 'PSMATRIX_WPS40_ADMIN_PASSWORD'"), 1)
+        self.assertEqual(raw.count("@('secret', 'set', 'PSMATRIX_WPS50_ADMIN_PASSWORD'"), 1)
+        self.assertEqual(raw.count("@('secret', 'set', 'PSMATRIX_WPS51_ADMIN_PASSWORD'"), 1)
 
     def test_repository_target_is_pinned_before_any_secret_mutation(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
@@ -320,6 +345,8 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
             "Do not rerun `ops-windows-lab-prereq-audit` as polling.",
             "`repository_dispatch` event of type `windows_lab_prereq_audit`",
             "`client_payload.expected_head`",
+            "`-SecretRepairOnly`",
+            "existing `PSMATRIX_WINDOWS_GA_ROOT`",
             "manual `workflow_dispatch`",
             "live provisioning helper owns that transition",
         ):

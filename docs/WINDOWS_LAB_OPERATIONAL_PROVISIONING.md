@@ -59,7 +59,9 @@ Prepare four files **outside the repository**:
 
 Keep the password files access-restricted on the operator host. Do not commit them, attach them to issues, upload them as Actions artifacts, or paste them into workflow inputs.
 
-The provisioning helper rejects relative source-file paths, repository-contained source files, empty files, links/reparse points, a non-absolute GA-root value, a missing root, overlapping repository/GA-root paths, and a root without the required `config` and `media\external` layout.
+The provisioning helper rejects relative source-file paths, repository-contained source files, empty files, links/reparse points, a non-absolute GA-root value, and overlapping repository/GA-root paths. In normal provisioning mode it also requires the GA root to exist on the operator host with the required `config` and `media\external` layout.
+
+When the three credential files are intentionally held on a different operator host from NAVEAX, use `-SecretRepairOnly`. That mode does **not** pretend the remote NAVEAX root exists locally. Dry-run defers local root-layout validation. Live repair instead reads the existing `production-ga-windows-lab` `PSMATRIX_WINDOWS_GA_ROOT` variable through GitHub metadata and requires it to exactly match the reviewed target root before the first mutation. The later canonical prerequisite audit still revalidates the real NAVEAX root and layout.
 
 ## Validate without mutation
 
@@ -75,6 +77,20 @@ pwsh -NoProfile -File .\scripts\ga\Invoke-WindowsLabOperationalEnvironmentProvis
 ```
 
 The helper reports only value-free validation state. It does not print configured paths, secret values, secret hashes or secret lengths. Dry-run also rejects broad readable ACLs on the three credential files, weak or predictable credential material, credential files that are not BOM-free printable ASCII byte sequences, and credentials that are not mutually distinct.
+
+For a split-host repair, prepare the root-value file with the **already committed NAVEAX root** and run:
+
+```powershell
+pwsh -NoProfile -File .\scripts\ga\Invoke-WindowsLabOperationalEnvironmentProvisioning.ps1 `
+  -GaRootValueFile '<absolute-external-file-containing-the-current-naveax-root>' `
+  -Wps40AdminPasswordFile '<absolute-external-wps40-secret-file>' `
+  -Wps50AdminPasswordFile '<absolute-external-wps50-secret-file>' `
+  -Wps51AdminPasswordFile '<absolute-external-wps51-secret-file>' `
+  -SecretRepairOnly `
+  -DryRun
+```
+
+This dry-run validates the four external material files and credential policy but reports the remote root-layout check as deferred. It still performs no GitHub authentication or mutation.
 
 ## Independent material review attestation
 
@@ -122,9 +138,15 @@ pwsh -NoProfile -File .\scripts\ga\Invoke-WindowsLabOperationalEnvironmentProvis
   -IndependentReviewAttestationFile '<absolute-external-review-attestation-json>'
 ```
 
-Live mode first verifies that the target is still exactly `Naveax/PSMatrix`, verifies GitHub CLI authentication, and checks that `production-ga-windows-lab` exists. It then invalidates the GA-root **commit marker** by temporarily setting `PSMATRIX_WINDOWS_GA_ROOT` to a deliberately relative sentinel value. Because the prerequisite audit requires an absolute existing root, any failure after this point remains fail-closed even when the environment had been successfully provisioned before.
+If the root is already correctly committed for NAVEAX and only the three credentials need repair from a separate operator host, add `-SecretRepairOnly` to the same reviewed live command. Independent material review is still mandatory; repair mode does not relax that gate.
 
-The helper then writes the three administrator secrets through standard input. Only after all three writes succeed does it replace the sentinel with the real absolute GA-root value, again through standard input. A partially completed initial provisioning or re-provisioning therefore cannot leave a valid root commit marker behind.
+Live mode first verifies that the target is still exactly `Naveax/PSMatrix`, verifies GitHub CLI authentication, and checks that `production-ga-windows-lab` exists.
+
+With `-SecretRepairOnly`, live mode additionally reads the existing `PSMATRIX_WINDOWS_GA_ROOT` environment variable and requires that absolute path to exactly match the reviewed root-value file. It never accepts a different root merely because the operator host has a similarly named directory. The existing root value is not logged.
+
+Both normal provisioning and secret repair then invalidate the GA-root **commit marker** by temporarily setting `PSMATRIX_WINDOWS_GA_ROOT` to a deliberately relative sentinel value. Because the prerequisite audit requires an absolute existing root, any failure after this point remains fail-closed. The helper writes the three administrator secrets through standard input. Only after all three writes succeed does it replace the sentinel with the reviewed absolute GA-root value, again through standard input. In secret-repair mode that final value is exactly the root that was verified before mutation, so the root binding is preserved rather than changed.
+
+A partially completed initial provisioning or secret repair therefore cannot leave a valid root commit marker behind.
 
 The helper provisions exactly the four operational names listed above. It does not provision the Windows-lab signing keypair and it does not consume the final-production-readiness evidence contract. The sentinel is not authority evidence, is never a valid Windows-lab root, and must not be treated as recovery success.
 
