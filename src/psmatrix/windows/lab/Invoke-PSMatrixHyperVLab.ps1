@@ -23,6 +23,16 @@ function Invoke-Checked([string]$File, [string[]]$Arguments) {
     if ($LASTEXITCODE -ne 0) { throw ($File + ' failed with exit code ' + $LASTEXITCODE) }
 }
 function Escape-Xml([string]$Value) { return [Security.SecurityElement]::Escape($Value) }
+function Set-RestrictedDirectoryAcl([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        throw ('Restricted directory is missing: ' + $Path)
+    }
+    & icacls.exe $Path /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw ('Unable to restrict directory ACL: ' + $Path)
+    }
+}
+
 function Get-WindowsPartitionRoot([int]$DiskNumber) {
     foreach ($partition in Get-Partition -DiskNumber $DiskNumber) {
         if ($partition.DriveLetter) {
@@ -51,7 +61,13 @@ function New-Unattend([string]$Path, [string]$ComputerName, [string]$Password) {
   </settings>
 </unattend>
 "@
-    $xml | Set-Content -LiteralPath $Path -Encoding UTF8
+    try {
+        $xml | Set-Content -LiteralPath $Path -Encoding UTF8
+    }
+    finally {
+        $secret = $null
+        $xml = $null
+    }
 }
 function New-LabVhd($Image, [string]$GuestBootstrap) {
     Assert-Artifact $Image.source_iso 'Windows ISO'
@@ -106,10 +122,17 @@ exit /b %ERRORLEVEL%
 ' | Set-Content -LiteralPath (Join-Path $setupDir 'SetupComplete.cmd') -Encoding ASCII
         $panther = Join-Path $windowsRoot 'Windows\Panther'
         New-Item -ItemType Directory -Path $panther -Force | Out-Null
-        $password = [Environment]::GetEnvironmentVariable([string]$Image.admin_password_env,'Process')
-        if ([string]::IsNullOrWhiteSpace($password)) { throw ('Required secret environment variable is missing: ' + [string]$Image.admin_password_env) }
-        New-Unattend (Join-Path $panther 'Unattend.xml') ([string]$Image.computer_name) $password
-        & icacls.exe $bootstrap /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' | Out-Null
+        $secretName = [string]$Image.admin_password_env
+        $password = [Environment]::GetEnvironmentVariable($secretName,'Process')
+        if ([string]::IsNullOrWhiteSpace($password)) { throw ('Required secret environment variable is missing: ' + $secretName) }
+        try {
+            New-Unattend (Join-Path $panther 'Unattend.xml') ([string]$Image.computer_name) $password
+        }
+        finally {
+            $password = $null
+            [Environment]::SetEnvironmentVariable($secretName,$null,'Process')
+        }
+        Set-RestrictedDirectoryAcl $bootstrap
     }
     finally {
         if ($vhdMounted) { Dismount-VHD -Path $output -ErrorAction SilentlyContinue }
@@ -117,13 +140,106 @@ exit /b %ERRORLEVEL%
     }
     return $output
 }
+function Assert-NoGuestSetupAnswerFiles([string]$WindowsRoot) {
+    # A missing Panther directory must not yield a false-clean checkpoint.
+    $panther = Join-Path $WindowsRoot 'Windows\Panther'
+    if (-not (Test-Path -LiteralPath $panther -PathType Container)) {
+        throw 'Guest Windows Panther setup directory is missing; refusing checkpoint.'
+    }
+    foreach ($relativeRoot in @('Windows\Panther', 'Windows\System32\Sysprep')) {
+        $searchRoot = Join-Path $WindowsRoot $relativeRoot
+        if (-not (Test-Path -LiteralPath $searchRoot -PathType Container)) { continue }
+        if (((Get-Item -LiteralPath $searchRoot -Force -ErrorAction Stop).Attributes -band
+                [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Guest setup directory is a reparse point; refusing checkpoint.'
+        }
+        $pending = New-Object System.Collections.Stack
+        $pending.Push($searchRoot)
+        while ($pending.Count -gt 0) {
+            $current = [string]$pending.Pop()
+            foreach ($entry in @(Get-ChildItem -LiteralPath $current -Force -ErrorAction Stop)) {
+                if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    throw 'Guest setup directory tree contains a reparse point; refusing checkpoint.'
+                }
+                if ($entry.PSIsContainer) { $pending.Push($entry.FullName) }
+                elseif ($entry.Name -match '^(?:Auto)?Unattend\.xml$') {
+                    throw 'Guest setup answer file remains on the VHDX; refusing checkpoint.'
+                }
+            }
+        }
+    }
+}
+
+function Assert-RestrictedGuestDirectoryAcl([string]$Path, [string]$Label) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        throw ($Label + ' directory is missing; refusing checkpoint.')
+    }
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw ($Label + ' directory is a reparse point; refusing checkpoint.')
+    }
+    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    if (-not $acl.AreAccessRulesProtected) {
+        throw ($Label + ' directory still inherits ACLs; refusing checkpoint.')
+    }
+    $required = @('S-1-5-18','S-1-5-32-544')
+    $seen = @{}
+    foreach ($rule in @($acl.Access)) {
+        try {
+            $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+        }
+        catch {
+            throw ($Label + ' ACL trustee cannot be translated to a SID; refusing checkpoint.')
+        }
+        if ($required -notcontains $sid) {
+            throw ($Label + ' ACL contains an unexpected trustee; refusing checkpoint.')
+        }
+        if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) {
+            throw ($Label + ' ACL contains a non-allow rule; refusing checkpoint.')
+        }
+        if (($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -ne
+                [Security.AccessControl.FileSystemRights]::FullControl) {
+            throw ($Label + ' ACL trustee lacks FullControl; refusing checkpoint.')
+        }
+        $seen[$sid] = $true
+    }
+    foreach ($sid in $required) {
+        if (-not $seen.ContainsKey($sid)) {
+            throw ($Label + ' ACL is missing a required trustee; refusing checkpoint.')
+        }
+    }
+}
+
+function Assert-NoGuestBootstrapStagingSecrets([string]$WindowsRoot) {
+    $staging = Join-Path $WindowsRoot 'ProgramData\PSMatrix\Bootstrap'
+    if (-not (Test-Path -LiteralPath $staging -PathType Container)) {
+        throw 'Guest bootstrap staging directory is missing; refusing checkpoint.'
+    }
+    if (((Get-Item -LiteralPath $staging -Force -ErrorAction Stop).Attributes -band
+        [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'Guest bootstrap staging directory is a reparse point; refusing checkpoint.'
+    }
+    foreach ($name in @('credential-bundle.zip', 'signing-bundle.zip')) {
+        if (Test-Path -LiteralPath (Join-Path $staging $name)) {
+            throw 'Guest bootstrap credential/signing staging archive remains; refusing checkpoint.'
+        }
+    }
+}
+
 function Read-BootstrapResult([string]$VhdPath) {
     $mounted = Mount-VHD -Path $VhdPath -PassThru
     try {
         $root = Get-WindowsPartitionRoot $mounted.DiskNumber
         $path = Join-Path $root 'ProgramData\PSMatrix\bootstrap-result.json'
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'Guest bootstrap result is missing.' }
-        return (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json)
+        $result = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+        Assert-RestrictedGuestDirectoryAcl -Path (Join-Path $root 'ProgramData\PSMatrix\Bootstrap') -Label 'Bootstrap'
+        Assert-RestrictedGuestDirectoryAcl -Path (Join-Path $root 'ProgramData\PSMatrix\Credentials') -Label 'Credentials'
+        Assert-RestrictedGuestDirectoryAcl -Path (Join-Path $root 'ProgramData\PSMatrix\Signing') -Label 'Signing'
+        Assert-RestrictedGuestDirectoryAcl -Path (Join-Path $root 'ProgramData\PSMatrix\WorkerConfig') -Label 'WorkerConfig'
+        Assert-NoGuestBootstrapStagingSecrets -WindowsRoot $root
+        Assert-NoGuestSetupAnswerFiles -WindowsRoot $root
+        return $result
     }
     finally { Dismount-VHD -Path $VhdPath -ErrorAction SilentlyContinue }
 }
