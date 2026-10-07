@@ -26,6 +26,10 @@ class FinalSourceSecurityRebaselineCandidateTests(unittest.TestCase):
         self.assertTrue(value["frozen_final_source"]["immutable"])
         self.assertTrue(value["human_review"]["required"])
         self.assertFalse(value["human_review"]["complete"])
+        self.assertNotIn("review_manifest_sha256", value["review_evidence"])
+        self.assertFalse(value["handoff_policy"]["review_manifest_is_authority"])
+        self.assertTrue(value["handoff_policy"]["review_manifest_may_evolve_without_changing_source_candidate"])
+        self.assertTrue(value["handoff_policy"]["immutable_evidence_must_remain_hash_bound"])
         self.assertIsNone(value["human_review"]["reviewer"])
         self.assertEqual(
             value["claims"],

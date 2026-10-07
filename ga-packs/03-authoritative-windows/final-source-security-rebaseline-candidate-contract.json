@@ -36,7 +36,6 @@
   },
   "review_evidence": {
     "patch_sha256": "9c18d70a64045fe706c821042f4b6e5dfe63eef745b6484982d17807f45e05ea",
-    "review_manifest_sha256": "f6b675a169037fe6b221accdfd6e92172608bc1cae9eba8b4eb6a92891fd09a0",
     "control_rebaseline_plan_sha256": "c977b4038c4a99a98c301faede4ebfc409006b7f85545d6240f94ce672c5c811"
   },
   "human_review": {
@@ -64,5 +63,10 @@
     "ga_eligible": false,
     "signed": false,
     "certified": false
+  },
+  "handoff_policy": {
+    "review_manifest_is_authority": false,
+    "review_manifest_may_evolve_without_changing_source_candidate": true,
+    "immutable_evidence_must_remain_hash_bound": true
   }
 }
