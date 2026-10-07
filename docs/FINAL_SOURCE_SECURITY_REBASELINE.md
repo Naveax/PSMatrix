@@ -9,6 +9,11 @@ The candidate contract binds the exact review branch, commit, tree, four-path de
 packet hashes, private-material scan receipt, and the still-incomplete independent human-review
 gate. It is deliberately non-authoritative and not GA eligible.
 
+The current V3 source candidate supersedes V2 because V2 recursively hardened the sensitive
+ACL trees but locked WorkerConfig before worker.json was created. V3 writes the generated
+worker configuration first and then applies the recursive ACL lock, ensuring that the generated
+file itself is covered by inheritance removal and the host's recursive checkpoint verification.
+
 After independent review approves the exact candidate commit/tree, the release process must
 create a new immutable final-source ref. The old v2 final source remains untouched. The new ref
 then requires fresh unsigned staging, Windows certification, signing, protected release intake,
