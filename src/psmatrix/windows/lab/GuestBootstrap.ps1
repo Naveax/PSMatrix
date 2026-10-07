@@ -36,6 +36,152 @@ function Find-File([string]$Root, [string]$Name) {
     return $item.FullName
 }
 
+function Set-RestrictedDirectoryAcl([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        throw ('Restricted directory is missing: ' + $Path)
+    }
+
+    $pending = New-Object System.Collections.Stack
+    $items = New-Object System.Collections.ArrayList
+    $pending.Push((Get-Item -LiteralPath $Path -Force -ErrorAction Stop))
+    while ($pending.Count -gt 0) {
+        $item = $pending.Pop()
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw ('Restricted directory tree contains a reparse point: ' + $item.FullName)
+        }
+        [void]$items.Add($item)
+        if ($item.PSIsContainer) {
+            foreach ($child in @(Get-ChildItem -LiteralPath $item.FullName -Force -ErrorAction Stop)) {
+                $pending.Push($child)
+            }
+        }
+    }
+
+    $systemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+    $adminSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+    foreach ($item in @($items | Sort-Object { $_.FullName.Length } -Descending)) {
+        $acl = Get-Acl -LiteralPath $item.FullName -ErrorAction Stop
+        $acl.SetAccessRuleProtection($true, $false)
+
+        $existingSids = @(
+            $acl.Access |
+            ForEach-Object {
+                try {
+                    $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+                }
+                catch {
+                    throw ('Restricted ACL contains an untranslatable trustee: ' + $item.FullName)
+                }
+            } |
+            Sort-Object -Unique
+        )
+        foreach ($sidValue in $existingSids) {
+            $acl.PurgeAccessRules([Security.Principal.SecurityIdentifier]::new([string]$sidValue))
+        }
+
+        $inheritance = [Security.AccessControl.InheritanceFlags]::None
+        if ($item.PSIsContainer) {
+            $inheritance = (
+                [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+                [Security.AccessControl.InheritanceFlags]::ObjectInherit
+            )
+        }
+        $propagation = [Security.AccessControl.PropagationFlags]::None
+        $allow = [Security.AccessControl.AccessControlType]::Allow
+        $fullControl = [Security.AccessControl.FileSystemRights]::FullControl
+        [void]$acl.AddAccessRule(
+            [Security.AccessControl.FileSystemAccessRule]::new(
+                $systemSid, $fullControl, $inheritance, $propagation, $allow
+            )
+        )
+        [void]$acl.AddAccessRule(
+            [Security.AccessControl.FileSystemAccessRule]::new(
+                $adminSid, $fullControl, $inheritance, $propagation, $allow
+            )
+        )
+        Set-Acl -LiteralPath $item.FullName -AclObject $acl -ErrorAction Stop
+    }
+}
+
+function Remove-GuestSetupAnswerFiles([string]$WindowsRoot = ($env:SystemDrive + '\')) {
+    # A missing Panther directory is not proof that the setup secrets were removed.
+    $panther = Join-Path $WindowsRoot 'Windows\Panther'
+    if (-not (Test-Path -LiteralPath $panther -PathType Container)) {
+        throw 'Windows Panther setup directory is missing.'
+    }
+    foreach ($relativeRoot in @('Windows\Panther', 'Windows\System32\Sysprep')) {
+        $searchRoot = Join-Path $WindowsRoot $relativeRoot
+        if (-not (Test-Path -LiteralPath $searchRoot -PathType Container)) { continue }
+        if (((Get-Item -LiteralPath $searchRoot -Force -ErrorAction Stop).Attributes -band
+                [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Setup directory is a reparse point.'
+        }
+        $pending = New-Object System.Collections.Stack
+        $pending.Push($searchRoot)
+        while ($pending.Count -gt 0) {
+            $current = [string]$pending.Pop()
+            $entries = @(Get-ChildItem -LiteralPath $current -Force -ErrorAction Stop)
+            foreach ($entry in $entries) {
+                if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    throw 'Setup file scan encountered a reparse point.'
+                }
+                if ($entry.PSIsContainer) {
+                    $pending.Push($entry.FullName)
+                }
+                elseif ($entry.Name -match '^(?:Auto)?Unattend\.xml$') {
+                    Remove-Item -LiteralPath $entry.FullName -Force -ErrorAction Stop
+                    if (Test-Path -LiteralPath $entry.FullName) {
+                        throw 'A setup answer file could not be removed.'
+                    }
+                }
+            }
+        }
+    }
+    # Validate post-cleanup state through an independent directory scan.
+    foreach ($relativeRoot in @('Windows\Panther', 'Windows\System32\Sysprep')) {
+        $searchRoot = Join-Path $WindowsRoot $relativeRoot
+        if (-not (Test-Path -LiteralPath $searchRoot -PathType Container)) { continue }
+        $pending = New-Object System.Collections.Stack
+        $pending.Push($searchRoot)
+        while ($pending.Count -gt 0) {
+            $current = [string]$pending.Pop()
+            foreach ($entry in @(Get-ChildItem -LiteralPath $current -Force -ErrorAction Stop)) {
+                if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    throw 'Post-cleanup setup scan encountered a reparse point.'
+                }
+                if ($entry.PSIsContainer) { $pending.Push($entry.FullName) }
+                elseif ($entry.Name -match '^(?:Auto)?Unattend\.xml$') {
+                    throw 'A setup answer file remains after cleanup.'
+                }
+            }
+        }
+    }
+}
+
+function Remove-GuestBootstrapStagingSecrets([string]$Root) {
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
+        throw 'Guest bootstrap staging directory is missing.'
+    }
+    if (((Get-Item -LiteralPath $Root -Force -ErrorAction Stop).Attributes -band
+        [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'Guest bootstrap staging directory is a reparse point.'
+    }
+    foreach ($name in @('credential-bundle.zip', 'signing-bundle.zip')) {
+        $path = Join-Path $Root $name
+        if (Test-Path -LiteralPath $path) {
+            $file = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+            if ($file.PSIsContainer -or
+                (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                throw 'Guest bootstrap staging material is an unsafe file type.'
+            }
+            Remove-Item -LiteralPath $path -Force -ErrorAction Stop
+        }
+        if (Test-Path -LiteralPath $path) {
+            throw 'Guest bootstrap staging material remains after cleanup.'
+        }
+    }
+}
+
 try {
     if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) { throw 'Bootstrap configuration is missing.' }
     $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
@@ -55,6 +201,8 @@ try {
     Expand-Zip (Join-Path $bootstrapRoot 'worker-package.zip') $workerRoot
     Expand-Zip (Join-Path $bootstrapRoot 'credential-bundle.zip') $credentialRoot
     Expand-Zip (Join-Path $bootstrapRoot 'signing-bundle.zip') $signingRoot
+    Set-RestrictedDirectoryAcl $credentialRoot
+    Set-RestrictedDirectoryAcl $signingRoot
 
     $pythonInstaller = Join-Path $bootstrapRoot 'python-installer.exe'
     $python = Get-Command python.exe -ErrorAction SilentlyContinue
@@ -85,6 +233,7 @@ try {
     $text = $text.Replace('{{SIGNING_ROOT}}',$signingRoot.Replace('\','\\'))
     $text = $text.Replace('{{WORKSPACE_ROOT}}','C:\\ProgramData\\PSMatrix\\Workspace')
     $text | Set-Content -LiteralPath $workerConfig -Encoding UTF8
+    Set-RestrictedDirectoryAcl $configRoot
 
     $installScript = Find-File $workerRoot 'install-worker.ps1'
     & $installScript -WorkerId ([string]$config.worker_id) -PowerShellVersion $expected -PythonExecutable $python.Source -ConfigPath $workerConfig -StartService
@@ -102,6 +251,8 @@ try {
         worker_config_sha256 = (Get-FileHash -LiteralPath $workerConfig -Algorithm SHA256).Hash.ToLowerInvariant()
         service_name = ('PSMatrixWorker-' + [string]$config.worker_id)
     }
+    Remove-GuestBootstrapStagingSecrets -Root $bootstrapRoot
+    Remove-GuestSetupAnswerFiles
     Write-Result 'PASS' 'Guest bootstrap completed.' $identity
 }
 catch {
