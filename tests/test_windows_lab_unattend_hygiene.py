@@ -57,13 +57,31 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
         guest = GUEST.read_text(encoding="utf-8")
         host = HOST.read_text(encoding="utf-8")
         for text in (guest, host):
-            self.assertIn("/T /C /Q", text)
-            self.assertIn("Unable to restrict directory tree ACL:", text)
-        self.assertIn("New-Object System.Collections.Stack", host)
+            self.assertIn("New-Object System.Collections.Stack", text)
+            self.assertIn("Restricted directory tree contains a reparse point:", text)
+            self.assertIn("[Security.Principal.SecurityIdentifier]::new('S-1-5-18')", text)
+            self.assertIn("[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')", text)
+            self.assertIn("$acl.SetAccessRuleProtection($true, $false)", text)
+            self.assertIn("$acl.PurgeAccessRules", text)
+            self.assertIn("$acl.AddAccessRule", text)
+            self.assertIn("Set-Acl -LiteralPath $item.FullName -AclObject $acl -ErrorAction Stop", text)
+            self.assertNotIn("/T /C /Q", text)
         self.assertIn("directory tree still inherits ACLs; refusing checkpoint.", host)
         self.assertIn("directory tree contains a reparse point; refusing checkpoint.", host)
         self.assertIn("Get-Acl -LiteralPath $item.FullName", host)
         self.assertIn("Get-ChildItem -LiteralPath $item.FullName -Force -ErrorAction Stop", host)
+
+    def test_recursive_acl_setter_uses_exact_file_and_directory_rule_shapes(self):
+        for text in (GUEST.read_text(encoding="utf-8"), HOST.read_text(encoding="utf-8")):
+            none = text.index("[Security.AccessControl.InheritanceFlags]::None")
+            branch = text.index("if ($item.PSIsContainer)", none)
+            container = text.index("[Security.AccessControl.InheritanceFlags]::ContainerInherit", branch)
+            object_inherit = text.index("[Security.AccessControl.InheritanceFlags]::ObjectInherit", container)
+            add_rule = text.index("[Security.AccessControl.FileSystemAccessRule]::new(", object_inherit)
+            self.assertLess(none, branch)
+            self.assertLess(branch, container)
+            self.assertLess(container, object_inherit)
+            self.assertLess(object_inherit, add_rule)
 
     def test_host_independently_verifies_sensitive_directory_acls_before_checkpoint(self):
         text = HOST.read_text(encoding="utf-8")
@@ -87,9 +105,12 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
         host = HOST.read_text(encoding="utf-8")
         for text in (guest, host):
             self.assertIn("function Set-RestrictedDirectoryAcl", text)
-            self.assertIn("*S-1-5-18:(OI)(CI)F", text)
-            self.assertIn("*S-1-5-32-544:(OI)(CI)F", text)
-            self.assertIn("if ($LASTEXITCODE -ne 0)", text)
+            self.assertIn("[Security.Principal.SecurityIdentifier]::new('S-1-5-18')", text)
+            self.assertIn("[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')", text)
+            self.assertIn("$acl.SetAccessRuleProtection($true, $false)", text)
+            self.assertIn("$acl.PurgeAccessRules", text)
+            self.assertIn("[Security.AccessControl.FileSystemAccessRule]::new(", text)
+            self.assertIn("Set-Acl -LiteralPath $item.FullName -AclObject $acl -ErrorAction Stop", text)
         for variable in ("$credentialRoot", "$signingRoot", "$configRoot"):
             self.assertIn("Set-RestrictedDirectoryAcl " + variable, guest)
         self.assertIn("Set-RestrictedDirectoryAcl $bootstrap", host)

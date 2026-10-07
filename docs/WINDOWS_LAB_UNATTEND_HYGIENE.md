@@ -30,8 +30,8 @@ This is file-presence hygiene, not secure erasure of VHDX sectors.
 
 Before checkpoint, the host independently reopens the shutdown VHDX and recursively
 verifies every entry under Bootstrap, Credentials, Signing, and WorkerConfig. Guest and
-host ACL setup recursively removes inheritance and grants FullControl only to the SYSTEM
-and built-in Administrators well-known SIDs. WorkerConfig is locked after worker.json is
+host ACL setup recursively rebuilds each DACL from well-known SIDs: files receive direct
+FullControl and directories receive inheritable FullControl only for SYSTEM and built-in Administrators. WorkerConfig is locked after worker.json is
 materialized so the generated config is part of the recursive inheritance removal.
 Unexpected trustees, inherited ACLs on any child, missing directories, or reparse points
 fail closed.

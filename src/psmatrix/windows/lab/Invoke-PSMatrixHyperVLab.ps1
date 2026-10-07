@@ -27,9 +27,66 @@ function Set-RestrictedDirectoryAcl([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
         throw ('Restricted directory is missing: ' + $Path)
     }
-    & icacls.exe $Path /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' /T /C /Q | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw ('Unable to restrict directory tree ACL: ' + $Path)
+
+    $pending = New-Object System.Collections.Stack
+    $items = New-Object System.Collections.ArrayList
+    $pending.Push((Get-Item -LiteralPath $Path -Force -ErrorAction Stop))
+    while ($pending.Count -gt 0) {
+        $item = $pending.Pop()
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw ('Restricted directory tree contains a reparse point: ' + $item.FullName)
+        }
+        [void]$items.Add($item)
+        if ($item.PSIsContainer) {
+            foreach ($child in @(Get-ChildItem -LiteralPath $item.FullName -Force -ErrorAction Stop)) {
+                $pending.Push($child)
+            }
+        }
+    }
+
+    $systemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+    $adminSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+    foreach ($item in @($items | Sort-Object { $_.FullName.Length } -Descending)) {
+        $acl = Get-Acl -LiteralPath $item.FullName -ErrorAction Stop
+        $acl.SetAccessRuleProtection($true, $false)
+
+        $existingSids = @(
+            $acl.Access |
+            ForEach-Object {
+                try {
+                    $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+                }
+                catch {
+                    throw ('Restricted ACL contains an untranslatable trustee: ' + $item.FullName)
+                }
+            } |
+            Sort-Object -Unique
+        )
+        foreach ($sidValue in $existingSids) {
+            $acl.PurgeAccessRules([Security.Principal.SecurityIdentifier]::new([string]$sidValue))
+        }
+
+        $inheritance = [Security.AccessControl.InheritanceFlags]::None
+        if ($item.PSIsContainer) {
+            $inheritance = (
+                [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+                [Security.AccessControl.InheritanceFlags]::ObjectInherit
+            )
+        }
+        $propagation = [Security.AccessControl.PropagationFlags]::None
+        $allow = [Security.AccessControl.AccessControlType]::Allow
+        $fullControl = [Security.AccessControl.FileSystemRights]::FullControl
+        [void]$acl.AddAccessRule(
+            [Security.AccessControl.FileSystemAccessRule]::new(
+                $systemSid, $fullControl, $inheritance, $propagation, $allow
+            )
+        )
+        [void]$acl.AddAccessRule(
+            [Security.AccessControl.FileSystemAccessRule]::new(
+                $adminSid, $fullControl, $inheritance, $propagation, $allow
+            )
+        )
+        Set-Acl -LiteralPath $item.FullName -AclObject $acl -ErrorAction Stop
     }
 }
 
