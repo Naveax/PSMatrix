@@ -28,6 +28,11 @@ The host independently rejects either leftover ZIP before checkpoint.
 Extracted runtime Credentials and Signing directories remain available.
 This is file-presence hygiene, not secure erasure of VHDX sectors.
 
+Before checkpoint, the host independently reopens the shutdown VHDX and verifies
+that Bootstrap, Credentials, Signing, and WorkerConfig have protected ACLs containing
+only the SYSTEM and built-in Administrators well-known SIDs with FullControl.
+Unexpected trustees, inherited ACLs, missing directories, or reparse points fail closed.
+
 Sensitive guest runtime directories (Credentials, Signing, and WorkerConfig) and
 the bootstrap staging directory are assigned explicit SYSTEM/Administrators ACLs
 using well-known SIDs, so localized Windows group names cannot silently weaken the

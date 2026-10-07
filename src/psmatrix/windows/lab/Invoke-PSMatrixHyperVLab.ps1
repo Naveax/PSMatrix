@@ -170,6 +170,46 @@ function Assert-NoGuestSetupAnswerFiles([string]$WindowsRoot) {
     }
 }
 
+function Assert-RestrictedGuestDirectoryAcl([string]$Path, [string]$Label) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        throw ($Label + ' directory is missing; refusing checkpoint.')
+    }
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw ($Label + ' directory is a reparse point; refusing checkpoint.')
+    }
+    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    if (-not $acl.AreAccessRulesProtected) {
+        throw ($Label + ' directory still inherits ACLs; refusing checkpoint.')
+    }
+    $required = @('S-1-5-18','S-1-5-32-544')
+    $seen = @{}
+    foreach ($rule in @($acl.Access)) {
+        try {
+            $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+        }
+        catch {
+            throw ($Label + ' ACL trustee cannot be translated to a SID; refusing checkpoint.')
+        }
+        if ($required -notcontains $sid) {
+            throw ($Label + ' ACL contains an unexpected trustee; refusing checkpoint.')
+        }
+        if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) {
+            throw ($Label + ' ACL contains a non-allow rule; refusing checkpoint.')
+        }
+        if (($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -ne
+                [Security.AccessControl.FileSystemRights]::FullControl) {
+            throw ($Label + ' ACL trustee lacks FullControl; refusing checkpoint.')
+        }
+        $seen[$sid] = $true
+    }
+    foreach ($sid in $required) {
+        if (-not $seen.ContainsKey($sid)) {
+            throw ($Label + ' ACL is missing a required trustee; refusing checkpoint.')
+        }
+    }
+}
+
 function Assert-NoGuestBootstrapStagingSecrets([string]$WindowsRoot) {
     $staging = Join-Path $WindowsRoot 'ProgramData\PSMatrix\Bootstrap'
     if (-not (Test-Path -LiteralPath $staging -PathType Container)) {
@@ -193,6 +233,10 @@ function Read-BootstrapResult([string]$VhdPath) {
         $path = Join-Path $root 'ProgramData\PSMatrix\bootstrap-result.json'
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'Guest bootstrap result is missing.' }
         $result = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+        Assert-RestrictedGuestDirectoryAcl -Path (Join-Path $root 'ProgramData\PSMatrix\Bootstrap') -Label 'Bootstrap'
+        Assert-RestrictedGuestDirectoryAcl -Path (Join-Path $root 'ProgramData\PSMatrix\Credentials') -Label 'Credentials'
+        Assert-RestrictedGuestDirectoryAcl -Path (Join-Path $root 'ProgramData\PSMatrix\Signing') -Label 'Signing'
+        Assert-RestrictedGuestDirectoryAcl -Path (Join-Path $root 'ProgramData\PSMatrix\WorkerConfig') -Label 'WorkerConfig'
         Assert-NoGuestBootstrapStagingSecrets -WindowsRoot $root
         Assert-NoGuestSetupAnswerFiles -WindowsRoot $root
         return $result

@@ -43,6 +43,23 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
                         text.index("    Checkpoint-VM -Name $vmName"))
         self.assertIn("Dismount-VHD -Path $VhdPath", text)
 
+    def test_host_independently_verifies_sensitive_directory_acls_before_checkpoint(self):
+        text = HOST.read_text(encoding="utf-8")
+        self.assertIn("function Assert-RestrictedGuestDirectoryAcl", text)
+        self.assertIn("directory still inherits ACLs; refusing checkpoint.", text)
+        self.assertIn("ACL contains an unexpected trustee; refusing checkpoint.", text)
+        self.assertIn("ACL is missing a required trustee; refusing checkpoint.", text)
+        for relative in (
+            "ProgramData\\PSMatrix\\Bootstrap",
+            "ProgramData\\PSMatrix\\Credentials",
+            "ProgramData\\PSMatrix\\Signing",
+            "ProgramData\\PSMatrix\\WorkerConfig",
+        ):
+            self.assertIn(relative, text)
+        verify = text.index("Assert-RestrictedGuestDirectoryAcl -Path")
+        checkpoint = text.index("    Checkpoint-VM -Name $vmName")
+        self.assertLess(verify, checkpoint)
+
     def test_sensitive_directories_use_localization_independent_restricted_acls(self):
         guest = GUEST.read_text(encoding="utf-8")
         host = HOST.read_text(encoding="utf-8")
