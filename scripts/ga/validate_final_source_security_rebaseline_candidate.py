@@ -1,0 +1,137 @@
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import subprocess
+from pathlib import Path
+from typing import Any
+
+_SHA40 = re.compile(r"^[0-9a-f]{40}$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_KIND = "psmatrix.windows-authority-final-source-security-rebaseline-candidate"
+
+
+def _git(repo: Path, *args: str) -> str:
+    p = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if p.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)} failed: {p.stderr.strip()}")
+    return p.stdout.strip()
+
+
+def _load(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise RuntimeError("contract root must be an object")
+    return value
+
+
+def _require(value: bool, message: str) -> None:
+    if not value:
+        raise RuntimeError(message)
+
+
+def validate(contract: dict[str, Any], repo: Path, frozen_ref: str | None, candidate_ref: str | None) -> dict[str, Any]:
+    _require(contract.get("schema") == 1, "schema mismatch")
+    _require(contract.get("kind") == _KIND, "kind mismatch")
+    _require(contract.get("pack") == "03-authoritative-windows", "pack mismatch")
+
+    frozen = contract["frozen_final_source"]
+    candidate = contract["security_source_candidate"]
+    review = contract["human_review"]
+    promotion = contract["promotion"]
+    claims = contract["claims"]
+
+    for label, sha in (
+        ("frozen commit", frozen["commit"]),
+        ("frozen tree", frozen["tree"]),
+        ("candidate commit", candidate["commit"]),
+        ("candidate tree", candidate["tree"]),
+        ("candidate parent", candidate["parent_commit"]),
+    ):
+        _require(bool(_SHA40.fullmatch(str(sha))), f"{label} is not SHA-40")
+
+    _require(frozen["immutable"] is True, "frozen source must remain immutable")
+    _require(candidate["parent_commit"] == frozen["commit"], "candidate parent binding mismatch")
+    paths = candidate["changed_paths"]
+    _require(isinstance(paths, list) and paths == sorted(set(paths)), "changed paths must be exact sorted unique list")
+    _require(candidate["changed_path_count"] == len(paths) == 4, "security changed-path count must be exactly four")
+
+    _require(review["required"] is True, "independent human review must be required")
+    _require(review["complete"] is False, "candidate must not claim completed human review")
+    _require(review["reviewer"] is None and review["reviewed_at"] is None, "candidate must not fabricate reviewer metadata")
+
+    _require(promotion["old_frozen_branch_must_not_move"] is True, "old frozen branch movement must be prohibited")
+    _require(promotion["new_immutable_final_source_ref_required"] is True, "new final source ref must be required")
+    _require(promotion["proposed_new_final_source_branch"] != frozen["branch"], "new source branch must differ from frozen v2")
+    for key in (
+        "exact_candidate_commit_required",
+        "fresh_unsigned_staging_required",
+        "fresh_windows_certification_required",
+        "fresh_signing_required",
+        "fresh_release_intake_required",
+        "fresh_security_review_required",
+        "fresh_evidence_rebind_required",
+        "fresh_ga_closure_required",
+        "signed_rc4_reuse_prohibited",
+    ):
+        _require(promotion[key] is True, f"{key} must remain true")
+
+    _require(claims == {"authoritative": False, "ga_eligible": False, "signed": False, "certified": False},
+             "candidate claims must remain entirely non-authoritative")
+
+    for key, digest in contract["review_evidence"].items():
+        _require(bool(_SHA256.fullmatch(str(digest))), f"review evidence digest invalid: {key}")
+    scan = candidate["repository_private_material_scan"]
+    _require(scan["findings"] == 0 and scan["files"] > 0, "private-material scan must be clean")
+    _require(bool(_SHA256.fullmatch(str(scan["receipt_sha256"]))), "private-material receipt digest invalid")
+
+    _git(repo, "cat-file", "-e", frozen["commit"] + "^{commit}")
+    _git(repo, "cat-file", "-e", candidate["commit"] + "^{commit}")
+    _require(_git(repo, "rev-parse", frozen["commit"] + "^{tree}") == frozen["tree"], "frozen tree mismatch")
+    _require(_git(repo, "rev-parse", candidate["commit"] + "^{tree}") == candidate["tree"], "candidate tree mismatch")
+    _require(_git(repo, "rev-parse", candidate["commit"] + "^") == frozen["commit"], "candidate is not a direct child of frozen source")
+    changed = _git(repo, "diff", "--name-only", frozen["commit"], candidate["commit"]).splitlines()
+    _require(changed == paths, "candidate changed-path closure mismatch")
+
+    if frozen_ref:
+        _require(_git(repo, "rev-parse", frozen_ref) == frozen["commit"], "frozen ref moved")
+    if candidate_ref:
+        _require(_git(repo, "rev-parse", candidate_ref) == candidate["commit"], "candidate ref mismatch")
+
+    return {
+        "schema": 1,
+        "kind": "psmatrix.final-source-security-rebaseline-validation",
+        "status": "PASS",
+        "frozen_commit": frozen["commit"],
+        "candidate_commit": candidate["commit"],
+        "candidate_tree": candidate["tree"],
+        "changed_path_count": len(paths),
+        "human_review_complete": False,
+        "authoritative": False,
+        "ga_eligible": False,
+        "ready_for_promotion": False,
+    }
+
+
+def main() -> int:
+    p = argparse.ArgumentParser()
+    p.add_argument("--contract", required=True)
+    p.add_argument("--repo", required=True)
+    p.add_argument("--frozen-ref")
+    p.add_argument("--candidate-ref")
+    args = p.parse_args()
+    result = validate(_load(Path(args.contract)), Path(args.repo), args.frozen_ref, args.candidate_ref)
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

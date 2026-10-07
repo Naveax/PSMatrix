@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-authority-final-source-security-rebaseline-candidate",
+  "pack": "03-authoritative-windows",
+  "frozen_final_source": {
+    "branch": "final/2.0.0-release-candidate-anchor-v2",
+    "commit": "43922a5544745c64165df4aedd9c57391bfe6c51",
+    "tree": "05cb5337e507be23791f4de22442a79802dc5c8e",
+    "immutable": true
+  },
+  "security_source_candidate": {
+    "branch": "security/2.0.0-unattend-hygiene-source-candidate-20261007",
+    "commit": "472f05f9afcdce270d26596710159980c6aeae36",
+    "tree": "c2286a725d905de469ce83e1015dbe3016340014",
+    "parent_commit": "43922a5544745c64165df4aedd9c57391bfe6c51",
+    "changed_path_count": 4,
+    "changed_paths": [
+      "docs/WINDOWS_LAB_UNATTEND_HYGIENE.md",
+      "src/psmatrix/windows/lab/GuestBootstrap.ps1",
+      "src/psmatrix/windows/lab/Invoke-PSMatrixHyperVLab.ps1",
+      "tests/test_windows_lab_unattend_hygiene.py"
+    ],
+    "baseline_tests": {
+      "passed": 17,
+      "total": 17
+    },
+    "windows_powershell_51_security_synthetic": {
+      "passed": 18,
+      "total": 18
+    },
+    "repository_private_material_scan": {
+      "files": 998,
+      "findings": 0,
+      "receipt_sha256": "530fa0b7799dc25013ef3c7cf1b1ad0b857f5abda6a39b59af6c5619ce91fe2b"
+    }
+  },
+  "review_evidence": {
+    "patch_sha256": "9c18d70a64045fe706c821042f4b6e5dfe63eef745b6484982d17807f45e05ea",
+    "review_manifest_sha256": "f6b675a169037fe6b221accdfd6e92172608bc1cae9eba8b4eb6a92891fd09a0",
+    "control_rebaseline_plan_sha256": "c977b4038c4a99a98c301faede4ebfc409006b7f85545d6240f94ce672c5c811"
+  },
+  "human_review": {
+    "required": true,
+    "complete": false,
+    "reviewer": null,
+    "reviewed_at": null
+  },
+  "promotion": {
+    "old_frozen_branch_must_not_move": true,
+    "new_immutable_final_source_ref_required": true,
+    "proposed_new_final_source_branch": "final/2.0.0-release-candidate-anchor-v3",
+    "exact_candidate_commit_required": true,
+    "fresh_unsigned_staging_required": true,
+    "fresh_windows_certification_required": true,
+    "fresh_signing_required": true,
+    "fresh_release_intake_required": true,
+    "fresh_security_review_required": true,
+    "fresh_evidence_rebind_required": true,
+    "fresh_ga_closure_required": true,
+    "signed_rc4_reuse_prohibited": true
+  },
+  "claims": {
+    "authoritative": false,
+    "ga_eligible": false,
+    "signed": false,
+    "certified": false
+  }
+}
