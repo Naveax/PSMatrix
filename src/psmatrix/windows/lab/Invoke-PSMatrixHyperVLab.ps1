@@ -27,9 +27,9 @@ function Set-RestrictedDirectoryAcl([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
         throw ('Restricted directory is missing: ' + $Path)
     }
-    & icacls.exe $Path /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
+    & icacls.exe $Path /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' /T /C /Q | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        throw ('Unable to restrict directory ACL: ' + $Path)
+        throw ('Unable to restrict directory tree ACL: ' + $Path)
     }
 }
 
@@ -174,38 +174,47 @@ function Assert-RestrictedGuestDirectoryAcl([string]$Path, [string]$Label) {
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
         throw ($Label + ' directory is missing; refusing checkpoint.')
     }
-    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
-    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw ($Label + ' directory is a reparse point; refusing checkpoint.')
-    }
-    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
-    if (-not $acl.AreAccessRulesProtected) {
-        throw ($Label + ' directory still inherits ACLs; refusing checkpoint.')
-    }
     $required = @('S-1-5-18','S-1-5-32-544')
-    $seen = @{}
-    foreach ($rule in @($acl.Access)) {
-        try {
-            $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+    $pending = New-Object System.Collections.Stack
+    $pending.Push((Get-Item -LiteralPath $Path -Force -ErrorAction Stop))
+    while ($pending.Count -gt 0) {
+        $item = $pending.Pop()
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw ($Label + ' directory tree contains a reparse point; refusing checkpoint.')
         }
-        catch {
-            throw ($Label + ' ACL trustee cannot be translated to a SID; refusing checkpoint.')
+        $acl = Get-Acl -LiteralPath $item.FullName -ErrorAction Stop
+        if (-not $acl.AreAccessRulesProtected) {
+            throw ($Label + ' directory tree still inherits ACLs; refusing checkpoint.')
         }
-        if ($required -notcontains $sid) {
-            throw ($Label + ' ACL contains an unexpected trustee; refusing checkpoint.')
+        $seen = @{}
+        foreach ($rule in @($acl.Access)) {
+            try {
+                $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+            }
+            catch {
+                throw ($Label + ' ACL trustee cannot be translated to a SID; refusing checkpoint.')
+            }
+            if ($required -notcontains $sid) {
+                throw ($Label + ' ACL contains an unexpected trustee; refusing checkpoint.')
+            }
+            if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) {
+                throw ($Label + ' ACL contains a non-allow rule; refusing checkpoint.')
+            }
+            if (($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -ne
+                    [Security.AccessControl.FileSystemRights]::FullControl) {
+                throw ($Label + ' ACL trustee lacks FullControl; refusing checkpoint.')
+            }
+            $seen[$sid] = $true
         }
-        if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) {
-            throw ($Label + ' ACL contains a non-allow rule; refusing checkpoint.')
+        foreach ($sid in $required) {
+            if (-not $seen.ContainsKey($sid)) {
+                throw ($Label + ' ACL is missing a required trustee; refusing checkpoint.')
+            }
         }
-        if (($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -ne
-                [Security.AccessControl.FileSystemRights]::FullControl) {
-            throw ($Label + ' ACL trustee lacks FullControl; refusing checkpoint.')
-        }
-        $seen[$sid] = $true
-    }
-    foreach ($sid in $required) {
-        if (-not $seen.ContainsKey($sid)) {
-            throw ($Label + ' ACL is missing a required trustee; refusing checkpoint.')
+        if ($item.PSIsContainer) {
+            foreach ($child in @(Get-ChildItem -LiteralPath $item.FullName -Force -ErrorAction Stop)) {
+                $pending.Push($child)
+            }
         }
     }
 }

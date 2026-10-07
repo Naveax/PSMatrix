@@ -43,10 +43,22 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
                         text.index("    Checkpoint-VM -Name $vmName"))
         self.assertIn("Dismount-VHD -Path $VhdPath", text)
 
+    def test_sensitive_acl_controls_cover_entire_tree(self):
+        guest = GUEST.read_text(encoding="utf-8")
+        host = HOST.read_text(encoding="utf-8")
+        for text in (guest, host):
+            self.assertIn("/T /C /Q", text)
+            self.assertIn("Unable to restrict directory tree ACL:", text)
+        self.assertIn("New-Object System.Collections.Stack", host)
+        self.assertIn("directory tree still inherits ACLs; refusing checkpoint.", host)
+        self.assertIn("directory tree contains a reparse point; refusing checkpoint.", host)
+        self.assertIn("Get-Acl -LiteralPath $item.FullName", host)
+        self.assertIn("Get-ChildItem -LiteralPath $item.FullName -Force -ErrorAction Stop", host)
+
     def test_host_independently_verifies_sensitive_directory_acls_before_checkpoint(self):
         text = HOST.read_text(encoding="utf-8")
         self.assertIn("function Assert-RestrictedGuestDirectoryAcl", text)
-        self.assertIn("directory still inherits ACLs; refusing checkpoint.", text)
+        self.assertIn("directory tree still inherits ACLs; refusing checkpoint.", text)
         self.assertIn("ACL contains an unexpected trustee; refusing checkpoint.", text)
         self.assertIn("ACL is missing a required trustee; refusing checkpoint.", text)
         for relative in (

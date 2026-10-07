@@ -40,9 +40,9 @@ function Set-RestrictedDirectoryAcl([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
         throw ('Restricted directory is missing: ' + $Path)
     }
-    & icacls.exe $Path /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
+    & icacls.exe $Path /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' /T /C /Q | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        throw ('Unable to restrict directory ACL: ' + $Path)
+        throw ('Unable to restrict directory tree ACL: ' + $Path)
     }
 }
 
