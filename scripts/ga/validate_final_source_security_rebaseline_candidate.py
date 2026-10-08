@@ -98,13 +98,22 @@ def validate(contract: dict[str, Any], repo: Path, frozen_ref: str | None, candi
         "review handoff authority or immutable evidence policy changed",
     )
 
+    expected_supersedes = {
+        "branch": "security/2.0.0-unattend-hygiene-source-candidate-v3-20261007",
+        "commit": "adfa7610c31813818ff532cfdc9f98fbddc01832",
+        "tree": "c286e6ea3da016753488ab5b2d1af362bd93abe9",
+        "reason": "exact per-entry DACL rebuild for SYSTEM and built-in Administrators replaces recursive icacls inheritance assumptions",
+    }
+    _require(candidate.get("supersedes") == expected_supersedes, "superseded V3 source identity changed")
+
     _require(review["required"] is True, "independent human review must be required")
     _require(review["complete"] is False, "candidate must not claim completed human review")
     _require(review["reviewer"] is None and review["reviewed_at"] is None, "candidate must not fabricate reviewer metadata")
 
     _require(promotion["old_frozen_branch_must_not_move"] is True, "old frozen branch movement must be prohibited")
     _require(promotion["new_immutable_final_source_ref_required"] is True, "new final source ref must be required")
-    _require(promotion["proposed_new_final_source_branch"] != frozen["branch"], "new source branch must differ from frozen v2")
+    _require(promotion["proposed_new_final_source_branch"] == "final/2.0.0-release-candidate-anchor-v3",
+             "proposed new final-source branch identity changed")
     for key in (
         "exact_candidate_commit_required",
         "fresh_unsigned_staging_required",
@@ -126,11 +135,19 @@ def validate(contract: dict[str, Any], repo: Path, frozen_ref: str | None, candi
         "candidate claims must remain entirely non-authoritative",
     )
 
+    expected_review_evidence = {
+        "patch_sha256": "860f8a8c1afeb904b84606c4863850c7ba9889fa6dc050ee106cfc242c5f3040",
+        "control_rebaseline_plan_sha256": "0941d23fe9ef4989fce34d5a30930e9fa1b3822824e1538f717f78bcfe655426",
+    }
+    _require(contract["review_evidence"] == expected_review_evidence,
+             "immutable review-evidence digest binding changed")
     for key, digest in contract["review_evidence"].items():
         _require(type(digest) is str and bool(_SHA256.fullmatch(digest)), f"review evidence digest invalid: {key}")
     scan = candidate["repository_private_material_scan"]
-    _require(type(scan["findings"]) is int and scan["findings"] == 0 and type(scan["files"]) is int and scan["files"] > 0, "private-material scan must be clean")
+    _require(type(scan["findings"]) is int and scan["findings"] == 0 and type(scan["files"]) is int and scan["files"] == 998, "private-material scan evidence count changed")
     _require(type(scan["receipt_sha256"]) is str and bool(_SHA256.fullmatch(scan["receipt_sha256"])), "private-material receipt digest invalid")
+    _require(scan["receipt_sha256"] == "a26d6c5e35df3217cd57b04ebfa57df035392cc919d3a9e306052708752b15cf",
+             "private-material scan receipt binding changed")
 
     _git(repo, "cat-file", "-e", frozen["commit"] + "^{commit}")
     _git(repo, "cat-file", "-e", candidate["commit"] + "^{commit}")

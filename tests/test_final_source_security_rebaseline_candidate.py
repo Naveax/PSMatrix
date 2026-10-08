@@ -132,13 +132,13 @@ class FinalSourceSecurityRebaselineCandidateTests(unittest.TestCase):
                 ("schema_true", ("schema",), True, "schema mismatch"),
                 ("schema_float", ("schema",), 1.0, "schema mismatch"),
                 ("path_count_float", ("security_source_candidate", "changed_path_count"), 4.0, "exactly four"),
-                ("scan_findings_false", ("security_source_candidate", "repository_private_material_scan", "findings"), False, "scan must be clean"),
-                ("scan_files_true", ("security_source_candidate", "repository_private_material_scan", "files"), True, "scan must be clean"),
+                ("scan_findings_false", ("security_source_candidate", "repository_private_material_scan", "findings"), False, "scan evidence count changed"),
+                ("scan_files_true", ("security_source_candidate", "repository_private_material_scan", "files"), True, "scan evidence count changed"),
                 ("claim_authoritative_zero", ("claims", "authoritative"), 0, "non-authoritative"),
                 ("claim_ga_eligible_float", ("claims", "ga_eligible"), 0.0, "non-authoritative"),
                 ("claim_signed_zero", ("claims", "signed"), 0, "non-authoritative"),
                 ("claim_certified_empty", ("claims", "certified"), "", "non-authoritative"),
-                ("review_digest_integer", ("review_evidence", "patch_sha256"), int("1" * 64), "review evidence digest invalid"),
+                ("review_digest_integer", ("review_evidence", "patch_sha256"), int("1" * 64), "immutable review-evidence digest binding changed"),
                 ("receipt_digest_integer", ("security_source_candidate", "repository_private_material_scan", "receipt_sha256"), int("1" * 64), "receipt digest invalid"),
             )
             for label, key_path, replacement, error in negative_types:
@@ -170,6 +170,30 @@ class FinalSourceSecurityRebaselineCandidateTests(unittest.TestCase):
                     for key in key_path[:-1]:
                         selected = selected[key]
                     selected[key_path[-1]] = replacement
+                    with self.assertRaisesRegex(RuntimeError, error):
+                        validator.validate(mutated, repo, "refs/heads/frozen-v2", "refs/heads/candidate-review")
+
+            negative_lineage_and_evidence = (
+                ("promotion_main", ("promotion", "proposed_new_final_source_branch"), "main", "proposed new final-source branch identity"),
+                ("promotion_blank", ("promotion", "proposed_new_final_source_branch"), "", "proposed new final-source branch identity"),
+                ("promotion_previous_security", ("promotion", "proposed_new_final_source_branch"), "security/2.0.0-unattend-hygiene-source-candidate-v4-20261007", "proposed new final-source branch identity"),
+                ("supersedes_branch", ("security_source_candidate", "supersedes", "branch"), "main", "superseded V3 source identity"),
+                ("supersedes_commit", ("security_source_candidate", "supersedes", "commit"), "0" * 40, "superseded V3 source identity"),
+                ("supersedes_tree", ("security_source_candidate", "supersedes", "tree"), "0" * 40, "superseded V3 source identity"),
+                ("supersedes_reason", ("security_source_candidate", "supersedes", "reason"), "", "superseded V3 source identity"),
+                ("review_evidence_empty", ("review_evidence",), {}, "immutable review-evidence digest binding"),
+                ("review_evidence_hash_changed", ("review_evidence", "patch_sha256"), "0" * 64, "immutable review-evidence digest binding"),
+                ("review_evidence_extra_key", ("review_evidence", "unreviewed_extra"), "0" * 64, "immutable review-evidence digest binding"),
+                ("scan_files_fabricated", ("security_source_candidate", "repository_private_material_scan", "files"), 999, "scan evidence count changed"),
+                ("scan_receipt_fabricated", ("security_source_candidate", "repository_private_material_scan", "receipt_sha256"), "0" * 64, "scan receipt binding changed"),
+            )
+            for label, key_path, replacement, error in negative_lineage_and_evidence:
+                with self.subTest(label=label):
+                    mutated = copy.deepcopy(value)
+                    chosen = mutated
+                    for key in key_path[:-1]:
+                        chosen = chosen[key]
+                    chosen[key_path[-1]] = replacement
                     with self.assertRaisesRegex(RuntimeError, error):
                         validator.validate(mutated, repo, "refs/heads/frozen-v2", "refs/heads/candidate-review")
 
