@@ -329,15 +329,60 @@ function Read-BootstrapResult([string]$VhdPath) {
     $mounted = Mount-VHD -Path $VhdPath -PassThru
     try {
         $root = Get-WindowsPartitionRoot $mounted.DiskNumber
+        # A mounted guest volume is untrusted input. Inspect ancestor links
+        # before reading a result file so a junction cannot redirect host I/O.
+        foreach ($relative in @('ProgramData', 'ProgramData\PSMatrix')) {
+            $ancestor = Join-Path $root $relative
+            if (-not (Test-Path -LiteralPath $ancestor -PathType Container)) {
+                throw 'Guest bootstrap result parent directory is missing.'
+            }
+            if (((Get-Item -LiteralPath $ancestor -Force -ErrorAction Stop).Attributes -band
+                [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'Guest bootstrap result parent is a reparse point; refusing checkpoint.'
+            }
+        }
         $path = Join-Path $root 'ProgramData\PSMatrix\bootstrap-result.json'
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'Guest bootstrap result is missing.' }
-        $result = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+        $resultFile = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+        if ($resultFile.PSIsContainer -or
+            (($resultFile.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) -or
+            $resultFile.Length -le 0 -or $resultFile.Length -gt 16384) {
+            throw 'Guest bootstrap result has an unsafe file type or size; refusing checkpoint.'
+        }
+        $rawResult = Get-Content -LiteralPath $path -Raw -ErrorAction Stop
+        if ($rawResult -notmatch '^\s*\{') {
+            throw 'Guest bootstrap result must be a top-level JSON object.'
+        }
+        $result = $rawResult | ConvertFrom-Json
+        if ($result -isnot [pscustomobject] -or
+            ($result.schema -isnot [int] -and $result.schema -isnot [long]) -or
+            $result.schema -ne 1 -or
+            $result.kind -isnot [string] -or
+            $result.kind -cne 'psmatrix.windows-guest-bootstrap-result' -or
+            $result.status -isnot [string] -or
+            $result.status -cnotin @('PASS','FAIL')) {
+            throw 'Guest bootstrap result schema, kind or status is invalid.'
+        }
         Assert-RestrictedGuestDirectoryAcl -Path (Join-Path $root 'ProgramData\PSMatrix\Bootstrap') -Label 'Bootstrap'
         Assert-RestrictedGuestDirectoryAcl -Path (Join-Path $root 'ProgramData\PSMatrix\Credentials') -Label 'Credentials'
         Assert-RestrictedGuestDirectoryAcl -Path (Join-Path $root 'ProgramData\PSMatrix\Signing') -Label 'Signing'
         Assert-RestrictedGuestDirectoryAcl -Path (Join-Path $root 'ProgramData\PSMatrix\WorkerConfig') -Label 'WorkerConfig'
         Assert-NoGuestBootstrapStagingSecrets -WindowsRoot $root
         Assert-NoGuestSetupAnswerFiles -WindowsRoot $root
+        if ($result.status -ceq 'PASS') {
+            if ($result.worker_config_sha256 -isnot [string] -or
+                $result.worker_config_sha256 -cnotmatch '^[0-9a-f]{64}$') {
+                throw 'Guest bootstrap reported worker configuration hash is invalid.'
+            }
+            $workerConfig = Join-Path $root 'ProgramData\PSMatrix\WorkerConfig\worker.json'
+            if (-not (Test-Path -LiteralPath $workerConfig -PathType Leaf)) {
+                throw 'Guest worker configuration is missing; refusing checkpoint.'
+            }
+            $actualConfigHash = (Get-FileHash -LiteralPath $workerConfig -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+            if ($actualConfigHash -cne $result.worker_config_sha256) {
+                throw 'Guest worker configuration SHA-256 mismatch; refusing checkpoint.'
+            }
+        }
         return $result
     }
     finally { Dismount-VHD -Path $VhdPath -ErrorAction SilentlyContinue }
@@ -375,6 +420,10 @@ foreach ($image in $planValue.images) {
     Wait-FirstBoot $vmName 3600
     $bootstrap = Read-BootstrapResult $vhd
     if ([string]$bootstrap.status -ne 'PASS') { throw ('Guest bootstrap failed for ' + $vmName + ': ' + [string]$bootstrap.message) }
+    if ([string]$bootstrap.worker_id -cne [string]$image.worker_id -or
+        [string]$bootstrap.computer_name -ine [string]$image.computer_name) {
+        throw ('Guest bootstrap worker/computer identity mismatch for ' + $vmName)
+    }
     $actualVersion = [string]$bootstrap.powershell_version
     $expectedVersion = [string]$image.expected_version
     if ($actualVersion -ne $expectedVersion -and -not $actualVersion.StartsWith($expectedVersion + '.')) { throw ('Guest exact version mismatch for ' + $vmName) }

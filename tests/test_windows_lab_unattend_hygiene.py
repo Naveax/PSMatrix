@@ -43,6 +43,62 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
                         text.index("    Checkpoint-VM -Name $vmName"))
         self.assertIn("Dismount-VHD -Path $VhdPath", text)
 
+    def test_host_rejects_unsafe_bootstrap_result_file_and_schema(self):
+        host = HOST.read_text(encoding="utf-8")
+        read = host.split("function Read-BootstrapResult(", 1)[1].split(
+            "function Wait-FirstBoot(", 1
+        )[0]
+        for fragment in (
+            "Guest bootstrap result parent is a reparse point; refusing checkpoint.",
+            "Guest bootstrap result has an unsafe file type or size; refusing checkpoint.",
+            "$resultFile.Length -gt 16384",
+            "$rawResult -notmatch '^\\s*\\{'",
+            "$result -isnot [pscustomobject]",
+            "$result.schema -isnot [int]",
+            "$result.kind -cne 'psmatrix.windows-guest-bootstrap-result'",
+            "$result.status -cnotin @('PASS','FAIL')",
+        ):
+            self.assertIn(fragment, read)
+        self.assertLess(
+            read.index("Guest bootstrap result parent is a reparse point"),
+            read.index("$rawResult = Get-Content"),
+        )
+        self.assertLess(
+            read.index("Guest bootstrap result schema, kind or status is invalid."),
+            read.index("Assert-RestrictedGuestDirectoryAcl -Path"),
+        )
+        self.assertIn("Dismount-VHD -Path $VhdPath", read)
+
+    def test_host_binds_actual_worker_config_hash_and_guest_identity(self):
+        host = HOST.read_text(encoding="utf-8")
+        read = host.split("function Read-BootstrapResult(", 1)[1].split(
+            "function Wait-FirstBoot(", 1
+        )[0]
+        for fragment in (
+            "Assert-RestrictedGuestDirectoryAcl -Path",
+            "Assert-NoGuestSetupAnswerFiles -WindowsRoot $root",
+            "$result.worker_config_sha256 -cnotmatch '^[0-9a-f]{64}$'",
+            "ProgramData\\PSMatrix\\WorkerConfig\\worker.json",
+            "Get-FileHash -LiteralPath $workerConfig -Algorithm SHA256",
+            "$actualConfigHash -cne $result.worker_config_sha256",
+            "Guest worker configuration SHA-256 mismatch; refusing checkpoint.",
+        ):
+            self.assertIn(fragment, read)
+        self.assertLess(
+            read.index("Assert-RestrictedGuestDirectoryAcl -Path"),
+            read.index("Get-FileHash -LiteralPath $workerConfig"),
+        )
+        self.assertLess(
+            read.index("Get-FileHash -LiteralPath $workerConfig"),
+            read.index("return $result"),
+        )
+        self.assertIn("$bootstrap.worker_id -cne [string]$image.worker_id", host)
+        self.assertIn("$bootstrap.computer_name -ine [string]$image.computer_name", host)
+        self.assertLess(
+            host.index("Guest bootstrap worker/computer identity mismatch"),
+            host.index("    Checkpoint-VM -Name $vmName"),
+        )
+
     def test_worker_config_is_written_before_recursive_acl_lock(self):
         text = GUEST.read_text(encoding="utf-8")
         create = text.index("$workerConfig = Join-Path $configRoot 'worker.json'")

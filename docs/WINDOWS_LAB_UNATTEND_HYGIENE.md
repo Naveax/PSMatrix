@@ -28,6 +28,8 @@ The host independently rejects either leftover ZIP before checkpoint.
 Extracted runtime Credentials and Signing directories remain available.
 This is file-presence hygiene, not secure erasure of VHDX sectors.
 
+The offline host now also treats the guest bootstrap success record as untrusted: it rejects a missing/reparse parent, a link or oversized result file (16 KiB ceiling), non-object JSON, and incorrect schema/kind/status before relying on guest-supplied metadata. After independently checking sensitive directory ACLs and removed setup material, a reported PASS is accepted only if the actual offline `WorkerConfig\worker.json` SHA-256 equals the guest's lowercase 64-hex digest. Before checkpoint, the guest worker and computer identities must match the image plan. These checks bind evidence to mounted contents; they do not cryptographically attest that the guest OS or worker process is trusted.
+
 Before checkpoint, the host independently reopens the shutdown VHDX and recursively
 verifies every entry under Bootstrap, Credentials, Signing, and WorkerConfig. Guest and
 host ACL setup recursively rebuilds each DACL from well-known SIDs: files receive direct
