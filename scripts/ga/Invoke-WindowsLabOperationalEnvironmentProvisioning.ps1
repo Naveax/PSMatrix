@@ -238,7 +238,13 @@ function Assert-IndependentMaterialReviewAttestation {
         throw 'Windows-lab independent material reviewer identity is invalid.'
     }
 
-    $reviewedAtText = ([string]$review.reviewed_at_utc).Trim()
+    # ConvertFrom-Json can coerce ISO-8601 strings into locale-formatted DateTime.
+    # Recover the original JSON UTC token rather than round-tripping a DateTime.
+    $timestampMatches = @([Regex]::Matches($raw, '"reviewed_at_utc"\s*:\s*"(?<utc>[^"\\]*)"'))
+    if ($timestampMatches.Count -ne 1) {
+        throw 'Windows-lab independent material review timestamp must appear exactly once as a plain UTC JSON string.'
+    }
+    $reviewedAtText = $timestampMatches[0].Groups['utc'].Value
     if ($reviewedAtText -cnotmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$') {
         throw 'Windows-lab independent material review timestamp must be an exact UTC timestamp.'
     }

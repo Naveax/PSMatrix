@@ -59,6 +59,21 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         self.assertEqual(raw.count("@('secret', 'set', 'PSMATRIX_WPS50_ADMIN_PASSWORD'"), 1)
         self.assertEqual(raw.count("@('secret', 'set', 'PSMATRIX_WPS51_ADMIN_PASSWORD'"), 1)
 
+    def test_review_timestamp_preserves_original_utc_json_token(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        self.assertIn("ConvertFrom-Json can coerce ISO-8601 strings", raw)
+        self.assertIn("$timestampMatches.Count -ne 1", raw)
+        self.assertIn("$reviewedAtText = $timestampMatches[0].Groups['utc'].Value", raw)
+        self.assertIn("timestamp must appear exactly once as a plain UTC JSON string", raw)
+        self.assertNotIn("([string]$review.reviewed_at_utc).Trim()", raw)
+
+        token = re.compile(r'"reviewed_at_utc"\s*:\s*"(?P<utc>[^"\\]*)"')
+        valid = '{"reviewed_at_utc":"2026-10-07T15:25:00Z"}'
+        matches = list(token.finditer(valid))
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0].group("utc"), "2026-10-07T15:25:00Z")
+        self.assertEqual(len(list(token.finditer(valid + valid))), 2)
+
     def test_repository_target_is_pinned_before_any_secret_mutation(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
 
