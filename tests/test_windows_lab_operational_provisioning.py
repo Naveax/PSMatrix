@@ -124,6 +124,29 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         )
         self.assertIn("PSMATRIX_WINDOWS_GA_ROOT and the repository must be disjoint paths.", raw)
 
+    def test_temporary_workspace_private_acl_is_enforced_before_secret_staging(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        private_acl = raw.split("function Protect-PrivateWindowsLabTemporaryWorkspace {", 1)[1].split(
+            "function Assert-RestrictedSecretFileAcl {", 1
+        )[0]
+        for required in (
+            "DirectorySecurity",
+            "SetAccessRuleProtection($true, $false)",
+            "'S-1-5-18'",
+            "'S-1-5-32-544'",
+            "[Security.Principal.WindowsIdentity]::GetCurrent()",
+            "ContainerInherit",
+            "ObjectInherit",
+            "Set-Acl -LiteralPath $Path -AclObject $newAcl -ErrorAction Stop",
+            "temporary workspace ACL rule count is not exact.",
+            "temporary workspace ACL does not match the exact private allowlist.",
+        ):
+            self.assertIn(required, private_acl)
+        protect_call = raw.index("Protect-PrivateWindowsLabTemporaryWorkspace -Path $tempRoot")
+        first_secret_copy = raw.index("Copy-Item -LiteralPath $wps40External")
+        self.assertLess(protect_call, first_secret_copy)
+        self.assertLess(raw.index("Assert-NoLinkOrReparsePath -Path $tempRoot"), protect_call)
+
     def test_external_bytes_are_staged_once_then_reused(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
         for fragment in (

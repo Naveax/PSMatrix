@@ -81,6 +81,60 @@ function Assert-ExternalMaterialFile {
 }
 
 
+function Protect-PrivateWindowsLabTemporaryWorkspace {
+    param([Parameter(Mandatory)] [string]$Path)
+
+    # The process TEMP directory can inherit ACEs for other local users.
+    # Harden this empty scratch directory BEFORE copying any credential bytes.
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    if ($null -eq $identity -or $null -eq $identity.User) {
+        throw 'Windows-lab temporary workspace operator SID is unavailable.'
+    }
+    $operatorSid = $identity.User.Value
+    $allowedSids = @($operatorSid, 'S-1-5-18', 'S-1-5-32-544')
+    $newAcl = New-Object System.Security.AccessControl.DirectorySecurity
+    $newAcl.SetAccessRuleProtection($true, $false)
+    foreach ($sidText in $allowedSids) {
+        $sid = New-Object Security.Principal.SecurityIdentifier($sidText)
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule (
+            $sid,
+            [Security.AccessControl.FileSystemRights]::FullControl,
+            ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit),
+            [Security.AccessControl.PropagationFlags]::None,
+            [Security.AccessControl.AccessControlType]::Allow
+        )
+        $newAcl.AddAccessRule($rule)
+    }
+    Set-Acl -LiteralPath $Path -AclObject $newAcl -ErrorAction Stop
+    $actual = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    if (-not $actual.AreAccessRulesProtected) {
+        throw 'Windows-lab temporary workspace ACL inheritance is not disabled.'
+    }
+    if ($actual.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne $operatorSid) {
+        throw 'Windows-lab temporary workspace owner does not match the operator.'
+    }
+    $rules = @($actual.Access)
+    if ($rules.Count -ne $allowedSids.Count) {
+        throw 'Windows-lab temporary workspace ACL rule count is not exact.'
+    }
+    $seen = @()
+    foreach ($rule in $rules) {
+        $sidText = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+        if (
+            $allowedSids -notcontains $sidText -or
+            $seen -contains $sidText -or
+            $rule.IsInherited -or
+            $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or
+            $rule.InheritanceFlags -ne ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit) -or
+            $rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None
+        ) {
+            throw 'Windows-lab temporary workspace ACL does not match the exact private allowlist.'
+        }
+        $seen += $sidText
+    }
+}
+
 function Assert-RestrictedSecretFileAcl {
     param(
         [Parameter(Mandatory)] [string]$Path,
@@ -401,6 +455,7 @@ if ((Test-PathWithinRoot -Candidate $tempRoot -Root $repoRoot) -or (Test-PathWit
 Assert-NoLinkOrReparsePath -Path $tempRoot -Label 'Windows-lab temporary workspace'
 
 try {
+    Protect-PrivateWindowsLabTemporaryWorkspace -Path $tempRoot
     # Stage exact selected bytes before any semantic read or GitHub mutation. The staged
     # copies become the only source for validation and upload, closing source-file TOCTOU.
     $rootSource = Join-Path $tempRoot 'ga-root.txt'

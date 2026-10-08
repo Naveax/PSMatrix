@@ -59,6 +59,8 @@ Prepare four files **outside the repository**:
 
 Keep the password files access-restricted on the operator host. Do not commit them, attach them to issues, upload them as Actions artifacts, or paste them into workflow inputs.
 
+The helper creates a per-run temporary directory. Before any credential data is copied, it replaces inherited directory ACLs with a verified exact allowlist for the current operator, SYSTEM, and built-in Administrators; children inherit this private ACL. An unexpected owner/ACE or a failed ACL update aborts before staging. Temporary-file deletion is not a forensic secure-erase guarantee for NTFS or disk snapshots.
+
 The provisioning helper rejects relative source-file paths, repository-contained source files, empty files, links/reparse points, a non-absolute GA-root value, and overlapping repository/GA-root paths. In normal provisioning mode it also requires the GA root to exist on the operator host with the required `config` and `media\external` layout.
 
 When the three credential files are intentionally held on a different operator host from NAVEAX, use `-SecretRepairOnly`. That mode does **not** pretend the remote NAVEAX root exists locally. Dry-run defers local root-layout validation. Live repair instead reads the existing `production-ga-windows-lab` `PSMATRIX_WINDOWS_GA_ROOT` variable through GitHub metadata and requires it to exactly match the reviewed target root before the first mutation. The later canonical prerequisite audit still revalidates the real NAVEAX root and layout.
