@@ -61,7 +61,7 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
             self.assertIn(fragment, read)
         self.assertLess(
             read.index("Guest bootstrap result parent is a reparse point"),
-            read.index("$rawResult = Get-Content"),
+            read.index("[IO.File]::Open("),
         )
         self.assertLess(
             read.index("Guest bootstrap result schema, kind or status is invalid."),
