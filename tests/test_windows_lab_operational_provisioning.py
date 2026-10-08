@@ -305,6 +305,23 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         self.assertLess(dry_run, first_mutation)
         self.assertIn("windows_lab_operational_environment_provisioning_executed=false dry_run=true", raw)
 
+    def test_review_attestation_requires_a_single_top_level_json_object(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        review = raw.split("function Assert-IndependentMaterialReviewAttestation {", 1)[1].split(
+            "function New-PrivateWindowsLabProcessCapturePath {", 1
+        )[0]
+        self.assertIn("PowerShell 7 unwraps a singleton JSON array", review)
+        self.assertIn("$raw -notmatch '^\\s*\\{'", review)
+        self.assertIn("$raw -notmatch '\\}\\s*$'", review)
+        self.assertIn(
+            "Windows-lab independent material review must be a top-level JSON object.",
+            review,
+        )
+        self.assertLess(
+            review.index("must be a top-level JSON object."),
+            review.index("$review = $raw | ConvertFrom-Json"),
+        )
+
     def test_review_json_rejects_duplicate_keys_and_implicit_type_coercion(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
         attestation = raw.split("function Assert-IndependentMaterialReviewAttestation {", 1)[1].split(

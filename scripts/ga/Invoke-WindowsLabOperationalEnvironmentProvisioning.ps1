@@ -351,6 +351,11 @@ function Assert-IndependentMaterialReviewAttestation {
 
     $resolved = Assert-ExternalMaterialFile -Path $Path -RepoRoot $RepoRoot -Label 'Windows-lab independent material review attestation' -MaxBytes 16384
     $raw = Get-Content -Raw -LiteralPath $resolved
+    # PowerShell 7 unwraps a singleton JSON array into a PSCustomObject.
+    # A human review record must be one top-level JSON object, never an array.
+    if ($raw -notmatch '^\s*\{' -or $raw -notmatch '\}\s*$') {
+        throw 'Windows-lab independent material review must be a top-level JSON object.'
+    }
     try {
         $review = $raw | ConvertFrom-Json
     }
