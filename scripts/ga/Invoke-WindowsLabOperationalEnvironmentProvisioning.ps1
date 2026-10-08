@@ -584,6 +584,12 @@ $wps40External = Assert-ExternalMaterialFile -Path $Wps40AdminPasswordFile -Repo
 $wps50External = Assert-ExternalMaterialFile -Path $Wps50AdminPasswordFile -RepoRoot $repoRoot -Label 'PSMATRIX_WPS50_ADMIN_PASSWORD' -MaxBytes 127
 $wps51External = Assert-ExternalMaterialFile -Path $Wps51AdminPasswordFile -RepoRoot $repoRoot -Label 'PSMATRIX_WPS51_ADMIN_PASSWORD' -MaxBytes 127
 
+# Verify source trustees before opening or copying any credential bytes.
+# A private destination ACL is not a substitute for rejecting an unsafe source.
+Assert-RestrictedSecretFileAcl -Path $wps40External -Label 'PSMATRIX_WPS40_ADMIN_PASSWORD'
+Assert-RestrictedSecretFileAcl -Path $wps50External -Label 'PSMATRIX_WPS50_ADMIN_PASSWORD'
+Assert-RestrictedSecretFileAcl -Path $wps51External -Label 'PSMATRIX_WPS51_ADMIN_PASSWORD'
+
 $tempWorkspace = New-Item -ItemType Directory -Path (Join-Path ([IO.Path]::GetTempPath()) ("psmatrix-windows-lab-" + [Guid]::NewGuid().ToString('N'))) -Force
 $tempRoot = [IO.Path]::GetFullPath($tempWorkspace.FullName)
 try {
@@ -652,9 +658,6 @@ try {
         $rootLayoutStatus = 'windows_lab_root_layout_validation=PASS'
     }
 
-    Assert-RestrictedSecretFileAcl -Path $wps40External -Label 'PSMATRIX_WPS40_ADMIN_PASSWORD'
-    Assert-RestrictedSecretFileAcl -Path $wps50External -Label 'PSMATRIX_WPS50_ADMIN_PASSWORD'
-    Assert-RestrictedSecretFileAcl -Path $wps51External -Label 'PSMATRIX_WPS51_ADMIN_PASSWORD'
     Assert-WindowsLabCredentialPolicy -Wps40Path $wps40Source -Wps50Path $wps50Source -Wps51Path $wps51Source
 
     Write-Host 'windows_lab_operational_material_validation=PASS checks=4'

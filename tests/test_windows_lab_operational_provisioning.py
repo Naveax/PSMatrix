@@ -450,8 +450,15 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         raw = HELPER.read_text(encoding="utf-8")
         calls = raw.index("Assert-RestrictedSecretFileAcl -Path $wps40External")
         policy = raw.index("Assert-WindowsLabCredentialPolicy -Wps40Path $wps40Source")
+        first_copy = raw.index("Copy-BoundedWindowsLabMaterial -Source $wps40External")
         first_write = raw.index("@('variable', 'set', 'PSMATRIX_WINDOWS_GA_ROOT'")
+        for label in ("WPS40", "WPS50", "WPS51"):
+            preflight = f"Assert-RestrictedSecretFileAcl -Path $wps{label[-2:]}External"
+            self.assertEqual(raw.count(preflight), 1)
+            self.assertLess(raw.index(preflight), first_copy)
         self.assertLess(calls, policy)
+        self.assertLess(calls, raw.index("$tempWorkspace = New-Item"))
+        self.assertLess(first_copy, policy)
         self.assertLess(policy, first_write)
 
     def test_live_mode_checks_auth_environment_and_repository_before_mutation(self) -> None:
