@@ -481,7 +481,15 @@ function Read-BootstrapResult([string]$VhdPath, [string]$ExpectedBootstrapNonce)
         $result | Add-Member -NotePropertyName verified_bootstrap_result_sha256 -NotePropertyValue $bootstrapResultSha256
         return $result
     }
-    finally { Dismount-VHD -Path $VhdPath -ErrorAction SilentlyContinue }
+    finally {
+        # Offline validation must not report success while the guest VHDX is
+        # still mounted. Failure to detach or query its attachment is fatal.
+        Dismount-VHD -Path $VhdPath -ErrorAction Stop
+        $vhdState = Get-VHD -Path $VhdPath -ErrorAction Stop
+        if ($vhdState.Attached -ne $false) {
+            throw 'Guest VHDX remains attached after offline validation; refusing checkpoint.'
+        }
+    }
 }
 function Wait-FirstBoot([string]$VmName, [int]$TimeoutSeconds) {
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)

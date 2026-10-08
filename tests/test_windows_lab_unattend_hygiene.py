@@ -43,6 +43,28 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
                         text.index("    Checkpoint-VM -Name $vmName"))
         self.assertIn("Dismount-VHD -Path $VhdPath", text)
 
+    def test_host_requires_confirmed_vhdx_dismount_before_checkpoint(self):
+        host = HOST.read_text(encoding="utf-8")
+        reader = host.split("function Read-BootstrapResult(", 1)[1].split(
+            "function Wait-FirstBoot(", 1
+        )[0]
+        for fragment in (
+            "Dismount-VHD -Path $VhdPath -ErrorAction Stop",
+            "Get-VHD -Path $VhdPath -ErrorAction Stop",
+            "$vhdState.Attached -ne $false",
+            "Guest VHDX remains attached after offline validation; refusing checkpoint.",
+        ):
+            self.assertIn(fragment, reader)
+        self.assertNotIn("Dismount-VHD -Path $VhdPath -ErrorAction SilentlyContinue", reader)
+        self.assertLess(
+            reader.index("Dismount-VHD -Path $VhdPath -ErrorAction Stop"),
+            reader.index("Get-VHD -Path $VhdPath -ErrorAction Stop"),
+        )
+        self.assertLess(
+            host.index("Read-BootstrapResult $vhd $bootstrapNonce"),
+            host.index("    Checkpoint-VM -Name $vmName"),
+        )
+
     def test_host_rejects_unsafe_bootstrap_result_file_and_schema(self):
         host = HOST.read_text(encoding="utf-8")
         read = host.split("function Read-BootstrapResult(", 1)[1].split(
