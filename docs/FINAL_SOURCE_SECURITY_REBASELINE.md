@@ -26,4 +26,4 @@ as proof for the changed source.
 The validator performs local, network-free validation. It checks Git object identity, direct
 ancestry, exact four-path closure, frozen/candidate refs when supplied, clean private-material
 evidence metadata, non-authoritative claims, and the mandatory fresh-evidence gates. It never
-moves refs and never performs network operations.
+moves refs and never performs network operations. Contract authority flags, schema numbers, changed-path counts, scan counters, and digest values also require their native JSON types: Python's numeric equality must not silently accept `true` as `1`, `false` as `0`, or a floating-point count as an integer. Invalid primitive types fail closed before Git object checks.

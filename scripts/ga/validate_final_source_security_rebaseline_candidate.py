@@ -39,7 +39,7 @@ def _require(value: bool, message: str) -> None:
 
 
 def validate(contract: dict[str, Any], repo: Path, frozen_ref: str | None, candidate_ref: str | None) -> dict[str, Any]:
-    _require(contract.get("schema") == 1, "schema mismatch")
+    _require(type(contract.get("schema")) is int and contract["schema"] == 1, "schema mismatch")
     _require(contract.get("kind") == _KIND, "kind mismatch")
     _require(contract.get("pack") == "03-authoritative-windows", "pack mismatch")
 
@@ -62,7 +62,7 @@ def validate(contract: dict[str, Any], repo: Path, frozen_ref: str | None, candi
     _require(candidate["parent_commit"] == frozen["commit"], "candidate parent binding mismatch")
     paths = candidate["changed_paths"]
     _require(isinstance(paths, list) and paths == sorted(set(paths)), "changed paths must be exact sorted unique list")
-    _require(candidate["changed_path_count"] == len(paths) == 4, "security changed-path count must be exactly four")
+    _require(type(candidate["changed_path_count"]) is int and candidate["changed_path_count"] == len(paths) == 4, "security changed-path count must be exactly four")
 
     _require(review["required"] is True, "independent human review must be required")
     _require(review["complete"] is False, "candidate must not claim completed human review")
@@ -84,14 +84,19 @@ def validate(contract: dict[str, Any], repo: Path, frozen_ref: str | None, candi
     ):
         _require(promotion[key] is True, f"{key} must remain true")
 
-    _require(claims == {"authoritative": False, "ga_eligible": False, "signed": False, "certified": False},
-             "candidate claims must remain entirely non-authoritative")
+    expected_claims = {"authoritative": False, "ga_eligible": False, "signed": False, "certified": False}
+    _require(
+        isinstance(claims, dict)
+        and claims.keys() == expected_claims.keys()
+        and all(type(claims[key]) is bool and claims[key] is False for key in expected_claims),
+        "candidate claims must remain entirely non-authoritative",
+    )
 
     for key, digest in contract["review_evidence"].items():
-        _require(bool(_SHA256.fullmatch(str(digest))), f"review evidence digest invalid: {key}")
+        _require(type(digest) is str and bool(_SHA256.fullmatch(digest)), f"review evidence digest invalid: {key}")
     scan = candidate["repository_private_material_scan"]
-    _require(scan["findings"] == 0 and scan["files"] > 0, "private-material scan must be clean")
-    _require(bool(_SHA256.fullmatch(str(scan["receipt_sha256"]))), "private-material receipt digest invalid")
+    _require(type(scan["findings"]) is int and scan["findings"] == 0 and type(scan["files"]) is int and scan["files"] > 0, "private-material scan must be clean")
+    _require(type(scan["receipt_sha256"]) is str and bool(_SHA256.fullmatch(scan["receipt_sha256"])), "private-material receipt digest invalid")
 
     _git(repo, "cat-file", "-e", frozen["commit"] + "^{commit}")
     _git(repo, "cat-file", "-e", candidate["commit"] + "^{commit}")

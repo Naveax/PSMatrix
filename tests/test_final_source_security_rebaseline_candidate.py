@@ -127,6 +127,31 @@ class FinalSourceSecurityRebaselineCandidateTests(unittest.TestCase):
             self.assertEqual(result["status"], "PASS")
             self.assertFalse(result["ready_for_promotion"])
 
+            # Python normally treats True == 1, False == 0 and 4.0 == 4.
+            # JSON contract authority fields must instead keep native types.
+            negative_types = (
+                ("schema_true", ("schema",), True, "schema mismatch"),
+                ("schema_float", ("schema",), 1.0, "schema mismatch"),
+                ("path_count_float", ("security_source_candidate", "changed_path_count"), 4.0, "exactly four"),
+                ("scan_findings_false", ("security_source_candidate", "repository_private_material_scan", "findings"), False, "scan must be clean"),
+                ("scan_files_true", ("security_source_candidate", "repository_private_material_scan", "files"), True, "scan must be clean"),
+                ("claim_authoritative_zero", ("claims", "authoritative"), 0, "non-authoritative"),
+                ("claim_ga_eligible_float", ("claims", "ga_eligible"), 0.0, "non-authoritative"),
+                ("claim_signed_zero", ("claims", "signed"), 0, "non-authoritative"),
+                ("claim_certified_empty", ("claims", "certified"), "", "non-authoritative"),
+                ("review_digest_integer", ("review_evidence", "patch_sha256"), int("1" * 64), "review evidence digest invalid"),
+                ("receipt_digest_integer", ("security_source_candidate", "repository_private_material_scan", "receipt_sha256"), int("1" * 64), "receipt digest invalid"),
+            )
+            for label, key_path, replacement, error in negative_types:
+                with self.subTest(label=label):
+                    mutated = copy.deepcopy(value)
+                    selected = mutated
+                    for key in key_path[:-1]:
+                        selected = selected[key]
+                    selected[key_path[-1]] = replacement
+                    with self.assertRaisesRegex(RuntimeError, error):
+                        validator.validate(mutated, repo, "refs/heads/frozen-v2", "refs/heads/candidate-review")
+
             value["security_source_candidate"]["changed_paths"] = four[:-1]
             value["security_source_candidate"]["changed_path_count"] = 3
             with self.assertRaisesRegex(RuntimeError, "exactly four"):
