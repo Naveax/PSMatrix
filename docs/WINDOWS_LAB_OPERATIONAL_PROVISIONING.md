@@ -76,7 +76,7 @@ pwsh -NoProfile -File .\scripts\ga\Invoke-WindowsLabOperationalEnvironmentProvis
   -DryRun
 ```
 
-The helper reports only value-free validation state. It does not print configured paths, secret values, secret hashes or secret lengths. Dry-run also rejects broad readable ACLs on the three credential files, weak or predictable credential material, credential files that are not BOM-free printable ASCII byte sequences, and credentials that are not mutually distinct.
+The helper reports only value-free validation state. It does not print configured paths, secret values, secret hashes or secret lengths. Dry-run also rejects broad readable ACLs, unapproved allow trustees, and unexpected file owners on the three credential files. The only allowed trustees are the operator identity running the helper, local SYSTEM, and built-in Administrators. Execute the helper under the identity that owns the reviewed material; a different identity can correctly fail closed. It rejects weak or predictable credential material, credential files that are not BOM-free printable ASCII byte sequences, and credentials that are not mutually distinct.
 
 For a split-host repair, prepare the root-value file with the **already committed NAVEAX root** and run:
 

@@ -88,6 +88,22 @@ function Assert-RestrictedSecretFileAcl {
     )
 
     $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    # Denylists miss domain, service, and other nonstandard readable trustees.
+    # Explicit allowlist: the operator running the helper, SYSTEM, Administrators.
+    $operatorIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    if ($null -eq $operatorIdentity -or $null -eq $operatorIdentity.User) {
+        throw "$Label operator SID could not be resolved safely."
+    }
+    $allowedSids = @('S-1-5-18', 'S-1-5-32-544', $operatorIdentity.User.Value)
+    try {
+        $ownerSid = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    }
+    catch {
+        throw "$Label owner SID could not be resolved safely."
+    }
+    if ($allowedSids -notcontains $ownerSid) {
+        throw "$Label owner is not an approved material trustee."
+    }
     $broadSids = @(
         'S-1-1-0',
         'S-1-5-11',
@@ -112,6 +128,11 @@ function Assert-RestrictedSecretFileAcl {
         }
         if (($broadSids -contains $sid) -and (($rule.FileSystemRights -band $readMask) -ne 0)) {
             throw "$Label ACL grants readable access to a broad principal."
+        }
+        # Do not allow an unknown principal to replace material or change the DACL,
+        # even when its ACE does not currently include ReadData.
+        if ($allowedSids -notcontains $sid) {
+            throw "$Label ACL contains an unapproved trustee."
         }
     }
 }

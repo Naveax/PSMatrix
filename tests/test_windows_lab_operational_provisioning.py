@@ -228,6 +228,34 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
 
         self.assertNotIn("Get-FileHash", raw)
 
+    def test_secret_acl_allows_only_operator_system_and_builtin_administrators(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        acl_body = raw.split("function Assert-RestrictedSecretFileAcl {", 1)[1].split(
+            "function Assert-WindowsLabCredentialPolicy {", 1
+        )[0]
+        for fragment in (
+            "[Security.Principal.WindowsIdentity]::GetCurrent()",
+            "$operatorIdentity.User.Value",
+            "'S-1-5-18'",
+            "'S-1-5-32-544'",
+            "$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value",
+            "$allowedSids -notcontains $ownerSid",
+            "$allowedSids -notcontains $sid",
+            "ACL contains an unapproved trustee.",
+            "owner is not an approved material trustee.",
+        ):
+            self.assertIn(fragment, acl_body)
+        self.assertLess(acl_body.index("$allowedSids = @("), acl_body.index("foreach ($rule in @($acl.Access))"))
+        self.assertLess(acl_body.index("ACL contains an unapproved trustee."), len(acl_body))
+
+    def test_secret_acl_guard_is_called_before_material_policy_and_github_mutation(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        calls = raw.index("Assert-RestrictedSecretFileAcl -Path $wps40External")
+        policy = raw.index("Assert-WindowsLabCredentialPolicy -Wps40Path $wps40Source")
+        first_write = raw.index("@('variable', 'set', 'PSMATRIX_WINDOWS_GA_ROOT'")
+        self.assertLess(calls, policy)
+        self.assertLess(policy, first_write)
+
     def test_live_mode_checks_auth_environment_and_repository_before_mutation(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
 
