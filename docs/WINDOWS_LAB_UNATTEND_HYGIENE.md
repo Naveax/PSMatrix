@@ -58,6 +58,10 @@ Windows operator WinPS 5.1 and PowerShell 7 exercised these constructors and
 ACL rule properties; no real Windows PowerShell 4.0 guest boot or elevated
 VHDX acceptance is claimed. The host-only source is not being retargeted to PS4.
 
+## Windows Firewall failure gate
+
+The guest bootstrap checks `netsh.exe advfirewall firewall add rule`'s exit code **immediately** after the command. Previously a failed firewall-rule command could be masked by a succeeding worker probe overwriting `$LASTEXITCODE`, allowing a false `PASS`. A nonzero `netsh` exit now fails closed before the probe. Real guest firewall reachability still requires elevated Windows acceptance; this is not a remote network test.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted

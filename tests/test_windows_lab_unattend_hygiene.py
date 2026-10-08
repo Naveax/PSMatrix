@@ -446,6 +446,24 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
         self.assertIn("Get-Acl -LiteralPath $item.FullName", host)
         self.assertIn("Get-ChildItem -LiteralPath $item.FullName -Force -ErrorAction Stop", host)
 
+    def test_guest_firewall_failure_cannot_be_hidden_by_successful_probe(self):
+        guest = GUEST.read_text(encoding="utf-8")
+        install = guest.index("$installScript = Find-File $workerRoot 'install-worker.ps1'")
+        firewall = guest.index("& netsh.exe advfirewall firewall add rule", install)
+        fail = guest.index(
+            "if ($LASTEXITCODE -ne 0) { throw 'Windows firewall rule configuration failed.' }",
+            firewall,
+        )
+        probe = guest.index("& $python.Source -m psmatrix worker probe", fail)
+        probe_fail = guest.index(
+            "if ($LASTEXITCODE -ne 0) { throw 'Installed worker probe failed.' }",
+            probe,
+        )
+        self.assertLess(firewall, fail)
+        self.assertLess(fail, probe)
+        self.assertLess(probe, probe_fail)
+        self.assertEqual(guest[firewall:probe].count("if ($LASTEXITCODE -ne 0)"), 1)
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)

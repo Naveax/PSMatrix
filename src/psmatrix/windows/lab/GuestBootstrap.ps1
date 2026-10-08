@@ -247,6 +247,8 @@ try {
 
     $port = [int]$config.worker_port
     & netsh.exe advfirewall firewall add rule name=('PSMatrix Worker ' + [string]$config.worker_id) dir=in action=allow protocol=TCP localport=$port profile=any | Out-Null
+    # Another successful native command will overwrite LASTEXITCODE.
+    if ($LASTEXITCODE -ne 0) { throw 'Windows firewall rule configuration failed.' }
     & $python.Source -m psmatrix worker probe --config $workerConfig | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Installed worker probe failed.' }
 
