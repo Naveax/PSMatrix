@@ -11,6 +11,15 @@ function Assert-Administrator {
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Administrator privileges are required.' }
 }
 function Get-Sha256([string]$Path) { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+function New-LabBootstrapNonce {
+    # A separate random value is needed for each guest boot. It is an
+    # anti-replay correlation token, not a secret or a guest attestation.
+    $bytes = New-Object 'System.Byte[]' 32
+    $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($bytes) }
+    finally { $rng.Dispose() }
+    return ([BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant()
+}
 function Assert-Artifact($Artifact, [string]$Label) {
     $path = [string]$Artifact.path
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw ($Label + ' not found: ' + $path) }
@@ -128,7 +137,7 @@ function New-Unattend([string]$Path, [string]$ComputerName, [string]$Password) {
         $xml = $null
     }
 }
-function New-LabVhd($Image, [string]$GuestBootstrap) {
+function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce) {
     Assert-Artifact $Image.source_iso 'Windows ISO'
     Assert-Artifact $Image.worker_package 'Worker package'
     Assert-Artifact $Image.python_installer 'Python installer'
@@ -172,6 +181,7 @@ function New-LabVhd($Image, [string]$GuestBootstrap) {
         [ordered]@{
             schema = 1; worker_id = [string]$Image.worker_id; expected_version = [string]$Image.expected_version
             computer_name = [string]$Image.computer_name; worker_port = [int]$Image.worker_port
+            bootstrap_nonce = $BootstrapNonce
         } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $bootstrap 'bootstrap-config.json') -Encoding UTF8
         $setupDir = Join-Path $windowsRoot 'Windows\Setup\Scripts'
         New-Item -ItemType Directory -Path $setupDir -Force | Out-Null
@@ -325,7 +335,7 @@ function Assert-NoGuestBootstrapStagingSecrets([string]$WindowsRoot) {
     }
 }
 
-function Read-BootstrapResult([string]$VhdPath) {
+function Read-BootstrapResult([string]$VhdPath, [string]$ExpectedBootstrapNonce) {
     $mounted = Mount-VHD -Path $VhdPath -PassThru
     try {
         $root = Get-WindowsPartitionRoot $mounted.DiskNumber
@@ -364,7 +374,7 @@ function Read-BootstrapResult([string]$VhdPath) {
         if ($result.status -ceq 'PASS') {
             $requiredFields += @(
                 'worker_id','runtime_id','authoritative',
-                'worker_config_sha256','service_name'
+                'worker_config_sha256','service_name','bootstrap_nonce'
             )
         }
         elseif ($result.status -ceq 'FAIL') {
@@ -396,6 +406,10 @@ function Read-BootstrapResult([string]$VhdPath) {
                 $result.runtime_id -isnot [string] -or
                 $result.service_name -isnot [string] -or
                 $result.service_name -cne ('PSMatrixWorker-' + $result.worker_id) -or
+                $result.bootstrap_nonce -isnot [string] -or
+                $result.bootstrap_nonce -cnotmatch '^[0-9a-f]{64}$' -or
+                $ExpectedBootstrapNonce -cnotmatch '^[0-9a-f]{64}$' -or
+                $result.bootstrap_nonce -cne $ExpectedBootstrapNonce -or
                 $result.authoritative -isnot [bool] -or
                 $result.authoritative -ne $true
             ) {
@@ -458,7 +472,8 @@ foreach ($image in $planValue.images) {
     $vmName = [string]$image.image_id
     if (Get-VM -Name $vmName -ErrorAction SilentlyContinue) { throw ('VM already exists: ' + $vmName) }
     if (-not (Get-VMSwitch -Name ([string]$image.switch_name) -ErrorAction SilentlyContinue)) { throw ('Hyper-V switch not found: ' + [string]$image.switch_name) }
-    $vhd = New-LabVhd $image (Join-Path $PSScriptRoot 'GuestBootstrap.ps1')
+    $bootstrapNonce = New-LabBootstrapNonce
+    $vhd = New-LabVhd $image (Join-Path $PSScriptRoot 'GuestBootstrap.ps1') $bootstrapNonce
     New-VM -Name $vmName -Generation ([int]$image.generation) -MemoryStartupBytes ([int64]$image.memory_mb * 1MB) -VHDPath $vhd -SwitchName ([string]$image.switch_name) | Out-Null
     Set-VMProcessor -VMName $vmName -Count ([int]$image.processors)
     Set-VMMemory -VMName $vmName -DynamicMemoryEnabled $false
@@ -466,7 +481,7 @@ foreach ($image in $planValue.images) {
     Enable-VMIntegrationService -VMName $vmName -Name 'Guest Service Interface' -ErrorAction SilentlyContinue
     Start-VM -Name $vmName | Out-Null
     Wait-FirstBoot $vmName 3600
-    $bootstrap = Read-BootstrapResult $vhd
+    $bootstrap = Read-BootstrapResult $vhd $bootstrapNonce
     if ([string]$bootstrap.status -ne 'PASS') { throw ('Guest bootstrap failed for ' + $vmName + ': ' + [string]$bootstrap.message) }
     if ([string]$bootstrap.worker_id -cne [string]$image.worker_id -or
         [string]$bootstrap.computer_name -ine [string]$image.computer_name) {

@@ -188,6 +188,11 @@ function Remove-GuestBootstrapStagingSecrets([string]$Root) {
 try {
     if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) { throw 'Bootstrap configuration is missing.' }
     $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+    # Refuse a missing/invalid nonce before side effects or service install.
+    if ($config.bootstrap_nonce -isnot [string] -or
+        $config.bootstrap_nonce -cnotmatch '^[0-9a-f]{64}$') {
+        throw 'Per-boot bootstrap correlation nonce is missing or malformed.'
+    }
     $expected = [string]$config.expected_version
     $actual = $PSVersionTable.PSVersion.ToString()
     if ($actual -ne $expected -and -not $actual.StartsWith($expected + '.')) {
@@ -249,6 +254,7 @@ try {
 
     $identity = [ordered]@{
         worker_id = [string]$config.worker_id
+        bootstrap_nonce = [string]$config.bootstrap_nonce
         runtime_id = ('windows-powershell-' + $expected)
         authoritative = $true
         worker_config_sha256 = (Get-FileHash -LiteralPath $workerConfig -Algorithm SHA256).Hash.ToLowerInvariant()

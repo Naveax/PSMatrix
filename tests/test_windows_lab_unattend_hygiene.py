@@ -69,6 +69,45 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
         )
         self.assertIn("Dismount-VHD -Path $VhdPath", read)
 
+    def test_guest_success_is_bound_to_a_new_random_boot_nonce(self):
+        host = HOST.read_text(encoding="utf-8")
+        guest = GUEST.read_text(encoding="utf-8")
+        for required in (
+            "function New-LabBootstrapNonce {",
+            "[Security.Cryptography.RandomNumberGenerator]::Create()",
+            "$rng.GetBytes($bytes)",
+            "function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce)",
+            "bootstrap_nonce = $BootstrapNonce",
+            "$bootstrapNonce = New-LabBootstrapNonce",
+            "New-LabVhd $image (Join-Path $PSScriptRoot 'GuestBootstrap.ps1') $bootstrapNonce",
+            "function Read-BootstrapResult([string]$VhdPath, [string]$ExpectedBootstrapNonce)",
+            "'worker_config_sha256','service_name','bootstrap_nonce'",
+            "$result.bootstrap_nonce -isnot [string]",
+            "$result.bootstrap_nonce -cnotmatch '^[0-9a-f]{64}$'",
+            "$result.bootstrap_nonce -cne $ExpectedBootstrapNonce",
+            "Read-BootstrapResult $vhd $bootstrapNonce",
+        ):
+            self.assertIn(required, host)
+        for required in (
+            "$config.bootstrap_nonce -isnot [string]",
+            "$config.bootstrap_nonce -cnotmatch '^[0-9a-f]{64}$'",
+            "bootstrap_nonce = [string]$config.bootstrap_nonce",
+            "Per-boot bootstrap correlation nonce is missing or malformed.",
+        ):
+            self.assertIn(required, guest)
+        self.assertLess(
+            guest.index("Per-boot bootstrap correlation nonce is missing or malformed."),
+            guest.index("Expand-Zip (Join-Path $bootstrapRoot 'worker-package.zip')"),
+        )
+        self.assertLess(
+            host.index("$result.bootstrap_nonce -cne $ExpectedBootstrapNonce"),
+            host.index("    Checkpoint-VM -Name $vmName"),
+        )
+        self.assertLess(
+            host.index("$bootstrapNonce = New-LabBootstrapNonce"),
+            host.index("Read-BootstrapResult $vhd $bootstrapNonce"),
+        )
+
     def test_host_bootstrap_result_uses_exact_json_keys_and_typed_pass_fields(self):
         host = HOST.read_text(encoding="utf-8")
         read = host.split("function Read-BootstrapResult(", 1)[1].split(
