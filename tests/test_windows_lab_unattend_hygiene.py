@@ -108,6 +108,36 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
             host.index("Read-BootstrapResult $vhd $bootstrapNonce"),
         )
 
+    def test_bootstrap_result_receipt_hashes_the_actual_bytes_read_once(self):
+        host = HOST.read_text(encoding="utf-8")
+        reader = host.split("function Read-BootstrapResult(", 1)[1].split(
+            "function Wait-FirstBoot(", 1
+        )[0]
+        for required in (
+            "[IO.File]::Open(",
+            "[IO.FileShare]::None",
+            "$readHandle.Length -gt 16384",
+            "$readHandle.Read($resultBytes, $offset, $resultBytes.Length - $offset)",
+            "$sha256.ComputeHash($resultBytes)",
+            "[Text.UTF8Encoding]::new($false, $true)",
+            "$rawResult[0] -eq [char]0xFEFF",
+            "verified_bootstrap_result_sha256",
+            "Guest bootstrap result was truncated during guarded read.",
+        ):
+            self.assertIn(required, reader)
+        self.assertNotIn("Get-Content -LiteralPath $path -Raw", reader)
+        self.assertLess(reader.index("[IO.File]::Open("), reader.index("$sha256.ComputeHash($resultBytes)"))
+        self.assertLess(reader.index("$sha256.ComputeHash($resultBytes)"), reader.index("$result = $rawResult | ConvertFrom-Json"))
+        self.assertLess(reader.index("verified_bootstrap_result_sha256"), reader.index("return $result"))
+        self.assertIn(
+            "bootstrap_result_sha256 = [string]$bootstrap.verified_bootstrap_result_sha256",
+            host,
+        )
+        self.assertNotIn(
+            "bootstrap_result_sha256 = [string]$bootstrap.worker_config_sha256",
+            host,
+        )
+
     def test_host_bootstrap_result_uses_exact_json_keys_and_typed_pass_fields(self):
         host = HOST.read_text(encoding="utf-8")
         read = host.split("function Read-BootstrapResult(", 1)[1].split(

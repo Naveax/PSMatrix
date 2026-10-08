@@ -359,7 +359,40 @@ function Read-BootstrapResult([string]$VhdPath, [string]$ExpectedBootstrapNonce)
             $resultFile.Length -le 0 -or $resultFile.Length -gt 16384) {
             throw 'Guest bootstrap result has an unsafe file type or size; refusing checkpoint.'
         }
-        $rawResult = Get-Content -LiteralPath $path -Raw -ErrorAction Stop
+        # Use one bounded read under an exclusive file handle for the JSON
+        # parser and the result SHA-256. Never hash a separately reopened file.
+        $readHandle = [IO.File]::Open(
+            $path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None
+        )
+        try {
+            if ($readHandle.Length -le 0 -or $readHandle.Length -gt 16384) {
+                throw 'Guest bootstrap result changed size during guarded read.'
+            }
+            $resultBytes = New-Object 'System.Byte[]' ([int]$readHandle.Length)
+            $offset = 0
+            while ($offset -lt $resultBytes.Length) {
+                $received = $readHandle.Read($resultBytes, $offset, $resultBytes.Length - $offset)
+                if ($received -le 0) {
+                    throw 'Guest bootstrap result was truncated during guarded read.'
+                }
+                $offset += $received
+            }
+            $sha256 = [Security.Cryptography.SHA256]::Create()
+            try {
+                $bootstrapResultSha256 = ([BitConverter]::ToString(
+                    $sha256.ComputeHash($resultBytes)
+                ) -replace '-', '').ToLowerInvariant()
+            }
+            finally { $sha256.Dispose() }
+            # Windows PowerShell 5.1 writes a UTF-8 BOM; accept BOM/no BOM.
+            # Invalid UTF-8 input is never silently replaced or normalized.
+            $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
+            $rawResult = $strictUtf8.GetString($resultBytes)
+            if ($rawResult.Length -gt 0 -and $rawResult[0] -eq [char]0xFEFF) {
+                $rawResult = $rawResult.Substring(1)
+            }
+        }
+        finally { $readHandle.Dispose() }
         if ($rawResult -notmatch '^\s*\{') {
             throw 'Guest bootstrap result must be a top-level JSON object.'
         }
@@ -445,6 +478,7 @@ function Read-BootstrapResult([string]$VhdPath, [string]$ExpectedBootstrapNonce)
                 throw 'Guest worker configuration SHA-256 mismatch; refusing checkpoint.'
             }
         }
+        $result | Add-Member -NotePropertyName verified_bootstrap_result_sha256 -NotePropertyValue $bootstrapResultSha256
         return $result
     }
     finally { Dismount-VHD -Path $VhdPath -ErrorAction SilentlyContinue }
@@ -502,7 +536,7 @@ foreach ($image in $planValue.images) {
         checkpoint_created = $true
         artifact_hashes_verified = $true
         vhdx_sha256 = Get-Sha256 $vhd
-        bootstrap_result_sha256 = [string]$bootstrap.worker_config_sha256
+        bootstrap_result_sha256 = [string]$bootstrap.verified_bootstrap_result_sha256
     }
 }
 [ordered]@{
