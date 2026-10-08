@@ -24,8 +24,19 @@ function Write-Result([string]$Status, [string]$Message, [hashtable]$Extra) {
 
 function Expand-Zip([string]$Archive, [string]$Destination) {
     if (-not (Test-Path -LiteralPath $Archive -PathType Leaf)) { throw ('Archive not found: ' + $Archive) }
-    if (Test-Path -LiteralPath $Destination) { Remove-Item -LiteralPath $Destination -Recurse -Force }
-    New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+    $archiveItem = Get-Item -LiteralPath $Archive -Force -ErrorAction Stop
+    if ($archiveItem.PSIsContainer -or
+        (($archiveItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+        throw 'Guest bootstrap archive is an unsafe file type.'
+    }
+    # These destinations must be new on first boot. Never recursively delete
+    # pre-existing credential, signing or payload directories to retry setup.
+    # A junction/symlink or interrupted install requires explicit inspection.
+    $existingTarget = Get-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+    if ($null -ne $existingTarget -or (Test-Path -LiteralPath $Destination)) {
+        throw 'Guest bootstrap archive destination already exists; refusing destructive replacement.'
+    }
+    New-Item -ItemType Directory -Path $Destination -ErrorAction Stop | Out-Null
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     [IO.Compression.ZipFile]::ExtractToDirectory($Archive, $Destination)
 }

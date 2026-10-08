@@ -514,6 +514,33 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
         self.assertLess(probe, probe_fail)
         self.assertEqual(guest[firewall:probe].count("if ($LASTEXITCODE -ne 0)"), 1)
 
+    def test_guest_archive_extract_never_replaces_existing_sensitive_tree(self):
+        guest = GUEST.read_text(encoding="utf-8")
+        extract = guest.split("function Expand-Zip(", 1)[1].split(
+            "function Find-File(", 1
+        )[0]
+        for fragment in (
+            "if (-not (Test-Path -LiteralPath $Archive -PathType Leaf))",
+            "$archiveItem = Get-Item -LiteralPath $Archive -Force -ErrorAction Stop",
+            "$archiveItem.Attributes -band [IO.FileAttributes]::ReparsePoint",
+            "$existingTarget = Get-Item -LiteralPath $Destination -Force",
+            "$null -ne $existingTarget -or (Test-Path -LiteralPath $Destination)",
+            "Guest bootstrap archive destination already exists; refusing destructive replacement.",
+            "New-Item -ItemType Directory -Path $Destination -ErrorAction Stop",
+            "[IO.Compression.ZipFile]::ExtractToDirectory($Archive, $Destination)",
+        ):
+            self.assertIn(fragment, extract)
+        self.assertNotIn("Remove-Item -LiteralPath $Destination", extract)
+        self.assertNotIn("New-Item -ItemType Directory -Path $Destination -Force", extract)
+        self.assertLess(
+            extract.index("Guest bootstrap archive destination already exists"),
+            extract.index("[IO.Compression.ZipFile]::ExtractToDirectory"),
+        )
+        self.assertLess(
+            extract.index("$archiveItem.Attributes -band"),
+            extract.index("New-Item -ItemType Directory -Path $Destination"),
+        )
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)

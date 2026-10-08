@@ -77,6 +77,17 @@ matching is an **identity consistency check**, not proof of running a real
 Windows PowerShell 4.0/5.0/5.1 guest. Elevated three-image acceptance and
 independent release approval remain required.
 
+## First-boot archive extraction ownership
+
+The guest no longer removes a pre-existing destination tree when extracting the
+worker, credential or signing ZIP archives. A present destination, including a
+junction or symbolic link, fails closed instead of silently erasing its contents;
+a staged archive that is itself a reparse point is also rejected. Only a new
+directory is created for extraction. This prevents an interrupted or modified
+first-boot state from being overwritten without investigation; it does not
+guarantee the safety or authenticity of ZIP contents. Elevated real-guest
+acceptance and independently approved artifacts are still required.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted
