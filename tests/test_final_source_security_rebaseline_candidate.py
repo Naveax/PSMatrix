@@ -114,9 +114,8 @@ class FinalSourceSecurityRebaselineCandidateTests(unittest.TestCase):
 
             value = json.loads(CONTRACT.read_text(encoding="utf-8"))
             value = copy.deepcopy(value)
-            value["frozen_final_source"].update({"branch": "frozen-v2", "commit": base, "tree": base_tree})
+            value["frozen_final_source"].update({"commit": base, "tree": base_tree})
             value["security_source_candidate"].update({
-                "branch": "candidate-review",
                 "commit": candidate,
                 "tree": candidate_tree,
                 "parent_commit": base,
@@ -143,6 +142,28 @@ class FinalSourceSecurityRebaselineCandidateTests(unittest.TestCase):
                 ("receipt_digest_integer", ("security_source_candidate", "repository_private_material_scan", "receipt_sha256"), int("1" * 64), "receipt digest invalid"),
             )
             for label, key_path, replacement, error in negative_types:
+                with self.subTest(label=label):
+                    mutated = copy.deepcopy(value)
+                    selected = mutated
+                    for key in key_path[:-1]:
+                        selected = selected[key]
+                    selected[key_path[-1]] = replacement
+                    with self.assertRaisesRegex(RuntimeError, error):
+                        validator.validate(mutated, repo, "refs/heads/frozen-v2", "refs/heads/candidate-review")
+
+            negative_governance = (
+                ("frozen_branch_forged", ("frozen_final_source", "branch"), "main", "frozen source branch identity"),
+                ("candidate_branch_forged", ("security_source_candidate", "branch"), "main", "V4 security candidate branch identity"),
+                ("baseline_pass_count_fake", ("security_source_candidate", "baseline_tests", "passed"), 999, "V4 baseline test evidence count"),
+                ("baseline_total_bool", ("security_source_candidate", "baseline_tests", "total"), True, "V4 baseline test evidence count"),
+                ("winps51_pass_count_fake", ("security_source_candidate", "windows_powershell_51_security_synthetic", "passed"), 999, "V4 Windows synthetic test evidence"),
+                ("winps51_acl_gate_disabled", ("security_source_candidate", "windows_powershell_51_security_synthetic", "elevated_recursive_acl_acceptance_required"), False, "elevated ACL gate changed"),
+                ("mutable_manifest_declared_authority", ("handoff_policy", "review_manifest_is_authority"), True, "review handoff authority"),
+                ("mutable_manifest_stability_removed", ("handoff_policy", "review_manifest_may_evolve_without_changing_source_candidate"), False, "review handoff authority"),
+                ("immutable_evidence_binding_disabled", ("handoff_policy", "immutable_evidence_must_remain_hash_bound"), False, "immutable evidence policy"),
+                ("handoff_policy_extra_key", ("handoff_policy", "fabricated_extra"), True, "review handoff authority"),
+            )
+            for label, key_path, replacement, error in negative_governance:
                 with self.subTest(label=label):
                     mutated = copy.deepcopy(value)
                     selected = mutated

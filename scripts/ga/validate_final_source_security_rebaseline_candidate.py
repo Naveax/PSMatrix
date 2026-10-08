@@ -59,10 +59,44 @@ def validate(contract: dict[str, Any], repo: Path, frozen_ref: str | None, candi
         _require(bool(_SHA40.fullmatch(str(sha))), f"{label} is not SHA-40")
 
     _require(frozen["immutable"] is True, "frozen source must remain immutable")
+    _require(frozen["branch"] == "final/2.0.0-release-candidate-anchor-v2", "frozen source branch identity changed")
+    _require(candidate["branch"] == "security/2.0.0-unattend-hygiene-source-candidate-v4-20261007",
+             "V4 security candidate branch identity changed")
     _require(candidate["parent_commit"] == frozen["commit"], "candidate parent binding mismatch")
     paths = candidate["changed_paths"]
     _require(isinstance(paths, list) and paths == sorted(set(paths)), "changed paths must be exact sorted unique list")
     _require(type(candidate["changed_path_count"]) is int and candidate["changed_path_count"] == len(paths) == 4, "security changed-path count must be exactly four")
+
+    baseline = candidate["baseline_tests"]
+    _require(
+        isinstance(baseline, dict)
+        and baseline.keys() == {"passed", "total"}
+        and type(baseline["passed"]) is int and baseline["passed"] == 20
+        and type(baseline["total"]) is int and baseline["total"] == 20,
+        "V4 baseline test evidence count changed",
+    )
+    windows_tests = candidate["windows_powershell_51_security_synthetic"]
+    _require(
+        isinstance(windows_tests, dict)
+        and windows_tests.keys() == {"passed", "total", "elevated_recursive_acl_acceptance_required"}
+        and type(windows_tests["passed"]) is int and windows_tests["passed"] == 19
+        and type(windows_tests["total"]) is int and windows_tests["total"] == 19
+        and windows_tests["elevated_recursive_acl_acceptance_required"] is True,
+        "V4 Windows synthetic test evidence or elevated ACL gate changed",
+    )
+    required_handoff = {
+        "review_manifest_is_authority": False,
+        "review_manifest_may_evolve_without_changing_source_candidate": True,
+        "immutable_evidence_must_remain_hash_bound": True,
+    }
+    handoff = contract["handoff_policy"]
+    _require(
+        isinstance(handoff, dict)
+        and handoff.keys() == required_handoff.keys()
+        and all(type(handoff[key]) is bool and handoff[key] is expected
+                for key, expected in required_handoff.items()),
+        "review handoff authority or immutable evidence policy changed",
+    )
 
     _require(review["required"] is True, "independent human review must be required")
     _require(review["complete"] is False, "candidate must not claim completed human review")
