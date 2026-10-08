@@ -116,10 +116,13 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
             "-Label 'Windows-lab independent material review attestation' -MaxBytes 16384",
         ):
             self.assertIn(required, raw)
-        self.assertEqual(raw.count("-MaxBytes 127"), 3)
+        self.assertEqual(raw.count("-Label 'PSMATRIX_WPS40_ADMIN_PASSWORD' -MaxBytes 127"), 1)
+        self.assertEqual(raw.count("-Label 'PSMATRIX_WPS50_ADMIN_PASSWORD' -MaxBytes 127"), 1)
+        self.assertEqual(raw.count("-Label 'PSMATRIX_WPS51_ADMIN_PASSWORD' -MaxBytes 127"), 1)
+        self.assertEqual(raw.count("Copy-BoundedWindowsLabMaterial -Source $wps"), 3)
         self.assertLess(
             raw.index("if ($sourceLength -gt $MaxBytes)"),
-            raw.index("Copy-Item -LiteralPath $wps40External"),
+            raw.index("Copy-BoundedWindowsLabMaterial -Source $wps40External"),
         )
         self.assertLess(
             raw.index("source file exceeds the allowed byte-size limit."),
@@ -198,9 +201,36 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         ):
             self.assertIn(required, private_acl)
         protect_call = raw.index("Protect-PrivateWindowsLabTemporaryWorkspace -Path $tempRoot")
-        first_secret_copy = raw.index("Copy-Item -LiteralPath $wps40External")
+        first_secret_copy = raw.index("Copy-BoundedWindowsLabMaterial -Source $wps40External")
         self.assertLess(protect_call, first_secret_copy)
         self.assertLess(raw.index("Assert-NoLinkOrReparsePath -Path $tempRoot"), protect_call)
+
+    def test_private_staging_is_bounded_and_prevents_uncontrolled_copy(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        copy_fn = raw.split("function Copy-BoundedWindowsLabMaterial {", 1)[1].split(
+            "function Protect-PrivateWindowsLabTemporaryWorkspace {", 1
+        )[0]
+        for required in (
+            "[ValidateRange(1, 131072)] [int]$MaxBytes",
+            "[IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read",
+            "$sourceStream.Length -gt $MaxBytes",
+            "New-Object byte[] ($MaxBytes + 1)",
+            "$total -gt $MaxBytes",
+            "$total -ne $sourceStream.Length",
+            "[IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None",
+            "$destinationStream.Write($buffer, 0, $total)",
+            "[Array]::Clear($buffer, 0, $buffer.Length)",
+            "$sourceStream.Dispose()",
+        ):
+            self.assertIn(required, copy_fn)
+        self.assertNotIn("Copy-Item -LiteralPath", raw)
+        self.assertEqual(raw.count("Copy-BoundedWindowsLabMaterial -Source $wps"), 3)
+        first_copy = raw.index("Copy-BoundedWindowsLabMaterial -Source $rootExternal")
+        self.assertLess(
+            raw.index("Protect-PrivateWindowsLabTemporaryWorkspace -Path $tempRoot"),
+            first_copy,
+        )
+        self.assertLess(first_copy, raw.index("Get-Content -Raw -LiteralPath $rootSource"))
 
     def test_external_bytes_are_staged_once_then_reused(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
@@ -209,15 +239,15 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
             "$wps40External = Assert-ExternalMaterialFile",
             "$rootSource = Join-Path $tempRoot 'ga-root.txt'",
             "$wps40Source = Join-Path $tempRoot 'wps40-admin.txt'",
-            "Copy-Item -LiteralPath $rootExternal -Destination $rootSource -Force",
-            "Copy-Item -LiteralPath $wps40External -Destination $wps40Source -Force",
+            "Copy-BoundedWindowsLabMaterial -Source $rootExternal -Destination $rootSource -MaxBytes 32768",
+            "Copy-BoundedWindowsLabMaterial -Source $wps40External -Destination $wps40Source -MaxBytes 127",
             "staged_bytes_validated_and_reused=true",
             "-InputFile $wps40Source",
             "-InputFile $wps50Source",
             "-InputFile $wps51Source",
         ):
             self.assertIn(fragment, raw)
-        stage = raw.index("Copy-Item -LiteralPath $rootExternal")
+        stage = raw.index("Copy-BoundedWindowsLabMaterial -Source $rootExternal")
         semantic_read = raw.index("Get-Content -Raw -LiteralPath $rootSource")
         first_mutation = raw.index("@('variable', 'set', 'PSMATRIX_WINDOWS_GA_ROOT'")
         self.assertLess(stage, semantic_read)

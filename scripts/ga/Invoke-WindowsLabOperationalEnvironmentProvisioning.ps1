@@ -100,6 +100,55 @@ function Assert-ExternalMaterialFile {
 }
 
 
+function Copy-BoundedWindowsLabMaterial {
+    param(
+        [Parameter(Mandatory)] [string]$Source,
+        [Parameter(Mandatory)] [string]$Destination,
+        [Parameter(Mandatory)] [ValidateRange(1, 131072)] [int]$MaxBytes
+    )
+
+    # Keep the validated source handle open with FileShare.Read to refuse
+    # concurrent writers while copying. Never read more than MaxBytes+1 bytes.
+    $sourceStream = [IO.File]::Open(
+        $Source, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read
+    )
+    $buffer = $null
+    try {
+        if ($sourceStream.Length -le 0 -or $sourceStream.Length -gt $MaxBytes) {
+            throw 'Windows-lab source size changed or exceeded the permitted byte limit before staging.'
+        }
+        $buffer = New-Object byte[] ($MaxBytes + 1)
+        $total = 0
+        while ($total -lt $buffer.Length) {
+            $read = $sourceStream.Read($buffer, $total, $buffer.Length - $total)
+            if ($read -eq 0) {
+                break
+            }
+            $total += $read
+        }
+        if ($total -le 0 -or $total -gt $MaxBytes -or $total -ne $sourceStream.Length) {
+            throw 'Windows-lab source length changed during bounded staging.'
+        }
+        # CreateNew rejects an already existing destination or link.
+        $destinationStream = [IO.File]::Open(
+            $Destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None
+        )
+        try {
+            $destinationStream.Write($buffer, 0, $total)
+            $destinationStream.Flush()
+        }
+        finally {
+            $destinationStream.Dispose()
+        }
+    }
+    finally {
+        if ($null -ne $buffer) {
+            [Array]::Clear($buffer, 0, $buffer.Length)
+        }
+        $sourceStream.Dispose()
+    }
+}
+
 function Protect-PrivateWindowsLabTemporaryWorkspace {
     param([Parameter(Mandatory)] [string]$Path)
 
@@ -532,10 +581,10 @@ try {
     $wps40Source = Join-Path $tempRoot 'wps40-admin.txt'
     $wps50Source = Join-Path $tempRoot 'wps50-admin.txt'
     $wps51Source = Join-Path $tempRoot 'wps51-admin.txt'
-    Copy-Item -LiteralPath $rootExternal -Destination $rootSource -Force
-    Copy-Item -LiteralPath $wps40External -Destination $wps40Source -Force
-    Copy-Item -LiteralPath $wps50External -Destination $wps50Source -Force
-    Copy-Item -LiteralPath $wps51External -Destination $wps51Source -Force
+    Copy-BoundedWindowsLabMaterial -Source $rootExternal -Destination $rootSource -MaxBytes 32768
+    Copy-BoundedWindowsLabMaterial -Source $wps40External -Destination $wps40Source -MaxBytes 127
+    Copy-BoundedWindowsLabMaterial -Source $wps50External -Destination $wps50Source -MaxBytes 127
+    Copy-BoundedWindowsLabMaterial -Source $wps51External -Destination $wps51Source -MaxBytes 127
     foreach ($staged in @($rootSource, $wps40Source, $wps50Source, $wps51Source)) {
         Assert-NoLinkOrReparsePath -Path $staged -Label 'Windows-lab staged material'
         if ((Get-Item -LiteralPath $staged).Length -le 0) {
