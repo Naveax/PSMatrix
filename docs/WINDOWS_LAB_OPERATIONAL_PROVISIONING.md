@@ -25,7 +25,7 @@ The three password values must be real operator-controlled material. Do not gene
 
 `PSMATRIX_WINDOWS_GA_ROOT` is the Windows-authority staging **root**, not the Local19 `provisioning` directory and not another child directory.
 
-The GA root and the repository must be disjoint paths: the GA root cannot equal or sit inside the repository, and it also cannot be an ancestor that contains the repository. Do not use an overly broad drive/root directory as the protected Windows-lab root.
+The GA root and the repository must be disjoint paths: the GA root cannot equal or sit inside the repository, and it also cannot be an ancestor that contains the repository. The helper explicitly rejects a drive root (for example `D:\`) or UNC share root (for example `\\host\share`) as the Windows-lab GA root, including in `-SecretRepairOnly`; choose a dedicated subdirectory such as `<drive>:\PSMatrix\WindowsAuthorityLab`. This check is performed before any GitHub environment mutation.
 
 Before the variable can be provisioned, the selected root must already exist and contain at least:
 
@@ -59,7 +59,13 @@ Prepare four files **outside the repository**:
 
 Keep the password files access-restricted on the operator host. Do not commit them, attach them to issues, upload them as Actions artifacts, or paste them into workflow inputs.
 
-The provisioning helper rejects relative source-file paths, repository-contained source files, empty files, links/reparse points, a non-absolute GA-root value, a missing root, overlapping repository/GA-root paths, and a root without the required `config` and `media\external` layout.
+Live mode requires the resolved GitHub CLI executable to have a valid Authenticode signature whose publisher organization is exactly `GitHub, Inc.`. Because GitHub CLI can route commands through the inherited `GH_HOST` setting, live mode also rejects any `GH_HOST` value other than unset or exactly `github.com`; this host constraint is checked before authentication and before every CLI process. It never silently redirects credentials to another GitHub Enterprise or custom hostname. The helper checks publisher trust before the first authentication command and again immediately before each CLI process launch. A missing, unsigned, untrusted or differently published executable fails closed; never bypass this requirement to provision credentials.
+
+The helper creates a per-run temporary directory. Before any credential data is copied, it replaces inherited directory ACLs with a verified exact allowlist for the current operator, SYSTEM, and built-in Administrators; children inherit this private ACL. An unexpected owner/ACE or a failed ACL update aborts before staging. Temporary-file deletion is not a forensic secure-erase guarantee for NTFS or disk snapshots. GitHub CLI stdout/stderr captures, including potentially sensitive root-path metadata, are also confined to that protected workspace and deleted during cleanup; they are never written to inherited world- or multi-user-readable TEMP paths. Failures during initial path validation also trigger workspace cleanup.
+
+The provisioning helper rejects relative source-file paths, repository-contained source files, empty files, links/reparse points, a non-absolute GA-root value, and overlapping repository/GA-root paths. Source-file size limits are enforced before staging: 127 bytes per admin password file, 32 KiB for the GA-root path file, and 16 KiB for the review JSON. Credential and root staging then use a bounded in-memory buffer (maximum allowed bytes plus one), retain a read-shared source handle that refuses concurrent writers, and create each staged file with CreateNew in the private ACL-controlled directory. The helper refuses a source that changes length or exceeds its limit, and wipes its short-lived staging buffer; source content is never logged. This reduces the size-check/copy race and prevents unbounded copies. The later credential policy still requires 16-127 BOM-free printable ASCII bytes with the documented complexity and uniqueness rules. It also rejects Windows drive-relative (`C:folder`), current-drive-rooted (`\folder`), and device-namespace paths that `IsPathRooted` alone can mistakenly accept. The helper accepts fully qualified drive paths and ordinary UNC file paths. In normal provisioning mode it also requires the GA root to exist on the operator host with the required `config` and `media\external` layout.
+
+When the three credential files are intentionally held on a different operator host from NAVEAX, use `-SecretRepairOnly`. That mode does **not** pretend the remote NAVEAX root exists locally. Dry-run defers local root-layout validation. Live repair instead reads the existing `production-ga-windows-lab` `PSMATRIX_WINDOWS_GA_ROOT` variable through GitHub metadata and requires it to exactly match the reviewed target root before the first mutation. The later canonical prerequisite audit still revalidates the real NAVEAX root and layout.
 
 ## Validate without mutation
 
@@ -74,7 +80,21 @@ pwsh -NoProfile -File .\scripts\ga\Invoke-WindowsLabOperationalEnvironmentProvis
   -DryRun
 ```
 
-The helper reports only value-free validation state. It does not print configured paths, secret values, secret hashes or secret lengths. Dry-run also rejects broad readable ACLs on the three credential files, weak or predictable credential material, credential files that are not BOM-free printable ASCII byte sequences, and credentials that are not mutually distinct.
+The helper reports only value-free validation state. It does not print configured paths, secret values, secret hashes or secret lengths. The helper validates the owner and allowlisted trustees of all three external credential source files **before creating the private staging workspace or opening any credential bytes**. Dry-run also rejects broad readable ACLs, unapproved allow trustees, and unexpected file owners on the three credential files. The only allowed trustees are the operator identity running the helper, local SYSTEM, and built-in Administrators. Execute the helper under the identity that owns the reviewed material; a different identity can correctly fail closed. It rejects weak or predictable credential material, credential files that are not BOM-free printable ASCII byte sequences, and credentials that are not mutually distinct.
+
+For a split-host repair, prepare the root-value file with the **already committed NAVEAX root** and run:
+
+```powershell
+pwsh -NoProfile -File .\scripts\ga\Invoke-WindowsLabOperationalEnvironmentProvisioning.ps1 `
+  -GaRootValueFile '<absolute-external-file-containing-the-current-naveax-root>' `
+  -Wps40AdminPasswordFile '<absolute-external-wps40-secret-file>' `
+  -Wps50AdminPasswordFile '<absolute-external-wps50-secret-file>' `
+  -Wps51AdminPasswordFile '<absolute-external-wps51-secret-file>' `
+  -SecretRepairOnly `
+  -DryRun
+```
+
+This dry-run validates the four external material files and credential policy but reports the remote root-layout check as deferred. It still performs no GitHub authentication or mutation.
 
 ## Independent material review attestation
 
@@ -105,7 +125,7 @@ Required shape:
 }
 ```
 
-The attestation must be no older than 24 hours, must be outside the repository, and must not be a link/reparse path. The helper also requires the review timestamp to be at or after the last-write time of all four reviewed material files; a post-review source change therefore fails closed without storing credential hashes or lengths. This file is a review gate only; it is not authority evidence and must not be fabricated by automation or by the release owner merely to satisfy the gate.
+The attestation must be no older than 24 hours, must be outside the repository, and must not be a link/reparse path. The helper also requires the review timestamp to be at or after the last-write time of all four reviewed material files; a post-review source change therefore fails closed without storing credential hashes or lengths. This file is a review gate only; it is not authority evidence and must not be fabricated by automation or by the release owner merely to satisfy the gate. The validator requires a case-exact set of unique JSON property keys and native JSON types: `schema` is an integer, all review flags are literal JSON booleans (`true`, not `1` or `"true"`), `kind`, `repository`, `environment`, and `reviewed_by` are strings, and `scope` is an array of exactly four ordered JSON strings. One-element arrays cannot substitute for string identity fields. Duplicate, extra, or Unicode-escaped property names are rejected rather than silently accepting the last value chosen by PowerShell's JSON parser. Only literal case-exact ASCII property tokens are accepted for this flat review schema. The top-level JSON value must be a single object: a singleton array wrapping an otherwise valid-looking review, an array containing multiple reviews, or a scalar JSON root is rejected before field interpretation. This avoids PowerShell runtime differences in singleton-array unwrapping.
 
 ## Provision the environment
 
@@ -122,9 +142,15 @@ pwsh -NoProfile -File .\scripts\ga\Invoke-WindowsLabOperationalEnvironmentProvis
   -IndependentReviewAttestationFile '<absolute-external-review-attestation-json>'
 ```
 
-Live mode first verifies that the target is still exactly `Naveax/PSMatrix`, verifies GitHub CLI authentication, and checks that `production-ga-windows-lab` exists. It then invalidates the GA-root **commit marker** by temporarily setting `PSMATRIX_WINDOWS_GA_ROOT` to a deliberately relative sentinel value. Because the prerequisite audit requires an absolute existing root, any failure after this point remains fail-closed even when the environment had been successfully provisioned before.
+If the root is already correctly committed for NAVEAX and only the three credentials need repair from a separate operator host, add `-SecretRepairOnly` to the same reviewed live command. Independent material review is still mandatory; repair mode does not relax that gate.
 
-The helper then writes the three administrator secrets through standard input. Only after all three writes succeed does it replace the sentinel with the real absolute GA-root value, again through standard input. A partially completed initial provisioning or re-provisioning therefore cannot leave a valid root commit marker behind.
+Live mode first verifies that the target is still exactly `Naveax/PSMatrix`, verifies GitHub CLI authentication, and checks that `production-ga-windows-lab` exists.
+
+With `-SecretRepairOnly`, live mode additionally reads the existing `PSMATRIX_WINDOWS_GA_ROOT` environment variable and requires that absolute path to exactly match the reviewed root-value file. It never accepts a different root merely because the operator host has a similarly named directory. The existing root value is not logged.
+
+Both normal provisioning and secret repair then invalidate the GA-root **commit marker** by temporarily setting `PSMATRIX_WINDOWS_GA_ROOT` to a deliberately relative sentinel value. Because the prerequisite audit requires an absolute existing root, any failure after this point remains fail-closed. The helper writes the three administrator secrets through standard input. Only after all three writes succeed does it replace the sentinel with the reviewed absolute GA-root value, again through standard input. In secret-repair mode that final value is exactly the root that was verified before mutation, so the root binding is preserved rather than changed.
+
+A partially completed initial provisioning or secret repair therefore cannot leave a valid root commit marker behind.
 
 The helper provisions exactly the four operational names listed above. It does not provision the Windows-lab signing keypair and it does not consume the final-production-readiness evidence contract. The sentinel is not authority evidence, is never a valid Windows-lab root, and must not be treated as recovery success.
 

@@ -33,6 +33,46 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         self.assertNotIn("final-production-readiness-contract.json", raw)
         self.assertNotIn("PSMATRIX_WINDOWS_LAB_PRIVATE_KEY", raw)
         self.assertNotIn("PSMATRIX_WINDOWS_LAB_PUBLIC_KEY", raw)
+        self.assertIn("[switch]$SecretRepairOnly", raw)
+
+    def test_secret_repair_only_defers_local_layout_and_verifies_existing_root_before_mutation(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+
+        for fragment in (
+            "windows_lab_root_layout_validation=DEFERRED secret_repair_only=true",
+            "windows_lab_secret_repair_existing_root_verification=DEFERRED dry_run=true",
+            "environments/$Environment/variables/PSMATRIX_WINDOWS_GA_ROOT",
+            "Existing Windows-lab GA-root variable identity is invalid.",
+            "Existing Windows-lab GA-root variable is not a valid absolute path.",
+            "Existing Windows-lab GA-root variable does not match the reviewed repair target.",
+            "windows_lab_secret_repair_existing_root_verification=PASS expected_root_matches_environment=true",
+            "existing_root_value_logged=false",
+            "windows_lab_secret_repair_only=PASS existing_root_preserved=true fail_closed_marker_restored=true",
+        ):
+            self.assertIn(fragment, raw)
+
+        repair_verify = raw.index("environments/$Environment/variables/PSMATRIX_WINDOWS_GA_ROOT")
+        first_mutation = raw.index("@('variable', 'set', 'PSMATRIX_WINDOWS_GA_ROOT'")
+        self.assertLess(repair_verify, first_mutation)
+
+        self.assertEqual(raw.count("@('secret', 'set', 'PSMATRIX_WPS40_ADMIN_PASSWORD'"), 1)
+        self.assertEqual(raw.count("@('secret', 'set', 'PSMATRIX_WPS50_ADMIN_PASSWORD'"), 1)
+        self.assertEqual(raw.count("@('secret', 'set', 'PSMATRIX_WPS51_ADMIN_PASSWORD'"), 1)
+
+    def test_review_timestamp_preserves_original_utc_json_token(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        self.assertIn("ConvertFrom-Json can coerce ISO-8601 strings", raw)
+        self.assertIn("$timestampMatches.Count -ne 1", raw)
+        self.assertIn("$reviewedAtText = $timestampMatches[0].Groups['utc'].Value", raw)
+        self.assertIn("timestamp must appear exactly once as a plain UTC JSON string", raw)
+        self.assertNotIn("([string]$review.reviewed_at_utc).Trim()", raw)
+
+        token = re.compile(r'"reviewed_at_utc"\s*:\s*"(?P<utc>[^"\\]*)"')
+        valid = '{"reviewed_at_utc":"2026-10-07T15:25:00Z"}'
+        matches = list(token.finditer(valid))
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0].group("utc"), "2026-10-07T15:25:00Z")
+        self.assertEqual(len(list(token.finditer(valid + valid))), 2)
 
     def test_repository_target_is_pinned_before_any_secret_mutation(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
@@ -49,10 +89,50 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         first_mutation = raw.index("@('variable', 'set', 'PSMATRIX_WINDOWS_GA_ROOT'")
         self.assertLess(guard, first_mutation)
 
+    def test_windows_paths_require_fully_qualified_drive_or_unc_form(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        section = raw.split("function Test-FullyQualifiedWindowsPath {", 1)[1].split(
+            "function Assert-ExternalMaterialFile {", 1
+        )[0]
+        self.assertIn("IsPathRooted alone accepts drive-relative C:foo", section)
+        self.assertIn("Permit drive-absolute and ordinary UNC paths", section)
+        self.assertIn("$Path -cmatch '^[A-Za-z]:[\\\\/]'", section)
+        self.assertIn("device namespaces", section)
+        self.assertIn("Test-FullyQualifiedWindowsPath -Path $rootValue", raw)
+        self.assertIn("Test-FullyQualifiedWindowsPath -Path $existingRootValue", raw)
+        self.assertIn("Test-FullyQualifiedWindowsPath -Path $Path", raw)
+
+    def test_external_file_limits_are_checked_before_any_staging_copy(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        for required in (
+            "[Parameter(Mandatory)] [ValidateRange(1, 131072)] [long]$MaxBytes",
+            "$sourceLength = (Get-Item -LiteralPath $resolved -ErrorAction Stop).Length",
+            "if ($sourceLength -gt $MaxBytes)",
+            "source file exceeds the allowed byte-size limit.",
+            "-Label 'PSMATRIX_WINDOWS_GA_ROOT' -MaxBytes 32768",
+            "-Label 'PSMATRIX_WPS40_ADMIN_PASSWORD' -MaxBytes 127",
+            "-Label 'PSMATRIX_WPS50_ADMIN_PASSWORD' -MaxBytes 127",
+            "-Label 'PSMATRIX_WPS51_ADMIN_PASSWORD' -MaxBytes 127",
+            "-Label 'Windows-lab independent material review attestation' -MaxBytes 16384",
+        ):
+            self.assertIn(required, raw)
+        self.assertEqual(raw.count("-Label 'PSMATRIX_WPS40_ADMIN_PASSWORD' -MaxBytes 127"), 1)
+        self.assertEqual(raw.count("-Label 'PSMATRIX_WPS50_ADMIN_PASSWORD' -MaxBytes 127"), 1)
+        self.assertEqual(raw.count("-Label 'PSMATRIX_WPS51_ADMIN_PASSWORD' -MaxBytes 127"), 1)
+        self.assertEqual(raw.count("Copy-BoundedWindowsLabMaterial -Source $wps"), 3)
+        self.assertLess(
+            raw.index("if ($sourceLength -gt $MaxBytes)"),
+            raw.index("Copy-BoundedWindowsLabMaterial -Source $wps40External"),
+        )
+        self.assertLess(
+            raw.index("source file exceeds the allowed byte-size limit."),
+            raw.index("@('variable', 'set', 'PSMATRIX_WINDOWS_GA_ROOT'"),
+        )
+
     def test_material_sources_must_be_absolute_external_files(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
 
-        self.assertIn("if (-not [IO.Path]::IsPathRooted($Path))", raw)
+        self.assertIn("if (-not [IO.Path]::IsPathRooted($Path) -or -not (Test-FullyQualifiedWindowsPath -Path $Path))", raw)
         self.assertIn("source file path must be absolute", raw)
         self.assertIn("source file must stay outside the repository", raw)
         self.assertIn("path must not contain links or reparse points", raw)
@@ -69,6 +149,31 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         ):
             self.assertIn(fragment, raw)
 
+    def test_ga_root_must_be_a_scoped_directory_not_a_volume_or_share_root(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        guard = raw.split("function Assert-WindowsLabGaRootIsScoped {", 1)[1].split(
+            "function Test-FullyQualifiedWindowsPath {", 1
+        )[0]
+        for expected in (
+            "[IO.Path]::GetFullPath($Path)",
+            "[IO.Path]::GetPathRoot($full)",
+            "$full.TrimEnd('\\', '/').Equals(",
+            "$volumeRoot.TrimEnd('\\', '/')",
+            "[StringComparison]::OrdinalIgnoreCase",
+            "must be a scoped subdirectory, not a volume or UNC share root.",
+        ):
+            self.assertIn(expected, guard)
+        self.assertIn("Assert-WindowsLabGaRootIsScoped -Path $gaRoot", raw)
+        self.assertIn("Assert-WindowsLabGaRootIsScoped -Path $existingRoot", raw)
+        self.assertLess(
+            raw.index("Assert-WindowsLabGaRootIsScoped -Path $gaRoot"),
+            raw.index("if ($SecretRepairOnly)"),
+        )
+        self.assertLess(
+            raw.index("Assert-WindowsLabGaRootIsScoped -Path $existingRoot"),
+            raw.index("windows_lab_secret_repair_existing_root_verification=PASS"),
+        )
+
     def test_ga_root_and_repository_must_be_disjoint_in_both_directions(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
 
@@ -84,6 +189,74 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         )
         self.assertIn("PSMATRIX_WINDOWS_GA_ROOT and the repository must be disjoint paths.", raw)
 
+    def test_all_github_process_captures_are_inside_private_workspace(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        self.assertNotIn("[IO.Path]::GetTempFileName()", raw)
+        self.assertIn("function New-PrivateWindowsLabProcessCapturePath {", raw)
+        self.assertIn("Join-Path $script:tempRoot", raw)
+        self.assertIn("private capture workspace is unavailable.", raw)
+        self.assertEqual(raw.count("New-PrivateWindowsLabProcessCapturePath -Stream 'stdout'"), 2)
+        self.assertEqual(raw.count("New-PrivateWindowsLabProcessCapturePath -Stream 'stderr'"), 2)
+        self.assertLess(
+            raw.index("Protect-PrivateWindowsLabTemporaryWorkspace -Path $tempRoot"),
+            raw.index("Invoke-GhCaptured -Executable $gh"),
+        )
+        self.assertLess(
+            raw.index("try {\n    if ((Test-PathWithinRoot -Candidate $tempRoot"),
+            raw.index("Assert-NoLinkOrReparsePath -Path $tempRoot"),
+        )
+
+    def test_temporary_workspace_private_acl_is_enforced_before_secret_staging(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        private_acl = raw.split("function Protect-PrivateWindowsLabTemporaryWorkspace {", 1)[1].split(
+            "function Assert-RestrictedSecretFileAcl {", 1
+        )[0]
+        for required in (
+            "DirectorySecurity",
+            "SetAccessRuleProtection($true, $false)",
+            "Select-Object -Unique",
+            "'S-1-5-18'",
+            "'S-1-5-32-544'",
+            "[Security.Principal.WindowsIdentity]::GetCurrent()",
+            "ContainerInherit",
+            "ObjectInherit",
+            "Set-Acl -LiteralPath $Path -AclObject $newAcl -ErrorAction Stop",
+            "temporary workspace ACL rule count is not exact.",
+            "temporary workspace ACL does not match the exact private allowlist.",
+        ):
+            self.assertIn(required, private_acl)
+        protect_call = raw.index("Protect-PrivateWindowsLabTemporaryWorkspace -Path $tempRoot")
+        first_secret_copy = raw.index("Copy-BoundedWindowsLabMaterial -Source $wps40External")
+        self.assertLess(protect_call, first_secret_copy)
+        self.assertLess(raw.index("Assert-NoLinkOrReparsePath -Path $tempRoot"), protect_call)
+
+    def test_private_staging_is_bounded_and_prevents_uncontrolled_copy(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        copy_fn = raw.split("function Copy-BoundedWindowsLabMaterial {", 1)[1].split(
+            "function Protect-PrivateWindowsLabTemporaryWorkspace {", 1
+        )[0]
+        for required in (
+            "[ValidateRange(1, 131072)] [int]$MaxBytes",
+            "[IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read",
+            "$sourceStream.Length -gt $MaxBytes",
+            "New-Object byte[] ($MaxBytes + 1)",
+            "$total -gt $MaxBytes",
+            "$total -ne $sourceStream.Length",
+            "[IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None",
+            "$destinationStream.Write($buffer, 0, $total)",
+            "[Array]::Clear($buffer, 0, $buffer.Length)",
+            "$sourceStream.Dispose()",
+        ):
+            self.assertIn(required, copy_fn)
+        self.assertNotIn("Copy-Item -LiteralPath", raw)
+        self.assertEqual(raw.count("Copy-BoundedWindowsLabMaterial -Source $wps"), 3)
+        first_copy = raw.index("Copy-BoundedWindowsLabMaterial -Source $rootExternal")
+        self.assertLess(
+            raw.index("Protect-PrivateWindowsLabTemporaryWorkspace -Path $tempRoot"),
+            first_copy,
+        )
+        self.assertLess(first_copy, raw.index("Get-Content -Raw -LiteralPath $rootSource"))
+
     def test_external_bytes_are_staged_once_then_reused(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
         for fragment in (
@@ -91,15 +264,15 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
             "$wps40External = Assert-ExternalMaterialFile",
             "$rootSource = Join-Path $tempRoot 'ga-root.txt'",
             "$wps40Source = Join-Path $tempRoot 'wps40-admin.txt'",
-            "Copy-Item -LiteralPath $rootExternal -Destination $rootSource -Force",
-            "Copy-Item -LiteralPath $wps40External -Destination $wps40Source -Force",
+            "Copy-BoundedWindowsLabMaterial -Source $rootExternal -Destination $rootSource -MaxBytes 32768",
+            "Copy-BoundedWindowsLabMaterial -Source $wps40External -Destination $wps40Source -MaxBytes 127",
             "staged_bytes_validated_and_reused=true",
             "-InputFile $wps40Source",
             "-InputFile $wps50Source",
             "-InputFile $wps51Source",
         ):
             self.assertIn(fragment, raw)
-        stage = raw.index("Copy-Item -LiteralPath $rootExternal")
+        stage = raw.index("Copy-BoundedWindowsLabMaterial -Source $rootExternal")
         semantic_read = raw.index("Get-Content -Raw -LiteralPath $rootSource")
         first_mutation = raw.index("@('variable', 'set', 'PSMATRIX_WINDOWS_GA_ROOT'")
         self.assertLess(stage, semantic_read)
@@ -131,6 +304,88 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         self.assertLess(dry_run, auth)
         self.assertLess(dry_run, first_mutation)
         self.assertIn("windows_lab_operational_environment_provisioning_executed=false dry_run=true", raw)
+
+    def test_review_attestation_requires_a_single_top_level_json_object(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        review = raw.split("function Assert-IndependentMaterialReviewAttestation {", 1)[1].split(
+            "function New-PrivateWindowsLabProcessCapturePath {", 1
+        )[0]
+        self.assertIn("PowerShell 7 unwraps a singleton JSON array", review)
+        self.assertIn("$raw -notmatch '^\\s*\\{'", review)
+        self.assertIn("$raw -notmatch '\\}\\s*$'", review)
+        self.assertIn(
+            "Windows-lab independent material review must be a top-level JSON object.",
+            review,
+        )
+        self.assertLess(
+            review.index("must be a top-level JSON object."),
+            review.index("$review = $raw | ConvertFrom-Json"),
+        )
+
+    def test_review_json_rejects_duplicate_keys_and_implicit_type_coercion(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        attestation = raw.split("function Assert-IndependentMaterialReviewAttestation {", 1)[1].split(
+            "function New-PrivateWindowsLabProcessCapturePath {", 1
+        )[0]
+        for requirement in (
+            "Compare-Object -ReferenceObject $expectedFields -DifferenceObject $actualFields -CaseSensitive",
+            "$jsonPropertyNames = @(",
+            "[Regex]::Matches($raw,",
+            "$jsonPropertyNames.Count -ne $expectedFields.Count",
+            "$jsonPropertyNames -cnotcontains $field",
+            "missing, extra, or repeated JSON property keys.",
+            "JSON property names must be exact and unescaped.",
+            "$review.schema -isnot [int] -and $review.schema -isnot [long]",
+            "schema must be a JSON integer.",
+            "$review.reviewed_by -isnot [string]",
+            "reviewer identity must be a JSON string.",
+            "$review.$flag -isnot [bool] -or $review.$flag -ne $true",
+            "requires $flag=true as a JSON boolean.",
+        ):
+            self.assertIn(requirement, attestation)
+        self.assertLess(
+            attestation.index("missing, extra, or repeated JSON property keys."),
+            attestation.index("Windows-lab independent material review attestation identity is invalid."),
+        )
+
+    def test_review_json_identity_and_scope_require_native_json_types(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        review = raw.split("function Assert-IndependentMaterialReviewAttestation {", 1)[1].split(
+            "function New-PrivateWindowsLabProcessCapturePath {", 1
+        )[0]
+        for fragment in (
+            "$review.kind -isnot [string]",
+            "$review.repository -isnot [string]",
+            "$review.environment -isnot [string]",
+            "identity values must be JSON strings.",
+            "$review.scope -isnot [array]",
+            "scope must be a JSON array.",
+            "$actualScope = @($review.scope)",
+            "$item -isnot [string]",
+            "scope items must be JSON strings.",
+        ):
+            self.assertIn(fragment, review)
+        self.assertNotIn("[string]$review.kind -cne", review)
+        self.assertNotIn("[string]$review.repository -cne", review)
+        self.assertNotIn("[string]$review.environment -cne", review)
+        self.assertNotIn("[string]$_", review)
+        self.assertLess(
+            review.index("$review.kind -isnot [string]"),
+            review.index("Windows-lab independent material review attestation identity is invalid."),
+        )
+
+    def test_review_json_lexical_property_keys_reject_escaped_aliases(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        self.assertIn("ConvertFrom-Json silently collapses exact duplicates", raw)
+        self.assertIn("Unicode-escaped", raw)
+        self.assertIn("$jsonPropertyNames -cnotcontains $field", raw)
+        pattern = re.compile(r'(?<!\\)"(?P<key>(?:\\.|[^"\\])*)"\s*:')
+        base = '{"schema":1,"review_complete":false}'
+        unicode_alias = '{"schema":1,"review_complete":false,"review_\\u0063omplete":true}'
+        repeated = '{"schema":1,"review_complete":false,"review_complete":true}'
+        assert [m.group("key") for m in pattern.finditer(base)] == ["schema", "review_complete"]
+        assert len(list(pattern.finditer(unicode_alias))) == 3
+        assert len(list(pattern.finditer(repeated))) == 3
 
     def test_live_mode_requires_external_fresh_independent_material_review_before_gh_resolution(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
@@ -188,6 +443,41 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
 
         self.assertNotIn("Get-FileHash", raw)
 
+    def test_secret_acl_allows_only_operator_system_and_builtin_administrators(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        acl_body = raw.split("function Assert-RestrictedSecretFileAcl {", 1)[1].split(
+            "function Assert-WindowsLabCredentialPolicy {", 1
+        )[0]
+        for fragment in (
+            "[Security.Principal.WindowsIdentity]::GetCurrent()",
+            "$operatorIdentity.User.Value",
+            "'S-1-5-18'",
+            "'S-1-5-32-544'",
+            "$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value",
+            "$allowedSids -notcontains $ownerSid",
+            "$allowedSids -notcontains $sid",
+            "ACL contains an unapproved trustee.",
+            "owner is not an approved material trustee.",
+        ):
+            self.assertIn(fragment, acl_body)
+        self.assertLess(acl_body.index("$allowedSids = @("), acl_body.index("foreach ($rule in @($acl.Access))"))
+        self.assertLess(acl_body.index("ACL contains an unapproved trustee."), len(acl_body))
+
+    def test_secret_acl_guard_is_called_before_material_policy_and_github_mutation(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        calls = raw.index("Assert-RestrictedSecretFileAcl -Path $wps40External")
+        policy = raw.index("Assert-WindowsLabCredentialPolicy -Wps40Path $wps40Source")
+        first_copy = raw.index("Copy-BoundedWindowsLabMaterial -Source $wps40External")
+        first_write = raw.index("@('variable', 'set', 'PSMATRIX_WINDOWS_GA_ROOT'")
+        for label in ("WPS40", "WPS50", "WPS51"):
+            preflight = f"Assert-RestrictedSecretFileAcl -Path $wps{label[-2:]}External"
+            self.assertEqual(raw.count(preflight), 1)
+            self.assertLess(raw.index(preflight), first_copy)
+        self.assertLess(calls, policy)
+        self.assertLess(calls, raw.index("$tempWorkspace = New-Item"))
+        self.assertLess(first_copy, policy)
+        self.assertLess(policy, first_write)
+
     def test_live_mode_checks_auth_environment_and_repository_before_mutation(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
 
@@ -217,6 +507,65 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         first_secret = raw.index("@('secret', 'set', 'PSMATRIX_WPS40_ADMIN_PASSWORD'")
         self.assertLess(cli_resolution, auth)
         self.assertLess(auth, first_secret)
+
+    def test_cli_publisher_is_checked_before_auth_and_every_process_execution(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        guard = raw.split("function Assert-TrustedGitHubCliPublisher {", 1)[1].split(
+            "function Invoke-GhCaptured {", 1
+        )[0]
+        for required in (
+            "Get-AuthenticodeSignature -LiteralPath $Executable -ErrorAction Stop",
+            "[string]$signature.Status -cne 'Valid'",
+            "$null -eq $signature.SignerCertificate",
+            "O=\"GitHub, Inc\\.",
+            "GitHub CLI publisher trust verification failed.",
+        ):
+            self.assertIn(required, guard)
+        self.assertLess(
+            raw.index("Assert-TrustedGitHubCliPublisher -Executable $gh"),
+            raw.index("@('auth', 'status', '--hostname', 'github.com')"),
+        )
+        capture = raw.split("function Invoke-GhCaptured {", 1)[1].split(
+            "function Invoke-GhJsonCaptured {", 1
+        )[0]
+        json_capture = raw.split("function Invoke-GhJsonCaptured {", 1)[1].split(
+            "$canonicalRepository = 'Naveax/PSMatrix'", 1
+        )[0]
+        self.assertLess(
+            capture.index("Assert-TrustedGitHubCliPublisher -Executable $Executable"),
+            capture.index("$process = Start-Process @start"),
+        )
+        self.assertLess(
+            json_capture.index("Assert-TrustedGitHubCliPublisher -Executable $Executable"),
+            json_capture.index("$process = Start-Process -FilePath $Executable"),
+        )
+        self.assertEqual(raw.count("Assert-TrustedGitHubCliPublisher -Executable $Executable"), 2)
+
+    def test_cli_network_host_is_pinned_before_every_process_launch(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        guard = raw.split("function Assert-CanonicalGitHubHost {", 1)[1].split(
+            "function Assert-TrustedGitHubCliPublisher {", 1
+        )[0]
+        for required in (
+            "$selectedHost = [string]$env:GH_HOST",
+            "[string]::IsNullOrEmpty($selectedHost)",
+            "$selectedHost -cne 'github.com'",
+            "GitHub CLI host must be unset or exactly github.com.",
+        ):
+            self.assertIn(required, guard)
+        self.assertEqual(raw.count("Assert-CanonicalGitHubHost"), 4)
+        self.assertLess(
+            raw.index("    Assert-CanonicalGitHubHost\n    Assert-TrustedGitHubCliPublisher -Executable $gh"),
+            raw.index("@('auth', 'status', '--hostname', 'github.com')"),
+        )
+        for marker in (
+            "$process = Start-Process @start",
+            "$process = Start-Process -FilePath $Executable",
+        ):
+            self.assertLess(
+                raw.rfind("Assert-CanonicalGitHubHost", 0, raw.index(marker)),
+                raw.index(marker),
+            )
 
     def test_values_are_sent_over_stdin_and_not_cli_body_arguments(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
@@ -320,6 +669,8 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
             "Do not rerun `ops-windows-lab-prereq-audit` as polling.",
             "`repository_dispatch` event of type `windows_lab_prereq_audit`",
             "`client_payload.expected_head`",
+            "`-SecretRepairOnly`",
+            "existing `PSMATRIX_WINDOWS_GA_ROOT`",
             "manual `workflow_dispatch`",
             "live provisioning helper owns that transition",
         ):

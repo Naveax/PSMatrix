@@ -7,6 +7,7 @@ param(
     [Parameter()] [string]$IndependentReviewAttestationFile,
     [Parameter()] [ValidateSet('Naveax/PSMatrix')] [string]$Repository = 'Naveax/PSMatrix',
     [Parameter()] [ValidateSet('production-ga-windows-lab')] [string]$Environment = 'production-ga-windows-lab',
+    [Parameter()] [switch]$SecretRepairOnly,
     [Parameter()] [switch]$DryRun
 )
 
@@ -54,14 +55,44 @@ function Test-PathWithinRoot {
     return $candidateFull.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)
 }
 
+function Assert-WindowsLabGaRootIsScoped {
+    param([Parameter(Mandatory)] [string]$Path)
+
+    # A drive root or UNC share root would make the lab's privileged material
+    # namespace encompass an entire volume or share, not a dedicated lab.
+    $full = [IO.Path]::GetFullPath($Path)
+    $volumeRoot = [IO.Path]::GetPathRoot($full)
+    if (
+        [string]::IsNullOrWhiteSpace($volumeRoot) -or
+        $full.TrimEnd('\', '/').Equals(
+            $volumeRoot.TrimEnd('\', '/'), [StringComparison]::OrdinalIgnoreCase
+        )
+    ) {
+        throw 'PSMATRIX_WINDOWS_GA_ROOT must be a scoped subdirectory, not a volume or UNC share root.'
+    }
+}
+
+function Test-FullyQualifiedWindowsPath {
+    param([Parameter(Mandatory)] [string]$Path)
+
+    # Windows PowerShell 5.1 has no Path.IsPathFullyQualified API.
+    # IsPathRooted alone accepts drive-relative C:foo and root-relative \foo.
+    # Permit drive-absolute and ordinary UNC paths; reject device namespaces.
+    return (
+        $Path -cmatch '^[A-Za-z]:[\\/]' -or
+        $Path -cmatch '^\\\\[^\\/.?][^\\/]*\\[^\\/.?][^\\/]*(?:[\\/]|$)'
+    )
+}
+
 function Assert-ExternalMaterialFile {
     param(
         [Parameter(Mandatory)] [string]$Path,
         [Parameter(Mandatory)] [string]$RepoRoot,
-        [Parameter(Mandatory)] [string]$Label
+        [Parameter(Mandatory)] [string]$Label,
+        [Parameter(Mandatory)] [ValidateRange(1, 131072)] [long]$MaxBytes
     )
 
-    if (-not [IO.Path]::IsPathRooted($Path)) {
+    if (-not [IO.Path]::IsPathRooted($Path) -or -not (Test-FullyQualifiedWindowsPath -Path $Path)) {
         throw "$Label source file path must be absolute."
     }
 
@@ -73,12 +104,121 @@ function Assert-ExternalMaterialFile {
     if (Test-PathWithinRoot -Candidate $resolved -Root $RepoRoot) {
         throw "$Label source file must stay outside the repository."
     }
-    if ((Get-Item -LiteralPath $resolved).Length -le 0) {
+    $sourceLength = (Get-Item -LiteralPath $resolved -ErrorAction Stop).Length
+    if ($sourceLength -le 0) {
         throw "$Label source file is empty."
+    }
+    # A giant external credential file must not be copied into private staging
+    # before its stricter in-memory 127-byte credential policy can run.
+    if ($sourceLength -gt $MaxBytes) {
+        throw "$Label source file exceeds the allowed byte-size limit."
     }
     return $resolved
 }
 
+
+function Copy-BoundedWindowsLabMaterial {
+    param(
+        [Parameter(Mandatory)] [string]$Source,
+        [Parameter(Mandatory)] [string]$Destination,
+        [Parameter(Mandatory)] [ValidateRange(1, 131072)] [int]$MaxBytes
+    )
+
+    # Keep the validated source handle open with FileShare.Read to refuse
+    # concurrent writers while copying. Never read more than MaxBytes+1 bytes.
+    $sourceStream = [IO.File]::Open(
+        $Source, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read
+    )
+    $buffer = $null
+    try {
+        if ($sourceStream.Length -le 0 -or $sourceStream.Length -gt $MaxBytes) {
+            throw 'Windows-lab source size changed or exceeded the permitted byte limit before staging.'
+        }
+        $buffer = New-Object byte[] ($MaxBytes + 1)
+        $total = 0
+        while ($total -lt $buffer.Length) {
+            $read = $sourceStream.Read($buffer, $total, $buffer.Length - $total)
+            if ($read -eq 0) {
+                break
+            }
+            $total += $read
+        }
+        if ($total -le 0 -or $total -gt $MaxBytes -or $total -ne $sourceStream.Length) {
+            throw 'Windows-lab source length changed during bounded staging.'
+        }
+        # CreateNew rejects an already existing destination or link.
+        $destinationStream = [IO.File]::Open(
+            $Destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None
+        )
+        try {
+            $destinationStream.Write($buffer, 0, $total)
+            $destinationStream.Flush()
+        }
+        finally {
+            $destinationStream.Dispose()
+        }
+    }
+    finally {
+        if ($null -ne $buffer) {
+            [Array]::Clear($buffer, 0, $buffer.Length)
+        }
+        $sourceStream.Dispose()
+    }
+}
+
+function Protect-PrivateWindowsLabTemporaryWorkspace {
+    param([Parameter(Mandatory)] [string]$Path)
+
+    # The process TEMP directory can inherit ACEs for other local users.
+    # Harden this empty scratch directory BEFORE copying any credential bytes.
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    if ($null -eq $identity -or $null -eq $identity.User) {
+        throw 'Windows-lab temporary workspace operator SID is unavailable.'
+    }
+    $operatorSid = $identity.User.Value
+    $allowedSids = @(@($operatorSid, 'S-1-5-18', 'S-1-5-32-544') | Select-Object -Unique)
+    $newAcl = New-Object System.Security.AccessControl.DirectorySecurity
+    $newAcl.SetAccessRuleProtection($true, $false)
+    foreach ($sidText in $allowedSids) {
+        $sid = New-Object Security.Principal.SecurityIdentifier($sidText)
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule (
+            $sid,
+            [Security.AccessControl.FileSystemRights]::FullControl,
+            ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit),
+            [Security.AccessControl.PropagationFlags]::None,
+            [Security.AccessControl.AccessControlType]::Allow
+        )
+        $newAcl.AddAccessRule($rule)
+    }
+    Set-Acl -LiteralPath $Path -AclObject $newAcl -ErrorAction Stop
+    $actual = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    if (-not $actual.AreAccessRulesProtected) {
+        throw 'Windows-lab temporary workspace ACL inheritance is not disabled.'
+    }
+    if ($actual.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne $operatorSid) {
+        throw 'Windows-lab temporary workspace owner does not match the operator.'
+    }
+    $rules = @($actual.Access)
+    if ($rules.Count -ne $allowedSids.Count) {
+        throw 'Windows-lab temporary workspace ACL rule count is not exact.'
+    }
+    $seen = @()
+    foreach ($rule in $rules) {
+        $sidText = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+        if (
+            $allowedSids -notcontains $sidText -or
+            $seen -contains $sidText -or
+            $rule.IsInherited -or
+            $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or
+            $rule.InheritanceFlags -ne ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit) -or
+            $rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None
+        ) {
+            throw 'Windows-lab temporary workspace ACL does not match the exact private allowlist.'
+        }
+        $seen += $sidText
+    }
+}
 
 function Assert-RestrictedSecretFileAcl {
     param(
@@ -87,6 +227,22 @@ function Assert-RestrictedSecretFileAcl {
     )
 
     $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    # Denylists miss domain, service, and other nonstandard readable trustees.
+    # Explicit allowlist: the operator running the helper, SYSTEM, Administrators.
+    $operatorIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    if ($null -eq $operatorIdentity -or $null -eq $operatorIdentity.User) {
+        throw "$Label operator SID could not be resolved safely."
+    }
+    $allowedSids = @('S-1-5-18', 'S-1-5-32-544', $operatorIdentity.User.Value)
+    try {
+        $ownerSid = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    }
+    catch {
+        throw "$Label owner SID could not be resolved safely."
+    }
+    if ($allowedSids -notcontains $ownerSid) {
+        throw "$Label owner is not an approved material trustee."
+    }
     $broadSids = @(
         'S-1-1-0',
         'S-1-5-11',
@@ -111,6 +267,11 @@ function Assert-RestrictedSecretFileAcl {
         }
         if (($broadSids -contains $sid) -and (($rule.FileSystemRights -band $readMask) -ne 0)) {
             throw "$Label ACL grants readable access to a broad principal."
+        }
+        # Do not allow an unknown principal to replace material or change the DACL,
+        # even when its ACE does not currently include ReadData.
+        if ($allowedSids -notcontains $sid) {
+            throw "$Label ACL contains an unapproved trustee."
         }
     }
 }
@@ -188,8 +349,13 @@ function Assert-IndependentMaterialReviewAttestation {
         [Parameter(Mandatory)] [string]$ExpectedEnvironment
     )
 
-    $resolved = Assert-ExternalMaterialFile -Path $Path -RepoRoot $RepoRoot -Label 'Windows-lab independent material review attestation'
+    $resolved = Assert-ExternalMaterialFile -Path $Path -RepoRoot $RepoRoot -Label 'Windows-lab independent material review attestation' -MaxBytes 16384
     $raw = Get-Content -Raw -LiteralPath $resolved
+    # PowerShell 7 unwraps a singleton JSON array into a PSCustomObject.
+    # A human review record must be one top-level JSON object, never an array.
+    if ($raw -notmatch '^\s*\{' -or $raw -notmatch '\}\s*$') {
+        throw 'Windows-lab independent material review must be a top-level JSON object.'
+    }
     try {
         $review = $raw | ConvertFrom-Json
     }
@@ -213,20 +379,50 @@ function Assert-IndependentMaterialReviewAttestation {
         'scope'
     )
     $actualFields = @($review.PSObject.Properties.Name)
-    $fieldDifference = @(Compare-Object -ReferenceObject $expectedFields -DifferenceObject $actualFields)
+    $fieldDifference = @(Compare-Object -ReferenceObject $expectedFields -DifferenceObject $actualFields -CaseSensitive)
     if ($fieldDifference.Count -ne 0) {
         throw 'Windows-lab independent material review attestation fields are not exact.'
     }
+    # ConvertFrom-Json silently collapses exact duplicates and Unicode-escaped
+    # aliases (such as review_\u0063omplete). Examine ALL raw property tokens.
+    # This flat schema has exactly the declared keys and no nested objects.
+    $jsonPropertyNames = @(
+        [Regex]::Matches($raw, '(?<!\\)"(?<key>(?:\\.|[^"\\])*)"\s*:') |
+            ForEach-Object { $_.Groups['key'].Value }
+    )
+    if ($jsonPropertyNames.Count -ne $expectedFields.Count) {
+        throw 'Windows-lab independent material review attestation has missing, extra, or repeated JSON property keys.'
+    }
+    foreach ($field in $expectedFields) {
+        if ($jsonPropertyNames -cnotcontains $field) {
+            throw 'Windows-lab independent material review attestation JSON property names must be exact and unescaped.'
+        }
+    }
+    if ($review.schema -isnot [int] -and $review.schema -isnot [long]) {
+        throw 'Windows-lab independent material review schema must be a JSON integer.'
+    }
 
+    # Casting a one-element JSON array to [string] yields its sole item on
+    # both Windows PowerShell 5.1 and PowerShell 7. Match types before values.
+    if (
+        $review.kind -isnot [string] -or
+        $review.repository -isnot [string] -or
+        $review.environment -isnot [string]
+    ) {
+        throw 'Windows-lab independent material review identity values must be JSON strings.'
+    }
     if (
         [int]$review.schema -ne 1 -or
-        [string]$review.kind -cne 'psmatrix.windows-lab-operational-material-review' -or
-        [string]$review.repository -cne $ExpectedRepository -or
-        [string]$review.environment -cne $ExpectedEnvironment
+        $review.kind -cne 'psmatrix.windows-lab-operational-material-review' -or
+        $review.repository -cne $ExpectedRepository -or
+        $review.environment -cne $ExpectedEnvironment
     ) {
         throw 'Windows-lab independent material review attestation identity is invalid.'
     }
 
+    if ($review.reviewed_by -isnot [string]) {
+        throw 'Windows-lab independent material reviewer identity must be a JSON string.'
+    }
     $reviewedBy = ([string]$review.reviewed_by).Trim()
     if (
         [string]::IsNullOrWhiteSpace($reviewedBy) -or
@@ -237,7 +433,13 @@ function Assert-IndependentMaterialReviewAttestation {
         throw 'Windows-lab independent material reviewer identity is invalid.'
     }
 
-    $reviewedAtText = ([string]$review.reviewed_at_utc).Trim()
+    # ConvertFrom-Json can coerce ISO-8601 strings into locale-formatted DateTime.
+    # Recover the original JSON UTC token rather than round-tripping a DateTime.
+    $timestampMatches = @([Regex]::Matches($raw, '"reviewed_at_utc"\s*:\s*"(?<utc>[^"\\]*)"'))
+    if ($timestampMatches.Count -ne 1) {
+        throw 'Windows-lab independent material review timestamp must appear exactly once as a plain UTC JSON string.'
+    }
+    $reviewedAtText = $timestampMatches[0].Groups['utc'].Value
     if ($reviewedAtText -cnotmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$') {
         throw 'Windows-lab independent material review timestamp must be an exact UTC timestamp.'
     }
@@ -264,8 +466,8 @@ function Assert-IndependentMaterialReviewAttestation {
         'secret_hashes_not_recorded',
         'secret_lengths_not_recorded'
     )) {
-        if ($review.$flag -ne $true) {
-            throw "Windows-lab independent material review attestation requires $flag=true."
+        if ($review.$flag -isnot [bool] -or $review.$flag -ne $true) {
+            throw "Windows-lab independent material review attestation requires $flag=true as a JSON boolean."
         }
     }
 
@@ -275,7 +477,15 @@ function Assert-IndependentMaterialReviewAttestation {
         'wps50_admin_credential',
         'wps51_admin_credential'
     )
-    $actualScope = @($review.scope | ForEach-Object { [string]$_ })
+    if ($review.scope -isnot [array]) {
+        throw 'Windows-lab independent material review scope must be a JSON array.'
+    }
+    $actualScope = @($review.scope)
+    foreach ($item in $actualScope) {
+        if ($item -isnot [string]) {
+            throw 'Windows-lab independent material review scope items must be JSON strings.'
+        }
+    }
     if ($actualScope.Count -ne $expectedScope.Count) {
         throw 'Windows-lab independent material review scope is incomplete.'
     }
@@ -291,6 +501,43 @@ function Assert-IndependentMaterialReviewAttestation {
     }
 }
 
+function New-PrivateWindowsLabProcessCapturePath {
+    param([Parameter(Mandatory)] [ValidateSet('stdout', 'stderr')] [string]$Stream)
+
+    # Never create CLI stdout/stderr in the inherited process TEMP root.
+    # The GitHub metadata stdout may contain the reviewed GA-root value.
+    if (
+        [string]::IsNullOrWhiteSpace($script:tempRoot) -or
+        -not (Test-Path -LiteralPath $script:tempRoot -PathType Container)
+    ) {
+        throw 'Windows-lab private capture workspace is unavailable.'
+    }
+    return (Join-Path $script:tempRoot ("gh-$Stream-" + [Guid]::NewGuid().ToString('N') + '.tmp'))
+}
+
+function Assert-CanonicalGitHubHost {
+    # gh api uses GH_HOST when a hostname is not supplied; the CLI's
+    # valid publisher signature alone does not bind the network endpoint.
+    $selectedHost = [string]$env:GH_HOST
+    if (-not [string]::IsNullOrEmpty($selectedHost) -and $selectedHost -cne 'github.com') {
+        throw 'GitHub CLI host must be unset or exactly github.com.'
+    }
+}
+
+function Assert-TrustedGitHubCliPublisher {
+    param([Parameter(Mandatory)] [string]$Executable)
+
+    # Only a valid GitHub-signed executable may receive operator input.
+    $signature = Get-AuthenticodeSignature -LiteralPath $Executable -ErrorAction Stop
+    if (
+        [string]$signature.Status -cne 'Valid' -or
+        $null -eq $signature.SignerCertificate -or
+        $signature.SignerCertificate.Subject -cnotmatch '(?:^|,\s*)O="GitHub, Inc\."(?:,|$)'
+    ) {
+        throw 'GitHub CLI publisher trust verification failed.'
+    }
+}
+
 function Invoke-GhCaptured {
     param(
         [Parameter(Mandatory)] [string]$Executable,
@@ -298,8 +545,8 @@ function Invoke-GhCaptured {
         [string]$InputFile
     )
 
-    $stdout = [IO.Path]::GetTempFileName()
-    $stderr = [IO.Path]::GetTempFileName()
+    $stdout = New-PrivateWindowsLabProcessCapturePath -Stream 'stdout'
+    $stderr = New-PrivateWindowsLabProcessCapturePath -Stream 'stderr'
     try {
         $start = @{
             FilePath = $Executable
@@ -314,6 +561,8 @@ function Invoke-GhCaptured {
             $start['RedirectStandardInput'] = $InputFile
         }
 
+        Assert-CanonicalGitHubHost
+        Assert-TrustedGitHubCliPublisher -Executable $Executable
         $process = Start-Process @start
         if ($process.ExitCode -ne 0) {
             throw "GitHub CLI command failed with exit $($process.ExitCode)."
@@ -330,9 +579,11 @@ function Invoke-GhJsonCaptured {
         [Parameter(Mandatory)] [string[]]$Arguments
     )
 
-    $stdout = [IO.Path]::GetTempFileName()
-    $stderr = [IO.Path]::GetTempFileName()
+    $stdout = New-PrivateWindowsLabProcessCapturePath -Stream 'stdout'
+    $stderr = New-PrivateWindowsLabProcessCapturePath -Stream 'stderr'
     try {
+        Assert-CanonicalGitHubHost
+        Assert-TrustedGitHubCliPublisher -Executable $Executable
         $process = Start-Process -FilePath $Executable -ArgumentList $Arguments -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
         if ($process.ExitCode -ne 0) {
             throw "GitHub CLI metadata query failed with exit $($process.ExitCode)."
@@ -360,29 +611,35 @@ if ($Repository -cne $canonicalRepository) {
 }
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
-$rootExternal = Assert-ExternalMaterialFile -Path $GaRootValueFile -RepoRoot $repoRoot -Label 'PSMATRIX_WINDOWS_GA_ROOT'
-$wps40External = Assert-ExternalMaterialFile -Path $Wps40AdminPasswordFile -RepoRoot $repoRoot -Label 'PSMATRIX_WPS40_ADMIN_PASSWORD'
-$wps50External = Assert-ExternalMaterialFile -Path $Wps50AdminPasswordFile -RepoRoot $repoRoot -Label 'PSMATRIX_WPS50_ADMIN_PASSWORD'
-$wps51External = Assert-ExternalMaterialFile -Path $Wps51AdminPasswordFile -RepoRoot $repoRoot -Label 'PSMATRIX_WPS51_ADMIN_PASSWORD'
+$rootExternal = Assert-ExternalMaterialFile -Path $GaRootValueFile -RepoRoot $repoRoot -Label 'PSMATRIX_WINDOWS_GA_ROOT' -MaxBytes 32768
+$wps40External = Assert-ExternalMaterialFile -Path $Wps40AdminPasswordFile -RepoRoot $repoRoot -Label 'PSMATRIX_WPS40_ADMIN_PASSWORD' -MaxBytes 127
+$wps50External = Assert-ExternalMaterialFile -Path $Wps50AdminPasswordFile -RepoRoot $repoRoot -Label 'PSMATRIX_WPS50_ADMIN_PASSWORD' -MaxBytes 127
+$wps51External = Assert-ExternalMaterialFile -Path $Wps51AdminPasswordFile -RepoRoot $repoRoot -Label 'PSMATRIX_WPS51_ADMIN_PASSWORD' -MaxBytes 127
+
+# Verify source trustees before opening or copying any credential bytes.
+# A private destination ACL is not a substitute for rejecting an unsafe source.
+Assert-RestrictedSecretFileAcl -Path $wps40External -Label 'PSMATRIX_WPS40_ADMIN_PASSWORD'
+Assert-RestrictedSecretFileAcl -Path $wps50External -Label 'PSMATRIX_WPS50_ADMIN_PASSWORD'
+Assert-RestrictedSecretFileAcl -Path $wps51External -Label 'PSMATRIX_WPS51_ADMIN_PASSWORD'
 
 $tempWorkspace = New-Item -ItemType Directory -Path (Join-Path ([IO.Path]::GetTempPath()) ("psmatrix-windows-lab-" + [Guid]::NewGuid().ToString('N'))) -Force
 $tempRoot = [IO.Path]::GetFullPath($tempWorkspace.FullName)
-if ((Test-PathWithinRoot -Candidate $tempRoot -Root $repoRoot) -or (Test-PathWithinRoot -Candidate $repoRoot -Root $tempRoot)) {
-    throw 'Windows-lab temporary workspace and repository must be disjoint paths.'
-}
-Assert-NoLinkOrReparsePath -Path $tempRoot -Label 'Windows-lab temporary workspace'
-
 try {
+    if ((Test-PathWithinRoot -Candidate $tempRoot -Root $repoRoot) -or (Test-PathWithinRoot -Candidate $repoRoot -Root $tempRoot)) {
+        throw 'Windows-lab temporary workspace and repository must be disjoint paths.'
+    }
+    Assert-NoLinkOrReparsePath -Path $tempRoot -Label 'Windows-lab temporary workspace'
+    Protect-PrivateWindowsLabTemporaryWorkspace -Path $tempRoot
     # Stage exact selected bytes before any semantic read or GitHub mutation. The staged
     # copies become the only source for validation and upload, closing source-file TOCTOU.
     $rootSource = Join-Path $tempRoot 'ga-root.txt'
     $wps40Source = Join-Path $tempRoot 'wps40-admin.txt'
     $wps50Source = Join-Path $tempRoot 'wps50-admin.txt'
     $wps51Source = Join-Path $tempRoot 'wps51-admin.txt'
-    Copy-Item -LiteralPath $rootExternal -Destination $rootSource -Force
-    Copy-Item -LiteralPath $wps40External -Destination $wps40Source -Force
-    Copy-Item -LiteralPath $wps50External -Destination $wps50Source -Force
-    Copy-Item -LiteralPath $wps51External -Destination $wps51Source -Force
+    Copy-BoundedWindowsLabMaterial -Source $rootExternal -Destination $rootSource -MaxBytes 32768
+    Copy-BoundedWindowsLabMaterial -Source $wps40External -Destination $wps40Source -MaxBytes 127
+    Copy-BoundedWindowsLabMaterial -Source $wps50External -Destination $wps50Source -MaxBytes 127
+    Copy-BoundedWindowsLabMaterial -Source $wps51External -Destination $wps51Source -MaxBytes 127
     foreach ($staged in @($rootSource, $wps40Source, $wps50Source, $wps51Source)) {
         Assert-NoLinkOrReparsePath -Path $staged -Label 'Windows-lab staged material'
         if ((Get-Item -LiteralPath $staged).Length -le 0) {
@@ -397,38 +654,47 @@ try {
     if ($rootValue.Contains("`r") -or $rootValue.Contains("`n")) {
         throw 'PSMATRIX_WINDOWS_GA_ROOT value must contain exactly one path value.'
     }
-    if (-not [IO.Path]::IsPathRooted($rootValue)) {
+    if (-not [IO.Path]::IsPathRooted($rootValue) -or -not (Test-FullyQualifiedWindowsPath -Path $rootValue)) {
         throw 'PSMATRIX_WINDOWS_GA_ROOT value must be an absolute path.'
     }
 
     $gaRoot = [IO.Path]::GetFullPath($rootValue)
+    Assert-WindowsLabGaRootIsScoped -Path $gaRoot
     $gaRootInsideRepository = Test-PathWithinRoot -Candidate $gaRoot -Root $repoRoot
     $repositoryInsideGaRoot = Test-PathWithinRoot -Candidate $repoRoot -Root $gaRoot
     if ($gaRootInsideRepository -or $repositoryInsideGaRoot) {
         throw 'PSMATRIX_WINDOWS_GA_ROOT and the repository must be disjoint paths.'
     }
-    if (-not (Test-Path -LiteralPath $gaRoot -PathType Container)) {
-        throw 'PSMATRIX_WINDOWS_GA_ROOT directory does not exist.'
+    if ($SecretRepairOnly) {
+        # In repair mode the credential material may intentionally live on a different
+        # operator host than NAVEAX. Local filesystem layout validation would therefore
+        # validate the wrong machine. Live mode instead verifies the already-committed
+        # GitHub environment root exactly before the first mutation, while the canonical
+        # prerequisite audit independently revalidates the real NAVEAX layout afterward.
+        $rootLayoutStatus = 'windows_lab_root_layout_validation=DEFERRED secret_repair_only=true'
     }
-    Assert-NoLinkOrReparsePath -Path $gaRoot -Label 'PSMATRIX_WINDOWS_GA_ROOT'
-
-    $configRoot = Join-Path $gaRoot 'config'
-    $externalRoot = Join-Path $gaRoot 'media\external'
-    foreach ($requiredPath in @($configRoot, $externalRoot)) {
-        if (-not (Test-Path -LiteralPath $requiredPath -PathType Container)) {
-            throw 'PSMATRIX_WINDOWS_GA_ROOT does not contain the required Windows-lab layout.'
+    else {
+        if (-not (Test-Path -LiteralPath $gaRoot -PathType Container)) {
+            throw 'PSMATRIX_WINDOWS_GA_ROOT directory does not exist.'
         }
-        Assert-NoLinkOrReparsePath -Path $requiredPath -Label 'Windows-lab layout'
+        Assert-NoLinkOrReparsePath -Path $gaRoot -Label 'PSMATRIX_WINDOWS_GA_ROOT'
+
+        $configRoot = Join-Path $gaRoot 'config'
+        $externalRoot = Join-Path $gaRoot 'media\external'
+        foreach ($requiredPath in @($configRoot, $externalRoot)) {
+            if (-not (Test-Path -LiteralPath $requiredPath -PathType Container)) {
+                throw 'PSMATRIX_WINDOWS_GA_ROOT does not contain the required Windows-lab layout.'
+            }
+            Assert-NoLinkOrReparsePath -Path $requiredPath -Label 'Windows-lab layout'
+        }
+        $rootLayoutStatus = 'windows_lab_root_layout_validation=PASS'
     }
 
-    Assert-RestrictedSecretFileAcl -Path $wps40External -Label 'PSMATRIX_WPS40_ADMIN_PASSWORD'
-    Assert-RestrictedSecretFileAcl -Path $wps50External -Label 'PSMATRIX_WPS50_ADMIN_PASSWORD'
-    Assert-RestrictedSecretFileAcl -Path $wps51External -Label 'PSMATRIX_WPS51_ADMIN_PASSWORD'
     Assert-WindowsLabCredentialPolicy -Wps40Path $wps40Source -Wps50Path $wps50Source -Wps51Path $wps51Source
 
     Write-Host 'windows_lab_operational_material_validation=PASS checks=4'
     Write-Host 'windows_lab_admin_credential_policy=PASS complexity=true distinct=true broad_acl=false'
-    Write-Host 'windows_lab_root_layout_validation=PASS'
+    Write-Host $rootLayoutStatus
     Write-Host 'staged_bytes_validated_and_reused=true'
     Write-Host "target_repository=$canonicalRepository"
     Write-Host "target_environment=$Environment"
@@ -438,6 +704,9 @@ try {
     Write-Host 'secret_lengths_logged=false'
 
     if ($DryRun) {
+        if ($SecretRepairOnly) {
+            Write-Host 'windows_lab_secret_repair_existing_root_verification=DEFERRED dry_run=true'
+        }
         Write-Host 'windows_lab_operational_environment_provisioning_executed=false dry_run=true'
         return
     }
@@ -473,8 +742,38 @@ try {
         throw 'GitHub CLI executable must not be loaded from the repository.'
     }
 
+    Assert-CanonicalGitHubHost
+    Assert-TrustedGitHubCliPublisher -Executable $gh
     Invoke-GhCaptured -Executable $gh -Arguments @('auth', 'status', '--hostname', 'github.com')
     Invoke-GhCaptured -Executable $gh -Arguments @('api', "repos/$Repository/environments/$Environment")
+
+    if ($SecretRepairOnly) {
+        $existingRootMetadata = Invoke-GhJsonCaptured -Executable $gh -Arguments @(
+            'api',
+            "repos/$Repository/environments/$Environment/variables/PSMATRIX_WINDOWS_GA_ROOT"
+        )
+        if ([string]$existingRootMetadata.name -cne 'PSMATRIX_WINDOWS_GA_ROOT') {
+            throw 'Existing Windows-lab GA-root variable identity is invalid.'
+        }
+        $existingRootValue = ([string]$existingRootMetadata.value).Trim()
+        if (
+            [string]::IsNullOrWhiteSpace($existingRootValue) -or
+            $existingRootValue.Contains("`r") -or
+            $existingRootValue.Contains("`n") -or
+            -not [IO.Path]::IsPathRooted($existingRootValue) -or
+            -not (Test-FullyQualifiedWindowsPath -Path $existingRootValue)
+        ) {
+            throw 'Existing Windows-lab GA-root variable is not a valid absolute path.'
+        }
+        $existingRoot = [IO.Path]::GetFullPath($existingRootValue).TrimEnd('\', '/')
+        Assert-WindowsLabGaRootIsScoped -Path $existingRoot
+        $expectedExistingRoot = $gaRoot.TrimEnd('\', '/')
+        if (-not $existingRoot.Equals($expectedExistingRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Existing Windows-lab GA-root variable does not match the reviewed repair target.'
+        }
+        Write-Host 'windows_lab_secret_repair_existing_root_verification=PASS expected_root_matches_environment=true'
+        Write-Host 'existing_root_value_logged=false'
+    }
 
     # A prior successful provisioning may already have committed a valid root variable.
     # Invalidate that commit marker before touching any secret so every partial rerun remains
@@ -502,6 +801,9 @@ try {
     Invoke-GhCaptured -Executable $gh -Arguments @('variable', 'set', 'PSMATRIX_WINDOWS_GA_ROOT', '--env', $Environment, '--repo', $Repository) -InputFile $sanitizedRootInput
     Write-Host 'provisioned=production-ga-windows-lab/var/PSMATRIX_WINDOWS_GA_ROOT'
     Write-Host 'windows_lab_root_commit_marker_valid=true'
+    if ($SecretRepairOnly) {
+        Write-Host 'windows_lab_secret_repair_only=PASS existing_root_preserved=true fail_closed_marker_restored=true'
+    }
 
     # Environment writes do not produce a Git push. After the commit marker is valid,
     # create exactly one provisioning-bound audit event for the exact current main head.
