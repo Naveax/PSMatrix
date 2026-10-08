@@ -25,7 +25,7 @@ The three password values must be real operator-controlled material. Do not gene
 
 `PSMATRIX_WINDOWS_GA_ROOT` is the Windows-authority staging **root**, not the Local19 `provisioning` directory and not another child directory.
 
-The GA root and the repository must be disjoint paths: the GA root cannot equal or sit inside the repository, and it also cannot be an ancestor that contains the repository. Do not use an overly broad drive/root directory as the protected Windows-lab root.
+The GA root and the repository must be disjoint paths: the GA root cannot equal or sit inside the repository, and it also cannot be an ancestor that contains the repository. The helper explicitly rejects a drive root (for example `D:\`) or UNC share root (for example `\\host\share`) as the Windows-lab GA root, including in `-SecretRepairOnly`; choose a dedicated subdirectory such as `<drive>:\PSMatrix\WindowsAuthorityLab`. This check is performed before any GitHub environment mutation.
 
 Before the variable can be provisioned, the selected root must already exist and contain at least:
 

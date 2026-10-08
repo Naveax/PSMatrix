@@ -149,6 +149,31 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         ):
             self.assertIn(fragment, raw)
 
+    def test_ga_root_must_be_a_scoped_directory_not_a_volume_or_share_root(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        guard = raw.split("function Assert-WindowsLabGaRootIsScoped {", 1)[1].split(
+            "function Test-FullyQualifiedWindowsPath {", 1
+        )[0]
+        for expected in (
+            "[IO.Path]::GetFullPath($Path)",
+            "[IO.Path]::GetPathRoot($full)",
+            "$full.TrimEnd('\\', '/').Equals(",
+            "$volumeRoot.TrimEnd('\\', '/')",
+            "[StringComparison]::OrdinalIgnoreCase",
+            "must be a scoped subdirectory, not a volume or UNC share root.",
+        ):
+            self.assertIn(expected, guard)
+        self.assertIn("Assert-WindowsLabGaRootIsScoped -Path $gaRoot", raw)
+        self.assertIn("Assert-WindowsLabGaRootIsScoped -Path $existingRoot", raw)
+        self.assertLess(
+            raw.index("Assert-WindowsLabGaRootIsScoped -Path $gaRoot"),
+            raw.index("if ($SecretRepairOnly)"),
+        )
+        self.assertLess(
+            raw.index("Assert-WindowsLabGaRootIsScoped -Path $existingRoot"),
+            raw.index("windows_lab_secret_repair_existing_root_verification=PASS"),
+        )
+
     def test_ga_root_and_repository_must_be_disjoint_in_both_directions(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
 

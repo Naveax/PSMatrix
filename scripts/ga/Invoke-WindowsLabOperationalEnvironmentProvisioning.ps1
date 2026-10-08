@@ -55,6 +55,23 @@ function Test-PathWithinRoot {
     return $candidateFull.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)
 }
 
+function Assert-WindowsLabGaRootIsScoped {
+    param([Parameter(Mandatory)] [string]$Path)
+
+    # A drive root or UNC share root would make the lab's privileged material
+    # namespace encompass an entire volume or share, not a dedicated lab.
+    $full = [IO.Path]::GetFullPath($Path)
+    $volumeRoot = [IO.Path]::GetPathRoot($full)
+    if (
+        [string]::IsNullOrWhiteSpace($volumeRoot) -or
+        $full.TrimEnd('\', '/').Equals(
+            $volumeRoot.TrimEnd('\', '/'), [StringComparison]::OrdinalIgnoreCase
+        )
+    ) {
+        throw 'PSMATRIX_WINDOWS_GA_ROOT must be a scoped subdirectory, not a volume or UNC share root.'
+    }
+}
+
 function Test-FullyQualifiedWindowsPath {
     param([Parameter(Mandatory)] [string]$Path)
 
@@ -604,6 +621,7 @@ try {
     }
 
     $gaRoot = [IO.Path]::GetFullPath($rootValue)
+    Assert-WindowsLabGaRootIsScoped -Path $gaRoot
     $gaRootInsideRepository = Test-PathWithinRoot -Candidate $gaRoot -Root $repoRoot
     $repositoryInsideGaRoot = Test-PathWithinRoot -Candidate $repoRoot -Root $gaRoot
     if ($gaRootInsideRepository -or $repositoryInsideGaRoot) {
@@ -711,6 +729,7 @@ try {
             throw 'Existing Windows-lab GA-root variable is not a valid absolute path.'
         }
         $existingRoot = [IO.Path]::GetFullPath($existingRootValue).TrimEnd('\', '/')
+        Assert-WindowsLabGaRootIsScoped -Path $existingRoot
         $expectedExistingRoot = $gaRoot.TrimEnd('\', '/')
         if (-not $existingRoot.Equals($expectedExistingRoot, [StringComparison]::OrdinalIgnoreCase)) {
             throw 'Existing Windows-lab GA-root variable does not match the reviewed repair target.'
