@@ -510,6 +510,15 @@ function New-PrivateWindowsLabProcessCapturePath {
     return (Join-Path $script:tempRoot ("gh-$Stream-" + [Guid]::NewGuid().ToString('N') + '.tmp'))
 }
 
+function Assert-CanonicalGitHubHost {
+    # gh api uses GH_HOST when a hostname is not supplied; the CLI's
+    # valid publisher signature alone does not bind the network endpoint.
+    $selectedHost = [string]$env:GH_HOST
+    if (-not [string]::IsNullOrEmpty($selectedHost) -and $selectedHost -cne 'github.com') {
+        throw 'GitHub CLI host must be unset or exactly github.com.'
+    }
+}
+
 function Assert-TrustedGitHubCliPublisher {
     param([Parameter(Mandatory)] [string]$Executable)
 
@@ -547,6 +556,7 @@ function Invoke-GhCaptured {
             $start['RedirectStandardInput'] = $InputFile
         }
 
+        Assert-CanonicalGitHubHost
         Assert-TrustedGitHubCliPublisher -Executable $Executable
         $process = Start-Process @start
         if ($process.ExitCode -ne 0) {
@@ -567,6 +577,7 @@ function Invoke-GhJsonCaptured {
     $stdout = New-PrivateWindowsLabProcessCapturePath -Stream 'stdout'
     $stderr = New-PrivateWindowsLabProcessCapturePath -Stream 'stderr'
     try {
+        Assert-CanonicalGitHubHost
         Assert-TrustedGitHubCliPublisher -Executable $Executable
         $process = Start-Process -FilePath $Executable -ArgumentList $Arguments -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
         if ($process.ExitCode -ne 0) {
@@ -726,6 +737,7 @@ try {
         throw 'GitHub CLI executable must not be loaded from the repository.'
     }
 
+    Assert-CanonicalGitHubHost
     Assert-TrustedGitHubCliPublisher -Executable $gh
     Invoke-GhCaptured -Executable $gh -Arguments @('auth', 'status', '--hostname', 'github.com')
     Invoke-GhCaptured -Executable $gh -Arguments @('api', "repos/$Repository/environments/$Environment")

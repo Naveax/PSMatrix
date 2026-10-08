@@ -524,6 +524,32 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         )
         self.assertEqual(raw.count("Assert-TrustedGitHubCliPublisher -Executable $Executable"), 2)
 
+    def test_cli_network_host_is_pinned_before_every_process_launch(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        guard = raw.split("function Assert-CanonicalGitHubHost {", 1)[1].split(
+            "function Assert-TrustedGitHubCliPublisher {", 1
+        )[0]
+        for required in (
+            "$selectedHost = [string]$env:GH_HOST",
+            "[string]::IsNullOrEmpty($selectedHost)",
+            "$selectedHost -cne 'github.com'",
+            "GitHub CLI host must be unset or exactly github.com.",
+        ):
+            self.assertIn(required, guard)
+        self.assertEqual(raw.count("Assert-CanonicalGitHubHost"), 4)
+        self.assertLess(
+            raw.index("    Assert-CanonicalGitHubHost\n    Assert-TrustedGitHubCliPublisher -Executable $gh"),
+            raw.index("@('auth', 'status', '--hostname', 'github.com')"),
+        )
+        for marker in (
+            "$process = Start-Process @start",
+            "$process = Start-Process -FilePath $Executable",
+        ):
+            self.assertLess(
+                raw.rfind("Assert-CanonicalGitHubHost", 0, raw.index(marker)),
+                raw.index(marker),
+            )
+
     def test_values_are_sent_over_stdin_and_not_cli_body_arguments(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
 
