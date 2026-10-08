@@ -189,10 +189,10 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
         )
         self.assertLess(
             loop.index("Checkpoint-VM -Name $vmName"),
-            loop.index("Start-VM -Name $vmName | Out-Null"),
+            loop.rindex("Start-VM -Name $vmName | Out-Null"),
         )
         self.assertLess(
-            loop.index("Start-VM -Name $vmName | Out-Null"),
+            loop.rindex("Start-VM -Name $vmName | Out-Null"),
             loop.index("vhdx_sha256 = $verifiedVhdxSha256"),
         )
         self.assertNotIn("vhdx_sha256 = Get-Sha256 $vhd", host)
