@@ -491,6 +491,39 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         self.assertLess(cli_resolution, auth)
         self.assertLess(auth, first_secret)
 
+    def test_cli_publisher_is_checked_before_auth_and_every_process_execution(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        guard = raw.split("function Assert-TrustedGitHubCliPublisher {", 1)[1].split(
+            "function Invoke-GhCaptured {", 1
+        )[0]
+        for required in (
+            "Get-AuthenticodeSignature -LiteralPath $Executable -ErrorAction Stop",
+            "[string]$signature.Status -cne 'Valid'",
+            "$null -eq $signature.SignerCertificate",
+            "O=\"GitHub, Inc\\.",
+            "GitHub CLI publisher trust verification failed.",
+        ):
+            self.assertIn(required, guard)
+        self.assertLess(
+            raw.index("Assert-TrustedGitHubCliPublisher -Executable $gh"),
+            raw.index("@('auth', 'status', '--hostname', 'github.com')"),
+        )
+        capture = raw.split("function Invoke-GhCaptured {", 1)[1].split(
+            "function Invoke-GhJsonCaptured {", 1
+        )[0]
+        json_capture = raw.split("function Invoke-GhJsonCaptured {", 1)[1].split(
+            "$canonicalRepository = 'Naveax/PSMatrix'", 1
+        )[0]
+        self.assertLess(
+            capture.index("Assert-TrustedGitHubCliPublisher -Executable $Executable"),
+            capture.index("$process = Start-Process @start"),
+        )
+        self.assertLess(
+            json_capture.index("Assert-TrustedGitHubCliPublisher -Executable $Executable"),
+            json_capture.index("$process = Start-Process -FilePath $Executable"),
+        )
+        self.assertEqual(raw.count("Assert-TrustedGitHubCliPublisher -Executable $Executable"), 2)
+
     def test_values_are_sent_over_stdin_and_not_cli_body_arguments(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
 

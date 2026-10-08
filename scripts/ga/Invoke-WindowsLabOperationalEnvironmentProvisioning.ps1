@@ -510,6 +510,20 @@ function New-PrivateWindowsLabProcessCapturePath {
     return (Join-Path $script:tempRoot ("gh-$Stream-" + [Guid]::NewGuid().ToString('N') + '.tmp'))
 }
 
+function Assert-TrustedGitHubCliPublisher {
+    param([Parameter(Mandatory)] [string]$Executable)
+
+    # Only a valid GitHub-signed executable may receive operator input.
+    $signature = Get-AuthenticodeSignature -LiteralPath $Executable -ErrorAction Stop
+    if (
+        [string]$signature.Status -cne 'Valid' -or
+        $null -eq $signature.SignerCertificate -or
+        $signature.SignerCertificate.Subject -cnotmatch '(?:^|,\s*)O="GitHub, Inc\."(?:,|$)'
+    ) {
+        throw 'GitHub CLI publisher trust verification failed.'
+    }
+}
+
 function Invoke-GhCaptured {
     param(
         [Parameter(Mandatory)] [string]$Executable,
@@ -533,6 +547,7 @@ function Invoke-GhCaptured {
             $start['RedirectStandardInput'] = $InputFile
         }
 
+        Assert-TrustedGitHubCliPublisher -Executable $Executable
         $process = Start-Process @start
         if ($process.ExitCode -ne 0) {
             throw "GitHub CLI command failed with exit $($process.ExitCode)."
@@ -552,6 +567,7 @@ function Invoke-GhJsonCaptured {
     $stdout = New-PrivateWindowsLabProcessCapturePath -Stream 'stdout'
     $stderr = New-PrivateWindowsLabProcessCapturePath -Stream 'stderr'
     try {
+        Assert-TrustedGitHubCliPublisher -Executable $Executable
         $process = Start-Process -FilePath $Executable -ArgumentList $Arguments -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
         if ($process.ExitCode -ne 0) {
             throw "GitHub CLI metadata query failed with exit $($process.ExitCode)."
@@ -710,6 +726,7 @@ try {
         throw 'GitHub CLI executable must not be loaded from the repository.'
     }
 
+    Assert-TrustedGitHubCliPublisher -Executable $gh
     Invoke-GhCaptured -Executable $gh -Arguments @('auth', 'status', '--hostname', 'github.com')
     Invoke-GhCaptured -Executable $gh -Arguments @('api', "repos/$Repository/environments/$Environment")
 
