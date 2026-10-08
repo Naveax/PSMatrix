@@ -55,6 +55,18 @@ function Test-PathWithinRoot {
     return $candidateFull.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)
 }
 
+function Test-FullyQualifiedWindowsPath {
+    param([Parameter(Mandatory)] [string]$Path)
+
+    # Windows PowerShell 5.1 has no Path.IsPathFullyQualified API.
+    # IsPathRooted alone accepts drive-relative C:foo and root-relative \foo.
+    # Permit drive-absolute and ordinary UNC paths; reject device namespaces.
+    return (
+        $Path -cmatch '^[A-Za-z]:[\\/]' -or
+        $Path -cmatch '^\\\\[^\\/.?][^\\/]*\\[^\\/.?][^\\/]*(?:[\\/]|$)'
+    )
+}
+
 function Assert-ExternalMaterialFile {
     param(
         [Parameter(Mandatory)] [string]$Path,
@@ -62,7 +74,7 @@ function Assert-ExternalMaterialFile {
         [Parameter(Mandatory)] [string]$Label
     )
 
-    if (-not [IO.Path]::IsPathRooted($Path)) {
+    if (-not [IO.Path]::IsPathRooted($Path) -or -not (Test-FullyQualifiedWindowsPath -Path $Path)) {
         throw "$Label source file path must be absolute."
     }
 
@@ -91,7 +103,7 @@ function Protect-PrivateWindowsLabTemporaryWorkspace {
         throw 'Windows-lab temporary workspace operator SID is unavailable.'
     }
     $operatorSid = $identity.User.Value
-    $allowedSids = @($operatorSid, 'S-1-5-18', 'S-1-5-32-544')
+    $allowedSids = @(@($operatorSid, 'S-1-5-18', 'S-1-5-32-544') | Select-Object -Unique)
     $newAcl = New-Object System.Security.AccessControl.DirectorySecurity
     $newAcl.SetAccessRuleProtection($true, $false)
     foreach ($sidText in $allowedSids) {
@@ -480,7 +492,7 @@ try {
     if ($rootValue.Contains("`r") -or $rootValue.Contains("`n")) {
         throw 'PSMATRIX_WINDOWS_GA_ROOT value must contain exactly one path value.'
     }
-    if (-not [IO.Path]::IsPathRooted($rootValue)) {
+    if (-not [IO.Path]::IsPathRooted($rootValue) -or -not (Test-FullyQualifiedWindowsPath -Path $rootValue)) {
         throw 'PSMATRIX_WINDOWS_GA_ROOT value must be an absolute path.'
     }
 
@@ -586,7 +598,8 @@ try {
             [string]::IsNullOrWhiteSpace($existingRootValue) -or
             $existingRootValue.Contains("`r") -or
             $existingRootValue.Contains("`n") -or
-            -not [IO.Path]::IsPathRooted($existingRootValue)
+            -not [IO.Path]::IsPathRooted($existingRootValue) -or
+            -not (Test-FullyQualifiedWindowsPath -Path $existingRootValue)
         ) {
             throw 'Existing Windows-lab GA-root variable is not a valid absolute path.'
         }

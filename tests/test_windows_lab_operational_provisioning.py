@@ -89,10 +89,23 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         first_mutation = raw.index("@('variable', 'set', 'PSMATRIX_WINDOWS_GA_ROOT'")
         self.assertLess(guard, first_mutation)
 
+    def test_windows_paths_require_fully_qualified_drive_or_unc_form(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        section = raw.split("function Test-FullyQualifiedWindowsPath {", 1)[1].split(
+            "function Assert-ExternalMaterialFile {", 1
+        )[0]
+        self.assertIn("IsPathRooted alone accepts drive-relative C:foo", section)
+        self.assertIn("Permit drive-absolute and ordinary UNC paths", section)
+        self.assertIn("$Path -cmatch '^[A-Za-z]:[\\\\/]'", section)
+        self.assertIn("device namespaces", section)
+        self.assertIn("Test-FullyQualifiedWindowsPath -Path $rootValue", raw)
+        self.assertIn("Test-FullyQualifiedWindowsPath -Path $existingRootValue", raw)
+        self.assertIn("Test-FullyQualifiedWindowsPath -Path $Path", raw)
+
     def test_material_sources_must_be_absolute_external_files(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
 
-        self.assertIn("if (-not [IO.Path]::IsPathRooted($Path))", raw)
+        self.assertIn("if (-not [IO.Path]::IsPathRooted($Path) -or -not (Test-FullyQualifiedWindowsPath -Path $Path))", raw)
         self.assertIn("source file path must be absolute", raw)
         self.assertIn("source file must stay outside the repository", raw)
         self.assertIn("path must not contain links or reparse points", raw)
@@ -132,6 +145,7 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         for required in (
             "DirectorySecurity",
             "SetAccessRuleProtection($true, $false)",
+            "Select-Object -Unique",
             "'S-1-5-18'",
             "'S-1-5-32-544'",
             "[Security.Principal.WindowsIdentity]::GetCurrent()",
