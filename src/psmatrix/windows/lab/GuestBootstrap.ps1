@@ -256,6 +256,9 @@ try {
     }
     Remove-GuestBootstrapStagingSecrets -Root $bootstrapRoot
     Remove-GuestSetupAnswerFiles
+    # Reassert ownership and explicit ACLs after first-boot staging cleanup.
+    # The host independently checks this directory before checkpoint.
+    Set-RestrictedDirectoryAcl $bootstrapRoot
     Write-Result 'PASS' 'Guest bootstrap completed.' $identity
 }
 catch {

@@ -86,6 +86,8 @@ function Set-RestrictedDirectoryAcl([string]$Path) {
                 $adminSid, $fullControl, $inheritance, $propagation, $allow
             )
         )
+        # The offline bootstrap tree must not retain an untrusted owner.
+        $acl.SetOwner($adminSid)
         Set-Acl -LiteralPath $item.FullName -AclObject $acl -ErrorAction Stop
     }
 }

@@ -139,6 +139,39 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
             host.index("    Checkpoint-VM -Name $vmName"),
         )
 
+    def test_bootstrap_acl_owner_is_set_on_host_and_relocked_by_guest(self):
+        host = HOST.read_text(encoding="utf-8")
+        guest = GUEST.read_text(encoding="utf-8")
+        host_setter = host.split("function Set-RestrictedDirectoryAcl(", 1)[1].split(
+            "function Get-WindowsPartitionRoot(", 1
+        )[0]
+        guest_setter = guest.split("function Set-RestrictedDirectoryAcl(", 1)[1].split(
+            "function Remove-GuestSetupAnswerFiles(", 1
+        )[0]
+        for setter in (host_setter, guest_setter):
+            self.assertIn("$acl.SetOwner($adminSid)", setter)
+            self.assertLess(
+                setter.index("$acl.SetOwner($adminSid)"),
+                setter.index("Set-Acl -LiteralPath $item.FullName -AclObject $acl"),
+            )
+        self.assertLess(
+            host.index("Set-RestrictedDirectoryAcl $bootstrap"),
+            host.index("    Checkpoint-VM -Name $vmName"),
+        )
+        self.assertLess(
+            guest.index("Remove-GuestBootstrapStagingSecrets -Root $bootstrapRoot"),
+            guest.index("Set-RestrictedDirectoryAcl $bootstrapRoot"),
+        )
+        self.assertLess(
+            guest.index("Remove-GuestSetupAnswerFiles\n"),
+            guest.index("Set-RestrictedDirectoryAcl $bootstrapRoot"),
+        )
+        self.assertLess(
+            guest.index("Set-RestrictedDirectoryAcl $bootstrapRoot"),
+            guest.index("Write-Result 'PASS' 'Guest bootstrap completed.' $identity"),
+        )
+        self.assertEqual(guest.count("Set-RestrictedDirectoryAcl $bootstrapRoot"), 1)
+
     def test_host_independently_verifies_sensitive_directory_acls_before_checkpoint(self):
         text = HOST.read_text(encoding="utf-8")
         self.assertIn("function Assert-RestrictedGuestDirectoryAcl", text)
