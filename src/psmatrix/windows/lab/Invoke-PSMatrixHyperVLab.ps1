@@ -184,9 +184,23 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce) {
     $output = [string]$Image.output_vhdx
     if (Test-Path -LiteralPath $output) { throw ('Output VHDX already exists: ' + $output) }
     New-Item -ItemType Directory -Path (Split-Path -Parent $output) -Force | Out-Null
-    $iso = Mount-DiskImage -ImagePath ([string]$Image.source_iso.path) -PassThru
+    $isoPath = [string]$Image.source_iso.path
+    # Do not claim ownership of, or detach, a pre-existing ISO attachment.
+    $preMount = Get-DiskImage -ImagePath $isoPath -ErrorAction Stop
+    if ($null -eq $preMount -or $preMount.Attached -isnot [bool]) {
+        throw 'Windows source ISO pre-mount state is unavailable; refusing provisioning.'
+    }
+    if ($preMount.Attached) {
+        throw 'Windows source ISO was already mounted; refusing to touch a pre-existing attachment.'
+    }
     $vhdMounted = $null
     try {
+        # A partial ISO mount can throw without returning an object.
+        # Enter the guarded cleanup scope before invoking Mount-DiskImage.
+        $iso = Mount-DiskImage -ImagePath $isoPath -PassThru -ErrorAction Stop
+        if ($null -eq $iso) {
+            throw 'Windows source ISO mount returned no disk image object.'
+        }
         $isoVolume = $iso | Get-Volume
         $isoRoot = ([string]$isoVolume.DriveLetter + ':\')
         $imageFile = Join-Path $isoRoot 'sources\install.wim'
@@ -241,7 +255,7 @@ exit /b %ERRORLEVEL%
         Set-RestrictedDirectoryAcl $bootstrap
     }
     finally {
-        Close-LabBuildMedia -VhdPath $output -IsoPath ([string]$Image.source_iso.path) -WasMounted ([bool]$vhdMounted)
+        Close-LabBuildMedia -VhdPath $output -IsoPath $isoPath -WasMounted ([bool]$vhdMounted)
     }
     return $output
 }

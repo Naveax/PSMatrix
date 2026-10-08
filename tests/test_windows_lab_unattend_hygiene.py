@@ -64,7 +64,7 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
             cleanup.index("Get-VHD -Path $VhdPath -ErrorAction Stop"),
         )
         self.assertIn(
-            "Close-LabBuildMedia -VhdPath $output -IsoPath ([string]$Image.source_iso.path) -WasMounted ([bool]$vhdMounted)",
+            "Close-LabBuildMedia -VhdPath $output -IsoPath $isoPath -WasMounted ([bool]$vhdMounted)",
             build,
         )
         self.assertLess(
@@ -100,8 +100,41 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
             helper.index("Dismount-DiskImage -ImagePath $IsoPath -ErrorAction Stop"),
         )
         self.assertIn(
-            "Close-LabBuildMedia -VhdPath $output -IsoPath ([string]$Image.source_iso.path) -WasMounted ([bool]$vhdMounted)",
+            "Close-LabBuildMedia -VhdPath $output -IsoPath $isoPath -WasMounted ([bool]$vhdMounted)",
             host,
+        )
+
+    def test_iso_mount_preflight_and_partial_failure_cleanup_scope(self):
+        host = HOST.read_text(encoding="utf-8")
+        build = host.split("function New-LabVhd(", 1)[1].split(
+            "function Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        for required in (
+            "$preMount = Get-DiskImage -ImagePath $isoPath -ErrorAction Stop",
+            "$preMount.Attached -isnot [bool]",
+            "Windows source ISO pre-mount state is unavailable",
+            "Windows source ISO was already mounted",
+            "$vhdMounted = $null",
+            "$iso = Mount-DiskImage -ImagePath $isoPath -PassThru -ErrorAction Stop",
+            "Windows source ISO mount returned no disk image object.",
+            "Close-LabBuildMedia -VhdPath $output -IsoPath $isoPath -WasMounted ([bool]$vhdMounted)",
+        ):
+            self.assertIn(required, build)
+        self.assertLess(
+            build.index("$preMount = Get-DiskImage"),
+            build.index("$iso = Mount-DiskImage"),
+        )
+        self.assertRegex(
+            build,
+            r"\$vhdMounted = \$null\s+try\s*\{\s+# A partial ISO mount",
+        )
+        self.assertLess(
+            build.index("$iso = Mount-DiskImage"),
+            build.index("Close-LabBuildMedia -VhdPath $output"),
+        )
+        self.assertLess(
+            host.index("Close-LabBuildMedia -VhdPath $output"),
+            host.index("    Checkpoint-VM -Name $vmName"),
         )
 
     def test_host_confirms_iso_dismount_state_before_returning_vhd(self):
@@ -127,7 +160,7 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
             host.index("function New-LabVhd(") - host.index("function Close-LabBuildMedia("),
         )
         self.assertIn(
-            "Close-LabBuildMedia -VhdPath $output -IsoPath ([string]$Image.source_iso.path) -WasMounted ([bool]$vhdMounted)",
+            "Close-LabBuildMedia -VhdPath $output -IsoPath $isoPath -WasMounted ([bool]$vhdMounted)",
             host,
         )
 
