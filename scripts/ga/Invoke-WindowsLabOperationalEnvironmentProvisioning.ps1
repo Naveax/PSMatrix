@@ -301,9 +301,20 @@ function Assert-IndependentMaterialReviewAttestation {
         'scope'
     )
     $actualFields = @($review.PSObject.Properties.Name)
-    $fieldDifference = @(Compare-Object -ReferenceObject $expectedFields -DifferenceObject $actualFields)
+    $fieldDifference = @(Compare-Object -ReferenceObject $expectedFields -DifferenceObject $actualFields -CaseSensitive)
     if ($fieldDifference.Count -ne 0) {
         throw 'Windows-lab independent material review attestation fields are not exact.'
+    }
+    # ConvertFrom-Json can collapse duplicate object keys using the last value.
+    # Refuse missing/repeated exact JSON property tokens before trusting any flags.
+    foreach ($field in $expectedFields) {
+        $propertyPattern = '(?<!\\)"' + [Regex]::Escape($field) + '"\s*:'
+        if ([Regex]::Matches($raw, $propertyPattern).Count -ne 1) {
+            throw 'Windows-lab independent material review attestation has missing or repeated JSON property keys.'
+        }
+    }
+    if ($review.schema -isnot [int] -and $review.schema -isnot [long]) {
+        throw 'Windows-lab independent material review schema must be a JSON integer.'
     }
 
     if (
@@ -315,6 +326,9 @@ function Assert-IndependentMaterialReviewAttestation {
         throw 'Windows-lab independent material review attestation identity is invalid.'
     }
 
+    if ($review.reviewed_by -isnot [string]) {
+        throw 'Windows-lab independent material reviewer identity must be a JSON string.'
+    }
     $reviewedBy = ([string]$review.reviewed_by).Trim()
     if (
         [string]::IsNullOrWhiteSpace($reviewedBy) -or
@@ -358,8 +372,8 @@ function Assert-IndependentMaterialReviewAttestation {
         'secret_hashes_not_recorded',
         'secret_lengths_not_recorded'
     )) {
-        if ($review.$flag -ne $true) {
-            throw "Windows-lab independent material review attestation requires $flag=true."
+        if ($review.$flag -isnot [bool] -or $review.$flag -ne $true) {
+            throw "Windows-lab independent material review attestation requires $flag=true as a JSON boolean."
         }
     }
 

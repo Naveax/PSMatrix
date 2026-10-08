@@ -226,6 +226,29 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         self.assertLess(dry_run, first_mutation)
         self.assertIn("windows_lab_operational_environment_provisioning_executed=false dry_run=true", raw)
 
+    def test_review_json_rejects_duplicate_keys_and_implicit_type_coercion(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        attestation = raw.split("function Assert-IndependentMaterialReviewAttestation {", 1)[1].split(
+            "function New-PrivateWindowsLabProcessCapturePath {", 1
+        )[0]
+        for requirement in (
+            "Compare-Object -ReferenceObject $expectedFields -DifferenceObject $actualFields -CaseSensitive",
+            "$propertyPattern = '(?<!\\\\)\"'",
+            "[Regex]::Matches($raw, $propertyPattern).Count -ne 1",
+            "missing or repeated JSON property keys.",
+            "$review.schema -isnot [int] -and $review.schema -isnot [long]",
+            "schema must be a JSON integer.",
+            "$review.reviewed_by -isnot [string]",
+            "reviewer identity must be a JSON string.",
+            "$review.$flag -isnot [bool] -or $review.$flag -ne $true",
+            "requires $flag=true as a JSON boolean.",
+        ):
+            self.assertIn(requirement, attestation)
+        self.assertLess(
+            attestation.index("missing or repeated JSON property keys."),
+            attestation.index("Windows-lab independent material review attestation identity is invalid."),
+        )
+
     def test_live_mode_requires_external_fresh_independent_material_review_before_gh_resolution(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
 
