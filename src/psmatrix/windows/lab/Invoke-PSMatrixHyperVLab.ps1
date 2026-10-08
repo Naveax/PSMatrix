@@ -579,6 +579,11 @@ Import-Module Hyper-V -ErrorAction Stop
 if (-not (Test-Path -LiteralPath $Plan -PathType Leaf)) { throw 'Lab plan is missing.' }
 $planValue = Get-Content -LiteralPath $Plan -Raw | ConvertFrom-Json
 if ([string]$planValue.kind -ne 'psmatrix.windows-hyperv-provision-plan') { throw 'Lab plan kind is invalid.' }
+# ConvertFrom-Json preserves a JSON array as System.Object[]. Neither a
+# missing image collection nor a scalar/non-array image can authorize PASS.
+if ($planValue.images -isnot [System.Array] -or @($planValue.images).Count -lt 1) {
+    throw 'Windows lab plan must contain a non-empty images array.'
+}
 $results = @()
 foreach ($image in $planValue.images) {
     $vmName = [string]$image.image_id

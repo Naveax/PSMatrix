@@ -164,6 +164,29 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
             host,
         )
 
+    def test_empty_or_non_array_plan_cannot_produce_false_pass(self):
+        host = HOST.read_text(encoding="utf-8")
+        entry = host.split("Assert-Administrator\nImport-Module Hyper-V", 1)[1]
+        required = (
+            "$planValue.images -isnot [System.Array]",
+            "@($planValue.images).Count -lt 1",
+            "Windows lab plan must contain a non-empty images array.",
+        )
+        for fragment in required:
+            self.assertIn(fragment, entry)
+        self.assertLess(
+            entry.index("Windows lab plan must contain a non-empty images array."),
+            entry.index("$results = @()"),
+        )
+        self.assertLess(
+            entry.index("Windows lab plan must contain a non-empty images array."),
+            entry.index("foreach ($image in $planValue.images)"),
+        )
+        self.assertLess(
+            entry.index("Windows lab plan must contain a non-empty images array."),
+            entry.index("status = 'PASS'"),
+        )
+
     def test_vhdx_report_hash_is_taken_offline_before_checkpoint_and_restart(self):
         host = HOST.read_text(encoding="utf-8")
         loop = host.split("foreach ($image in $planValue.images) {", 1)[1]
