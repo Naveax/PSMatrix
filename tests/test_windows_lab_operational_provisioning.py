@@ -137,6 +137,23 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         )
         self.assertIn("PSMATRIX_WINDOWS_GA_ROOT and the repository must be disjoint paths.", raw)
 
+    def test_all_github_process_captures_are_inside_private_workspace(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        self.assertNotIn("[IO.Path]::GetTempFileName()", raw)
+        self.assertIn("function New-PrivateWindowsLabProcessCapturePath {", raw)
+        self.assertIn("Join-Path $script:tempRoot", raw)
+        self.assertIn("private capture workspace is unavailable.", raw)
+        self.assertEqual(raw.count("New-PrivateWindowsLabProcessCapturePath -Stream 'stdout'"), 2)
+        self.assertEqual(raw.count("New-PrivateWindowsLabProcessCapturePath -Stream 'stderr'"), 2)
+        self.assertLess(
+            raw.index("Protect-PrivateWindowsLabTemporaryWorkspace -Path $tempRoot"),
+            raw.index("Invoke-GhCaptured -Executable $gh"),
+        )
+        self.assertLess(
+            raw.index("try {\n    if ((Test-PathWithinRoot -Candidate $tempRoot"),
+            raw.index("Assert-NoLinkOrReparsePath -Path $tempRoot"),
+        )
+
     def test_temporary_workspace_private_acl_is_enforced_before_secret_staging(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
         private_acl = raw.split("function Protect-PrivateWindowsLabTemporaryWorkspace {", 1)[1].split(

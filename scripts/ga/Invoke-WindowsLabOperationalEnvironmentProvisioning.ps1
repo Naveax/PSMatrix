@@ -385,6 +385,20 @@ function Assert-IndependentMaterialReviewAttestation {
     }
 }
 
+function New-PrivateWindowsLabProcessCapturePath {
+    param([Parameter(Mandatory)] [ValidateSet('stdout', 'stderr')] [string]$Stream)
+
+    # Never create CLI stdout/stderr in the inherited process TEMP root.
+    # The GitHub metadata stdout may contain the reviewed GA-root value.
+    if (
+        [string]::IsNullOrWhiteSpace($script:tempRoot) -or
+        -not (Test-Path -LiteralPath $script:tempRoot -PathType Container)
+    ) {
+        throw 'Windows-lab private capture workspace is unavailable.'
+    }
+    return (Join-Path $script:tempRoot ("gh-$Stream-" + [Guid]::NewGuid().ToString('N') + '.tmp'))
+}
+
 function Invoke-GhCaptured {
     param(
         [Parameter(Mandatory)] [string]$Executable,
@@ -392,8 +406,8 @@ function Invoke-GhCaptured {
         [string]$InputFile
     )
 
-    $stdout = [IO.Path]::GetTempFileName()
-    $stderr = [IO.Path]::GetTempFileName()
+    $stdout = New-PrivateWindowsLabProcessCapturePath -Stream 'stdout'
+    $stderr = New-PrivateWindowsLabProcessCapturePath -Stream 'stderr'
     try {
         $start = @{
             FilePath = $Executable
@@ -424,8 +438,8 @@ function Invoke-GhJsonCaptured {
         [Parameter(Mandatory)] [string[]]$Arguments
     )
 
-    $stdout = [IO.Path]::GetTempFileName()
-    $stderr = [IO.Path]::GetTempFileName()
+    $stdout = New-PrivateWindowsLabProcessCapturePath -Stream 'stdout'
+    $stderr = New-PrivateWindowsLabProcessCapturePath -Stream 'stderr'
     try {
         $process = Start-Process -FilePath $Executable -ArgumentList $Arguments -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
         if ($process.ExitCode -ne 0) {
@@ -461,12 +475,11 @@ $wps51External = Assert-ExternalMaterialFile -Path $Wps51AdminPasswordFile -Repo
 
 $tempWorkspace = New-Item -ItemType Directory -Path (Join-Path ([IO.Path]::GetTempPath()) ("psmatrix-windows-lab-" + [Guid]::NewGuid().ToString('N'))) -Force
 $tempRoot = [IO.Path]::GetFullPath($tempWorkspace.FullName)
-if ((Test-PathWithinRoot -Candidate $tempRoot -Root $repoRoot) -or (Test-PathWithinRoot -Candidate $repoRoot -Root $tempRoot)) {
-    throw 'Windows-lab temporary workspace and repository must be disjoint paths.'
-}
-Assert-NoLinkOrReparsePath -Path $tempRoot -Label 'Windows-lab temporary workspace'
-
 try {
+    if ((Test-PathWithinRoot -Candidate $tempRoot -Root $repoRoot) -or (Test-PathWithinRoot -Candidate $repoRoot -Root $tempRoot)) {
+        throw 'Windows-lab temporary workspace and repository must be disjoint paths.'
+    }
+    Assert-NoLinkOrReparsePath -Path $tempRoot -Label 'Windows-lab temporary workspace'
     Protect-PrivateWindowsLabTemporaryWorkspace -Path $tempRoot
     # Stage exact selected bytes before any semantic read or GitHub mutation. The staged
     # copies become the only source for validation and upload, closing source-file TOCTOU.
