@@ -305,12 +305,19 @@ function Assert-IndependentMaterialReviewAttestation {
     if ($fieldDifference.Count -ne 0) {
         throw 'Windows-lab independent material review attestation fields are not exact.'
     }
-    # ConvertFrom-Json can collapse duplicate object keys using the last value.
-    # Refuse missing/repeated exact JSON property tokens before trusting any flags.
+    # ConvertFrom-Json silently collapses exact duplicates and Unicode-escaped
+    # aliases (such as review_\u0063omplete). Examine ALL raw property tokens.
+    # This flat schema has exactly the declared keys and no nested objects.
+    $jsonPropertyNames = @(
+        [Regex]::Matches($raw, '(?<!\\)"(?<key>(?:\\.|[^"\\])*)"\s*:') |
+            ForEach-Object { $_.Groups['key'].Value }
+    )
+    if ($jsonPropertyNames.Count -ne $expectedFields.Count) {
+        throw 'Windows-lab independent material review attestation has missing, extra, or repeated JSON property keys.'
+    }
     foreach ($field in $expectedFields) {
-        $propertyPattern = '(?<!\\)"' + [Regex]::Escape($field) + '"\s*:'
-        if ([Regex]::Matches($raw, $propertyPattern).Count -ne 1) {
-            throw 'Windows-lab independent material review attestation has missing or repeated JSON property keys.'
+        if ($jsonPropertyNames -cnotcontains $field) {
+            throw 'Windows-lab independent material review attestation JSON property names must be exact and unescaped.'
         }
     }
     if ($review.schema -isnot [int] -and $review.schema -isnot [long]) {

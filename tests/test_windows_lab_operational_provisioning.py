@@ -233,9 +233,12 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         )[0]
         for requirement in (
             "Compare-Object -ReferenceObject $expectedFields -DifferenceObject $actualFields -CaseSensitive",
-            "$propertyPattern = '(?<!\\\\)\"'",
-            "[Regex]::Matches($raw, $propertyPattern).Count -ne 1",
-            "missing or repeated JSON property keys.",
+            "$jsonPropertyNames = @(",
+            "[Regex]::Matches($raw,",
+            "$jsonPropertyNames.Count -ne $expectedFields.Count",
+            "$jsonPropertyNames -cnotcontains $field",
+            "missing, extra, or repeated JSON property keys.",
+            "JSON property names must be exact and unescaped.",
             "$review.schema -isnot [int] -and $review.schema -isnot [long]",
             "schema must be a JSON integer.",
             "$review.reviewed_by -isnot [string]",
@@ -245,9 +248,22 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         ):
             self.assertIn(requirement, attestation)
         self.assertLess(
-            attestation.index("missing or repeated JSON property keys."),
+            attestation.index("missing, extra, or repeated JSON property keys."),
             attestation.index("Windows-lab independent material review attestation identity is invalid."),
         )
+
+    def test_review_json_lexical_property_keys_reject_escaped_aliases(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        self.assertIn("ConvertFrom-Json silently collapses exact duplicates", raw)
+        self.assertIn("Unicode-escaped", raw)
+        self.assertIn("$jsonPropertyNames -cnotcontains $field", raw)
+        pattern = re.compile(r'(?<!\\)"(?P<key>(?:\\.|[^"\\])*)"\s*:')
+        base = '{"schema":1,"review_complete":false}'
+        unicode_alias = '{"schema":1,"review_complete":false,"review_\\u0063omplete":true}'
+        repeated = '{"schema":1,"review_complete":false,"review_complete":true}'
+        assert [m.group("key") for m in pattern.finditer(base)] == ["schema", "review_complete"]
+        assert len(list(pattern.finditer(unicode_alias))) == 3
+        assert len(list(pattern.finditer(repeated))) == 3
 
     def test_live_mode_requires_external_fresh_independent_material_review_before_gh_resolution(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
