@@ -69,6 +69,41 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
         )
         self.assertIn("Dismount-VHD -Path $VhdPath", read)
 
+    def test_host_bootstrap_result_uses_exact_json_keys_and_typed_pass_fields(self):
+        host = HOST.read_text(encoding="utf-8")
+        read = host.split("function Read-BootstrapResult(", 1)[1].split(
+            "function Wait-FirstBoot(", 1
+        )[0]
+        for required in (
+            "$requiredFields = @(",
+            "'worker_id','runtime_id','authoritative'",
+            "'error_type','script_stack'",
+            "[Regex]::Matches($rawResult",
+            "$rawJsonKeys.Count -ne $requiredFields.Count",
+            "$parsedKeys.Count -ne $requiredFields.Count",
+            "$rawJsonKeys -cnotcontains $name",
+            "$parsedKeys -cnotcontains $name",
+            "missing, extra or duplicate JSON keys",
+            "JSON keys are not exact or unescaped",
+            "$result.worker_id -isnot [string]",
+            "$result.service_name -cne ('PSMatrixWorker-' + $result.worker_id)",
+            "$result.authoritative -isnot [bool]",
+            "PASS record contains invalid typed identity or service fields",
+        ):
+            self.assertIn(required, read)
+        self.assertLess(
+            read.index("$rawJsonKeys = @("),
+            read.index("Assert-RestrictedGuestDirectoryAcl -Path"),
+        )
+        self.assertLess(
+            read.index("PASS record contains invalid typed identity"),
+            read.index("return $result"),
+        )
+        self.assertLess(
+            host.index("Read-BootstrapResult $vhd"),
+            host.index("    Checkpoint-VM -Name $vmName"),
+        )
+
     def test_host_binds_actual_worker_config_hash_and_guest_identity(self):
         host = HOST.read_text(encoding="utf-8")
         read = host.split("function Read-BootstrapResult(", 1)[1].split(

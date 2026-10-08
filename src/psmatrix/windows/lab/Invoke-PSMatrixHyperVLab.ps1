@@ -354,6 +354,54 @@ function Read-BootstrapResult([string]$VhdPath) {
             throw 'Guest bootstrap result must be a top-level JSON object.'
         }
         $result = $rawResult | ConvertFrom-Json
+        # The guest serializes a flat, fixed-schema JSON object. ConvertFrom-Json
+        # silently collapses repeated property names and escaped key aliases,
+        # including keys used to authorize the checkpoint PASS decision.
+        $requiredFields = @(
+            'schema','kind','status','message','completed_at',
+            'computer_name','powershell_version'
+        )
+        if ($result.status -ceq 'PASS') {
+            $requiredFields += @(
+                'worker_id','runtime_id','authoritative',
+                'worker_config_sha256','service_name'
+            )
+        }
+        elseif ($result.status -ceq 'FAIL') {
+            $requiredFields += @('error_type','script_stack')
+        }
+        $rawJsonKeys = @(
+            [Regex]::Matches($rawResult, '(?<!\\)"(?<key>(?:\\.|[^"\\])*)"\s*:') |
+                ForEach-Object { $_.Groups['key'].Value }
+        )
+        $parsedKeys = @($result.PSObject.Properties.Name)
+        if (
+            $rawJsonKeys.Count -ne $requiredFields.Count -or
+            $parsedKeys.Count -ne $requiredFields.Count
+        ) {
+            throw 'Guest bootstrap result contains missing, extra or duplicate JSON keys.'
+        }
+        foreach ($name in $requiredFields) {
+            if ($rawJsonKeys -cnotcontains $name -or $parsedKeys -cnotcontains $name) {
+                throw 'Guest bootstrap result JSON keys are not exact or unescaped.'
+            }
+        }
+        if ($result.status -ceq 'PASS') {
+            if (
+                $result.message -isnot [string] -or
+                $result.computer_name -isnot [string] -or
+                $result.powershell_version -isnot [string] -or
+                $result.worker_id -isnot [string] -or
+                [string]::IsNullOrWhiteSpace($result.worker_id) -or
+                $result.runtime_id -isnot [string] -or
+                $result.service_name -isnot [string] -or
+                $result.service_name -cne ('PSMatrixWorker-' + $result.worker_id) -or
+                $result.authoritative -isnot [bool] -or
+                $result.authoritative -ne $true
+            ) {
+                throw 'Guest bootstrap PASS record contains invalid typed identity or service fields.'
+            }
+        }
         if ($result -isnot [pscustomobject] -or
             ($result.schema -isnot [int] -and $result.schema -isnot [long]) -or
             $result.schema -ne 1 -or
