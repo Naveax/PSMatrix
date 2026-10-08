@@ -331,11 +331,20 @@ function Assert-IndependentMaterialReviewAttestation {
         throw 'Windows-lab independent material review schema must be a JSON integer.'
     }
 
+    # Casting a one-element JSON array to [string] yields its sole item on
+    # both Windows PowerShell 5.1 and PowerShell 7. Match types before values.
+    if (
+        $review.kind -isnot [string] -or
+        $review.repository -isnot [string] -or
+        $review.environment -isnot [string]
+    ) {
+        throw 'Windows-lab independent material review identity values must be JSON strings.'
+    }
     if (
         [int]$review.schema -ne 1 -or
-        [string]$review.kind -cne 'psmatrix.windows-lab-operational-material-review' -or
-        [string]$review.repository -cne $ExpectedRepository -or
-        [string]$review.environment -cne $ExpectedEnvironment
+        $review.kind -cne 'psmatrix.windows-lab-operational-material-review' -or
+        $review.repository -cne $ExpectedRepository -or
+        $review.environment -cne $ExpectedEnvironment
     ) {
         throw 'Windows-lab independent material review attestation identity is invalid.'
     }
@@ -397,7 +406,15 @@ function Assert-IndependentMaterialReviewAttestation {
         'wps50_admin_credential',
         'wps51_admin_credential'
     )
-    $actualScope = @($review.scope | ForEach-Object { [string]$_ })
+    if ($review.scope -isnot [array]) {
+        throw 'Windows-lab independent material review scope must be a JSON array.'
+    }
+    $actualScope = @($review.scope)
+    foreach ($item in $actualScope) {
+        if ($item -isnot [string]) {
+            throw 'Windows-lab independent material review scope items must be JSON strings.'
+        }
+    }
     if ($actualScope.Count -ne $expectedScope.Count) {
         throw 'Windows-lab independent material review scope is incomplete.'
     }

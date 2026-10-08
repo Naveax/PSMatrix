@@ -276,6 +276,32 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
             attestation.index("Windows-lab independent material review attestation identity is invalid."),
         )
 
+    def test_review_json_identity_and_scope_require_native_json_types(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        review = raw.split("function Assert-IndependentMaterialReviewAttestation {", 1)[1].split(
+            "function New-PrivateWindowsLabProcessCapturePath {", 1
+        )[0]
+        for fragment in (
+            "$review.kind -isnot [string]",
+            "$review.repository -isnot [string]",
+            "$review.environment -isnot [string]",
+            "identity values must be JSON strings.",
+            "$review.scope -isnot [array]",
+            "scope must be a JSON array.",
+            "$actualScope = @($review.scope)",
+            "$item -isnot [string]",
+            "scope items must be JSON strings.",
+        ):
+            self.assertIn(fragment, review)
+        self.assertNotIn("[string]$review.kind -cne", review)
+        self.assertNotIn("[string]$review.repository -cne", review)
+        self.assertNotIn("[string]$review.environment -cne", review)
+        self.assertNotIn("[string]$_", review)
+        self.assertLess(
+            review.index("$review.kind -isnot [string]"),
+            review.index("Windows-lab independent material review attestation identity is invalid."),
+        )
+
     def test_review_json_lexical_property_keys_reject_escaped_aliases(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
         self.assertIn("ConvertFrom-Json silently collapses exact duplicates", raw)
