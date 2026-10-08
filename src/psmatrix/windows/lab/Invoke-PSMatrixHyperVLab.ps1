@@ -261,6 +261,26 @@ function Assert-RestrictedGuestDirectoryAcl([string]$Path, [string]$Label) {
                     [Security.AccessControl.FileSystemRights]::FullControl) {
                 throw ($Label + ' ACL trustee lacks FullControl; refusing checkpoint.')
             }
+            # The guest writer issues direct FullControl on files and an
+            # inheritable (CI|OI), non-propagating FullControl rule on directories.
+            # Checking trustee/rights alone does not prove the expected DACL shape.
+            $requiredInheritance = [Security.AccessControl.InheritanceFlags]::None
+            if ($item.PSIsContainer) {
+                $requiredInheritance = (
+                    [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+                    [Security.AccessControl.InheritanceFlags]::ObjectInherit
+                )
+            }
+            if (
+                $rule.InheritanceFlags -ne $requiredInheritance -or
+                $rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None -or
+                $rule.IsInherited
+            ) {
+                throw ($Label + ' ACL has an unexpected inheritance or propagation shape; refusing checkpoint.')
+            }
+            if ($seen.ContainsKey($sid)) {
+                throw ($Label + ' ACL contains multiple rules for one required trustee; refusing checkpoint.')
+            }
             $seen[$sid] = $true
         }
         foreach ($sid in $required) {

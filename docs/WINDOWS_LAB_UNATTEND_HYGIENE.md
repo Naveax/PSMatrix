@@ -34,7 +34,7 @@ host ACL setup recursively rebuilds each DACL from well-known SIDs: files receiv
 FullControl and directories receive inheritable FullControl only for SYSTEM and built-in Administrators. WorkerConfig is locked after worker.json is
 materialized so the generated config is part of the recursive inheritance removal.
 Unexpected trustees, inherited ACLs on any child, missing directories, or reparse points
-fail closed.
+fail closed. The host also requires the **exact rule shape** produced by the guest: files have non-inheritable direct Allow FullControl rules, directories have explicit ContainerInherit|ObjectInherit Allow FullControl rules, propagation flags are None, and each of the two allowed SIDs appears exactly once. A wrong inheritance shape, propagation policy or duplicate trustee rule fails before checkpoint. This host-side check does not prove secure erasure or establish image acceptance.
 
 Sensitive guest runtime directories (Credentials, Signing, and WorkerConfig) and
 the bootstrap staging directory are assigned explicit SYSTEM/Administrators ACLs

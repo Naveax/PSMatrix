@@ -83,6 +83,32 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
             self.assertLess(container, object_inherit)
             self.assertLess(object_inherit, add_rule)
 
+    def test_host_requires_guest_exact_acl_rule_inheritance_and_unique_trustees(self):
+        host = HOST.read_text(encoding="utf-8")
+        guard = host.split("function Assert-RestrictedGuestDirectoryAcl(", 1)[1].split(
+            "function Assert-NoGuestBootstrapStagingSecrets(", 1
+        )[0]
+        for required in (
+            "$requiredInheritance = [Security.AccessControl.InheritanceFlags]::None",
+            "[Security.AccessControl.InheritanceFlags]::ContainerInherit -bor",
+            "[Security.AccessControl.InheritanceFlags]::ObjectInherit",
+            "$rule.InheritanceFlags -ne $requiredInheritance",
+            "$rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None",
+            "$rule.IsInherited",
+            "$seen.ContainsKey($sid)",
+            "ACL has an unexpected inheritance or propagation shape; refusing checkpoint.",
+            "ACL contains multiple rules for one required trustee; refusing checkpoint.",
+        ):
+            self.assertIn(required, guard)
+        self.assertLess(
+            guard.index("ACL has an unexpected inheritance or propagation shape"),
+            guard.index("ACL is missing a required trustee"),
+        )
+        self.assertLess(
+            host.index("Assert-RestrictedGuestDirectoryAcl -Path"),
+            host.index("    Checkpoint-VM -Name $vmName"),
+        )
+
     def test_host_independently_verifies_sensitive_directory_acls_before_checkpoint(self):
         text = HOST.read_text(encoding="utf-8")
         self.assertIn("function Assert-RestrictedGuestDirectoryAcl", text)
