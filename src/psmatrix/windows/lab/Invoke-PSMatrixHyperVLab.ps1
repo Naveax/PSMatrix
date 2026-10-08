@@ -579,10 +579,18 @@ Import-Module Hyper-V -ErrorAction Stop
 if (-not (Test-Path -LiteralPath $Plan -PathType Leaf)) { throw 'Lab plan is missing.' }
 $planValue = Get-Content -LiteralPath $Plan -Raw | ConvertFrom-Json
 if ([string]$planValue.kind -ne 'psmatrix.windows-hyperv-provision-plan') { throw 'Lab plan kind is invalid.' }
-# ConvertFrom-Json preserves a JSON array as System.Object[]. Neither a
-# missing image collection nor a scalar/non-array image can authorize PASS.
-if ($planValue.images -isnot [System.Array] -or @($planValue.images).Count -lt 1) {
-    throw 'Windows lab plan must contain a non-empty images array.'
+# Require the three unique canonical Windows PowerShell targets before any
+# VM provisioning. An incomplete or duplicated plan cannot produce PASS.
+$requiredRuntimes = @('windows-powershell-4.0', 'windows-powershell-5.0', 'windows-powershell-5.1')
+if ($planValue.images -isnot [System.Array] -or @($planValue.images).Count -ne $requiredRuntimes.Count) {
+    throw 'Windows lab plan must contain exactly three canonical runtime images.'
+}
+foreach ($requiredRuntime in $requiredRuntimes) {
+    $matches = @($planValue.images | Where-Object { [string]$_.runtime_id -ceq $requiredRuntime })
+    if ($matches.Count -ne 1 -or
+        [string]$matches[0].expected_version -cne $requiredRuntime.Substring('windows-powershell-'.Length)) {
+        throw ('Windows lab plan missing, duplicating or mislabeling runtime: ' + $requiredRuntime)
+    }
 }
 $results = @()
 foreach ($image in $planValue.images) {
@@ -603,6 +611,9 @@ foreach ($image in $planValue.images) {
     if ([string]$bootstrap.worker_id -cne [string]$image.worker_id -or
         [string]$bootstrap.computer_name -ine [string]$image.computer_name) {
         throw ('Guest bootstrap worker/computer identity mismatch for ' + $vmName)
+    }
+    if ([string]$bootstrap.runtime_id -cne [string]$image.runtime_id) {
+        throw ('Guest runtime identity mismatch for ' + $vmName)
     }
     $actualVersion = [string]$bootstrap.powershell_version
     $expectedVersion = [string]$image.expected_version

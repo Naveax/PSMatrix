@@ -164,27 +164,54 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
             host,
         )
 
-    def test_empty_or_non_array_plan_cannot_produce_false_pass(self):
+    def test_partial_or_non_array_plan_cannot_produce_false_pass(self):
         host = HOST.read_text(encoding="utf-8")
         entry = host.split("Assert-Administrator\nImport-Module Hyper-V", 1)[1]
-        required = (
+        for required in (
+            "$requiredRuntimes = @('windows-powershell-4.0', 'windows-powershell-5.0', 'windows-powershell-5.1')",
             "$planValue.images -isnot [System.Array]",
-            "@($planValue.images).Count -lt 1",
-            "Windows lab plan must contain a non-empty images array.",
-        )
-        for fragment in required:
-            self.assertIn(fragment, entry)
+            "@($planValue.images).Count -ne $requiredRuntimes.Count",
+            "Windows lab plan must contain exactly three canonical runtime images.",
+        ):
+            self.assertIn(required, entry)
         self.assertLess(
-            entry.index("Windows lab plan must contain a non-empty images array."),
+            entry.index("Windows lab plan must contain exactly three canonical runtime images."),
             entry.index("$results = @()"),
         )
+
+    def test_plan_has_unique_canonical_runtime_and_matching_version(self):
+        host = HOST.read_text(encoding="utf-8")
+        entry = host.split("Assert-Administrator\nImport-Module Hyper-V", 1)[1]
+        for required in (
+            "foreach ($requiredRuntime in $requiredRuntimes)",
+            "[string]$_.runtime_id -ceq $requiredRuntime",
+            "$matches.Count -ne 1",
+            "$matches[0].expected_version -cne $requiredRuntime.Substring('windows-powershell-'.Length)",
+            "Windows lab plan missing, duplicating or mislabeling runtime:",
+        ):
+            self.assertIn(required, entry)
         self.assertLess(
-            entry.index("Windows lab plan must contain a non-empty images array."),
+            entry.index("Windows lab plan missing, duplicating or mislabeling runtime:"),
             entry.index("foreach ($image in $planValue.images)"),
         )
+
+    def test_guest_runtime_claim_must_match_plan_before_checkpoint(self):
+        host = HOST.read_text(encoding="utf-8")
+        loop = host.split("foreach ($image in $planValue.images) {", 1)[1]
+        for required in (
+            "$bootstrap.runtime_id -cne [string]$image.runtime_id",
+            "Guest runtime identity mismatch for ",
+            "$bootstrap.powershell_version",
+            "Guest exact version mismatch",
+        ):
+            self.assertIn(required, loop)
         self.assertLess(
-            entry.index("Windows lab plan must contain a non-empty images array."),
-            entry.index("status = 'PASS'"),
+            loop.index("Guest runtime identity mismatch for "),
+            loop.index("Guest exact version mismatch"),
+        )
+        self.assertLess(
+            loop.index("Guest runtime identity mismatch for "),
+            loop.index("Checkpoint-VM -Name $vmName"),
         )
 
     def test_vhdx_report_hash_is_taken_offline_before_checkpoint_and_restart(self):

@@ -62,14 +62,20 @@ VHDX acceptance is claimed. The host-only source is not being retargeted to PS4.
 
 The guest bootstrap checks `netsh.exe advfirewall firewall add rule`'s exit code **immediately** after the command. Previously a failed firewall-rule command could be masked by a succeeding worker probe overwriting `$LASTEXITCODE`, allowing a false `PASS`. A nonzero `netsh` exit now fails closed before the probe. Real guest firewall reachability still requires elevated Windows acceptance; this is not a remote network test.
 
-## Empty-plan false PASS prevention
+## Canonical three-runtime plan and guest identity
 
-The host provisioner rejects a missing, scalar or empty `images` collection
-*before* it enters the VM creation loop. Previously an `images: []` JSON plan
-produced `status: "PASS"` with `images: []` and no VM validation. Requiring
-a non-empty JSON array prevents that false-success evidence. It does not mean
-the specified images booted successfully: real elevated Hyper-V acceptance and
-independent source certification remain mandatory.
+The host now requires exactly three unique image profiles: `windows-powershell-4.0`,
+`windows-powershell-5.0` and `windows-powershell-5.1`, each with a matching
+`expected_version`. This enforces the existing provision-plan schema's
+`minItems: 3` / `maxItems: 3` boundary and the shipped lab profile catalog.
+Previously the host accepted a one-image or duplicate-target plan and could
+issue an apparently complete `PASS` after checking only that subset.
+
+The offline guest's `runtime_id` must also match the planned value before
+`Checkpoint-VM` and before it is included in the result receipt. Runtime ID
+matching is an **identity consistency check**, not proof of running a real
+Windows PowerShell 4.0/5.0/5.1 guest. Elevated three-image acceptance and
+independent release approval remain required.
 
 ## Important limitations
 
