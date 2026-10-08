@@ -99,6 +99,9 @@ function Set-RestrictedDirectoryAcl([string]$Path) {
                 $adminSid, $fullControl, $inheritance, $propagation, $allow
             )
         )
+        # Explicit trustees do not remove the NTFS owner's right to rewrite
+        # the DACL; fail closed if elevated bootstrap cannot set trusted owner.
+        $acl.SetOwner($adminSid)
         Set-Acl -LiteralPath $item.FullName -AclObject $acl -ErrorAction Stop
     }
 }

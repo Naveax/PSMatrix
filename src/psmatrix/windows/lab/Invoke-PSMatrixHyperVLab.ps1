@@ -243,6 +243,17 @@ function Assert-RestrictedGuestDirectoryAcl([string]$Path, [string]$Label) {
         if (-not $acl.AreAccessRulesProtected) {
             throw ($Label + ' directory tree still inherits ACLs; refusing checkpoint.')
         }
+        # A non-allowlisted NTFS owner can rewrite the DACL even when
+        # the visible access rules only mention SYSTEM and Administrators.
+        try {
+            $ownerSid = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+        }
+        catch {
+            throw ($Label + ' ACL owner cannot be resolved to a SID; refusing checkpoint.')
+        }
+        if ($required -notcontains $ownerSid) {
+            throw ($Label + ' ACL owner is not SYSTEM or built-in Administrators; refusing checkpoint.')
+        }
         $seen = @{}
         foreach ($rule in @($acl.Access)) {
             try {

@@ -109,6 +109,36 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
             host.index("    Checkpoint-VM -Name $vmName"),
         )
 
+    def test_sensitive_ntfs_owner_is_restricted_before_guest_checkpoint(self):
+        guest = GUEST.read_text(encoding="utf-8")
+        host = HOST.read_text(encoding="utf-8")
+        setter = guest.split("function Set-RestrictedDirectoryAcl(", 1)[1].split(
+            "function Remove-GuestSetupAnswerFiles(", 1
+        )[0]
+        verifier = host.split("function Assert-RestrictedGuestDirectoryAcl(", 1)[1].split(
+            "function Assert-NoGuestBootstrapStagingSecrets(", 1
+        )[0]
+        self.assertIn("$acl.SetOwner($adminSid)", setter)
+        self.assertLess(
+            setter.index("$acl.SetOwner($adminSid)"),
+            setter.index("Set-Acl -LiteralPath $item.FullName -AclObject $acl"),
+        )
+        for required in (
+            "$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value",
+            "$required -notcontains $ownerSid",
+            "ACL owner cannot be resolved to a SID; refusing checkpoint.",
+            "ACL owner is not SYSTEM or built-in Administrators; refusing checkpoint.",
+        ):
+            self.assertIn(required, verifier)
+        self.assertLess(
+            verifier.index("$required -notcontains $ownerSid"),
+            verifier.index("$seen = @{}"),
+        )
+        self.assertLess(
+            host.index("Assert-RestrictedGuestDirectoryAcl -Path"),
+            host.index("    Checkpoint-VM -Name $vmName"),
+        )
+
     def test_host_independently_verifies_sensitive_directory_acls_before_checkpoint(self):
         text = HOST.read_text(encoding="utf-8")
         self.assertIn("function Assert-RestrictedGuestDirectoryAcl", text)
