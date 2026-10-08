@@ -46,6 +46,18 @@ removes the corresponding administrator password environment variable from its
 process and drops local string references; this shortens plaintext lifetime but is
 not a memory-erasure guarantee.
 
+## PowerShell 4.0 guest constructor compatibility
+
+The first-boot guest supports a Windows PowerShell **4.0** target in addition to
+5.0/5.1. PowerShell's intrinsic `[Type]::new(...)` constructor syntax was added
+only in PowerShell 5.0, so it cannot be used by the guest's ACL hardening code.
+Guest SecurityIdentifier and FileSystemAccessRule objects now use `New-Object
+-TypeName ... -ArgumentList`, preserving the well-known SYSTEM and built-in
+Administrators SIDs, exact explicit ACL rule shapes and trusted-owner checks.
+Windows operator WinPS 5.1 and PowerShell 7 exercised these constructors and
+ACL rule properties; no real Windows PowerShell 4.0 guest boot or elevated
+VHDX acceptance is claimed. The host-only source is not being retargeted to PS4.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted

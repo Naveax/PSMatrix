@@ -430,8 +430,12 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
         for text in (guest, host):
             self.assertIn("New-Object System.Collections.Stack", text)
             self.assertIn("Restricted directory tree contains a reparse point:", text)
-            self.assertIn("[Security.Principal.SecurityIdentifier]::new('S-1-5-18')", text)
-            self.assertIn("[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')", text)
+            if text == guest:
+                self.assertIn("New-Object -TypeName System.Security.Principal.SecurityIdentifier -ArgumentList 'S-1-5-18'", text)
+                self.assertIn("New-Object -TypeName System.Security.Principal.SecurityIdentifier -ArgumentList 'S-1-5-32-544'", text)
+            else:
+                self.assertIn("[Security.Principal.SecurityIdentifier]::new('S-1-5-18')", text)
+                self.assertIn("[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')", text)
             self.assertIn("$acl.SetAccessRuleProtection($true, $false)", text)
             self.assertIn("$acl.PurgeAccessRules", text)
             self.assertIn("$acl.AddAccessRule", text)
@@ -442,13 +446,35 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
         self.assertIn("Get-Acl -LiteralPath $item.FullName", host)
         self.assertIn("Get-ChildItem -LiteralPath $item.FullName -Force -ErrorAction Stop", host)
 
+    def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
+        guest = GUEST.read_text(encoding="utf-8")
+        self.assertNotIn("::new(", guest)
+        for code in (
+            "New-Object -TypeName System.Security.Principal.SecurityIdentifier -ArgumentList 'S-1-5-18'",
+            "New-Object -TypeName System.Security.Principal.SecurityIdentifier -ArgumentList 'S-1-5-32-544'",
+            "New-Object -TypeName System.Security.Principal.SecurityIdentifier -ArgumentList ([string]$sidValue)",
+            "New-Object -TypeName System.Security.AccessControl.FileSystemAccessRule -ArgumentList @(",
+            "$acl.SetOwner($adminSid)",
+        ):
+            self.assertIn(code, guest)
+        self.assertEqual(
+            guest.count("New-Object -TypeName System.Security.AccessControl.FileSystemAccessRule -ArgumentList @("),
+            2,
+        )
+        self.assertIn("Set-Acl -LiteralPath $item.FullName -AclObject $acl -ErrorAction Stop", guest)
+
     def test_recursive_acl_setter_uses_exact_file_and_directory_rule_shapes(self):
         for text in (GUEST.read_text(encoding="utf-8"), HOST.read_text(encoding="utf-8")):
             none = text.index("[Security.AccessControl.InheritanceFlags]::None")
             branch = text.index("if ($item.PSIsContainer)", none)
             container = text.index("[Security.AccessControl.InheritanceFlags]::ContainerInherit", branch)
             object_inherit = text.index("[Security.AccessControl.InheritanceFlags]::ObjectInherit", container)
-            add_rule = text.index("[Security.AccessControl.FileSystemAccessRule]::new(", object_inherit)
+            add_rule = text.index(
+                "New-Object -TypeName System.Security.AccessControl.FileSystemAccessRule"
+                if text == GUEST.read_text(encoding="utf-8")
+                else "[Security.AccessControl.FileSystemAccessRule]::new(",
+                object_inherit,
+            )
             self.assertLess(none, branch)
             self.assertLess(branch, container)
             self.assertLess(container, object_inherit)
@@ -565,11 +591,18 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
         host = HOST.read_text(encoding="utf-8")
         for text in (guest, host):
             self.assertIn("function Set-RestrictedDirectoryAcl", text)
-            self.assertIn("[Security.Principal.SecurityIdentifier]::new('S-1-5-18')", text)
-            self.assertIn("[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')", text)
+            if text == guest:
+                self.assertIn("New-Object -TypeName System.Security.Principal.SecurityIdentifier -ArgumentList 'S-1-5-18'", text)
+                self.assertIn("New-Object -TypeName System.Security.Principal.SecurityIdentifier -ArgumentList 'S-1-5-32-544'", text)
+            else:
+                self.assertIn("[Security.Principal.SecurityIdentifier]::new('S-1-5-18')", text)
+                self.assertIn("[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')", text)
             self.assertIn("$acl.SetAccessRuleProtection($true, $false)", text)
             self.assertIn("$acl.PurgeAccessRules", text)
-            self.assertIn("[Security.AccessControl.FileSystemAccessRule]::new(", text)
+            if text == guest:
+                self.assertIn("New-Object -TypeName System.Security.AccessControl.FileSystemAccessRule", text)
+            else:
+                self.assertIn("[Security.AccessControl.FileSystemAccessRule]::new(", text)
             self.assertIn("Set-Acl -LiteralPath $item.FullName -AclObject $acl -ErrorAction Stop", text)
         for variable in ("$credentialRoot", "$signingRoot", "$configRoot"):
             self.assertIn("Set-RestrictedDirectoryAcl " + variable, guest)

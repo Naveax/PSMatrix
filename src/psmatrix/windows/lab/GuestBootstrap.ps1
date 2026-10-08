@@ -57,8 +57,8 @@ function Set-RestrictedDirectoryAcl([string]$Path) {
         }
     }
 
-    $systemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
-    $adminSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+    $systemSid = New-Object -TypeName System.Security.Principal.SecurityIdentifier -ArgumentList 'S-1-5-18'
+    $adminSid = New-Object -TypeName System.Security.Principal.SecurityIdentifier -ArgumentList 'S-1-5-32-544'
     foreach ($item in @($items | Sort-Object { $_.FullName.Length } -Descending)) {
         $acl = Get-Acl -LiteralPath $item.FullName -ErrorAction Stop
         $acl.SetAccessRuleProtection($true, $false)
@@ -76,7 +76,7 @@ function Set-RestrictedDirectoryAcl([string]$Path) {
             Sort-Object -Unique
         )
         foreach ($sidValue in $existingSids) {
-            $acl.PurgeAccessRules([Security.Principal.SecurityIdentifier]::new([string]$sidValue))
+            $acl.PurgeAccessRules((New-Object -TypeName System.Security.Principal.SecurityIdentifier -ArgumentList ([string]$sidValue)))
         }
 
         $inheritance = [Security.AccessControl.InheritanceFlags]::None
@@ -90,12 +90,12 @@ function Set-RestrictedDirectoryAcl([string]$Path) {
         $allow = [Security.AccessControl.AccessControlType]::Allow
         $fullControl = [Security.AccessControl.FileSystemRights]::FullControl
         [void]$acl.AddAccessRule(
-            [Security.AccessControl.FileSystemAccessRule]::new(
+            New-Object -TypeName System.Security.AccessControl.FileSystemAccessRule -ArgumentList @(
                 $systemSid, $fullControl, $inheritance, $propagation, $allow
             )
         )
         [void]$acl.AddAccessRule(
-            [Security.AccessControl.FileSystemAccessRule]::new(
+            New-Object -TypeName System.Security.AccessControl.FileSystemAccessRule -ArgumentList @(
                 $adminSid, $fullControl, $inheritance, $propagation, $allow
             )
         )
