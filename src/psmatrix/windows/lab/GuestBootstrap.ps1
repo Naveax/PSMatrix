@@ -89,16 +89,14 @@ function Set-RestrictedDirectoryAcl([string]$Path) {
         $propagation = [Security.AccessControl.PropagationFlags]::None
         $allow = [Security.AccessControl.AccessControlType]::Allow
         $fullControl = [Security.AccessControl.FileSystemRights]::FullControl
-        [void]$acl.AddAccessRule(
-            New-Object -TypeName System.Security.AccessControl.FileSystemAccessRule -ArgumentList @(
-                $systemSid, $fullControl, $inheritance, $propagation, $allow
-            )
+        $systemRule = New-Object -TypeName System.Security.AccessControl.FileSystemAccessRule -ArgumentList @(
+            $systemSid, $fullControl, $inheritance, $propagation, $allow
         )
-        [void]$acl.AddAccessRule(
-            New-Object -TypeName System.Security.AccessControl.FileSystemAccessRule -ArgumentList @(
-                $adminSid, $fullControl, $inheritance, $propagation, $allow
-            )
+        $adminRule = New-Object -TypeName System.Security.AccessControl.FileSystemAccessRule -ArgumentList @(
+            $adminSid, $fullControl, $inheritance, $propagation, $allow
         )
+        [void]$acl.AddAccessRule($systemRule)
+        [void]$acl.AddAccessRule($adminRule)
         # Explicit trustees do not remove the NTFS owner's right to rewrite
         # the DACL; fail closed if elevated bootstrap cannot set trusted owner.
         $acl.SetOwner($adminSid)
