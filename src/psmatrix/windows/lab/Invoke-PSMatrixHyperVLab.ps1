@@ -165,6 +165,13 @@ function Close-LabBuildMedia([string]$VhdPath, [string]$IsoPath, [bool]$WasMount
     }
     finally {
         Dismount-DiskImage -ImagePath $IsoPath -ErrorAction Stop
+        # A successful dismount command does not establish that the ISO has
+        # detached. Verify its actual Storage module attachment state.
+        $isoState = Get-DiskImage -ImagePath $IsoPath -ErrorAction Stop
+        if ($null -eq $isoState -or $isoState.Attached -isnot [bool] -or
+            $isoState.Attached -ne $false) {
+            throw 'New lab Windows ISO remains attached after cleanup; refusing provisioning.'
+        }
     }
 }
 function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce) {

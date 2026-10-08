@@ -104,6 +104,33 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
             host,
         )
 
+    def test_host_confirms_iso_dismount_state_before_returning_vhd(self):
+        host = HOST.read_text(encoding="utf-8")
+        helper = host.split("function Close-LabBuildMedia(", 1)[1].split(
+            "function New-LabVhd(", 1
+        )[0]
+        for fragment in (
+            "Dismount-DiskImage -ImagePath $IsoPath -ErrorAction Stop",
+            "Get-DiskImage -ImagePath $IsoPath -ErrorAction Stop",
+            "$null -eq $isoState",
+            "$isoState.Attached -isnot [bool]",
+            "$isoState.Attached -ne $false",
+            "New lab Windows ISO remains attached after cleanup; refusing provisioning.",
+        ):
+            self.assertIn(fragment, helper)
+        self.assertLess(
+            helper.index("Dismount-DiskImage -ImagePath $IsoPath -ErrorAction Stop"),
+            helper.index("Get-DiskImage -ImagePath $IsoPath -ErrorAction Stop"),
+        )
+        self.assertLess(
+            helper.index("Get-DiskImage -ImagePath $IsoPath -ErrorAction Stop"),
+            host.index("function New-LabVhd(") - host.index("function Close-LabBuildMedia("),
+        )
+        self.assertIn(
+            "Close-LabBuildMedia -VhdPath $output -IsoPath ([string]$Image.source_iso.path) -WasMounted ([bool]$vhdMounted)",
+            host,
+        )
+
     def test_host_requires_confirmed_vhdx_dismount_before_checkpoint(self):
         host = HOST.read_text(encoding="utf-8")
         reader = host.split("function Read-BootstrapResult(", 1)[1].split(
