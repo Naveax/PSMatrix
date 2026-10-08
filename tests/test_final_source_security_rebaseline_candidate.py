@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import re
 import subprocess
 import tempfile
 import unittest
@@ -61,6 +62,42 @@ class FinalSourceSecurityRebaselineCandidateTests(unittest.TestCase):
                 path.write_text(content, encoding="utf-8")
                 with self.assertRaisesRegex(RuntimeError, error):
                     validator._load(path)
+
+    def test_contract_rejects_unreviewed_fields_and_missing_keys_at_every_level(self):
+        source = validator._load(CONTRACT)
+        validator._assert_contract_shape(source)
+        paths = (
+            (),
+            ("frozen_final_source",),
+            ("security_source_candidate",),
+            ("security_source_candidate", "baseline_tests"),
+            ("security_source_candidate", "windows_powershell_51_security_synthetic"),
+            ("security_source_candidate", "repository_private_material_scan"),
+            ("security_source_candidate", "supersedes"),
+            ("review_evidence",),
+            ("human_review",),
+            ("promotion",),
+            ("claims",),
+            ("handoff_policy",),
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                candidate = copy.deepcopy(source)
+                node = candidate
+                for part in path:
+                    node = node[part]
+                node["unreviewed_override"] = True
+                error = "contract object shape changed: " + (".".join(path) or "<root>")
+                with self.assertRaisesRegex(RuntimeError, re.escape(error)):
+                    validator.validate(candidate, ROOT, None, None)
+
+                missing = copy.deepcopy(source)
+                node = missing
+                for part in path:
+                    node = node[part]
+                node.pop(next(iter(node)))
+                with self.assertRaisesRegex(RuntimeError, re.escape(error)):
+                    validator.validate(missing, ROOT, None, None)
 
     def test_security_scope_is_exactly_four_paths(self):
         value = json.loads(CONTRACT.read_text(encoding="utf-8"))
@@ -197,7 +234,7 @@ class FinalSourceSecurityRebaselineCandidateTests(unittest.TestCase):
                     ("mutable_manifest_declared_authority", ("handoff_policy", "review_manifest_is_authority"), True, "review handoff authority"),
                     ("mutable_manifest_stability_removed", ("handoff_policy", "review_manifest_may_evolve_without_changing_source_candidate"), False, "review handoff authority"),
                     ("immutable_evidence_binding_disabled", ("handoff_policy", "immutable_evidence_must_remain_hash_bound"), False, "immutable evidence policy"),
-                    ("handoff_policy_extra_key", ("handoff_policy", "fabricated_extra"), True, "review handoff authority"),
+                    ("handoff_policy_extra_key", ("handoff_policy", "fabricated_extra"), True, "contract object shape changed: handoff_policy"),
                 )
                 for label, key_path, replacement, error in negative_governance:
                     with self.subTest(label=label):
@@ -217,9 +254,9 @@ class FinalSourceSecurityRebaselineCandidateTests(unittest.TestCase):
                     ("supersedes_commit", ("security_source_candidate", "supersedes", "commit"), "0" * 40, "superseded V3 source identity"),
                     ("supersedes_tree", ("security_source_candidate", "supersedes", "tree"), "0" * 40, "superseded V3 source identity"),
                     ("supersedes_reason", ("security_source_candidate", "supersedes", "reason"), "", "superseded V3 source identity"),
-                    ("review_evidence_empty", ("review_evidence",), {}, "immutable review-evidence digest binding"),
+                    ("review_evidence_empty", ("review_evidence",), {}, "contract object shape changed: review_evidence"),
                     ("review_evidence_hash_changed", ("review_evidence", "patch_sha256"), "0" * 64, "immutable review-evidence digest binding"),
-                    ("review_evidence_extra_key", ("review_evidence", "unreviewed_extra"), "0" * 64, "immutable review-evidence digest binding"),
+                    ("review_evidence_extra_key", ("review_evidence", "unreviewed_extra"), "0" * 64, "contract object shape changed: review_evidence"),
                     ("scan_files_fabricated", ("security_source_candidate", "repository_private_material_scan", "files"), 999, "scan evidence count changed"),
                     ("scan_receipt_fabricated", ("security_source_candidate", "repository_private_material_scan", "receipt_sha256"), "0" * 64, "scan receipt binding changed"),
                 )

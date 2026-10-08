@@ -23,6 +23,64 @@ _EXPECTED_V4_CHANGED_PATHS = (
 
 
 
+_CONTRACT_OBJECT_FIELDS: dict[tuple[str, ...], frozenset[str]] = {
+    (): frozenset({
+        "schema", "kind", "pack", "frozen_final_source",
+        "security_source_candidate", "review_evidence", "human_review",
+        "promotion", "claims", "handoff_policy",
+    }),
+    ("frozen_final_source",): frozenset({"branch", "commit", "tree", "immutable"}),
+    ("security_source_candidate",): frozenset({
+        "branch", "commit", "tree", "parent_commit", "changed_path_count",
+        "changed_paths", "baseline_tests", "windows_powershell_51_security_synthetic",
+        "repository_private_material_scan", "supersedes",
+    }),
+    ("security_source_candidate", "baseline_tests"): frozenset({"passed", "total"}),
+    ("security_source_candidate", "windows_powershell_51_security_synthetic"): frozenset({
+        "passed", "total", "elevated_recursive_acl_acceptance_required",
+    }),
+    ("security_source_candidate", "repository_private_material_scan"): frozenset({
+        "files", "findings", "receipt_sha256",
+    }),
+    ("security_source_candidate", "supersedes"): frozenset({
+        "branch", "commit", "tree", "reason",
+    }),
+    ("review_evidence",): frozenset({
+        "patch_sha256", "control_rebaseline_plan_sha256",
+    }),
+    ("human_review",): frozenset({"required", "complete", "reviewer", "reviewed_at"}),
+    ("promotion",): frozenset({
+        "old_frozen_branch_must_not_move",
+        "new_immutable_final_source_ref_required",
+        "proposed_new_final_source_branch",
+        "exact_candidate_commit_required", "fresh_unsigned_staging_required",
+        "fresh_windows_certification_required", "fresh_signing_required",
+        "fresh_release_intake_required", "fresh_security_review_required",
+        "fresh_evidence_rebind_required", "fresh_ga_closure_required",
+        "signed_rc4_reuse_prohibited",
+    }),
+    ("claims",): frozenset({"authoritative", "ga_eligible", "signed", "certified"}),
+    ("handoff_policy",): frozenset({
+        "review_manifest_is_authority",
+        "review_manifest_may_evolve_without_changing_source_candidate",
+        "immutable_evidence_must_remain_hash_bound",
+    }),
+}
+
+
+def _assert_contract_shape(contract: dict[str, Any]) -> None:
+    # Review data is not an extensible command language. Refuse unexpected
+    # fields as well as missing keys at every authority-bearing object level.
+    for path, expected in _CONTRACT_OBJECT_FIELDS.items():
+        node: Any = contract
+        for key in path:
+            if not isinstance(node, dict) or key not in node:
+                raise RuntimeError(f"contract object shape changed: {'.'.join(path)}")
+            node = node[key]
+        if type(node) is not dict or node.keys() != expected:
+            raise RuntimeError(f"contract object shape changed: {'.'.join(path) or '<root>'}")
+
+
 def _git(repo: Path, *args: str) -> str:
     p = subprocess.run(
         ["git", *args],
@@ -69,6 +127,7 @@ def _require(value: bool, message: str) -> None:
 
 
 def validate(contract: dict[str, Any], repo: Path, frozen_ref: str | None, candidate_ref: str | None) -> dict[str, Any]:
+    _assert_contract_shape(contract)
     _require(type(contract.get("schema")) is int and contract["schema"] == 1, "schema mismatch")
     _require(contract.get("kind") == _KIND, "kind mismatch")
     _require(contract.get("pack") == "03-authoritative-windows", "pack mismatch")
