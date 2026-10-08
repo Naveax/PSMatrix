@@ -164,7 +164,7 @@ class FinalSourceSecurityRebaselineCandidateTests(unittest.TestCase):
             subprocess.run(["git", "commit", "-qm", "base"], cwd=repo, check=True)
             base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
             base_tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=repo, text=True).strip()
-            subprocess.run(["git", "branch", "frozen-v2"], cwd=repo, check=True)
+            subprocess.run(["git", "branch", "final/2.0.0-release-candidate-anchor-v2"], cwd=repo, check=True)
             for path in four:
                 p = repo / path
                 p.parent.mkdir(parents=True, exist_ok=True)
@@ -173,7 +173,7 @@ class FinalSourceSecurityRebaselineCandidateTests(unittest.TestCase):
             subprocess.run(["git", "commit", "-qm", "candidate"], cwd=repo, check=True)
             candidate = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
             candidate_tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=repo, text=True).strip()
-            subprocess.run(["git", "branch", "candidate-review"], cwd=repo, check=True)
+            subprocess.run(["git", "branch", "security/2.0.0-unattend-hygiene-source-candidate-v4-20261007"], cwd=repo, check=True)
 
             value = json.loads(CONTRACT.read_text(encoding="utf-8"))
             value = copy.deepcopy(value)
@@ -195,12 +195,27 @@ class FinalSourceSecurityRebaselineCandidateTests(unittest.TestCase):
                 _EXPECTED_V4_COMMIT=candidate,
                 _EXPECTED_V4_TREE=candidate_tree,
             ):
-                result = validator.validate(value, repo, "refs/heads/frozen-v2", "refs/heads/candidate-review")
+                result = validator.validate(value, repo, "refs/heads/final/2.0.0-release-candidate-anchor-v2", "refs/heads/security/2.0.0-unattend-hygiene-source-candidate-v4-20261007")
                 self.assertEqual(result["status"], "PASS")
                 self.assertFalse(result["ready_for_promotion"])
 
                 # Python normally treats True == 1, False == 0 and 4.0 == 4.
                 # JSON contract authority fields must instead keep native types.
+                # The reviewed branch names must be checked, not just the
+                # SHA-40 object; stale/moved branches and omitted refs are unsafe.
+                ref_negative_cases = (
+                    ("both_omitted", None, None, "frozen ref must be the reviewed"),
+                    ("frozen_sha_instead_of_ref", base, "refs/heads/security/2.0.0-unattend-hygiene-source-candidate-v4-20261007", "frozen ref must be the reviewed"),
+                    ("candidate_sha_instead_of_ref", "refs/heads/final/2.0.0-release-candidate-anchor-v2", candidate, "candidate ref must be the reviewed"),
+                    ("unreviewed_branch_name", "refs/heads/frozen-v2", "refs/heads/security/2.0.0-unattend-hygiene-source-candidate-v4-20261007", "frozen ref must be the reviewed"),
+                    ("other_branch_name", "refs/heads/final/2.0.0-release-candidate-anchor-v2", "refs/heads/candidate-review", "candidate ref must be the reviewed"),
+                    ("branch_ref_missing", "refs/remotes/origin/final/2.0.0-release-candidate-anchor-v2", "refs/heads/security/2.0.0-unattend-hygiene-source-candidate-v4-20261007", "git show-ref"),
+                )
+                for label, frozen_arg, candidate_arg, error in ref_negative_cases:
+                    with self.subTest(label=label):
+                        with self.assertRaisesRegex(RuntimeError, error):
+                            validator.validate(value, repo, frozen_arg, candidate_arg)
+
                 negative_types = (
                     ("schema_true", ("schema",), True, "schema mismatch"),
                     ("schema_float", ("schema",), 1.0, "schema mismatch"),
@@ -222,7 +237,7 @@ class FinalSourceSecurityRebaselineCandidateTests(unittest.TestCase):
                             selected = selected[key]
                         selected[key_path[-1]] = replacement
                         with self.assertRaisesRegex(RuntimeError, error):
-                            validator.validate(mutated, repo, "refs/heads/frozen-v2", "refs/heads/candidate-review")
+                            validator.validate(mutated, repo, "refs/heads/final/2.0.0-release-candidate-anchor-v2", "refs/heads/security/2.0.0-unattend-hygiene-source-candidate-v4-20261007")
 
                 negative_governance = (
                     ("frozen_branch_forged", ("frozen_final_source", "branch"), "main", "frozen source branch identity"),
@@ -244,7 +259,7 @@ class FinalSourceSecurityRebaselineCandidateTests(unittest.TestCase):
                             selected = selected[key]
                         selected[key_path[-1]] = replacement
                         with self.assertRaisesRegex(RuntimeError, error):
-                            validator.validate(mutated, repo, "refs/heads/frozen-v2", "refs/heads/candidate-review")
+                            validator.validate(mutated, repo, "refs/heads/final/2.0.0-release-candidate-anchor-v2", "refs/heads/security/2.0.0-unattend-hygiene-source-candidate-v4-20261007")
 
                 negative_lineage_and_evidence = (
                     ("promotion_main", ("promotion", "proposed_new_final_source_branch"), "main", "proposed new final-source branch identity"),
@@ -268,7 +283,7 @@ class FinalSourceSecurityRebaselineCandidateTests(unittest.TestCase):
                             chosen = chosen[key]
                         chosen[key_path[-1]] = replacement
                         with self.assertRaisesRegex(RuntimeError, error):
-                            validator.validate(mutated, repo, "refs/heads/frozen-v2", "refs/heads/candidate-review")
+                            validator.validate(mutated, repo, "refs/heads/final/2.0.0-release-candidate-anchor-v2", "refs/heads/security/2.0.0-unattend-hygiene-source-candidate-v4-20261007")
 
                 immutable_identity_cases = (
                     ("frozen_commit_v3", ("frozen_final_source", "commit"), "adfa7610c31813818ff532cfdc9f98fbddc01832", "frozen V2 commit/tree identity"),
@@ -286,12 +301,12 @@ class FinalSourceSecurityRebaselineCandidateTests(unittest.TestCase):
                             node = node[key]
                         node[key_path[-1]] = new_value
                         with self.assertRaisesRegex(RuntimeError, error):
-                            validator.validate(mutated, repo, "refs/heads/frozen-v2", "refs/heads/candidate-review")
+                            validator.validate(mutated, repo, "refs/heads/final/2.0.0-release-candidate-anchor-v2", "refs/heads/security/2.0.0-unattend-hygiene-source-candidate-v4-20261007")
 
                 value["security_source_candidate"]["changed_paths"] = four[:-1]
                 value["security_source_candidate"]["changed_path_count"] = 3
                 with self.assertRaisesRegex(RuntimeError, "exactly four"):
-                    validator.validate(value, repo, "refs/heads/frozen-v2", "refs/heads/candidate-review")
+                    validator.validate(value, repo, "refs/heads/final/2.0.0-release-candidate-anchor-v2", "refs/heads/security/2.0.0-unattend-hygiene-source-candidate-v4-20261007")
 
     def test_validator_has_no_network_or_ref_mutation_commands(self):
         text = VALIDATOR.read_text(encoding="utf-8")

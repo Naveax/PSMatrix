@@ -255,10 +255,25 @@ def validate(contract: dict[str, Any], repo: Path, frozen_ref: str | None, candi
     changed = _git(repo, "diff", "--name-only", frozen["commit"], candidate["commit"]).splitlines()
     _require(changed == paths, "candidate changed-path closure mismatch")
 
-    if frozen_ref:
-        _require(_git(repo, "rev-parse", frozen_ref) == frozen["commit"], "frozen ref moved")
-    if candidate_ref:
-        _require(_git(repo, "rev-parse", candidate_ref) == candidate["commit"], "candidate ref mismatch")
+    # Source object identities and branch identities are separate checks.
+    # Reject omitted refs and raw SHAs: a SHA resolves without proving that
+    # the reviewed named branch actually still points to that commit.
+    for label, supplied, branch, expected_commit in (
+        ("frozen", frozen_ref, frozen["branch"], frozen["commit"]),
+        ("candidate", candidate_ref, candidate["branch"], candidate["commit"]),
+    ):
+        expected_refs = (
+            "refs/heads/" + branch,
+            "refs/remotes/origin/" + branch,
+        )
+        _require(
+            type(supplied) is str and supplied in expected_refs,
+            f"{label} ref must be the reviewed fully qualified branch reference",
+        )
+        _require(
+            _git(repo, "show-ref", "--verify", "--hash", supplied) == expected_commit,
+            f"{label} ref mismatch",
+        )
 
     return {
         "schema": 1,
@@ -279,8 +294,8 @@ def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--contract", required=True)
     p.add_argument("--repo", required=True)
-    p.add_argument("--frozen-ref")
-    p.add_argument("--candidate-ref")
+    p.add_argument("--frozen-ref", required=True)
+    p.add_argument("--candidate-ref", required=True)
     args = p.parse_args()
     result = validate(_load(Path(args.contract)), Path(args.repo), args.frozen_ref, args.candidate_ref)
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
