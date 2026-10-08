@@ -573,6 +573,121 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
         self.assertEqual(extract.count("Set-RestrictedDirectoryAcl $Destination"), 2)
         self.assertNotIn("::new(", guest)
 
+    def test_guest_zip_preflight_rejects_duplicate_targets_and_resource_exhaustion(self):
+        guest = GUEST.read_text(encoding="utf-8")
+        extract = guest.split("function Expand-Zip(", 1)[1].split(
+            "function Find-File(", 1
+        )[0]
+        for fragment in (
+            "$maxEntries = 16384",
+            "$maxExpandedBytes = [long]4294967296",
+            "System.Collections.Generic.HashSet[string]",
+            "[StringComparer]::OrdinalIgnoreCase",
+            "$entryCount -gt $maxEntries",
+            "$entryFull.TrimEnd([char[]]@('\\', '/'))",
+            "$seenEntries.Add($canonicalEntry)",
+            "Guest bootstrap ZIP contains duplicate destination paths.",
+            "[long]$entry.Length -gt ($maxExpandedBytes - $expandedBytes)",
+            "Guest bootstrap ZIP exceeds its expanded-size limit.",
+        ):
+            self.assertIn(fragment, extract)
+        create = extract.index("New-Item -ItemType Directory -Path $Destination")
+        self.assertLess(extract.index("$seenEntries.Add("), create)
+        self.assertLess(extract.index("$expandedBytes += [long]$entry.Length"), create)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows PowerShell")
+    def test_guest_zip_preflight_dynamic_duplicate_rejected_before_write(self):
+        import shutil
+        import struct
+        import subprocess
+        import tempfile
+        import zipfile
+
+        def ps_quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-zip-preflight-") as root:
+            directory = Path(root)
+            bad_zip = directory / "duplicates.zip"
+            good_zip = directory / "safe.zip"
+            with zipfile.ZipFile(bad_zip, "w") as archive:
+                archive.writestr("Dir/item.txt", "a")
+                archive.writestr("dir\\ITEM.TXT", "b")
+            with zipfile.ZipFile(good_zip, "w") as archive:
+                archive.writestr("pkg/worker.txt", "safe")
+            oversized_zip = directory / "oversized-metadata.zip"
+            with zipfile.ZipFile(oversized_zip, "w") as archive:
+                archive.writestr("part-a", "a")
+                archive.writestr("part-b", "b")
+            # Inflate only ZIP central-directory metadata. No large file is
+            # allocated or extracted; preflight must reject it before writes.
+            raw = bytearray(oversized_zip.read_bytes())
+            cursor = 0
+            for _ in range(2):
+                position = raw.find(b"PK\x01\x02", cursor)
+                self.assertGreaterEqual(position, 0)
+                struct.pack_into("<I", raw, position + 24, 0xF0000000)
+                cursor = position + 4
+            oversized_zip.write_bytes(raw)
+            bad_destination = directory / "should-not-exist"
+            oversized_destination = directory / "oversized-should-not-exist"
+            good_destination = directory / "valid"
+            # Extract only the target function. Intentionally stub ACL changes
+            # because this is a non-elevated ZIP preflight test, not an ACL test.
+            script = """
+$ErrorActionPreference = 'Stop'
+$source = Get-Content -LiteralPath {source} -Raw
+$start = $source.IndexOf('function Expand-Zip(')
+$end = $source.IndexOf('function Find-File(', $start)
+if ($start -lt 0 -or $end -lt 0) {{ throw 'Missing extraction function.' }}
+Invoke-Expression $source.Substring($start, $end - $start)
+function Set-RestrictedDirectoryAcl([string]$Path) {{ }}
+try {{
+    Expand-Zip {bad_zip} {bad_destination}
+    throw 'Duplicate ZIP entry was accepted.'
+}} catch {{
+    if ($_.Exception.Message -ne 'Guest bootstrap ZIP contains duplicate destination paths.') {{ throw }}
+}}
+if (Test-Path -LiteralPath {bad_destination}) {{ throw 'Preflight created rejected destination.' }}
+try {{
+    Expand-Zip {oversized_zip} {oversized_destination}
+    throw 'Oversized ZIP entry metadata was accepted.'
+}} catch {{
+    if ($_.Exception.Message -ne 'Guest bootstrap ZIP exceeds its expanded-size limit.') {{ throw }}
+}}
+if (Test-Path -LiteralPath {oversized_destination}) {{ throw 'Oversized ZIP created its destination.' }}
+Expand-Zip {good_zip} {good_destination}
+if (-not (Test-Path -LiteralPath (Join-Path {good_destination} 'pkg/worker.txt'))) {{
+    throw 'Valid ZIP was not extracted.'
+}}
+""".format(
+                source=ps_quote(GUEST),
+                bad_zip=ps_quote(bad_zip),
+                bad_destination=ps_quote(bad_destination),
+                oversized_zip=ps_quote(oversized_zip),
+                oversized_destination=ps_quote(oversized_destination),
+                good_zip=ps_quote(good_zip),
+                good_destination=ps_quote(good_destination),
+            )
+            result = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                text=True,
+                capture_output=True,
+                timeout=30,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            if shutil.which('pwsh.exe'):
+                shutil.rmtree(good_destination)
+                ps7 = subprocess.run(
+                    ['pwsh.exe', '-NoProfile', '-NonInteractive', '-Command', script],
+                    text=True,
+                    capture_output=True,
+                    timeout=30,
+                    check=False,
+                )
+                self.assertEqual(ps7.returncode, 0, ps7.stdout + ps7.stderr)
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)

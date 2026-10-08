@@ -41,9 +41,20 @@ function Expand-Zip([string]$Archive, [string]$Destination) {
     # traversal. Validate the entire archive before writing any files.
     $destFull = [IO.Path]::GetFullPath($Destination)
     $destPrefix = $destFull.TrimEnd([char[]]@('\', '/')) + [IO.Path]::DirectorySeparatorChar
+    # Refuse duplicate Windows paths and bounded-resource exhaustion before
+    # creating a sensitive destination. These limits cover each archive.
+    $maxEntries = 16384
+    $maxExpandedBytes = [long]4294967296
+    $seenEntries = New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList ([StringComparer]::OrdinalIgnoreCase)
+    $entryCount = 0
+    $expandedBytes = [long]0
     $zip = [IO.Compression.ZipFile]::OpenRead($Archive)
     try {
         foreach ($entry in $zip.Entries) {
+            $entryCount++
+            if ($entryCount -gt $maxEntries) {
+                throw 'Guest bootstrap ZIP exceeds its entry-count limit.'
+            }
             $relativeName = ([string]$entry.FullName).Replace('/', '\')
             if ([string]::IsNullOrWhiteSpace($relativeName) -or
                 $relativeName.StartsWith('\') -or $relativeName.IndexOf(':') -ge 0) {
@@ -53,6 +64,16 @@ function Expand-Zip([string]$Archive, [string]$Destination) {
             if (-not $entryFull.StartsWith($destPrefix, [StringComparison]::OrdinalIgnoreCase)) {
                 throw 'Guest bootstrap ZIP entry escapes the extraction destination.'
             }
+            # The extractor treats case-variant and slash-variant names as the
+            # same Windows target. Refuse collisions before writing any files.
+            $canonicalEntry = $entryFull.TrimEnd([char[]]@('\', '/'))
+            if (-not $seenEntries.Add($canonicalEntry)) {
+                throw 'Guest bootstrap ZIP contains duplicate destination paths.'
+            }
+            if ([long]$entry.Length -gt ($maxExpandedBytes - $expandedBytes)) {
+                throw 'Guest bootstrap ZIP exceeds its expanded-size limit.'
+            }
+            $expandedBytes += [long]$entry.Length
         }
     }
     finally { $zip.Dispose() }
