@@ -602,6 +602,9 @@ foreach ($image in $planValue.images) {
     $actualVersion = [string]$bootstrap.powershell_version
     $expectedVersion = [string]$image.expected_version
     if ($actualVersion -ne $expectedVersion -and -not $actualVersion.StartsWith($expectedVersion + '.')) { throw ('Guest exact version mismatch for ' + $vmName) }
+    # Hash the fully detached, validated base VHDX at the quiescent
+    # checkpoint boundary. Hashing after Start-VM races live guest writes.
+    $verifiedVhdxSha256 = Get-Sha256 $vhd
     Checkpoint-VM -Name $vmName -SnapshotName ([string]$image.checkpoint_name) | Out-Null
     Start-VM -Name $vmName | Out-Null
     $results += [ordered]@{
@@ -613,7 +616,7 @@ foreach ($image in $planValue.images) {
         checkpoint = [string]$image.checkpoint_name
         checkpoint_created = $true
         artifact_hashes_verified = $true
-        vhdx_sha256 = Get-Sha256 $vhd
+        vhdx_sha256 = $verifiedVhdxSha256
         bootstrap_result_sha256 = [string]$bootstrap.verified_bootstrap_result_sha256
     }
 }

@@ -164,6 +164,40 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
             host,
         )
 
+    def test_vhdx_report_hash_is_taken_offline_before_checkpoint_and_restart(self):
+        host = HOST.read_text(encoding="utf-8")
+        loop = host.split("foreach ($image in $planValue.images) {", 1)[1]
+        for fragment in (
+            "Read-BootstrapResult $vhd $bootstrapNonce",
+            "$verifiedVhdxSha256 = Get-Sha256 $vhd",
+            "Checkpoint-VM -Name $vmName",
+            "Start-VM -Name $vmName | Out-Null",
+            "vhdx_sha256 = $verifiedVhdxSha256",
+        ):
+            self.assertIn(fragment, loop)
+        self.assertLess(
+            loop.index("Read-BootstrapResult $vhd $bootstrapNonce"),
+            loop.index("$verifiedVhdxSha256 = Get-Sha256 $vhd"),
+        )
+        self.assertLess(
+            loop.index("Guest exact version mismatch"),
+            loop.index("$verifiedVhdxSha256 = Get-Sha256 $vhd"),
+        )
+        self.assertLess(
+            loop.index("$verifiedVhdxSha256 = Get-Sha256 $vhd"),
+            loop.index("Checkpoint-VM -Name $vmName"),
+        )
+        self.assertLess(
+            loop.index("Checkpoint-VM -Name $vmName"),
+            loop.index("Start-VM -Name $vmName | Out-Null"),
+        )
+        self.assertLess(
+            loop.index("Start-VM -Name $vmName | Out-Null"),
+            loop.index("vhdx_sha256 = $verifiedVhdxSha256"),
+        )
+        self.assertNotIn("vhdx_sha256 = Get-Sha256 $vhd", host)
+        self.assertEqual(loop.count("Get-Sha256 $vhd"), 1)
+
     def test_host_requires_confirmed_vhdx_dismount_before_checkpoint(self):
         host = HOST.read_text(encoding="utf-8")
         reader = host.split("function Read-BootstrapResult(", 1)[1].split(
