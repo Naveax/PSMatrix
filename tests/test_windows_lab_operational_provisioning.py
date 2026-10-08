@@ -102,6 +102,30 @@ class WindowsLabOperationalProvisioningTests(unittest.TestCase):
         self.assertIn("Test-FullyQualifiedWindowsPath -Path $existingRootValue", raw)
         self.assertIn("Test-FullyQualifiedWindowsPath -Path $Path", raw)
 
+    def test_external_file_limits_are_checked_before_any_staging_copy(self) -> None:
+        raw = HELPER.read_text(encoding="utf-8")
+        for required in (
+            "[Parameter(Mandatory)] [ValidateRange(1, 131072)] [long]$MaxBytes",
+            "$sourceLength = (Get-Item -LiteralPath $resolved -ErrorAction Stop).Length",
+            "if ($sourceLength -gt $MaxBytes)",
+            "source file exceeds the allowed byte-size limit.",
+            "-Label 'PSMATRIX_WINDOWS_GA_ROOT' -MaxBytes 32768",
+            "-Label 'PSMATRIX_WPS40_ADMIN_PASSWORD' -MaxBytes 127",
+            "-Label 'PSMATRIX_WPS50_ADMIN_PASSWORD' -MaxBytes 127",
+            "-Label 'PSMATRIX_WPS51_ADMIN_PASSWORD' -MaxBytes 127",
+            "-Label 'Windows-lab independent material review attestation' -MaxBytes 16384",
+        ):
+            self.assertIn(required, raw)
+        self.assertEqual(raw.count("-MaxBytes 127"), 3)
+        self.assertLess(
+            raw.index("if ($sourceLength -gt $MaxBytes)"),
+            raw.index("Copy-Item -LiteralPath $wps40External"),
+        )
+        self.assertLess(
+            raw.index("source file exceeds the allowed byte-size limit."),
+            raw.index("@('variable', 'set', 'PSMATRIX_WINDOWS_GA_ROOT'"),
+        )
+
     def test_material_sources_must_be_absolute_external_files(self) -> None:
         raw = HELPER.read_text(encoding="utf-8")
 

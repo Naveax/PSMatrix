@@ -71,7 +71,8 @@ function Assert-ExternalMaterialFile {
     param(
         [Parameter(Mandatory)] [string]$Path,
         [Parameter(Mandatory)] [string]$RepoRoot,
-        [Parameter(Mandatory)] [string]$Label
+        [Parameter(Mandatory)] [string]$Label,
+        [Parameter(Mandatory)] [ValidateRange(1, 131072)] [long]$MaxBytes
     )
 
     if (-not [IO.Path]::IsPathRooted($Path) -or -not (Test-FullyQualifiedWindowsPath -Path $Path)) {
@@ -86,8 +87,14 @@ function Assert-ExternalMaterialFile {
     if (Test-PathWithinRoot -Candidate $resolved -Root $RepoRoot) {
         throw "$Label source file must stay outside the repository."
     }
-    if ((Get-Item -LiteralPath $resolved).Length -le 0) {
+    $sourceLength = (Get-Item -LiteralPath $resolved -ErrorAction Stop).Length
+    if ($sourceLength -le 0) {
         throw "$Label source file is empty."
+    }
+    # A giant external credential file must not be copied into private staging
+    # before its stricter in-memory 127-byte credential policy can run.
+    if ($sourceLength -gt $MaxBytes) {
+        throw "$Label source file exceeds the allowed byte-size limit."
     }
     return $resolved
 }
@@ -276,7 +283,7 @@ function Assert-IndependentMaterialReviewAttestation {
         [Parameter(Mandatory)] [string]$ExpectedEnvironment
     )
 
-    $resolved = Assert-ExternalMaterialFile -Path $Path -RepoRoot $RepoRoot -Label 'Windows-lab independent material review attestation'
+    $resolved = Assert-ExternalMaterialFile -Path $Path -RepoRoot $RepoRoot -Label 'Windows-lab independent material review attestation' -MaxBytes 16384
     $raw = Get-Content -Raw -LiteralPath $resolved
     try {
         $review = $raw | ConvertFrom-Json
@@ -489,10 +496,10 @@ if ($Repository -cne $canonicalRepository) {
 }
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
-$rootExternal = Assert-ExternalMaterialFile -Path $GaRootValueFile -RepoRoot $repoRoot -Label 'PSMATRIX_WINDOWS_GA_ROOT'
-$wps40External = Assert-ExternalMaterialFile -Path $Wps40AdminPasswordFile -RepoRoot $repoRoot -Label 'PSMATRIX_WPS40_ADMIN_PASSWORD'
-$wps50External = Assert-ExternalMaterialFile -Path $Wps50AdminPasswordFile -RepoRoot $repoRoot -Label 'PSMATRIX_WPS50_ADMIN_PASSWORD'
-$wps51External = Assert-ExternalMaterialFile -Path $Wps51AdminPasswordFile -RepoRoot $repoRoot -Label 'PSMATRIX_WPS51_ADMIN_PASSWORD'
+$rootExternal = Assert-ExternalMaterialFile -Path $GaRootValueFile -RepoRoot $repoRoot -Label 'PSMATRIX_WINDOWS_GA_ROOT' -MaxBytes 32768
+$wps40External = Assert-ExternalMaterialFile -Path $Wps40AdminPasswordFile -RepoRoot $repoRoot -Label 'PSMATRIX_WPS40_ADMIN_PASSWORD' -MaxBytes 127
+$wps50External = Assert-ExternalMaterialFile -Path $Wps50AdminPasswordFile -RepoRoot $repoRoot -Label 'PSMATRIX_WPS50_ADMIN_PASSWORD' -MaxBytes 127
+$wps51External = Assert-ExternalMaterialFile -Path $Wps51AdminPasswordFile -RepoRoot $repoRoot -Label 'PSMATRIX_WPS51_ADMIN_PASSWORD' -MaxBytes 127
 
 $tempWorkspace = New-Item -ItemType Directory -Path (Join-Path ([IO.Path]::GetTempPath()) ("psmatrix-windows-lab-" + [Guid]::NewGuid().ToString('N'))) -Force
 $tempRoot = [IO.Path]::GetFullPath($tempWorkspace.FullName)
