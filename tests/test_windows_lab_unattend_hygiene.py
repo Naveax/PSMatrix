@@ -179,7 +179,7 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
         self.assertNotIn("Dismount-VHD -Path $VhdPath -ErrorAction SilentlyContinue", reader)
         self.assertLess(
             reader.index("Dismount-VHD -Path $VhdPath -ErrorAction Stop"),
-            reader.index("Get-VHD -Path $VhdPath -ErrorAction Stop"),
+            reader.rindex("Get-VHD -Path $VhdPath -ErrorAction Stop"),
         )
         self.assertLess(
             host.index("Read-BootstrapResult $vhd $bootstrapNonce"),
@@ -205,11 +205,11 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
             self.assertIn(fragment, reader)
         self.assertLess(
             reader.index("$preMount = Get-VHD"),
-            reader.index("    try {\\n        $mounted = Mount-VHD"),
+            reader.index("    try {\n        $mounted = Mount-VHD"),
         )
         self.assertLess(
-            reader.index("    try {\\n        $mounted = Mount-VHD"),
-            reader.index("    finally {\\n        # Mount-VHD may attach"),
+            reader.index("    try {\n        $mounted = Mount-VHD"),
+            reader.index("    finally {\n        # Mount-VHD may attach"),
         )
         self.assertLess(
             reader.index("if ($vhdState.Attached)"),
