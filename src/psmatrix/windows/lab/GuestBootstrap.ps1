@@ -36,9 +36,32 @@ function Expand-Zip([string]$Archive, [string]$Destination) {
     if ($null -ne $existingTarget -or (Test-Path -LiteralPath $Destination)) {
         throw 'Guest bootstrap archive destination already exists; refusing destructive replacement.'
     }
-    New-Item -ItemType Directory -Path $Destination -ErrorAction Stop | Out-Null
     Add-Type -AssemblyName System.IO.Compression.FileSystem
+    # Older guest .NET builds cannot be relied on to reject every ZIP path
+    # traversal. Validate the entire archive before writing any files.
+    $destFull = [IO.Path]::GetFullPath($Destination)
+    $destPrefix = $destFull.TrimEnd([char[]]@('\', '/')) + [IO.Path]::DirectorySeparatorChar
+    $zip = [IO.Compression.ZipFile]::OpenRead($Archive)
+    try {
+        foreach ($entry in $zip.Entries) {
+            $relativeName = ([string]$entry.FullName).Replace('/', '\')
+            if ([string]::IsNullOrWhiteSpace($relativeName) -or
+                $relativeName.StartsWith('\') -or $relativeName.IndexOf(':') -ge 0) {
+                throw 'Guest bootstrap ZIP contains an unsafe entry path.'
+            }
+            $entryFull = [IO.Path]::GetFullPath([IO.Path]::Combine($destFull, $relativeName))
+            if (-not $entryFull.StartsWith($destPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'Guest bootstrap ZIP entry escapes the extraction destination.'
+            }
+        }
+    }
+    finally { $zip.Dispose() }
+    # Restrict the newly created directory before extracting credentials,
+    # so children are not temporarily written under permissive parent ACLs.
+    New-Item -ItemType Directory -Path $Destination -ErrorAction Stop | Out-Null
+    Set-RestrictedDirectoryAcl $Destination
     [IO.Compression.ZipFile]::ExtractToDirectory($Archive, $Destination)
+    Set-RestrictedDirectoryAcl $Destination
 }
 
 function Find-File([string]$Root, [string]$Name) {

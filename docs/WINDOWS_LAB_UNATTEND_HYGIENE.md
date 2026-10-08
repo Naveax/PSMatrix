@@ -88,6 +88,16 @@ first-boot state from being overwritten without investigation; it does not
 guarantee the safety or authenticity of ZIP contents. Elevated real-guest
 acceptance and independently approved artifacts are still required.
 
+Before creating the extraction directory, the guest now inspects all ZIP entry
+names using the PS4-compatible .NET ZIP reader and refuses absolute paths,
+Windows alternate-stream/drive syntax and canonicalized paths escaping the
+intended destination. This explicit check avoids relying on old .NET extraction
+runtime behavior for path-traversal defense. It also applies the strict SYSTEM
+and Administrators ACL **before** extracting archive contents, then reasserts
+exact recursive ACLs on the extracted tree. A failed validation leaves the
+destination uncreated. These checks do not authenticate the supplied ZIP or
+replace review of the archive publisher and real elevated guest acceptance.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted

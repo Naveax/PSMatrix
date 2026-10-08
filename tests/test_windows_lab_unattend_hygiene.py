@@ -541,6 +541,38 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
             extract.index("New-Item -ItemType Directory -Path $Destination"),
         )
 
+    def test_guest_zip_preflight_and_acl_before_extraction(self):
+        guest = GUEST.read_text(encoding="utf-8")
+        extract = guest.split("function Expand-Zip(", 1)[1].split(
+            "function Find-File(", 1
+        )[0]
+        for fragment in (
+            "$archiveItem.Attributes -band [IO.FileAttributes]::ReparsePoint",
+            "$existingTarget = Get-Item -LiteralPath $Destination",
+            "$zip = [IO.Compression.ZipFile]::OpenRead($Archive)",
+            "foreach ($entry in $zip.Entries)",
+            "$relativeName = ([string]$entry.FullName).Replace('/', '\\')",
+            "$relativeName.StartsWith('\\')",
+            "$relativeName.IndexOf(':') -ge 0",
+            "[IO.Path]::GetFullPath([IO.Path]::Combine($destFull, $relativeName))",
+            "$entryFull.StartsWith($destPrefix, [StringComparison]::OrdinalIgnoreCase)",
+            "Guest bootstrap ZIP entry escapes the extraction destination.",
+            "finally { $zip.Dispose() }",
+            "Set-RestrictedDirectoryAcl $Destination",
+        ):
+            self.assertIn(fragment, extract)
+        create = extract.index("New-Item -ItemType Directory -Path $Destination -ErrorAction Stop")
+        extraction = extract.index("[IO.Compression.ZipFile]::ExtractToDirectory")
+        acl_first = extract.index("Set-RestrictedDirectoryAcl $Destination", create)
+        acl_last = extract.rindex("Set-RestrictedDirectoryAcl $Destination")
+        self.assertLess(extract.index("$zip = [IO.Compression.ZipFile]::OpenRead"), create)
+        self.assertLess(extract.index("finally { $zip.Dispose() }"), create)
+        self.assertLess(create, acl_first)
+        self.assertLess(acl_first, extraction)
+        self.assertLess(extraction, acl_last)
+        self.assertEqual(extract.count("Set-RestrictedDirectoryAcl $Destination"), 2)
+        self.assertNotIn("::new(", guest)
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)
