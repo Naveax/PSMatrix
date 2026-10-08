@@ -74,6 +74,36 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
         self.assertNotIn("Dismount-VHD -Path $output -ErrorAction SilentlyContinue", build)
         self.assertNotIn("Dismount-DiskImage -ImagePath ([string]$Image.source_iso.path) -ErrorAction SilentlyContinue", build)
 
+    def test_partial_mount_without_result_still_dismounts_existing_vhdx(self):
+        host = HOST.read_text(encoding="utf-8")
+        helper = host.split("function Close-LabBuildMedia(", 1)[1].split(
+            "function New-LabVhd(", 1
+        )[0]
+        for required in (
+            "$vhdExists = $WasMounted -or (Test-Path -LiteralPath $VhdPath -PathType Leaf)",
+            "elseif ($vhdExists)",
+            "$before = Get-VHD -Path $VhdPath -ErrorAction Stop",
+            "$before.Attached -isnot [bool]",
+            "if ($before.Attached)",
+            "Dismount-VHD -Path $VhdPath -ErrorAction Stop",
+            "if ($vhdExists)",
+            "$vhdState.Attached -ne $false",
+            "Dismount-DiskImage -ImagePath $IsoPath -ErrorAction Stop",
+        ):
+            self.assertIn(required, helper)
+        self.assertLess(
+            helper.index("if ($before.Attached)"),
+            helper.index("if ($vhdExists) {"),
+        )
+        self.assertLess(
+            helper.index("Dismount-VHD -Path $VhdPath -ErrorAction Stop"),
+            helper.index("Dismount-DiskImage -ImagePath $IsoPath -ErrorAction Stop"),
+        )
+        self.assertIn(
+            "Close-LabBuildMedia -VhdPath $output -IsoPath ([string]$Image.source_iso.path) -WasMounted ([bool]$vhdMounted)",
+            host,
+        )
+
     def test_host_requires_confirmed_vhdx_dismount_before_checkpoint(self):
         host = HOST.read_text(encoding="utf-8")
         reader = host.split("function Read-BootstrapResult(", 1)[1].split(

@@ -138,13 +138,27 @@ function New-Unattend([string]$Path, [string]$ComputerName, [string]$Password) {
     }
 }
 function Close-LabBuildMedia([string]$VhdPath, [string]$IsoPath, [bool]$WasMounted) {
-    # Even if VHDX detachment fails, attempt ISO cleanup. Any failure
-    # aborts the build; never return an attached disk for VM checkpointing.
+    # Mount-VHD can attach a disk and then fail before returning an object.
+    # In that case $WasMounted is false even though the output VHDX exists
+    # and is still attached. Always inspect a newly created output VHDX.
+    $vhdExists = $WasMounted -or (Test-Path -LiteralPath $VhdPath -PathType Leaf)
     try {
         if ($WasMounted) {
             Dismount-VHD -Path $VhdPath -ErrorAction Stop
+        }
+        elseif ($vhdExists) {
+            $before = Get-VHD -Path $VhdPath -ErrorAction Stop
+            if ($null -eq $before -or $before.Attached -isnot [bool]) {
+                throw 'New lab VHDX attachment state is unavailable; refusing provisioning.'
+            }
+            if ($before.Attached) {
+                Dismount-VHD -Path $VhdPath -ErrorAction Stop
+            }
+        }
+        if ($vhdExists) {
             $vhdState = Get-VHD -Path $VhdPath -ErrorAction Stop
-            if ($vhdState.Attached -ne $false) {
+            if ($null -eq $vhdState -or $vhdState.Attached -isnot [bool] -or
+                $vhdState.Attached -ne $false) {
                 throw 'New lab VHDX remains attached after cleanup; refusing provisioning.'
             }
         }
