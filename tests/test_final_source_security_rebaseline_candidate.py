@@ -37,6 +37,31 @@ class FinalSourceSecurityRebaselineCandidateTests(unittest.TestCase):
             {"authoritative": False, "ga_eligible": False, "signed": False, "certified": False},
         )
 
+    def test_loader_rejects_duplicate_unicode_alias_and_nonfinite_json(self):
+        text = CONTRACT.read_text(encoding="utf-8")
+        malformed = (
+            ("duplicate_root", text.replace('"schema": 1,', '"schema": 1, "schema": 1,', 1),
+             "duplicate JSON contract property: schema"),
+            ("duplicate_nested_claim", text.replace('"authoritative": false,',
+             '"authoritative": true, "authoritative": false,', 1),
+             "duplicate JSON contract property: authoritative"),
+            ("unicode_escaped_alias", text.replace('"schema": 1,',
+             '"sch\\u0065ma": false, "schema": 1,', 1),
+             "duplicate JSON contract property: schema"),
+            ("not_a_number", text.replace('"schema": 1,', '"schema": NaN,', 1),
+             "non-finite JSON contract constant: NaN"),
+            ("positive_infinity", text.replace('"schema": 1,', '"schema": Infinity,', 1),
+             "non-finite JSON contract constant: Infinity"),
+            ("negative_infinity", text.replace('"schema": 1,', '"schema": -Infinity,', 1),
+             "non-finite JSON contract constant: -Infinity"),
+        )
+        for label, content, error in malformed:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as td:
+                path = Path(td) / "bad-contract.json"
+                path.write_text(content, encoding="utf-8")
+                with self.assertRaisesRegex(RuntimeError, error):
+                    validator._load(path)
+
     def test_security_scope_is_exactly_four_paths(self):
         value = json.loads(CONTRACT.read_text(encoding="utf-8"))
         paths = value["security_source_candidate"]["changed_paths"]

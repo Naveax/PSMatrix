@@ -37,8 +37,27 @@ def _git(repo: Path, *args: str) -> str:
     return p.stdout.strip()
 
 
+def _reject_duplicate_json_properties(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        # object_pairs_hook runs on every nested JSON object after Unicode
+        # escapes are decoded, so even encoded aliases cannot duplicate keys.
+        if key in value:
+            raise RuntimeError(f"duplicate JSON contract property: {key}")
+        value[key] = item
+    return value
+
+
+def _reject_nonfinite_json_constant(value: str) -> None:
+    raise RuntimeError(f"non-finite JSON contract constant: {value}")
+
+
 def _load(path: Path) -> dict[str, Any]:
-    value = json.loads(path.read_text(encoding="utf-8"))
+    value = json.loads(
+        path.read_text(encoding="utf-8"),
+        object_pairs_hook=_reject_duplicate_json_properties,
+        parse_constant=_reject_nonfinite_json_constant,
+    )
     if not isinstance(value, dict):
         raise RuntimeError("contract root must be an object")
     return value
