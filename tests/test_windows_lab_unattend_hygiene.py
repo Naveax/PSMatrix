@@ -93,7 +93,7 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
             self.assertIn(required, helper)
         self.assertLess(
             helper.index("if ($before.Attached)"),
-            helper.index("if ($vhdExists) {"),
+            helper.index("\n        if ($vhdExists) {"),
         )
         self.assertLess(
             helper.index("Dismount-VHD -Path $VhdPath -ErrorAction Stop"),
