@@ -95,8 +95,11 @@ intended destination. This explicit check avoids relying on old .NET extraction
 runtime behavior for path-traversal defense. Before creating the extraction
 root, the guest also rejects case-insensitive/canonical-path ZIP collisions,
 archives exceeding 16,384 entries, and archives declaring more than 4 GiB of
-expanded content (limits applied separately to each ZIP). These metadata limits
-reduce accidental overwrite and resource exhaustion; they do not guarantee
+expanded content (limits applied separately to each ZIP). The guest also
+rejects reparse-point ancestors of the extraction destination (including
+junctions and mount points), rather than trusting a safe-looking leaf path.
+These metadata and ancestor checks reduce accidental overwrite and resource
+exhaustion; they do not guarantee
 protection against filesystem races or forged ZIP metadata. The guest applies
 the strict SYSTEM and Administrators ACL **before** extracting archive contents,
 then reasserts exact recursive ACLs on the extracted tree. A failed validation leaves the

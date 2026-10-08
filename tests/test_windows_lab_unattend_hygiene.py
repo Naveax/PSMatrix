@@ -688,6 +688,56 @@ if (-not (Test-Path -LiteralPath (Join-Path {good_destination} 'pkg/worker.txt')
                 )
                 self.assertEqual(ps7.returncode, 0, ps7.stdout + ps7.stderr)
 
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_guest_zip_preflight_rejects_junction_ancestor_without_writing(self):
+        import shutil
+        import subprocess
+        import tempfile
+        import zipfile
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-zip-junction-") as root:
+            directory = Path(root)
+            actual = directory / "actual"
+            junction = directory / "junction"
+            actual.mkdir()
+            created = subprocess.run(
+                ["cmd.exe", "/c", "mklink", "/J", str(junction), str(actual)],
+                text=True, capture_output=True, timeout=15, check=False,
+            )
+            if created.returncode != 0:
+                self.skipTest("Junction creation not available in the test account")
+            archive = directory / "safe.zip"
+            with zipfile.ZipFile(archive, "w") as zip_file:
+                zip_file.writestr("worker.txt", "safe")
+            destination = junction / "not-created"
+            quote = lambda value: "'" + str(value).replace("'", "''") + "'"
+            script = """
+$ErrorActionPreference = 'Stop'
+$source = Get-Content -LiteralPath {source} -Raw
+$start = $source.IndexOf('function Expand-Zip(')
+$end = $source.IndexOf('function Find-File(', $start)
+Invoke-Expression $source.Substring($start, $end - $start)
+function Set-RestrictedDirectoryAcl([string]$Path) {{ }}
+try {{
+    Expand-Zip {archive} {destination}
+    throw 'Junction ancestor was accepted.'
+}} catch {{
+    if ($_.Exception.Message -ne 'Guest bootstrap ZIP extraction ancestor is an unsafe directory.') {{ throw }}
+}}
+if (Test-Path -LiteralPath {destination}) {{ throw 'Rejected junction caused a write.' }}
+""".format(
+                source=quote(GUEST), archive=quote(archive), destination=quote(destination)
+            )
+            shells = ["powershell.exe"]
+            if shutil.which("pwsh.exe"):
+                shells.append("pwsh.exe")
+            for executable in shells:
+                result = subprocess.run(
+                    [executable, "-NoProfile", "-NonInteractive", "-Command", script],
+                    text=True, capture_output=True, timeout=30, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)

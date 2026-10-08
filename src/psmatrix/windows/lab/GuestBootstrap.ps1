@@ -40,6 +40,17 @@ function Expand-Zip([string]$Archive, [string]$Destination) {
     # Older guest .NET builds cannot be relied on to reject every ZIP path
     # traversal. Validate the entire archive before writing any files.
     $destFull = [IO.Path]::GetFullPath($Destination)
+    # A non-reparse destination is not enough if an existing ancestor is a
+    # junction or mount point: extraction would follow that redirected parent.
+    $ancestorPath = [IO.Path]::GetDirectoryName($destFull)
+    while (-not [string]::IsNullOrEmpty($ancestorPath)) {
+        $ancestor = Get-Item -LiteralPath $ancestorPath -Force -ErrorAction Stop
+        if (-not $ancestor.PSIsContainer -or
+            (($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            throw 'Guest bootstrap ZIP extraction ancestor is an unsafe directory.'
+        }
+        $ancestorPath = [IO.Path]::GetDirectoryName($ancestorPath.TrimEnd([char[]]@('\', '/')))
+    }
     $destPrefix = $destFull.TrimEnd([char[]]@('\', '/')) + [IO.Path]::DirectorySeparatorChar
     # Refuse duplicate Windows paths and bounded-resource exhaustion before
     # creating a sensitive destination. These limits cover each archive.
