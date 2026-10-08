@@ -10,6 +10,17 @@ from typing import Any
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _KIND = "psmatrix.windows-authority-final-source-security-rebaseline-candidate"
+_EXPECTED_FROZEN_COMMIT = "43922a5544745c64165df4aedd9c57391bfe6c51"
+_EXPECTED_FROZEN_TREE = "05cb5337e507be23791f4de22442a79802dc5c8e"
+_EXPECTED_V4_COMMIT = "af90094d9104c0ae4d932462f45bdc020ea35b14"
+_EXPECTED_V4_TREE = "e6966e2bb84815c647ea91eb1e41aa2c6c661f98"
+_EXPECTED_V4_CHANGED_PATHS = (
+    "docs/WINDOWS_LAB_UNATTEND_HYGIENE.md",
+    "src/psmatrix/windows/lab/GuestBootstrap.ps1",
+    "src/psmatrix/windows/lab/Invoke-PSMatrixHyperVLab.ps1",
+    "tests/test_windows_lab_unattend_hygiene.py",
+)
+
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -56,8 +67,16 @@ def validate(contract: dict[str, Any], repo: Path, frozen_ref: str | None, candi
         ("candidate tree", candidate["tree"]),
         ("candidate parent", candidate["parent_commit"]),
     ):
-        _require(bool(_SHA40.fullmatch(str(sha))), f"{label} is not SHA-40")
+        _require(type(sha) is str and bool(_SHA40.fullmatch(sha)), f"{label} is not SHA-40")
 
+    _require(
+        frozen["commit"] == _EXPECTED_FROZEN_COMMIT and frozen["tree"] == _EXPECTED_FROZEN_TREE,
+        "frozen V2 commit/tree identity mismatch",
+    )
+    _require(
+        candidate["commit"] == _EXPECTED_V4_COMMIT and candidate["tree"] == _EXPECTED_V4_TREE,
+        "V4 candidate commit/tree identity mismatch",
+    )
     _require(frozen["immutable"] is True, "frozen source must remain immutable")
     _require(frozen["branch"] == "final/2.0.0-release-candidate-anchor-v2", "frozen source branch identity changed")
     _require(candidate["branch"] == "security/2.0.0-unattend-hygiene-source-candidate-v4-20261007",
@@ -66,6 +85,7 @@ def validate(contract: dict[str, Any], repo: Path, frozen_ref: str | None, candi
     paths = candidate["changed_paths"]
     _require(isinstance(paths, list) and paths == sorted(set(paths)), "changed paths must be exact sorted unique list")
     _require(type(candidate["changed_path_count"]) is int and candidate["changed_path_count"] == len(paths) == 4, "security changed-path count must be exactly four")
+    _require(paths == list(_EXPECTED_V4_CHANGED_PATHS), "V4 changed-path identity mismatch")
 
     baseline = candidate["baseline_tests"]
     _require(
