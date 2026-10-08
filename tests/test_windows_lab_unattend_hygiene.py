@@ -186,6 +186,40 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
             host.index("    Checkpoint-VM -Name $vmName"),
         )
 
+    def test_offline_guest_mount_partial_failure_is_detached(self):
+        host = HOST.read_text(encoding="utf-8")
+        reader = host.split("function Read-BootstrapResult(", 1)[1].split(
+            "function Wait-FirstBoot(", 1
+        )[0]
+        for fragment in (
+            "$preMount = Get-VHD -Path $VhdPath -ErrorAction Stop",
+            "Guest VHDX was already attached before validation; refusing checkpoint.",
+            "$mounted = Mount-VHD -Path $VhdPath -PassThru -ErrorAction Stop",
+            "Guest VHDX mount did not return a valid disk number; refusing checkpoint.",
+            "$vhdState = Get-VHD -Path $VhdPath -ErrorAction Stop",
+            "if ($vhdState.Attached)",
+            "Dismount-VHD -Path $VhdPath -ErrorAction Stop",
+            "Guest VHDX cleanup state is unavailable; refusing checkpoint.",
+            "Guest VHDX remains attached after offline validation; refusing checkpoint.",
+        ):
+            self.assertIn(fragment, reader)
+        self.assertLess(
+            reader.index("$preMount = Get-VHD"),
+            reader.index("    try {\\n        $mounted = Mount-VHD"),
+        )
+        self.assertLess(
+            reader.index("    try {\\n        $mounted = Mount-VHD"),
+            reader.index("    finally {\\n        # Mount-VHD may attach"),
+        )
+        self.assertLess(
+            reader.index("if ($vhdState.Attached)"),
+            reader.rindex("$vhdState = Get-VHD -Path $VhdPath -ErrorAction Stop"),
+        )
+        self.assertLess(
+            host.index("Read-BootstrapResult $vhd $bootstrapNonce"),
+            host.index("    Checkpoint-VM -Name $vmName"),
+        )
+
     def test_host_rejects_unsafe_bootstrap_result_file_and_schema(self):
         host = HOST.read_text(encoding="utf-8")
         read = host.split("function Read-BootstrapResult(", 1)[1].split(

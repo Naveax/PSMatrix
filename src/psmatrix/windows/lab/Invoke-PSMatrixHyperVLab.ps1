@@ -386,8 +386,20 @@ function Assert-NoGuestBootstrapStagingSecrets([string]$WindowsRoot) {
 }
 
 function Read-BootstrapResult([string]$VhdPath, [string]$ExpectedBootstrapNonce) {
-    $mounted = Mount-VHD -Path $VhdPath -PassThru
+    # Never detach an unrelated pre-existing mount. Do not treat a partial
+    # Mount-VHD failure as proof that the guest disk is unattached.
+    $preMount = Get-VHD -Path $VhdPath -ErrorAction Stop
+    if ($null -eq $preMount -or $preMount.Attached -isnot [bool]) {
+        throw 'Guest VHDX initial attachment state is unavailable; refusing checkpoint.'
+    }
+    if ($preMount.Attached) {
+        throw 'Guest VHDX was already attached before validation; refusing checkpoint.'
+    }
     try {
+        $mounted = Mount-VHD -Path $VhdPath -PassThru -ErrorAction Stop
+        if ($null -eq $mounted -or $null -eq $mounted.DiskNumber) {
+            throw 'Guest VHDX mount did not return a valid disk number; refusing checkpoint.'
+        }
         $root = Get-WindowsPartitionRoot $mounted.DiskNumber
         # A mounted guest volume is untrusted input. Inspect ancestor links
         # before reading a result file so a junction cannot redirect host I/O.
@@ -532,11 +544,19 @@ function Read-BootstrapResult([string]$VhdPath, [string]$ExpectedBootstrapNonce)
         return $result
     }
     finally {
-        # Offline validation must not report success while the guest VHDX is
-        # still mounted. Failure to detach or query its attachment is fatal.
-        Dismount-VHD -Path $VhdPath -ErrorAction Stop
+        # Mount-VHD may attach and then throw without returning a disk object.
+        # Inspect the real state and recover any partial attachment before
+        # returning to the checkpoint path. A failed query is fatal.
         $vhdState = Get-VHD -Path $VhdPath -ErrorAction Stop
-        if ($vhdState.Attached -ne $false) {
+        if ($null -eq $vhdState -or $vhdState.Attached -isnot [bool]) {
+            throw 'Guest VHDX cleanup state is unavailable; refusing checkpoint.'
+        }
+        if ($vhdState.Attached) {
+            Dismount-VHD -Path $VhdPath -ErrorAction Stop
+        }
+        $vhdState = Get-VHD -Path $VhdPath -ErrorAction Stop
+        if ($null -eq $vhdState -or $vhdState.Attached -isnot [bool] -or
+            $vhdState.Attached -ne $false) {
             throw 'Guest VHDX remains attached after offline validation; refusing checkpoint.'
         }
     }
