@@ -43,6 +43,37 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
                         text.index("    Checkpoint-VM -Name $vmName"))
         self.assertIn("Dismount-VHD -Path $VhdPath", text)
 
+    def test_host_build_cleanup_rejects_attached_vhd_or_failed_iso_eject(self):
+        host = HOST.read_text(encoding="utf-8")
+        cleanup = host.split("function Close-LabBuildMedia(", 1)[1].split(
+            "function New-LabVhd(", 1
+        )[0]
+        build = host.split("function New-LabVhd(", 1)[1].split(
+            "function Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        for required in (
+            "Dismount-VHD -Path $VhdPath -ErrorAction Stop",
+            "Get-VHD -Path $VhdPath -ErrorAction Stop",
+            "$vhdState.Attached -ne $false",
+            "New lab VHDX remains attached after cleanup; refusing provisioning.",
+            "Dismount-DiskImage -ImagePath $IsoPath -ErrorAction Stop",
+        ):
+            self.assertIn(required, cleanup)
+        self.assertLess(
+            cleanup.index("Dismount-VHD -Path $VhdPath -ErrorAction Stop"),
+            cleanup.index("Get-VHD -Path $VhdPath -ErrorAction Stop"),
+        )
+        self.assertIn(
+            "Close-LabBuildMedia -VhdPath $output -IsoPath ([string]$Image.source_iso.path) -WasMounted ([bool]$vhdMounted)",
+            build,
+        )
+        self.assertLess(
+            host.index("Close-LabBuildMedia -VhdPath $output"),
+            host.index("    Checkpoint-VM -Name $vmName"),
+        )
+        self.assertNotIn("Dismount-VHD -Path $output -ErrorAction SilentlyContinue", build)
+        self.assertNotIn("Dismount-DiskImage -ImagePath ([string]$Image.source_iso.path) -ErrorAction SilentlyContinue", build)
+
     def test_host_requires_confirmed_vhdx_dismount_before_checkpoint(self):
         host = HOST.read_text(encoding="utf-8")
         reader = host.split("function Read-BootstrapResult(", 1)[1].split(

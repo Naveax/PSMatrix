@@ -137,6 +137,22 @@ function New-Unattend([string]$Path, [string]$ComputerName, [string]$Password) {
         $xml = $null
     }
 }
+function Close-LabBuildMedia([string]$VhdPath, [string]$IsoPath, [bool]$WasMounted) {
+    # Even if VHDX detachment fails, attempt ISO cleanup. Any failure
+    # aborts the build; never return an attached disk for VM checkpointing.
+    try {
+        if ($WasMounted) {
+            Dismount-VHD -Path $VhdPath -ErrorAction Stop
+            $vhdState = Get-VHD -Path $VhdPath -ErrorAction Stop
+            if ($vhdState.Attached -ne $false) {
+                throw 'New lab VHDX remains attached after cleanup; refusing provisioning.'
+            }
+        }
+    }
+    finally {
+        Dismount-DiskImage -ImagePath $IsoPath -ErrorAction Stop
+    }
+}
 function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce) {
     Assert-Artifact $Image.source_iso 'Windows ISO'
     Assert-Artifact $Image.worker_package 'Worker package'
@@ -204,8 +220,7 @@ exit /b %ERRORLEVEL%
         Set-RestrictedDirectoryAcl $bootstrap
     }
     finally {
-        if ($vhdMounted) { Dismount-VHD -Path $output -ErrorAction SilentlyContinue }
-        Dismount-DiskImage -ImagePath ([string]$Image.source_iso.path) -ErrorAction SilentlyContinue
+        Close-LabBuildMedia -VhdPath $output -IsoPath ([string]$Image.source_iso.path) -WasMounted ([bool]$vhdMounted)
     }
     return $output
 }
