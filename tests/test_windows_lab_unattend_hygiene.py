@@ -659,6 +659,30 @@ if ($writtenAfter -cne $written) {{ throw 'Existing worker content changed.' }}
         self.assertEqual(extract.count("Set-RestrictedDirectoryAcl $Destination"), 2)
         self.assertNotIn("::new(", guest)
 
+    def test_zip_preflight_file_directory_conflict_check_precedes_target_creation(self):
+        guest = GUEST.read_text(encoding="utf-8")
+        extract = guest.split("function Expand-Zip(", 1)[1].split(
+            "function Find-File(", 1
+        )[0]
+        for fragment in (
+            "$fileTargets = New-Object",
+            "$neededDirectories = New-Object",
+            "$neededDirectories.Contains($canonicalEntry)",
+            "$fileTargets.Contains($canonicalEntry)",
+            "$parent = [IO.Path]::GetDirectoryName($canonicalEntry)",
+            "$fileTargets.Contains($parent)",
+            "Guest bootstrap ZIP contains a file/directory path collision.",
+        ):
+            self.assertIn(fragment, extract)
+        self.assertLess(
+            extract.index("$neededDirectories.Contains($canonicalEntry)"),
+            extract.index("New-Item -ItemType Directory -Path $Destination"),
+        )
+        self.assertLess(
+            extract.index("$fileTargets.Contains($parent)"),
+            extract.index("New-Item -ItemType Directory -Path $Destination"),
+        )
+
     def test_guest_zip_preflight_rejects_duplicate_targets_and_resource_exhaustion(self):
         guest = GUEST.read_text(encoding="utf-8")
         extract = guest.split("function Expand-Zip(", 1)[1].split(
@@ -1074,6 +1098,84 @@ exit 0
                     capture_output=True, text=True, timeout=30, check=False,
                 )
                 self.assertEqual(run.returncode, 0, shell + ": " + run.stdout + run.stderr)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_guest_zip_file_directory_collision_preflight_has_no_side_effects(self):
+        import shutil
+        import subprocess
+        import tempfile
+        import zipfile
+
+        def ps_quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-zip-tree-collision-") as root:
+            folder = Path(root)
+            malicious = []
+            for index, names in enumerate((
+                ("payload", "payload/worker.json"),
+                ("payload/worker.json", "payload"),
+                ("MiXeD/worker.json", "mixed"),
+                ("foo/bar/baz.txt", "FOO/BAR"),
+            )):
+                path = folder / ("collision-" + str(index) + ".zip")
+                with zipfile.ZipFile(path, "w") as archive:
+                    for name in names:
+                        archive.writestr(name, "test")
+                malicious.append(path)
+            valid_zip = folder / "valid-tree.zip"
+            with zipfile.ZipFile(valid_zip, "w") as archive:
+                archive.writestr("package/", "")
+                archive.writestr("package/nested/", "")
+                archive.writestr("package/nested/worker.json", "{}")
+            script = """
+$ErrorActionPreference = 'Stop'
+$source = Get-Content -LiteralPath {source} -Raw
+$start = $source.IndexOf('function Expand-Zip(')
+$end = $source.IndexOf('function Find-File(', $start)
+Invoke-Expression $source.Substring($start, $end - $start)
+function Set-RestrictedDirectoryAcl([string]$Path) {{ }}
+$badArchives = @({bad_archives})
+$index = 0
+foreach ($archive in $badArchives) {{
+    $target = Join-Path {root} ('rejected-' + $index)
+    try {{
+        Expand-Zip $archive $target
+        throw ('Collision archive accepted at index ' + $index)
+    }} catch {{
+        if ($_.Exception.Message -ne 'Guest bootstrap ZIP contains a file/directory path collision.') {{
+            throw ('Unexpected failure at index ' + $index + ': ' + $_.Exception.Message)
+        }}
+    }}
+    if (Test-Path -LiteralPath $target) {{ throw ('Collision wrote target ' + $index) }}
+    $index++
+}}
+Expand-Zip {valid_zip} {valid_destination}
+if (-not (Test-Path -LiteralPath (Join-Path {valid_destination} 'package/nested/worker.json'))) {{
+    throw 'Valid nested ZIP was rejected.'
+}}
+exit 0
+""".format(
+                source=ps_quote(GUEST),
+                bad_archives=", ".join(ps_quote(value) for value in malicious),
+                root=ps_quote(folder),
+                valid_zip=ps_quote(valid_zip),
+                valid_destination=ps_quote(folder / "valid-destination"),
+            )
+            for shell in ("powershell.exe", "pwsh.exe"):
+                if shutil.which(shell) is None:
+                    continue
+                target = folder / "valid-destination"
+                if target.exists():
+                    shutil.rmtree(target)
+                run = subprocess.run(
+                    [shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=45, check=False,
+                )
+                self.assertEqual(
+                    run.returncode, 0, shell + ": " + run.stdout + run.stderr,
+                )
 
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")

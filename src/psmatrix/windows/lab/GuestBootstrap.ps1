@@ -57,6 +57,10 @@ function Expand-Zip([string]$Archive, [string]$Destination) {
     $maxEntries = 16384
     $maxExpandedBytes = [long]4294967296
     $seenEntries = New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList ([StringComparer]::OrdinalIgnoreCase)
+    # Detect a file whose name must also act as a parent directory, whether
+    # the file or the child appears first in the archive's entry list.
+    $fileTargets = New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList ([StringComparer]::OrdinalIgnoreCase)
+    $neededDirectories = New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList ([StringComparer]::OrdinalIgnoreCase)
     $entryCount = 0
     $expandedBytes = [long]0
     $zip = [IO.Compression.ZipFile]::OpenRead($Archive)
@@ -98,6 +102,25 @@ function Expand-Zip([string]$Archive, [string]$Destination) {
             $canonicalEntry = $entryFull.TrimEnd([char[]]@('\', '/'))
             if (-not $seenEntries.Add($canonicalEntry)) {
                 throw 'Guest bootstrap ZIP contains duplicate destination paths.'
+            }
+            $isDirectory = $relativeName.EndsWith('\')
+            if (-not $isDirectory) {
+                if ($neededDirectories.Contains($canonicalEntry)) {
+                    throw 'Guest bootstrap ZIP contains a file/directory path collision.'
+                }
+                [void]$fileTargets.Add($canonicalEntry)
+            }
+            elseif ($fileTargets.Contains($canonicalEntry)) {
+                throw 'Guest bootstrap ZIP contains a file/directory path collision.'
+            }
+            $parent = [IO.Path]::GetDirectoryName($canonicalEntry)
+            while (-not [string]::IsNullOrEmpty($parent) -and
+                $parent.StartsWith($destPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+                if ($fileTargets.Contains($parent)) {
+                    throw 'Guest bootstrap ZIP contains a file/directory path collision.'
+                }
+                [void]$neededDirectories.Add($parent)
+                $parent = [IO.Path]::GetDirectoryName($parent)
             }
             if ([long]$entry.Length -gt ($maxExpandedBytes - $expandedBytes)) {
                 throw 'Guest bootstrap ZIP exceeds its expanded-size limit.'

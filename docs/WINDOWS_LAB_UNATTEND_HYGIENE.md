@@ -93,6 +93,8 @@ Windows alternate-stream/drive syntax and canonicalized paths escaping the
 intended destination. This explicit check avoids relying on old .NET extraction
 runtime behavior for path-traversal defense. Before creating the extraction
 root, the guest also rejects case-insensitive/canonical-path ZIP collisions,
+**file-versus-required-directory** collisions in either ZIP entry order
+(e.g. a regular file `payload` followed by `payload/worker.json`),
 archives exceeding 16,384 entries, and archives declaring more than 4 GiB of
 expanded content (limits applied separately to each ZIP). The guest also
 rejects reparse-point ancestors of the extraction destination (including
