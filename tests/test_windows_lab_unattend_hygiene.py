@@ -1198,6 +1198,79 @@ foreach ($case in @(
             )
             self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
 
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_new_iso_mount_is_bound_to_expected_source_before_volume_query(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        start = host.index("function Assert-LabMountedIsoIdentity(")
+        end = host.index("\nfunction Get-LabIsoVolumeRoot(", start)
+        code = host[start:end]
+        build = host.split("function New-LabVhd(", 1)[1].split(
+            "\nfunction Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        self.assertLess(
+            build.index("Assert-LabMountedIsoIdentity $isoPath $iso"),
+            build.index("$isoRoot = Get-LabIsoVolumeRoot $iso"),
+        )
+        self.assertLess(
+            build.index("Assert-LabMountedIsoIdentity $isoPath $iso"),
+            build.index("New-VHD -Path $output -Dynamic"),
+        )
+        script = code + r"""
+$ErrorActionPreference='Stop'
+$expected='D:\Fixture\Windows-ISO.iso'
+$script:queryPath=''
+$script:queryFails=$false
+$script:queryResult=[pscustomobject]@{ImagePath=$expected;Attached=$true}
+function Get-DiskImage {
+    [CmdletBinding()]
+    param([string]$ImagePath)
+    $script:queryPath=$ImagePath
+    if($script:queryFails){throw 'Storage provider failed'}
+    return $script:queryResult
+}
+$mounted=[pscustomobject]@{ImagePath=$expected;Attached=$true}
+Assert-LabMountedIsoIdentity $expected $mounted
+if($script:queryPath -cne $expected){throw 'ISO image lookup targeted the wrong file'}
+foreach ($case in @(
+    [pscustomobject]@{Name='returned wrong ISO';From=([pscustomobject]@{ImagePath='D:\Fixture\other.iso';Attached=$true});Queried=$script:queryResult},
+    [pscustomobject]@{Name='returned unattached ISO';From=([pscustomobject]@{ImagePath=$expected;Attached=$false});Queried=$script:queryResult},
+    [pscustomobject]@{Name='returned malformed attached';From=([pscustomobject]@{ImagePath=$expected;Attached='True'});Queried=$script:queryResult},
+    [pscustomobject]@{Name='no mount result';From=$null;Queried=$script:queryResult},
+    [pscustomobject]@{Name='wrong queried ISO';From=$mounted;Queried=([pscustomobject]@{ImagePath='D:\Fixture\other.iso';Attached=$true})},
+    [pscustomobject]@{Name='queried unattached';From=$mounted;Queried=([pscustomobject]@{ImagePath=$expected;Attached=$false})},
+    [pscustomobject]@{Name='queried missing attached';From=$mounted;Queried=([pscustomobject]@{ImagePath=$expected;Attached=$null})},
+    [pscustomobject]@{Name='no queried ISO';From=$mounted;Queried=$null},
+    [pscustomobject]@{Name='duplicate ISO results';From=$mounted;Queried=@(
+        [pscustomobject]@{ImagePath=$expected;Attached=$true},
+        [pscustomobject]@{ImagePath=$expected;Attached=$true}
+    )}
+)) {
+    $script:queryResult=$case.Queried
+    $denied=$false
+    try { Assert-LabMountedIsoIdentity $expected $case.From }
+    catch { $denied=$true }
+    if(-not $denied){throw ('Unsafe ISO mount result accepted: '+$case.Name)}
+}
+$script:queryResult=[pscustomobject]@{ImagePath=$expected;Attached=$true}
+$script:queryFails=$true
+$denied=$false
+try { Assert-LabMountedIsoIdentity $expected $mounted }
+catch { $denied=$true }
+if(-not $denied){throw 'Failed independent Storage query was accepted'}
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
     def test_iso_mount_requires_exactly_one_valid_drive_before_vhd_creation(self):
         import shutil
         import subprocess

@@ -392,6 +392,30 @@ function Assert-LabPlanArtifactsReady([object[]]$Images) {
     }
 }
 
+function Assert-LabMountedIsoIdentity([string]$IsoPath, $MountedIso) {
+    # Do not select elevated DISM source media from a substituted or
+    # unattached Storage response. Verify the exact ISO through a second
+    # lookup before enumerating its drive letter.
+    if ($null -eq $MountedIso -or $MountedIso -is [Array] -or
+        $MountedIso.Attached -isnot [bool] -or $MountedIso.Attached -ne $true -or
+        [string]::IsNullOrWhiteSpace([string]$MountedIso.ImagePath) -or
+        -not [string]::Equals(
+            [IO.Path]::GetFullPath([string]$MountedIso.ImagePath),
+            [IO.Path]::GetFullPath($IsoPath),
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Mounted Windows ISO identity or attachment state is invalid.'
+    }
+    $confirmed = @(Get-DiskImage -ImagePath $IsoPath -ErrorAction Stop)
+    if ($confirmed.Count -ne 1 -or $null -eq $confirmed[0] -or
+        $confirmed[0].Attached -isnot [bool] -or $confirmed[0].Attached -ne $true -or
+        [string]::IsNullOrWhiteSpace([string]$confirmed[0].ImagePath) -or
+        -not [string]::Equals(
+            [IO.Path]::GetFullPath([string]$confirmed[0].ImagePath),
+            [IO.Path]::GetFullPath($IsoPath),
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Windows ISO does not independently resolve to the requested attached image.'
+    }
+}
 function Get-LabIsoVolumeRoot($MountedIso) {
     # Storage can return no volume, multiple volumes, or a volume without an
     # assigned letter. Never guess an ISO source root for elevated DISM.
@@ -579,6 +603,7 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         if ($null -eq $iso) {
             throw 'Windows source ISO mount returned no disk image object.'
         }
+        Assert-LabMountedIsoIdentity $isoPath $iso
         $isoRoot = Get-LabIsoVolumeRoot $iso
         $imageFile = Join-Path $isoRoot 'sources\install.wim'
         if (-not (Test-Path -LiteralPath $imageFile)) { $imageFile = Join-Path $isoRoot 'sources\install.esd' }

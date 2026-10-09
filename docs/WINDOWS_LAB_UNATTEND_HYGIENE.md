@@ -289,6 +289,17 @@ PowerShell 5.1/7 fixture tests exercise the valid and invalid shapes
 without mounting images or modifying host volumes. This check narrows
 ISO source selection, not authenticity of the underlying ISO bytes.
 
+After `Mount-DiskImage` returns, the host now verifies its result is
+the **requested attached ISO**, with a full-path comparison and a native
+Boolean `Attached=true` state. An independent
+`Get-DiskImage -ImagePath` must return exactly one matching attached
+image before `Get-Volume` selects a source drive or any VHDX is created.
+Wrong-file, detached, ambiguous and unreadable Storage results refuse
+provisioning, with the existing `finally` cleanup still in force.
+Isolated Windows PowerShell 5.1 and PowerShell 7 mocks cover these cases
+without mounting media. This does not prove the ISO bytes themselves are
+trusted or rule out concurrent host mount changes.
+
 The newly created EFI and Windows guest partitions are now checked for
 distinct, single alphabetical drive letters before the elevated host calls
 DISM or BCDBoot. A missing partition object, unassigned/malformed letter,
