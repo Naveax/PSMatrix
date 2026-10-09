@@ -20,9 +20,29 @@ function New-LabBootstrapNonce {
     finally { $rng.Dispose() }
     return ([BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant()
 }
+function Assert-SafeLabArtifactPath([string]$Path) {
+    # A valid hash does not make a redirected media path trustworthy:
+    # junctions and symbolic links can redirect elevated file reads/copies.
+    # Use absolute Windows paths and reject reparse points from file to root.
+    if (-not [IO.Path]::IsPathRooted($Path) -or
+        -not ($Path -match '^[A-Za-z]:\\' -or $Path.StartsWith('\\'))) {
+        throw 'Windows lab artifact path is unsafe.'
+    }
+    $itemPath = [IO.Path]::GetFullPath($Path)
+    while (-not [string]::IsNullOrEmpty($itemPath)) {
+        $item = Get-Item -LiteralPath $itemPath -Force -ErrorAction Stop
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Windows lab artifact path contains a reparse point.'
+        }
+        $parent = [IO.Path]::GetDirectoryName($itemPath)
+        if ($parent -eq $itemPath) { break }
+        $itemPath = $parent
+    }
+}
 function Assert-Artifact($Artifact, [string]$Label) {
     $path = [string]$Artifact.path
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw ($Label + ' not found: ' + $path) }
+    Assert-SafeLabArtifactPath $path
     $actual = Get-Sha256 $path
     if ($actual -ne ([string]$Artifact.sha256).ToLowerInvariant()) { throw ($Label + ' SHA-256 mismatch.') }
     if ($Artifact.size -and (Get-Item -LiteralPath $path).Length -ne [int64]$Artifact.size) { throw ($Label + ' size mismatch.') }

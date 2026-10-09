@@ -250,6 +250,21 @@ explicit host-specific rejection, not a claim that upstream plan generation
 has been rebaselined. Isolated dynamic WinPS 5.1/PowerShell 7 tests exercise
 boundary values and invalid plans without creating a real Hyper-V VM.
 
+Artifact SHA-256 verification now also rejects **relative media paths** and
+any existing NTFS reparse point on the artifact file or in its ancestor
+directory chain. This applies to Windows ISOs, worker and Python installers,
+credential/signing bundles and optional WMF packages. Hash equality alone
+would otherwise allow an elevated build to read an input through a
+pre-existing junction or symbolic link to an unexpected filesystem location.
+The same guard runs at whole-plan preflight and immediately before each
+artifact is used by `New-LabVhd`. Windows PowerShell 5.1 and PowerShell 7
+tests use a real isolated directory junction pointing to a dummy media
+file with a matching SHA-256, confirm the redirect is rejected, and
+confirm an ordinary direct path is accepted. This is **not** an atomic
+open-by-file-ID guarantee against concurrent link swaps, and installations
+that intentionally locate lab media behind junctions must use direct
+non-reparse paths.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted

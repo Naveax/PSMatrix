@@ -1901,7 +1901,7 @@ $end = $raw.IndexOf('function New-LabVhd(', $start)
 if ($start -lt 0 -or $end -le $start) { throw 'Missing media preflight.' }
 Invoke-Expression $raw.Substring($start, $end - $start)
 $root = __ROOT__
-$artifactStart = $raw.IndexOf('function Assert-Artifact(')
+$artifactStart = $raw.IndexOf('function Assert-SafeLabArtifactPath(')
 $artifactEnd = $raw.IndexOf('function Invoke-Checked(', $artifactStart)
 if ($artifactStart -lt 0 -or $artifactEnd -le $artifactStart) { throw 'Original hash guard is missing.' }
 function Get-Sha256([string]$Path) {
@@ -2161,6 +2161,89 @@ exit 0
             self.assertEqual(
                 result.returncode, 0, shell + ": " + result.stdout + result.stderr,
             )
+
+    def test_host_rejects_untrusted_artifact_paths_before_hash_or_copy(self):
+        host = HOST.read_text(encoding="utf-8")
+        start = host.index("function Assert-SafeLabArtifactPath(")
+        end = host.index("function Invoke-Checked(", start)
+        guard = host[start:end]
+        for expected in (
+            "[IO.Path]::GetFullPath($Path)",
+            "[IO.Path]::IsPathRooted($Path)",
+            "[IO.FileAttributes]::ReparsePoint",
+            "Get-Item -LiteralPath $itemPath -Force -ErrorAction Stop",
+            "Windows lab artifact path is unsafe.",
+            "Windows lab artifact path contains a reparse point.",
+            "Assert-SafeLabArtifactPath $path",
+        ):
+            self.assertIn(expected, guard)
+        self.assertLess(guard.index("Assert-SafeLabArtifactPath $path"), guard.index("Get-Sha256 $path"))
+        self.assertLess(host.index("Assert-LabPlanArtifactsReady $planValue.images"),host.index("$results = @()"))
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_artifact_hash_cannot_authorize_junction_media_path(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        def quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-artifact-link-") as root:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                case = Path(root) / exe.replace(".", "-")
+                case.mkdir()
+                script = """
+$ErrorActionPreference = 'Stop'
+$source = Get-Content -LiteralPath __HOST__ -Raw
+$start = $source.IndexOf('function Assert-SafeLabArtifactPath(')
+$end = $source.IndexOf('function Invoke-Checked(', $start)
+if ($start -lt 0 -or $end -le $start) { throw 'Missing artifact path guard.' }
+Invoke-Expression $source.Substring($start, $end - $start)
+function Get-Sha256([string]$Path) {
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+$base = __ROOT__
+$real = Join-Path $base 'real'
+$link = Join-Path $base 'redirected'
+New-Item -ItemType Directory -Path $real | Out-Null
+$target = Join-Path $real 'payload.bin'
+[IO.File]::WriteAllText($target, 'fictional non-sensitive test media')
+$expected = Get-Sha256 $target
+$size = (Get-Item -LiteralPath $target).Length
+Assert-Artifact ([pscustomobject]@{path=$target;sha256=$expected;size=$size}) 'Dummy media'
+New-Item -ItemType Junction -Path $link -Target $real -ErrorAction Stop | Out-Null
+try {
+    $alias = Join-Path $link 'payload.bin'
+    if ((Get-Sha256 $alias) -cne $expected) { throw 'Fixture is not a valid alias.' }
+    try {
+        Assert-Artifact ([pscustomobject]@{path=$alias;sha256=$expected;size=$size}) 'Dummy media'
+        throw 'Junction-mediated artifact was accepted.'
+    } catch {
+        if ($_.Exception.Message -cne 'Windows lab artifact path contains a reparse point.') { throw }
+    }
+    try {
+        Assert-SafeLabArtifactPath 'relative\\payload.bin'
+        throw 'Relative artifact path was accepted.'
+    } catch {
+        if ($_.Exception.Message -cne 'Windows lab artifact path is unsafe.') { throw }
+    }
+} finally {
+    & cmd.exe /d /c ('rmdir "' + $link + '"')
+    if ($LASTEXITCODE -ne 0) { throw 'Could not remove fixture junction safely.' }
+}
+exit 0
+""".replace("__HOST__", quote(HOST)).replace("__ROOT__", quote(case))
+                run = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=40, check=False,
+                )
+                self.assertEqual(
+                    run.returncode, 0, exe + ": " + run.stdout + run.stderr,
+                )
 
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
