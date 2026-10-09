@@ -2912,6 +2912,10 @@ exit 0
             script = r"""
 $ErrorActionPreference = 'Stop'
 $hostSource = Get-Content -LiteralPath '__HOST__' -Raw
+$safeBegin = $hostSource.IndexOf('function Assert-SafeLabArtifactPath(')
+$safeEnd = $hostSource.IndexOf('function Assert-Artifact(', $safeBegin)
+if ($safeBegin -lt 0 -or $safeEnd -le $safeBegin) { throw 'Safe input path helper missing.' }
+Invoke-Expression $hostSource.Substring($safeBegin, $safeEnd - $safeBegin)
 $first = $hostSource.IndexOf('function Read-LabProvisionPlan(')
 $last = $hostSource.IndexOf('function Wait-FirstBoot(', $first)
 if ($first -lt 0 -or $last -le $first) { throw 'Canonical plan functions missing.' }
@@ -3069,6 +3073,122 @@ exit 0
                 self.assertEqual(
                     result.returncode, 0,
                     shell + ": " + result.stdout + result.stderr,
+                )
+
+    def test_host_bounds_and_safeguards_plan_file_before_json_parse(self):
+        host = HOST.read_text(encoding="utf-8")
+        guard = host.split("function Read-LabProvisionPlan(", 1)[1].split(
+            "function ConvertTo-LabCanonicalJsonString(", 1
+        )[0]
+        for expected in (
+            "Assert-SafeLabArtifactPath $fullPath",
+            "[IO.File]::Open(",
+            "[IO.FileShare]::None",
+            "$stream.Length -gt 1048576",
+            "[Text.UTF8Encoding]::new($false, $true)",
+            "Windows lab plan file has an invalid size.",
+            "Windows lab plan file was truncated during guarded read.",
+            "DateKind",
+            "'String'",
+        ):
+            self.assertIn(expected, guard)
+        self.assertNotIn("Get-Content -LiteralPath $Path -Raw -Encoding UTF8", guard)
+        self.assertLess(guard.index("Assert-SafeLabArtifactPath $fullPath"), guard.index("[IO.File]::Open("))
+        self.assertLess(guard.index("$stream.Length -gt 1048576"), guard.index("ConvertFrom-Json @convert"))
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_plan_reader_dynamic_bounds_utf8_and_junctions(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        def quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-plan-input-") as tmp:
+            root = Path(tmp)
+            for executable in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(executable):
+                    continue
+                case = root / executable.replace(".", "-")
+                case.mkdir()
+                source = case / "source"
+                source.mkdir()
+                (source / "valid.json").write_bytes(
+                    '{"created_at":"2026-10-09T15:06:00Z","label":"Çanakkale","schema":1}'.encode("utf-8")
+                )
+                (source / "bom.json").write_bytes(
+                    b"\xef\xbb\xbf" + b'{"created_at":"2026-10-09T15:06:00Z","schema":1}'
+                )
+                (source / "bad-utf8.json").write_bytes(b'{"schema":1,"text":"\xff"}')
+                (source / "oversize.json").write_bytes(b" " * (1048576 + 1))
+                (source / "empty.json").write_bytes(b"")
+                script = r"""
+$ErrorActionPreference = 'Stop'
+$source = Get-Content -LiteralPath __HOST__ -Raw
+$a = $source.IndexOf('function Assert-SafeLabArtifactPath(')
+$b = $source.IndexOf('function Assert-Artifact(', $a)
+$c = $source.IndexOf('function Read-LabProvisionPlan(')
+$e = $source.IndexOf('function ConvertTo-LabCanonicalJsonString(', $c)
+if ($a -lt 0 -or $b -le $a -or $c -lt 0 -or $e -le $c) {
+    throw 'Expected host plan parsing guards missing.'
+}
+Invoke-Expression $source.Substring($a, $b - $a)
+Invoke-Expression $source.Substring($c, $e - $c)
+$base = __ROOT__
+$real = Join-Path $base 'source'
+$valid = Join-Path $real 'valid.json'
+$plan = Read-LabProvisionPlan $valid
+if ($plan.label -cne 'Çanakkale' -or $plan.schema -ne 1) {
+    throw 'Valid UTF-8 plan was not parsed correctly.'
+}
+if ($plan.created_at -isnot [string]) {
+    throw 'Canonical plan reader changed ISO timestamp into a non-string.'
+}
+$withBom = Read-LabProvisionPlan (Join-Path $real 'bom.json')
+if ($withBom.schema -ne 1 -or $withBom.created_at -isnot [string]) {
+    throw 'UTF-8 BOM input was not accepted correctly.'
+}
+foreach ($name in @('empty.json', 'oversize.json')) {
+    try {
+        Read-LabProvisionPlan (Join-Path $real $name)
+        throw ('Invalid-size plan accepted: ' + $name)
+    } catch {
+        if ($_.Exception.Message -cne 'Windows lab plan file has an invalid size.') { throw }
+    }
+}
+try {
+    Read-LabProvisionPlan (Join-Path $real 'bad-utf8.json')
+    throw 'Invalid UTF-8 plan was accepted.'
+} catch {
+    if ($_.Exception.GetBaseException().GetType().FullName -cne 'System.Text.DecoderFallbackException') {
+        throw ('Unexpected UTF-8 failure: ' + $_.Exception.GetBaseException().GetType().FullName)
+    }
+}
+$link = Join-Path $base 'source-junction'
+New-Item -ItemType Junction -Path $link -Target $real -ErrorAction Stop | Out-Null
+try {
+    try {
+        Read-LabProvisionPlan (Join-Path $link 'valid.json')
+        throw 'Junction-based plan path was accepted.'
+    } catch {
+        if ($_.Exception.Message -cne 'Windows lab artifact path contains a reparse point.') { throw }
+    }
+}
+finally {
+    & cmd.exe /d /c ('rmdir "' + $link + '"')
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to remove test junction safely.' }
+}
+exit 0
+""".replace("__HOST__", quote(HOST)).replace("__ROOT__", quote(case))
+                result = subprocess.run(
+                    [executable, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=60, check=False,
+                )
+                self.assertEqual(
+                    result.returncode, 0,
+                    executable + ": " + result.stdout + result.stderr,
                 )
 
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):

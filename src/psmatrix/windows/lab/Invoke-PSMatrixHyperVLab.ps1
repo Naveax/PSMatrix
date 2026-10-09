@@ -920,10 +920,35 @@ function Assert-LabPlanExpectedOs([object[]]$Images) {
 }
 
 function Read-LabProvisionPlan([string]$Path) {
-    # PowerShell 7.5+ otherwise auto-converts ISO timestamps into DateTime
-    # values, changing the canonical JSON bytes used by Python's digest.
-    # Windows PowerShell 5.1 keeps these JSON values as strings already.
-    $raw = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+    # Treat this elevated host input as untrusted. A large file or NTFS
+    # junction must not reach JSON parsing, and invalid UTF-8 must fail
+    # rather than silently changing the bytes used by the plan digest.
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    Assert-SafeLabArtifactPath $fullPath
+    $stream = [IO.File]::Open(
+        $fullPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None
+    )
+    try {
+        if ($stream.Length -le 0 -or $stream.Length -gt 1048576) {
+            throw 'Windows lab plan file has an invalid size.'
+        }
+        $bytes = New-Object 'System.Byte[]' ([int]$stream.Length)
+        $offset = 0
+        while ($offset -lt $bytes.Length) {
+            $received = $stream.Read($bytes, $offset, $bytes.Length - $offset)
+            if ($received -le 0) {
+                throw 'Windows lab plan file was truncated during guarded read.'
+            }
+            $offset += $received
+        }
+        $raw = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+        if ($raw.Length -gt 0 -and $raw[0] -eq [char]0xFEFF) {
+            $raw = $raw.Substring(1)
+        }
+    }
+    finally { $stream.Dispose() }
+    # PowerShell 7.5+ otherwise auto-converts ISO timestamp strings to
+    # DateTime, changing the Python producer's canonical JSON digest.
     $convert = @{ InputObject = $raw }
     if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
         $convert['DateKind'] = 'String'

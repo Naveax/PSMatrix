@@ -392,6 +392,27 @@ verify both fail-closed branches. This does not provide atomic
 file-identity binding against privileged concurrent replacements,
 and elevated offline Hyper-V acceptance remains necessary.
 
+The host also treats the **provision plan JSON file itself** as
+untrusted elevated input. Before parsing, `Read-LabProvisionPlan`
+normalizes its path, rejects existing NTFS reparse points in the file
+or any ancestor directory, opens one exclusive read handle, and
+enforces a **1 MiB maximum / nonempty file** bound. A single bounded
+read is decoded using strict UTF-8, rejecting malformed sequences
+rather than replacing invalid bytes. Optional UTF-8 BOM is tolerated;
+the parsed JSON still retains ISO timestamp strings on both Windows
+PowerShell 5.1 and PowerShell 7.6, preserving Python's canonical
+`plan_sha256` behavior. A relative `-Plan` path is resolved to an
+absolute path before the ancestor checks. Disposable tests validate
+normal and BOM-containing UTF-8 JSON, oversized/empty inputs, invalid
+UTF-8, and a **real NTFS directory junction** in both PowerShell
+versions. No genuine lab plan, credentials or Hyper-V VM is used.
+
+These checks bound normal input and reject *preexisting* redirected
+paths; they do not cryptographically authorize the plan or eliminate
+all privileged concurrent filesystem replacement races. Operators
+should keep plans in a controlled non-reparse directory, not rely on
+a self-declared SHA-256 as an authorization signature.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted
