@@ -858,10 +858,60 @@ if ($writtenAfter -cne $written) {{ throw 'Existing worker content changed.' }}
         self.assertIn("Get-Acl -LiteralPath $item.FullName", host)
         self.assertIn("Get-ChildItem -LiteralPath $item.FullName -Force -ErrorAction Stop", host)
 
+    def test_guest_firewall_uses_trusted_system_netsh_not_path_resolution(self):
+        guest = GUEST.read_text(encoding="utf-8")
+        worker_install = guest.index("$installScript = Find-File $workerRoot 'install-worker.ps1'")
+        trusted = guest.index("$netshPath = Join-Path ([Environment]::SystemDirectory) 'netsh.exe'", worker_install)
+        presence = guest.index("[IO.File]::Exists($netshPath)", trusted)
+        invocation = guest.index("& $netshPath advfirewall firewall add rule", presence)
+        failure_gate = guest.index(
+            "if ($LASTEXITCODE -ne 0) { throw 'Windows firewall rule configuration failed.' }",
+            invocation,
+        )
+        self.assertLess(trusted, presence)
+        self.assertLess(presence, invocation)
+        self.assertLess(invocation, failure_gate)
+        self.assertNotIn("& netsh.exe advfirewall firewall add rule", guest)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_system_netsh_lookup_is_not_shadowed_by_powershell_command(self):
+        import shutil
+        import subprocess
+
+        script = r"""
+$ErrorActionPreference = 'Stop'
+function netsh.exe { throw 'shadowed test command executed' }
+$unqualified = Get-Command netsh.exe -ErrorAction Stop
+if ($unqualified.CommandType -cne 'Function') {
+    throw 'Test fixture failed to shadow the unqualified executable name.'
+}
+$netshPath = Join-Path ([Environment]::SystemDirectory) 'netsh.exe'
+if (-not [IO.Path]::IsPathRooted($netshPath) -or
+    -not [IO.File]::Exists($netshPath)) {
+    throw 'Trusted Windows netsh path did not resolve.'
+}
+$trusted = Get-Item -LiteralPath $netshPath -ErrorAction Stop
+if ($trusted.Name -ine 'netsh.exe' -or $trusted.PSIsContainer) {
+    throw 'Trusted netsh target is invalid.'
+}
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=30, check=False,
+            )
+            self.assertEqual(
+                result.returncode, 0,
+                exe + ": " + result.stdout + result.stderr,
+            )
+
     def test_guest_firewall_failure_cannot_be_hidden_by_successful_probe(self):
         guest = GUEST.read_text(encoding="utf-8")
         install = guest.index("$installScript = Find-File $workerRoot 'install-worker.ps1'")
-        firewall = guest.index("& netsh.exe advfirewall firewall add rule", install)
+        firewall = guest.index("& $netshPath advfirewall firewall add rule", install)
         fail = guest.index(
             "if ($LASTEXITCODE -ne 0) { throw 'Windows firewall rule configuration failed.' }",
             firewall,

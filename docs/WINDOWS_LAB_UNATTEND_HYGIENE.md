@@ -59,7 +59,7 @@ VHDX acceptance is claimed. The host-only source is not being retargeted to PS4.
 
 ## Windows Firewall failure gate
 
-The guest bootstrap checks `netsh.exe advfirewall firewall add rule`'s exit code **immediately** after the command. Previously a failed firewall-rule command could be masked by a succeeding worker probe overwriting `$LASTEXITCODE`, allowing a false `PASS`. A nonzero `netsh` exit now fails closed before the probe. Real guest firewall reachability still requires elevated Windows acceptance; this is not a remote network test.
+The guest bootstrap checks `netsh.exe advfirewall firewall add rule`'s exit code **immediately** after the command. Previously a failed firewall-rule command could be masked by a succeeding worker probe overwriting `$LASTEXITCODE`, allowing a false `PASS`. A nonzero `netsh` exit now fails closed before the probe. The privileged guest now invokes the **absolute host Windows SystemDirectory `netsh.exe`**, instead of resolving an unqualified executable through PATH/PowerShell command precedence. A missing system utility fails closed. RED/GREEN source regression and non-mutating Windows PowerShell 5.1/PowerShell 7 lookup fixtures cover the shadowing risk, without changing the host firewall. This avoids command-search hijacking but does not attest the system binary itself. Real guest firewall reachability still requires elevated Windows acceptance; this is not a remote network test.
 
 ## Canonical three-runtime plan and guest identity
 

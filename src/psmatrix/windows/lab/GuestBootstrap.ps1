@@ -582,7 +582,13 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'PSMatrix worker service installation failed.' }
 
     $port = [int]$config.worker_port
-    & netsh.exe advfirewall firewall add rule name=('PSMatrix Worker ' + [string]$config.worker_id) dir=in action=allow protocol=TCP localport=$port profile=any | Out-Null
+    # The first-boot script runs elevated. Never resolve netsh via PATH or
+    # command precedence, where an untrusted executable/function can shadow it.
+    $netshPath = Join-Path ([Environment]::SystemDirectory) 'netsh.exe'
+    if (-not [IO.File]::Exists($netshPath)) {
+        throw 'Windows system netsh utility is missing.'
+    }
+    & $netshPath advfirewall firewall add rule name=('PSMatrix Worker ' + [string]$config.worker_id) dir=in action=allow protocol=TCP localport=$port profile=any | Out-Null
     # Another successful native command will overwrite LASTEXITCODE.
     if ($LASTEXITCODE -ne 0) { throw 'Windows firewall rule configuration failed.' }
     & $python.Source -m psmatrix worker probe --config $workerConfig | Out-Null
