@@ -147,6 +147,17 @@ range `1..65535`; the host enforces the narrower existing plan contract.
 These preflight tests use isolated PowerShell function execution, **not**
 real elevated Hyper-V or historical PowerShell guest acceptance.
 
+The host additionally checks the **whole three-image plan** for unique,
+case-insensitive guest computer names of at most 15 ASCII-safe characters
+and unique canonical Windows `output_vhdx` paths before any VM/VHDX
+creation. Relative, missing and non-`.vhdx` output paths are rejected.
+This avoids proceeding with the first VM if another planned guest would
+reuse its computer identity or output disk target. The plan generator
+may truncate a requested computer name to 15 characters; the host now
+detects collisions in the resulting names. These are preflight guards,
+not proof against filesystem aliasing through pre-existing junctions or
+a real elevated Hyper-V installation.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted

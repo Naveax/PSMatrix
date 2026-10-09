@@ -1414,6 +1414,89 @@ exit 0
             )
             self.assertEqual(run.returncode, 0, shell + ": " + run.stdout + run.stderr)
 
+    def test_host_machine_and_vhdx_preflight_before_any_vm_side_effect(self):
+        host = HOST.read_text(encoding="utf-8")
+        self.assertIn("function Assert-LabPlanMachineAndOutputPaths(", host)
+        section = host.split("function Assert-LabPlanMachineAndOutputPaths(", 1)[1].split(
+            "function Wait-FirstBoot(", 1
+        )[0]
+        for fragment in (
+            "Windows lab plan computer_name is invalid or duplicated.",
+            "Windows lab plan output_vhdx is invalid.",
+            "Windows lab plan output_vhdx is duplicated.",
+            "[IO.Path]::GetFullPath($path)",
+            "[StringComparer]::OrdinalIgnoreCase",
+        ):
+            self.assertIn(fragment, section)
+        call = host.index("Assert-LabPlanMachineAndOutputPaths $planValue.images")
+        self.assertLess(call, host.index("$results = @()"))
+        self.assertLess(call, host.index("New-LabVhd $image"))
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_machine_and_disk_preflight_dynamic(self):
+        import shutil
+        import subprocess
+
+        host_path = "'" + str(HOST).replace("'", "''") + "'"
+        script = """
+$ErrorActionPreference = 'Stop'
+$source = Get-Content -LiteralPath __HOST_PATH__ -Raw
+$a = $source.IndexOf('function Assert-LabPlanMachineAndOutputPaths(')
+$b = $source.IndexOf('function Wait-FirstBoot(', $a)
+if ($a -lt 0 -or $b -le $a) { throw 'Missing host preflight.' }
+Invoke-Expression $source.Substring($a, $b-$a)
+$root = Join-Path $env:TEMP 'psmatrix-host-preflight-fixtures'
+$valid = @(
+    [pscustomobject]@{computer_name='PSMX-40';output_vhdx=(Join-Path $root '40.vhdx')},
+    [pscustomobject]@{computer_name='PSMX-50';output_vhdx=(Join-Path $root '50.vhdx')},
+    [pscustomobject]@{computer_name='PSMX-51';output_vhdx=(Join-Path $root '51.vhdx')}
+)
+Assert-LabPlanMachineAndOutputPaths $valid
+$cases = @(
+    @{name='duplicate-computer';computer='psmx-40';file='different.vhdx';error='Windows lab plan computer_name is invalid or duplicated.'},
+    @{name='long-computer';computer='ABCDEFGHIJKLMNOP';file='different.vhdx';error='Windows lab plan computer_name is invalid or duplicated.'},
+    @{name='same-output';computer='OTHER-50';file='40.VHDX';error='Windows lab plan output_vhdx is duplicated.'},
+    @{name='invalid-extension';computer='OTHER-50';file='wrong.iso';error='Windows lab plan output_vhdx is invalid.'}
+)
+foreach ($case in $cases) {
+    $candidate = [pscustomobject]@{computer_name=$case.computer;output_vhdx=(Join-Path $root $case.file)}
+    try {
+        Assert-LabPlanMachineAndOutputPaths @($valid[0],$candidate,$valid[2])
+        throw ('Invalid plan accepted: ' + $case.name)
+    } catch {
+        if ($_.Exception.Message -cne $case.error) {
+            throw ('Unexpected failure: ' + $case.name + ': ' + $_.Exception.Message)
+        }
+    }
+}
+$tooLong = [pscustomobject]@{computer_name='ABCDEFGHIJKLMNO';output_vhdx=(Join-Path $root 'other.vhdx')}
+Assert-LabPlanMachineAndOutputPaths @($valid[0],$tooLong,$valid[2])
+$badRelative = [pscustomobject]@{computer_name='OTHER-50';output_vhdx='relative.vhdx'}
+try {
+    Assert-LabPlanMachineAndOutputPaths @($valid[0],$badRelative,$valid[2])
+    throw 'Relative VHDX path accepted.'
+} catch {
+    if ($_.Exception.Message -cne 'Windows lab plan output_vhdx is invalid.') { throw }
+}
+$missing = [pscustomobject]@{computer_name='OTHER-50'}
+try {
+    Assert-LabPlanMachineAndOutputPaths @($valid[0],$missing,$valid[2])
+    throw 'Missing VHDX path accepted.'
+} catch {
+    if ($_.Exception.Message -cne 'Windows lab plan output_vhdx is invalid.') { throw }
+}
+exit 0
+""".replace("__HOST_PATH__", host_path)
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            proc = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(proc.returncode, 0, exe + ": " + proc.stdout + proc.stderr)
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)

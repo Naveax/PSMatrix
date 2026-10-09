@@ -589,6 +589,42 @@ function Assert-LabPlanGuestIdentities([object[]]$Images) {
     }
 }
 
+function Assert-LabPlanMachineAndOutputPaths([object[]]$Images) {
+    # Plan building can truncate the requested Windows computer name to
+    # 15 chars. Check the resulting names and disk targets before any VM
+    # is created; Windows computer names and filesystem paths ignore case.
+    $seenComputers = New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList ([StringComparer]::OrdinalIgnoreCase)
+    $seenDisks = New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($image in $Images) {
+        if ($image.computer_name -isnot [string] -or
+            $image.computer_name -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,14}$' -or
+            -not $seenComputers.Add([string]$image.computer_name)) {
+            throw 'Windows lab plan computer_name is invalid or duplicated.'
+        }
+        if ($image.output_vhdx -isnot [string] -or
+            [string]::IsNullOrWhiteSpace($image.output_vhdx)) {
+            throw 'Windows lab plan output_vhdx is invalid.'
+        }
+        $path = [string]$image.output_vhdx
+        if (-not [IO.Path]::IsPathRooted($path) -or
+            -not ($path -match '^[A-Za-z]:\\' -or $path.StartsWith('\\'))) {
+            throw 'Windows lab plan output_vhdx is invalid.'
+        }
+        try {
+            $canonicalDisk = [IO.Path]::GetFullPath($path)
+        }
+        catch {
+            throw 'Windows lab plan output_vhdx is invalid.'
+        }
+        if (-not $canonicalDisk.EndsWith('.vhdx', [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Windows lab plan output_vhdx is invalid.'
+        }
+        if (-not $seenDisks.Add($canonicalDisk)) {
+            throw 'Windows lab plan output_vhdx is duplicated.'
+        }
+    }
+}
+
 function Wait-FirstBoot([string]$VmName, [int]$TimeoutSeconds) {
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     $observedRunning = $false
@@ -622,6 +658,7 @@ foreach ($requiredRuntime in $requiredRuntimes) {
     }
 }
 Assert-LabPlanGuestIdentities $planValue.images
+Assert-LabPlanMachineAndOutputPaths $planValue.images
 $results = @()
 foreach ($image in $planValue.images) {
     $vmName = [string]$image.image_id
