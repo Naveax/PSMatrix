@@ -561,6 +561,34 @@ function Read-BootstrapResult([string]$VhdPath, [string]$ExpectedBootstrapNonce)
         }
     }
 }
+function Assert-LabPlanGuestIdentities([object[]]$Images) {
+    # Validate the complete plan before creating any VHDX or VM. The upstream
+    # manifest may accept worker IDs longer than the actual Windows install
+    # worker.ps1 64-character limit. Windows names are case-insensitive.
+    $seenWorkers = New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList ([StringComparer]::OrdinalIgnoreCase)
+    $seenImages = New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($image in $Images) {
+        if ($image.worker_id -isnot [string] -or
+            $image.worker_id -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') {
+            throw 'Windows lab plan worker_id is invalid or exceeds installer limit.'
+        }
+        if (-not $seenWorkers.Add([string]$image.worker_id)) {
+            throw 'Windows lab plan worker_id is duplicated.'
+        }
+        if ($image.image_id -isnot [string] -or
+            $image.image_id -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$' -or
+            -not $seenImages.Add([string]$image.image_id)) {
+            throw 'Windows lab plan image_id is invalid or duplicated.'
+        }
+        # Mirror the existing provisioning manifest range, avoiding a long
+        # VM build whose guest bootstrap would later reject an invalid port.
+        if ($image.worker_port -isnot [int] -or
+            $image.worker_port -lt 1024 -or $image.worker_port -gt 65535) {
+            throw 'Windows lab plan worker_port is invalid.'
+        }
+    }
+}
+
 function Wait-FirstBoot([string]$VmName, [int]$TimeoutSeconds) {
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     $observedRunning = $false
@@ -578,6 +606,7 @@ Assert-Administrator
 Import-Module Hyper-V -ErrorAction Stop
 if (-not (Test-Path -LiteralPath $Plan -PathType Leaf)) { throw 'Lab plan is missing.' }
 $planValue = Get-Content -LiteralPath $Plan -Raw | ConvertFrom-Json
+if ($planValue.schema -isnot [int] -or $planValue.schema -ne 1) { throw 'Windows lab plan schema is invalid.' }
 if ([string]$planValue.kind -ne 'psmatrix.windows-hyperv-provision-plan') { throw 'Lab plan kind is invalid.' }
 # Require the three unique canonical Windows PowerShell targets before any
 # VM provisioning. An incomplete or duplicated plan cannot produce PASS.
@@ -592,6 +621,7 @@ foreach ($requiredRuntime in $requiredRuntimes) {
         throw ('Windows lab plan missing, duplicating or mislabeling runtime: ' + $requiredRuntime)
     }
 }
+Assert-LabPlanGuestIdentities $planValue.images
 $results = @()
 foreach ($image in $planValue.images) {
     $vmName = [string]$image.image_id

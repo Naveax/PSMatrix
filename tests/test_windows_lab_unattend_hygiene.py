@@ -1336,6 +1336,84 @@ exit 0
                 shell + ": " + result.stdout + result.stderr,
             )
 
+    def test_host_validates_all_plan_guest_ids_and_ports_before_any_vm_side_effect(self):
+        host = HOST.read_text(encoding="utf-8")
+        self.assertIn("function Assert-LabPlanGuestIdentities(", host)
+        start = host.index("function Assert-LabPlanGuestIdentities(")
+        checker = host[start:host.index("function Wait-FirstBoot(", start)]
+        for part in (
+            "Windows lab plan worker_id is invalid or exceeds installer limit.",
+            "Windows lab plan worker_id is duplicated.",
+            "Windows lab plan image_id is invalid or duplicated.",
+            "Windows lab plan worker_port is invalid.",
+            "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+            "$image.worker_port -isnot [int]",
+            "$image.worker_port -lt 1024",
+            "$image.worker_port -gt 65535",
+            "[StringComparer]::OrdinalIgnoreCase",
+        ):
+            self.assertIn(part, checker)
+        call = host.index("Assert-LabPlanGuestIdentities $planValue.images")
+        self.assertLess(call, host.index("$results = @()"))
+        self.assertLess(call, host.index("New-LabVhd $image"))
+        self.assertIn("Windows lab plan schema is invalid.", host)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_plan_identity_preflight_dynamic_rejects_ambiguous_invalid_images(self):
+        import shutil
+        import subprocess
+
+        quoted = "'" + str(HOST).replace("'", "''") + "'"
+        script = """
+$ErrorActionPreference = 'Stop'
+$raw = Get-Content -LiteralPath __HOST__ -Raw
+$start = $raw.IndexOf('function Assert-LabPlanGuestIdentities(')
+$end = $raw.IndexOf('function Wait-FirstBoot(', $start)
+if ($start -lt 0 -or $end -le $start) { throw 'Missing host plan preflight.' }
+Invoke-Expression $raw.Substring($start, $end - $start)
+$valid = @(
+  [pscustomobject]@{worker_id='worker-40';worker_port=1024;image_id='vm-40'},
+  [pscustomobject]@{worker_id='worker-50';worker_port=9443;image_id='vm-50'},
+  [pscustomobject]@{worker_id='worker-51';worker_port=65535;image_id='vm-51'}
+)
+Assert-LabPlanGuestIdentities $valid
+$atLimit = [pscustomobject]@{worker_id=('a' * 64);worker_port=9443;image_id='vm-50'}
+Assert-LabPlanGuestIdentities @($valid[0],$atLimit,$valid[2])
+$cases = @(
+  @{name='unsafe'; value=[pscustomobject]@{worker_id='worker/50';worker_port=9443;image_id='vm-50'};reason='Windows lab plan worker_id is invalid or exceeds installer limit.'},
+  @{name='too-long';value=[pscustomobject]@{worker_id=('a'*65);worker_port=9443;image_id='vm-50'};reason='Windows lab plan worker_id is invalid or exceeds installer limit.'},
+  @{name='missing';value=[pscustomobject]@{worker_port=9443;image_id='vm-50'};reason='Windows lab plan worker_id is invalid or exceeds installer limit.'},
+  @{name='duplicate-case';value=[pscustomobject]@{worker_id='WORKER-40';worker_port=9443;image_id='vm-50'};reason='Windows lab plan worker_id is duplicated.'},
+  @{name='duplicate-vm';value=[pscustomobject]@{worker_id='worker-50';worker_port=9443;image_id='VM-40'};reason='Windows lab plan image_id is invalid or duplicated.'},
+  @{name='bad-vm';value=[pscustomobject]@{worker_id='worker-50';worker_port=9443;image_id='VM 50'};reason='Windows lab plan image_id is invalid or duplicated.'},
+  @{name='port-low';value=[pscustomobject]@{worker_id='worker-50';worker_port=1023;image_id='vm-50'};reason='Windows lab plan worker_port is invalid.'},
+  @{name='port-high';value=[pscustomobject]@{worker_id='worker-50';worker_port=65536;image_id='vm-50'};reason='Windows lab plan worker_port is invalid.'},
+  @{name='port-string';value=[pscustomobject]@{worker_id='worker-50';worker_port='9443';image_id='vm-50'};reason='Windows lab plan worker_port is invalid.'},
+  @{name='port-null';value=[pscustomobject]@{worker_id='worker-50';image_id='vm-50'};reason='Windows lab plan worker_port is invalid.'}
+)
+foreach ($case in $cases) {
+    $images = @($valid[0],$case.value,$valid[2])
+    try {
+        Assert-LabPlanGuestIdentities $images
+        throw ('Unexpected acceptance: ' + $case.name)
+    } catch {
+        if ($_.Exception.Message -cne $case.reason) {
+            throw ('Wrong failure for ' + $case.name + ': ' + $_.Exception.Message)
+        }
+    }
+}
+exit 0
+""".replace("__HOST__", quoted)
+        for shell in ("powershell.exe", "pwsh.exe"):
+            if shutil.which(shell) is None:
+                continue
+            run = subprocess.run(
+                [shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(run.returncode, 0, shell + ": " + run.stdout + run.stderr)
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)

@@ -135,6 +135,18 @@ planning permits some longer IDs, which are not guest-installable without a
 separate reviewed contract change. These preflight controls do not validate
 the provenance of the plan or replace real elevated guest acceptance.
 
+Before **any** VHDX or VM is created, the host now independently preflights
+all three plan images for worker IDs compatible with the 64-character Windows
+installer, case-insensitive unique worker and VM IDs, and native integer worker
+ports in the provisioning-manifest range `1024..65535`. The host also
+requires the native integer plan `schema=1`. Previously a plan generator
+could allow 65–128-character worker identities and only fail much later in
+the first-boot guest installer; VM-name case collisions could also fail after
+an earlier VM had already been created. The guest retains its broader port
+range `1..65535`; the host enforces the narrower existing plan contract.
+These preflight tests use isolated PowerShell function execution, **not**
+real elevated Hyper-V or historical PowerShell guest acceptance.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted
