@@ -387,6 +387,39 @@ function Get-LabPartitionRoots($WindowsPartition, $EfiPartition) {
         EfiRoot = $efiLetter.ToUpperInvariant() + ':'
     }
 }
+function Assert-NewLabVhdDiskIdentity([string]$VhdPath, $MountedVhd) {
+    # Disk initialization is destructive. Bind the disk reported by Mount-VHD
+    # back to the exact VHDX, and refuse initialized/host boot disks.
+    if ($null -eq $MountedVhd -or $null -eq $MountedVhd.DiskNumber -or
+        ($MountedVhd.DiskNumber -isnot [int] -and
+         $MountedVhd.DiskNumber -isnot [uint32] -and
+         $MountedVhd.DiskNumber -isnot [long])) {
+        throw 'New lab VHDX did not return a valid disk number; refusing initialization.'
+    }
+    $diskNumber = [long]$MountedVhd.DiskNumber
+    if ($diskNumber -lt 0 -or $diskNumber -gt [int]::MaxValue) {
+        throw 'New lab VHDX disk number is outside the safe range.'
+    }
+    $vhd = Get-VHD -DiskNumber ([uint32]$diskNumber) -ErrorAction Stop
+    if ($null -eq $vhd -or $vhd -is [Array] -or $vhd.Attached -isnot [bool] -or
+        $vhd.Attached -ne $true -or
+        [string]::IsNullOrWhiteSpace([string]$vhd.Path) -or
+        -not [string]::Equals(
+            [IO.Path]::GetFullPath([string]$vhd.Path),
+            [IO.Path]::GetFullPath($VhdPath),
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'New lab disk does not resolve to the expected attached VHDX.'
+    }
+    $disk = Get-Disk -Number ([int]$diskNumber) -ErrorAction Stop
+    if ($null -eq $disk -or $disk -is [Array] -or $null -eq $disk.Number -or
+        [long]$disk.Number -ne $diskNumber -or
+        $disk.IsBoot -isnot [bool] -or $disk.IsSystem -isnot [bool] -or
+        $disk.IsBoot -ne $false -or $disk.IsSystem -ne $false -or
+        [string]$disk.PartitionStyle -ine 'RAW') {
+        throw 'New lab VHDX disk is not an unused non-system RAW disk.'
+    }
+    return [int]$diskNumber
+}
 function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $BootstrapArtifact) {
     Assert-Artifact $BootstrapArtifact 'Guest bootstrap script'
     Assert-Artifact $Image.source_iso 'Windows ISO'
@@ -422,9 +455,9 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         if (-not (Test-Path -LiteralPath $imageFile)) { $imageFile = Join-Path $isoRoot 'sources\install.esd' }
         if (-not (Test-Path -LiteralPath $imageFile)) { throw 'Windows install.wim or install.esd was not found.' }
         New-VHD -Path $output -Dynamic -SizeBytes 64GB | Out-Null
-        $vhdMounted = Mount-VHD -Path $output -PassThru
-        $diskNumber = $vhdMounted.DiskNumber
-        Initialize-Disk -Number $diskNumber -PartitionStyle GPT | Out-Null
+        $vhdMounted = Mount-VHD -Path $output -PassThru -ErrorAction Stop
+        $diskNumber = Assert-NewLabVhdDiskIdentity $output $vhdMounted
+        Initialize-Disk -Number $diskNumber -PartitionStyle GPT -ErrorAction Stop | Out-Null
         $efi = New-Partition -DiskNumber $diskNumber -Size 260MB -AssignDriveLetter -GptType '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}'
         Format-Volume -Partition $efi -FileSystem FAT32 -NewFileSystemLabel 'SYSTEM' -Confirm:$false | Out-Null
         New-Partition -DiskNumber $diskNumber -Size 16MB -GptType '{e3c9e316-0b5c-4db8-817d-f92df00215ae}' | Out-Null

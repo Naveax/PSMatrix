@@ -299,6 +299,19 @@ inputs without creating partitions or formatting volumes. This check does
 not establish real Storage provider correctness; elevated Hyper-V acceptance
 remains required.
 
+Before the newly created VHDX is initialized, the host now treats the
+`Mount-VHD` disk-number response as untrusted. It obtains the actual attached
+VHD with `Get-VHD -DiskNumber`, checks that its canonical path matches the
+intended output VHDX and that it is attached, then queries `Get-Disk` for
+the same disk number. An absent/mismatched disk, system/boot disk,
+missing Boolean safety state, or any partition style other than RAW aborts
+before `Initialize-Disk`. Both VHD mount and disk initialization now
+request terminating errors. Isolated Windows PowerShell 5.1 / PowerShell 7
+tests simulate healthy and corrupted Storage/Hyper-V responses without
+touching or initializing any disk. These checks reduce wrong-disk risk,
+but concurrent host/storage races and actual elevated Hyper-V behavior
+still require independent acceptance.
+
 Failed guest bootstraps now also **attempt to remove staging credential and
 signing ZIPs plus plaintext Windows unattended answer files** before
 writing the `FAIL` bootstrap result. `Invoke-GuestBootstrapFailureCleanup`

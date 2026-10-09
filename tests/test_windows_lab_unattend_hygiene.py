@@ -467,6 +467,97 @@ foreach ($target in @('Windows','Windows\System32','Windows\System32\Config','Wi
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_new_vhd_identity_guard_refuses_wrong_host_disk_before_initialize(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        helper_start = host.index("function Assert-NewLabVhdDiskIdentity(")
+        helper_end = host.index("\nfunction New-LabVhd(", helper_start)
+        helper = host[helper_start:helper_end]
+        build = host[helper_end:host.index("\nfunction Assert-NoGuestSetupAnswerFiles(", helper_end)]
+        self.assertLess(
+            build.index("Assert-NewLabVhdDiskIdentity $output $vhdMounted"),
+            build.index("Initialize-Disk -Number $diskNumber"),
+        )
+        script = helper + r"""
+$ErrorActionPreference = 'Stop'
+$expectedPath = 'D:\PSMatrix-fixture\guest.vhdx'
+$script:vhdPath = $expectedPath
+$script:attached = $true
+$script:diskNumber = 42
+$script:raw = 'RAW'
+$script:boot = $false
+$script:system = $false
+$script:queryFails = $false
+function Get-VHD {
+    [CmdletBinding()]
+    param([uint32]$DiskNumber)
+    if ($script:queryFails) { throw 'fixture VHD lookup unavailable' }
+    return [pscustomobject]@{
+        Path = $script:vhdPath
+        Attached = $script:attached
+    }
+}
+function Get-Disk {
+    [CmdletBinding()]
+    param([int]$Number)
+    if ($script:queryFails) { throw 'fixture disk lookup unavailable' }
+    return [pscustomobject]@{
+        Number = $script:diskNumber
+        IsBoot = $script:boot
+        IsSystem = $script:system
+        PartitionStyle = $script:raw
+    }
+}
+$mounted = [pscustomobject]@{DiskNumber=42}
+if ((Assert-NewLabVhdDiskIdentity $expectedPath $mounted) -ne 42) {
+    throw 'Healthy newly mounted VHD disk was rejected.'
+}
+foreach ($case in @(
+    [pscustomobject]@{Name='other VHD';Prop='vhdPath';Value='D:\PSMatrix-fixture\other.vhdx'},
+    [pscustomobject]@{Name='detached';Prop='attached';Value=$false},
+    [pscustomobject]@{Name='different disk';Prop='diskNumber';Value=7},
+    [pscustomobject]@{Name='boot disk';Prop='boot';Value=$true},
+    [pscustomobject]@{Name='system disk';Prop='system';Value=$true},
+    [pscustomobject]@{Name='already initialized';Prop='raw';Value='GPT'},
+    [pscustomobject]@{Name='unknown partition style';Prop='raw';Value=$null},
+    [pscustomobject]@{Name='unknown attached';Prop='attached';Value=$null}
+)) {
+    $old = Get-Variable -Name $case.Prop -Scope Script -ValueOnly
+    Set-Variable -Name $case.Prop -Scope Script -Value $case.Value
+    $denied = $false
+    try { Assert-NewLabVhdDiskIdentity $expectedPath $mounted | Out-Null }
+    catch { $denied = $true }
+    Set-Variable -Name $case.Prop -Scope Script -Value $old
+    if (-not $denied) { throw ('Unsafe disk accepted: ' + $case.Name) }
+}
+foreach ($badNumber in @($null, -1, 'bogus')) {
+    $denied = $false
+    try { Assert-NewLabVhdDiskIdentity $expectedPath ([pscustomobject]@{DiskNumber=$badNumber}) | Out-Null }
+    catch { $denied = $true }
+    if (-not $denied) { throw 'Invalid VHD DiskNumber was accepted.' }
+}
+$script:queryFails = $true
+$denied = $false
+try { Assert-NewLabVhdDiskIdentity $expectedPath $mounted | Out-Null }
+catch { $denied = $true }
+if (-not $denied) { throw 'Provider lookup failure was accepted.' }
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(
+                result.returncode, 0,
+                exe + ": " + result.stdout + result.stderr,
+            )
+
     def test_lab_guest_efi_and_windows_drive_letters_are_checked_before_dism(self):
         import shutil
         import subprocess
