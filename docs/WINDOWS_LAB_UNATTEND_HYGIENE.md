@@ -101,10 +101,14 @@ The preflight also refuses Windows-invalid or ambiguous path segments: empty
 intermediate names, dot/dot-dot components, trailing spaces or periods, ASCII
 control/forbidden filename characters, and reserved DOS device names (including
 COM/LPT variants). An archive whose preflight reader exposes zero entries is
-rejected before extraction; a separate extraction pass must never proceed after
-inspecting no entries. These metadata, name and ancestor checks reduce
-accidental overwrite and resource exhaustion; they do not guarantee
-protection against filesystem races or forged ZIP metadata. The guest applies
+rejected before extraction. After all entries pass preflight, the guest
+extracts **from the same open ZipArchive instance** rather than reopening the
+ZIP path for a second independent read. It closes the archive via `finally`
+after extraction, including error paths. This closes the path-reopen race
+between checking names/declared sizes and extracting bytes; it is not
+cryptographic source authentication or a guarantee against every filesystem
+race or forged ZIP metadata. These metadata, name and ancestor checks reduce
+accidental overwrite and resource exhaustion. The guest applies
 the strict SYSTEM and Administrators ACL **before** extracting archive contents,
 then reasserts exact recursive ACLs on the extracted tree. A failed validation leaves the
 destination uncreated. These checks do not authenticate the supplied ZIP or

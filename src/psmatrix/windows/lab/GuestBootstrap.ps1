@@ -104,14 +104,15 @@ function Expand-Zip([string]$Archive, [string]$Destination) {
             }
             $expandedBytes += [long]$entry.Length
         }
+        # Keep the validated ZipArchive open for the actual extraction. Reopening
+        # the path would introduce a race against archive replacement after
+        # preflight, potentially extracting different unvalidated entries.
+        New-Item -ItemType Directory -Path $Destination -ErrorAction Stop | Out-Null
+        Set-RestrictedDirectoryAcl $Destination
+        [IO.Compression.ZipFileExtensions]::ExtractToDirectory($zip, $Destination)
+        Set-RestrictedDirectoryAcl $Destination
     }
     finally { $zip.Dispose() }
-    # Restrict the newly created directory before extracting credentials,
-    # so children are not temporarily written under permissive parent ACLs.
-    New-Item -ItemType Directory -Path $Destination -ErrorAction Stop | Out-Null
-    Set-RestrictedDirectoryAcl $Destination
-    [IO.Compression.ZipFile]::ExtractToDirectory($Archive, $Destination)
-    Set-RestrictedDirectoryAcl $Destination
 }
 
 function Find-File([string]$Root, [string]$Name) {

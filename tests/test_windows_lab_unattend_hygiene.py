@@ -611,14 +611,14 @@ if ($writtenAfter -cne $written) {{ throw 'Existing worker content changed.' }}
             "$null -ne $existingTarget -or (Test-Path -LiteralPath $Destination)",
             "Guest bootstrap archive destination already exists; refusing destructive replacement.",
             "New-Item -ItemType Directory -Path $Destination -ErrorAction Stop",
-            "[IO.Compression.ZipFile]::ExtractToDirectory($Archive, $Destination)",
+            "[IO.Compression.ZipFileExtensions]::ExtractToDirectory($zip, $Destination)",
         ):
             self.assertIn(fragment, extract)
         self.assertNotIn("Remove-Item -LiteralPath $Destination", extract)
         self.assertNotIn("New-Item -ItemType Directory -Path $Destination -Force", extract)
         self.assertLess(
             extract.index("Guest bootstrap archive destination already exists"),
-            extract.index("[IO.Compression.ZipFile]::ExtractToDirectory"),
+            extract.index("[IO.Compression.ZipFileExtensions]::ExtractToDirectory"),
         )
         self.assertLess(
             extract.index("$archiveItem.Attributes -band"),
@@ -646,11 +646,13 @@ if ($writtenAfter -cne $written) {{ throw 'Existing worker content changed.' }}
         ):
             self.assertIn(fragment, extract)
         create = extract.index("New-Item -ItemType Directory -Path $Destination -ErrorAction Stop")
-        extraction = extract.index("[IO.Compression.ZipFile]::ExtractToDirectory")
+        extraction = extract.index("[IO.Compression.ZipFileExtensions]::ExtractToDirectory")
         acl_first = extract.index("Set-RestrictedDirectoryAcl $Destination", create)
         acl_last = extract.rindex("Set-RestrictedDirectoryAcl $Destination")
         self.assertLess(extract.index("$zip = [IO.Compression.ZipFile]::OpenRead"), create)
-        self.assertLess(extract.index("finally { $zip.Dispose() }"), create)
+        self.assertLess(extraction, extract.index("finally { $zip.Dispose() }"))
+        self.assertNotIn("[IO.Compression.ZipFile]::ExtractToDirectory($Archive", extract)
+        self.assertEqual(extract.count("[IO.Compression.ZipFileExtensions]::ExtractToDirectory($zip, $Destination)"), 1)
         self.assertLess(create, acl_first)
         self.assertLess(acl_first, extraction)
         self.assertLess(extraction, acl_last)
@@ -924,6 +926,88 @@ if (-not (Test-Path -LiteralPath (Join-Path {good_destination} 'safe/config.txt'
                 )
                 self.assertEqual(
                     result.returncode, 0, executable + ": " + result.stdout + result.stderr,
+                )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_zip_source_is_held_open_across_preflight_and_extraction(self):
+        import shutil
+        import subprocess
+        import tempfile
+        import zipfile
+
+        def quoted(value):
+            return "'" + str(value).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-zip-single-reader-") as root:
+            folder = Path(root)
+            archive_path = folder / "archive.zip"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("payload/safe.txt", "known-content")
+            invalid_archive_path = folder / "invalid.zip"
+            with zipfile.ZipFile(invalid_archive_path, "w") as archive:
+                archive.writestr("../escape.txt", "should-not-extract")
+            source = """
+$ErrorActionPreference = 'Stop'
+$source = Get-Content -LiteralPath {guest} -Raw
+$start = $source.IndexOf('function Expand-Zip(')
+$end = $source.IndexOf('function Find-File(', $start)
+if ($start -lt 0 -or $end -lt 0) {{ throw 'Missing ZIP function.' }}
+Invoke-Expression $source.Substring($start, $end - $start)
+$script:archivePath = {archive}
+$script:aclInvocations = 0
+function Set-RestrictedDirectoryAcl([string]$Path) {{
+    $script:aclInvocations++
+    if ($script:aclInvocations -eq 1) {{
+        $writeHandle = $null
+        try {{
+            $writeHandle = [IO.File]::Open(
+                $script:archivePath, [IO.FileMode]::Open,
+                [IO.FileAccess]::Write, [IO.FileShare]::None)
+            throw 'Archive can be replaced after preflight.'
+        }} catch [IO.IOException] {{
+            # Expected: the validated archive is still open for extraction.
+        }} finally {{
+            if ($null -ne $writeHandle) {{ $writeHandle.Dispose() }}
+        }}
+    }}
+}}
+Expand-Zip {archive} {destination}
+if ($script:aclInvocations -ne 2) {{ throw 'Expected pre/post extraction ACL calls.' }}
+$contents = Get-Content -LiteralPath (Join-Path {destination} 'payload/safe.txt') -Raw
+if ($contents -ne 'known-content') {{ throw 'Extracted archive content mismatch.' }}
+# The archive must be closed after successful extraction.
+$after = [IO.File]::Open({archive}, [IO.FileMode]::Open, [IO.FileAccess]::Write, [IO.FileShare]::None)
+$after.Dispose()
+# A failed preflight must also release the source handle without extracting.
+try {{
+    Expand-Zip {invalid_archive} {invalid_destination}
+    throw 'Invalid archive passed preflight.'
+}} catch {{
+    if ($_.Exception.Message -ne 'Guest bootstrap ZIP contains an unsafe Windows entry segment.') {{ throw }}
+}}
+if (Test-Path -LiteralPath {invalid_destination}) {{ throw 'Invalid archive created a target.' }}
+$afterFailure = [IO.File]::Open({invalid_archive}, [IO.FileMode]::Open, [IO.FileAccess]::Write, [IO.FileShare]::None)
+$afterFailure.Dispose()
+""".format(
+                guest=quoted(GUEST),
+                archive=quoted(archive_path),
+                destination=quoted(folder / "unpacked"),
+                invalid_archive=quoted(invalid_archive_path),
+                invalid_destination=quoted(folder / "rejected"),
+            )
+            for shell in ("powershell.exe", "pwsh.exe"):
+                if shutil.which(shell) is None:
+                    continue
+                destination = folder / "unpacked"
+                if destination.exists():
+                    shutil.rmtree(destination)
+                test_run = subprocess.run(
+                    [shell, "-NoProfile", "-NonInteractive", "-Command", source],
+                    capture_output=True, text=True, timeout=45, check=False,
+                )
+                self.assertEqual(
+                    test_run.returncode, 0,
+                    shell + ": " + test_run.stdout + test_run.stderr,
                 )
 
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
