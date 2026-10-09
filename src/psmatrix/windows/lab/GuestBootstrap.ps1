@@ -19,7 +19,31 @@ function Write-Result([string]$Status, [string]$Message, [hashtable]$Extra) {
         foreach ($key in $Extra.Keys) { $result[$key] = $Extra[$key] }
     }
     $path = 'C:\ProgramData\PSMatrix\bootstrap-result.json'
-    $result | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $path -Encoding UTF8
+    # The result is a one-shot first-boot receipt. A pre-existing record
+    # (including a dangling link) must never be overwritten by SYSTEM.
+    # CreateNew atomically rejects an existing directory entry.
+    $parent = [IO.Path]::GetDirectoryName($path)
+    while (-not [string]::IsNullOrEmpty($parent)) {
+        $item = Get-Item -LiteralPath $parent -Force -ErrorAction Stop
+        if (-not $item.PSIsContainer -or
+            (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            throw 'Guest bootstrap result destination has an unsafe parent.'
+        }
+        $parent = [IO.Path]::GetDirectoryName($parent)
+    }
+    $json = $result | ConvertTo-Json -Depth 10
+    # Match the legacy WinPS UTF-8 BOM accepted by the offline host reader.
+    $utf8 = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList @($true)
+    $preamble = $utf8.GetPreamble()
+    $payload = $utf8.GetBytes([string]$json + [Environment]::NewLine)
+    $stream = [IO.File]::Open(
+        $path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None
+    )
+    try {
+        $stream.Write($preamble, 0, $preamble.Length)
+        $stream.Write($payload, 0, $payload.Length)
+    }
+    finally { $stream.Dispose() }
 }
 
 function Read-GuestBootstrapConfig([string]$Path) {

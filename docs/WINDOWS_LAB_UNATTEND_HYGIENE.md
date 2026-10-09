@@ -650,6 +650,20 @@ mistaken for completed cleanup, but do not make deletion atomic
 against privileged concurrent replacement or replace elevated
 guest/Hyper-V acceptance.
 
+Guest result recording now uses a create-only .NET file handle
+(`FileMode.CreateNew`) instead of overwriting the destination with
+`Set-Content`. The guest rechecks the result's directory ancestors for
+reparse points, preserves the UTF-8 BOM format accepted by the offline
+host reader, and refuses to replace an existing bootstrap receipt. A
+previously present output file (or a conflicting filesystem entry) is
+an error, not an invitation to erase evidence. Dynamic Windows
+PowerShell 5.1 and PowerShell 7 tests prove that a first result can be
+read and subsequent writes preserve its exact bytes. The parent-directory
+reparse defense has not undergone real guest acceptance. Atomic leaf
+creation reduces overwrite races, but cannot establish the trust of a privileged
+guest, prevent concurrent ancestor replacement, or substitute for
+offline VHDX and real Hyper-V acceptance.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted

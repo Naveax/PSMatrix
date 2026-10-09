@@ -11,6 +11,60 @@ GUEST = LAB / "GuestBootstrap.ps1"
 
 
 class WindowsLabUnattendHygieneTests(unittest.TestCase):
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_guest_result_record_is_created_once_without_overwrite(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        guest = GUEST.read_text(encoding="utf-8")
+        section = "function Write-Result(" + guest.split("function Write-Result(", 1)[1].split(
+            "\nfunction Read-GuestBootstrapConfig(", 1
+        )[0]
+        with tempfile.TemporaryDirectory(prefix="psmatrix-guest-result-once-") as root:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                destination = Path(root) / exe.replace(".", "-") / "bootstrap-result.json"
+                destination.parent.mkdir(parents=True)
+                ps_path = str(destination).replace("'", "''")
+                isolated = section.replace(
+                    r"C:\ProgramData\PSMatrix\bootstrap-result.json", ps_path
+                )
+                self.assertNotEqual(isolated, section)
+                script = isolated + r"""
+$ErrorActionPreference = 'Stop'
+$destination = '__DEST__'
+Write-Result 'PASS' 'fixture initial record' @{ test_tag = 'dummy' }
+$record = Get-Content -LiteralPath $destination -Raw | ConvertFrom-Json
+if ($record.status -cne 'PASS' -or $record.message -cne 'fixture initial record') {
+    throw 'First result record was invalid.'
+}
+$before = [IO.File]::ReadAllBytes($destination)
+if ($before.Length -lt 3 -or $before[0] -ne 239 -or
+    $before[1] -ne 187 -or $before[2] -ne 191) {
+    throw 'Result record did not retain the legacy UTF-8 BOM.'
+}
+$refused = $false
+try { Write-Result 'FAIL' 'fixture must not replace initial record' @{} }
+catch { $refused = $true }
+if (-not $refused) { throw 'Guest overwrote an existing bootstrap result.' }
+$after = [IO.File]::ReadAllBytes($destination)
+if ($before.Length -ne $after.Length) { throw 'Existing result length changed.' }
+for ($i=0; $i -lt $before.Length; $i++) {
+    if ($before[$i] -ne $after[$i]) { throw 'Existing result bytes changed.' }
+}
+""".replace("__DEST__", ps_path)
+                completed = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=40, check=False,
+                )
+                self.assertEqual(
+                    completed.returncode, 0,
+                    exe + ": " + completed.stdout + completed.stderr,
+                )
+
     def test_guest_deletes_known_setup_answer_files_before_success(self):
         text = GUEST.read_text(encoding="utf-8")
         for expected in (
