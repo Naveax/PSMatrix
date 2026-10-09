@@ -297,6 +297,21 @@ boots, crashes before running the catch handler or loses filesystem
 access. The host still refuses any checkpoint unless it independently
 validates setup-file absence and restricted ACLs.
 
+The host now validates the six **`safety` declarations in a generated
+Hyper-V provision plan** before any VHDX or VM creation. The Python
+plan producer includes `require_hyperv`, `require_administrator`,
+`verify_all_artifact_hashes`, `reject_existing_vm`,
+`create_standard_checkpoint` and
+`secrets_from_environment_only` as Boolean `true` values. Host
+`Assert-LabPlanSafetyContract` now requires exactly those six
+case-sensitive names and native Boolean `true` values. Missing, extra,
+wrong-case, `false` and string/numeric lookalikes fail closed rather
+than being silently ignored. This is **declaration consistency checking**
+and does not make the plan self-authenticating or replace the actual
+host-enforced safety measures. Dynamic Windows PowerShell 5.1 and
+PowerShell 7 regressions cover the valid producer shape and malformed
+variants without real Hyper-V provisioning.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted

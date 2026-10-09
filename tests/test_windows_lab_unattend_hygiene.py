@@ -2479,6 +2479,113 @@ exit 0
             )
             self.assertEqual(r.returncode, 0, exe + ": " + r.stdout + r.stderr)
 
+    def test_host_enforces_all_safety_contract_flags_before_vm_creation(self):
+        host = HOST.read_text(encoding="utf-8")
+        self.assertIn("function Assert-LabPlanSafetyContract(", host)
+        section = host.split("function Assert-LabPlanSafetyContract(", 1)[1].split(
+            "function Wait-FirstBoot(", 1
+        )[0]
+        for flag in (
+            "require_hyperv",
+            "require_administrator",
+            "verify_all_artifact_hashes",
+            "reject_existing_vm",
+            "create_standard_checkpoint",
+            "secrets_from_environment_only",
+        ):
+            self.assertIn("'" + flag + "'", section)
+        self.assertIn("Windows lab plan safety contract is invalid.", section)
+        self.assertIn("GetType()", section)
+        self.assertIn("Assert-LabPlanSafetyContract $planValue.safety", host)
+        self.assertLess(
+            host.index("Assert-LabPlanSafetyContract $planValue.safety"),
+            host.index("$results = @()"),
+        )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_safety_contract_dynamic_rejects_false_missing_extra_and_wrong_types(self):
+        import shutil
+        import subprocess
+
+        host_literal = "'" + str(HOST).replace("'", "''") + "'"
+        script = """
+$ErrorActionPreference = 'Stop'
+$source = Get-Content -LiteralPath __HOST__ -Raw
+$a = $source.IndexOf('function Assert-LabPlanSafetyContract(')
+$b = $source.IndexOf('function Wait-FirstBoot(', $a)
+if ($a -lt 0 -or $b -le $a) { throw 'Safety contract guard not found.' }
+Invoke-Expression $source.Substring($a, $b - $a)
+function New-ValidSafety {
+    return [pscustomobject]@{
+        require_hyperv = $true
+        require_administrator = $true
+        verify_all_artifact_hashes = $true
+        reject_existing_vm = $true
+        create_standard_checkpoint = $true
+        secrets_from_environment_only = $true
+    }
+}
+function Assert-Rejects([object]$Value, [string]$CaseName) {
+    try {
+        Assert-LabPlanSafetyContract $Value
+        throw ('Unsafe safety contract accepted: ' + $CaseName)
+    } catch {
+        if ($_.Exception.Message -cne 'Windows lab plan safety contract is invalid.') {
+            throw ('Unexpected safety result ' + $CaseName + ': ' + $_.Exception.Message)
+        }
+    }
+}
+Assert-LabPlanSafetyContract (New-ValidSafety)
+$flags = @(
+    'require_hyperv',
+    'require_administrator',
+    'verify_all_artifact_hashes',
+    'reject_existing_vm',
+    'create_standard_checkpoint',
+    'secrets_from_environment_only'
+)
+foreach ($flag in $flags) {
+    $case = New-ValidSafety
+    $case.PSObject.Properties[$flag].Value = $false
+    Assert-Rejects $case ('false ' + $flag)
+    $case = New-ValidSafety
+    $case.PSObject.Properties[$flag].Value = 'true'
+    Assert-Rejects $case ('string ' + $flag)
+    $case = New-ValidSafety
+    $case.PSObject.Properties.Remove($flag)
+    Assert-Rejects $case ('missing ' + $flag)
+}
+$extra = New-ValidSafety
+$extra | Add-Member -NotePropertyName 'unused_override' -NotePropertyValue $true
+Assert-Rejects $extra 'unexpected property'
+Assert-Rejects $null 'null'
+Assert-Rejects @{} 'hashtable'
+Assert-Rejects @() 'array'
+$case = New-ValidSafety
+$case.require_hyperv = 1
+Assert-Rejects $case 'integer'
+$case = New-ValidSafety
+$case.verify_all_artifact_hashes = $null
+Assert-Rejects $case 'null flag'
+$case = New-ValidSafety
+$case.PSObject.Properties.Remove('require_hyperv')
+$case | Add-Member -NotePropertyName 'REQUIRE_HYPERV' -NotePropertyValue $true
+Assert-Rejects $case 'wrong property casing'
+exit 0
+""".replace("__HOST__", host_literal)
+        for executable in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(executable):
+                continue
+            result = subprocess.run(
+                [executable, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=45, check=False,
+            )
+            self.assertEqual(
+                result.returncode, 0,
+                executable + ": " + result.stdout + result.stderr,
+            )
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)

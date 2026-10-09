@@ -811,6 +811,38 @@ function Assert-LabPlanSourceIsoDetached([object[]]$Images) {
     }
 }
 
+function Assert-LabPlanSafetyContract($Safety) {
+    # The Python plan declares these six defenses as an exact Boolean
+    # contract. A modified or malformed declaration cannot silently
+    # advertise weaker safety controls while a partial VM build proceeds.
+    $required = @(
+        'require_hyperv',
+        'require_administrator',
+        'verify_all_artifact_hashes',
+        'reject_existing_vm',
+        'create_standard_checkpoint',
+        'secrets_from_environment_only'
+    )
+    if ($null -eq $Safety -or $Safety -isnot [pscustomobject]) {
+        throw 'Windows lab plan safety contract is invalid.'
+    }
+    $properties = @($Safety.PSObject.Properties)
+    if ($properties.Count -ne $required.Count) {
+        throw 'Windows lab plan safety contract is invalid.'
+    }
+    $names = @($properties | ForEach-Object { $_.Name })
+    foreach ($flag in $required) {
+        if ($names -cnotcontains $flag) {
+            throw 'Windows lab plan safety contract is invalid.'
+        }
+        $value = $Safety.PSObject.Properties[$flag].Value
+        if ($null -eq $value -or $value.GetType() -ne [bool] -or
+            $value -ne $true) {
+            throw 'Windows lab plan safety contract is invalid.'
+        }
+    }
+}
+
 function Wait-FirstBoot([string]$VmName, [int]$TimeoutSeconds) {
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     $observedRunning = $false
@@ -830,6 +862,7 @@ if (-not (Test-Path -LiteralPath $Plan -PathType Leaf)) { throw 'Lab plan is mis
 $planValue = Get-Content -LiteralPath $Plan -Raw | ConvertFrom-Json
 if ($planValue.schema -isnot [int] -or $planValue.schema -ne 1) { throw 'Windows lab plan schema is invalid.' }
 if ([string]$planValue.kind -ne 'psmatrix.windows-hyperv-provision-plan') { throw 'Lab plan kind is invalid.' }
+Assert-LabPlanSafetyContract $planValue.safety
 # Require the three unique canonical Windows PowerShell targets before any
 # VM provisioning. An incomplete or duplicated plan cannot produce PASS.
 $requiredRuntimes = @('windows-powershell-4.0', 'windows-powershell-5.0', 'windows-powershell-5.1')
