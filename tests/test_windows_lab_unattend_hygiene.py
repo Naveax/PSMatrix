@@ -4192,6 +4192,112 @@ exit 0
                     out.returncode, 0, exe + ": " + out.stdout + out.stderr,
                 )
 
+    def test_host_dism_invocations_only_resolve_trusted_system_executable(self):
+        host = HOST.read_text(encoding="utf-8")
+        self.assertIn("function Invoke-HostDism(", host)
+        helper = host.split("function Invoke-HostDism(", 1)[1].split(
+            "function Close-LabBuildMedia(", 1
+        )[0]
+        for value in (
+            "[Environment]::SystemDirectory",
+            "Join-Path $hostSystemDirectory 'dism.exe'",
+            "Assert-SafeLabArtifactPath $hostDism",
+            "Invoke-Checked $hostDism $Arguments",
+            "Host dism.exe is unavailable.",
+        ):
+            self.assertIn(value, helper)
+        self.assertIn("Invoke-HostDism @('/English','/Apply-Image'", host)
+        self.assertIn("Invoke-HostDism @('/English',('/Image:'", host)
+        self.assertNotIn("Invoke-Checked 'dism.exe'", host)
+        self.assertLess(
+            host.index("Invoke-HostDism @('/English','/Apply-Image'"),
+            host.index("Invoke-HostBcdBoot $windowsRoot $efiRoot"),
+        )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_dism_dynamic_uses_only_system_exe_for_apply_and_wmf(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        def quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-host-dism-") as root:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if shutil.which(exe) is None:
+                    continue
+                case = Path(root) / exe.replace(".", "-")
+                case.mkdir()
+                (case / "dism.exe").write_bytes(b"UNTRUSTED-DISM-FROM-CURRENT-DIRECTORY")
+                script = r"""
+$ErrorActionPreference = 'Stop'
+$src = Get-Content -LiteralPath __HOST__ -Raw
+$a = $src.IndexOf('function Invoke-HostDism(')
+$b = $src.IndexOf('function Close-LabBuildMedia(', $a)
+if ($a -lt 0 -or $b -le $a) { throw 'Trusted DISM wrapper missing.' }
+Invoke-Expression $src.Substring($a,$b-$a)
+$script:count = 0
+$script:verified = 0
+$script:missing = $false
+function Test-Path {
+    param([string]$LiteralPath, [string]$PathType)
+    if ($script:missing) { return $false }
+    return (Microsoft.PowerShell.Management\Test-Path -LiteralPath $LiteralPath -PathType $PathType)
+}
+function Assert-SafeLabArtifactPath([string]$Path) {
+    $script:verified++
+    if ($Path -cne (Join-Path ([Environment]::SystemDirectory) 'dism.exe')) {
+        throw 'DISM path was not constrained to the host system directory.'
+    }
+}
+function Invoke-Checked([string]$File,[string[]]$Arguments) {
+    $script:count++
+    if ($File -cne (Join-Path ([Environment]::SystemDirectory) 'dism.exe')) {
+        throw ('Untrusted DISM executable selected: ' + $File)
+    }
+    if ($script:count -eq 1) {
+        $expected = @('/English','/Apply-Image','/ImageFile:X:\sources\install.wim',
+            '/Index:3','/ApplyDir:Y:\')
+    } else {
+        $expected = @('/English','/Image:Y:\','/Add-Package',
+            '/PackagePath:D:\wmf.msu','/NoRestart')
+    }
+    if ($Arguments.Count -ne $expected.Count) {
+        throw 'DISM argument count changed.'
+    }
+    for ($i=0; $i -lt $expected.Count; $i++) {
+        if ($Arguments[$i] -cne $expected[$i]) {
+            throw ('DISM argument changed: ' + $i)
+        }
+    }
+}
+Invoke-HostDism @('/English','/Apply-Image','/ImageFile:X:\sources\install.wim','/Index:3','/ApplyDir:Y:\')
+Invoke-HostDism @('/English','/Image:Y:\','/Add-Package','/PackagePath:D:\wmf.msu','/NoRestart')
+if ($script:count -ne 2 -or $script:verified -ne 2) {
+    throw 'Host DISM execution or safe path check count is incorrect.'
+}
+$script:missing = $true
+try {
+    Invoke-HostDism @('/English','/Apply-Image')
+    throw 'Missing host DISM binary was accepted.'
+} catch {
+    if ($_.Exception.Message -cne 'Host dism.exe is unavailable.') { throw }
+}
+if ($script:count -ne 2) { throw 'Missing DISM triggered execution.' }
+exit 0
+""".replace("__HOST__", quote(HOST))
+                result = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    cwd=case,
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=50, check=False,
+                )
+                self.assertEqual(
+                    result.returncode, 0,
+                    exe + ": " + result.stdout + result.stderr,
+                )
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)

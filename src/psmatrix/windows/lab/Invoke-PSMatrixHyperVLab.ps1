@@ -257,6 +257,21 @@ function Invoke-HostBcdBoot([string]$WindowsRoot, [string]$EfiRoot) {
     Assert-SafeLabArtifactPath $hostBcdBoot
     Invoke-Checked $hostBcdBoot @((Join-Path $WindowsRoot 'Windows'),'/s',$EfiRoot,'/f','UEFI')
 }
+function Invoke-HostDism([string[]]$Arguments) {
+    # DISM is a privileged host utility. Never resolve an unqualified
+    # executable from PATH (which can include operator-writable folders).
+    # The offline guest image supplies data, never host executables.
+    $hostSystemDirectory = [Environment]::SystemDirectory
+    if ([string]::IsNullOrWhiteSpace($hostSystemDirectory)) {
+        throw 'Host dism.exe is unavailable.'
+    }
+    $hostDism = Join-Path $hostSystemDirectory 'dism.exe'
+    if (-not (Test-Path -LiteralPath $hostDism -PathType Leaf)) {
+        throw 'Host dism.exe is unavailable.'
+    }
+    Assert-SafeLabArtifactPath $hostDism
+    Invoke-Checked $hostDism $Arguments
+}
 function Close-LabBuildMedia([string]$VhdPath, [string]$IsoPath, [bool]$WasMounted) {
     # Mount-VHD can attach a disk and then fail before returning an object.
     # In that case $WasMounted is false even though the output VHDX exists
@@ -354,9 +369,9 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         Format-Volume -Partition $windows -FileSystem NTFS -NewFileSystemLabel 'Windows' -Confirm:$false | Out-Null
         $windowsRoot = ([string]$windows.DriveLetter + ':\')
         $efiRoot = ([string]$efi.DriveLetter + ':')
-        Invoke-Checked 'dism.exe' @('/English','/Apply-Image',('/ImageFile:' + $imageFile),('/Index:' + [int]$Image.edition_index),('/ApplyDir:' + $windowsRoot))
+        Invoke-HostDism @('/English','/Apply-Image',('/ImageFile:' + $imageFile),('/Index:' + [int]$Image.edition_index),('/ApplyDir:' + $windowsRoot))
         if ($Image.wmf_package) {
-            Invoke-Checked 'dism.exe' @('/English',('/Image:' + $windowsRoot),'/Add-Package',('/PackagePath:' + [string]$Image.wmf_package.path),'/NoRestart')
+            Invoke-HostDism @('/English',('/Image:' + $windowsRoot),'/Add-Package',('/PackagePath:' + [string]$Image.wmf_package.path),'/NoRestart')
         }
         Invoke-HostBcdBoot $windowsRoot $efiRoot
         Assert-SafeOfflineGuestWriteAncestors $windowsRoot

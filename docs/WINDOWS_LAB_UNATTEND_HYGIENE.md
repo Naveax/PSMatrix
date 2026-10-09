@@ -608,6 +608,27 @@ golden image, its boot binaries or BCD template, and cannot replace
 independent media signature/provenance verification and elevated
 Hyper-V boot acceptance.
 
+The elevated host also executes **DISM solely from its own Windows
+System32 directory**, not by resolving the unqualified `dism.exe`
+through the calling process's `PATH` or current directory. Both the
+offline `/Apply-Image` operation and optional WMF `/Add-Package`
+operation now use `Invoke-HostDism`, which resolves the utility from
+`[Environment]::SystemDirectory\dism.exe`, requires the host file to
+exist and rejects NTFS reparse-point ancestors before executing it.
+The original DISM arguments, source ISO media checks and subsequent
+host-only BCDBoot operation are unchanged. This closes a separate
+host-privilege executable-search hijacking risk; the guest image is
+still *data*, never an authorized host executable.
+
+WinPS5.1 and PowerShell 7 regression tests put a dummy `dism.exe`
+in an attacker-controlled working directory. Execution is mocked,
+so they verify that both image application and optional WMF paths
+select **only** the host system binary with the intended arguments,
+and that a missing host binary fails closed. No actual Windows image
+is applied by these tests. Using the host's real DISM/BCDBoot utilities
+does **not** authenticate untrusted WIM/ESD/WMF contents, nor replace
+real elevated Hyper-V and guest acceptance.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted
