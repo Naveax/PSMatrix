@@ -499,6 +499,26 @@ privileged attacker with the ability to edit both can recalculate
 hashes. Authorized manifest/signing material, offline ACL checks and
 real Windows PowerShell 4.0/5.0/5.1 guest acceptance remain essential.
 
+The guest now reads **`bootstrap-config.json` through a bounded
+and reparse-aware first-boot reader**, rather than passing unbounded
+`Get-Content -Raw` directly to `ConvertFrom-Json`. Before parsing,
+`Read-GuestBootstrapConfig` verifies that the file and every existing
+ancestor directory are not NTFS reparse points, opens one exclusive
+read handle, enforces a nonempty **64 KiB maximum**, and decodes the
+bounded bytes as strict UTF-8. A standard UTF-8 BOM is accepted, but
+malformed UTF-8, invalid JSON, unsafe paths and oversized inputs
+fail before schema and OS identity checks or any worker installation.
+The implementation uses PowerShell-4-compatible .NET construction;
+isolated WinPS5.1/PS7 tests exercise a Unicode plan, BOM, empty and
+oversized files, invalid UTF-8, invalid JSON and a real NTFS junction
+without touching live guests.
+
+This reduces first-boot denial-of-service and redirected file reads;
+it does **not** make an unsigned bootstrap config authentic or lock
+the guest filesystem against privileged concurrent replacements.
+Real WinPS4.0/5.0/5.1 Hyper-V and offline NTFS ACL acceptance remain
+mandatory before authorizing a release.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted

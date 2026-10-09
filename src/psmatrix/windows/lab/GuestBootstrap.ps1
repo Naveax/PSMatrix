@@ -22,6 +22,51 @@ function Write-Result([string]$Status, [string]$Message, [hashtable]$Extra) {
     $result | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $path -Encoding UTF8
 }
 
+function Read-GuestBootstrapConfig([string]$Path) {
+    # First-boot configuration is input from the offline VHDX. Refuse
+    # links, unbounded reads and malformed UTF-8 before trusting its JSON.
+    # Use PowerShell 4-compatible .NET construction and APIs.
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $ancestor = [IO.Path]::GetDirectoryName($fullPath)
+    while (-not [string]::IsNullOrEmpty($ancestor)) {
+        $item = Get-Item -LiteralPath $ancestor -Force -ErrorAction Stop
+        if (-not $item.PSIsContainer -or
+            (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            throw 'Guest bootstrap config has unsafe path or file type.'
+        }
+        $ancestor = [IO.Path]::GetDirectoryName($ancestor)
+    }
+    $file = Get-Item -LiteralPath $fullPath -Force -ErrorAction Stop
+    if ($file.PSIsContainer -or
+        (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+        throw 'Guest bootstrap config has unsafe path or file type.'
+    }
+    $stream = [IO.File]::Open(
+        $fullPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None
+    )
+    try {
+        if ($stream.Length -le 0 -or $stream.Length -gt 65536) {
+            throw 'Guest bootstrap config has an invalid size.'
+        }
+        $bytes = New-Object 'System.Byte[]' ([int]$stream.Length)
+        $offset = 0
+        while ($offset -lt $bytes.Length) {
+            $received = $stream.Read($bytes, $offset, $bytes.Length - $offset)
+            if ($received -le 0) {
+                throw 'Guest bootstrap config was truncated during guarded read.'
+            }
+            $offset += $received
+        }
+        $utf8 = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList @($false, $true)
+        $raw = $utf8.GetString($bytes)
+        if ($raw.Length -gt 0 -and $raw[0] -eq [char]0xFEFF) {
+            $raw = $raw.Substring(1)
+        }
+    }
+    finally { $stream.Dispose() }
+    return (ConvertFrom-Json -InputObject $raw)
+}
+
 function Assert-GuestBootstrapConfig($Config) {
     # Validate untrusted first-boot configuration before extracting packages or
     # rendering a credential JSON template. Installer uses the same 64-char ID.
@@ -437,7 +482,7 @@ function Invoke-GuestBootstrapFailureCleanup([string]$BootstrapRoot) {
 
 try {
     if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) { throw 'Bootstrap configuration is missing.' }
-    $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+    $config = Read-GuestBootstrapConfig $ConfigPath
     Assert-GuestBootstrapConfig $config
     Assert-GuestExpectedOs $config.expected_os
     # Refuse a missing/invalid nonce before side effects or service install.

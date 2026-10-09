@@ -3633,6 +3633,134 @@ exit 0
                     shell + ": " + result.stdout + result.stderr,
                 )
 
+    def test_guest_bootstrap_config_bounded_safe_reader_before_schema_checks(self):
+        guest = GUEST.read_text(encoding="utf-8")
+        self.assertIn("function Read-GuestBootstrapConfig(", guest)
+        reader = guest.split("function Read-GuestBootstrapConfig(", 1)[1].split(
+            "function Assert-GuestBootstrapConfig(", 1
+        )[0]
+        for required in (
+            "Get-Item -LiteralPath $fullPath -Force -ErrorAction Stop",
+            "[IO.FileAttributes]::ReparsePoint",
+            "Guest bootstrap config has unsafe path or file type.",
+            "$stream.Length -gt 65536",
+            "Guest bootstrap config has an invalid size.",
+            "[IO.FileShare]::None",
+            "New-Object -TypeName System.Text.UTF8Encoding",
+            "$stream.Read(",
+            "ConvertFrom-Json",
+        ):
+            self.assertIn(required, reader)
+        self.assertLess(reader.index("[IO.FileAttributes]::ReparsePoint"),
+                        reader.index("[IO.File]::Open("))
+        self.assertLess(reader.index("$stream.Read("), reader.index("ConvertFrom-Json"))
+        self.assertIn("$config = Read-GuestBootstrapConfig $ConfigPath", guest)
+        self.assertNotIn(
+            "Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json", guest
+        )
+        self.assertLess(guest.index("$config = Read-GuestBootstrapConfig $ConfigPath"),
+                        guest.index("Assert-GuestBootstrapConfig $config"))
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_guest_config_reader_dynamic_strict_utf8_bounded_and_junction_safe(self):
+        import json
+        import shutil
+        import subprocess
+        import tempfile
+
+        def quote(path):
+            return "'" + str(path).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-guest-config-reader-") as root:
+            for shell in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(shell):
+                    continue
+                case = Path(root) / shell.replace(".", "-")
+                real = case / "real-bootstrap"
+                real.mkdir(parents=True)
+                good = {
+                    "schema": 1, "worker_id": "guest-40", "worker_port": 18080,
+                    "bootstrap_nonce": "e" * 64, "machine": "Çanakkale",
+                }
+                payload = json.dumps(good, ensure_ascii=False).encode("utf-8")
+                (real / "valid.json").write_bytes(payload)
+                (real / "bom.json").write_bytes(b"\xef\xbb\xbf" + payload)
+                (real / "empty.json").write_bytes(b"")
+                (real / "oversize.json").write_bytes(b" " * 65537)
+                (real / "invalid-utf8.json").write_bytes(b'{"text":"\xff"}')
+                (real / "invalid-json.json").write_bytes(b'{"schema":')
+                script = r"""
+$ErrorActionPreference = 'Stop'
+$src = Get-Content -LiteralPath __GUEST__ -Raw
+$a = $src.IndexOf('function Read-GuestBootstrapConfig(')
+$b = $src.IndexOf('function Assert-GuestBootstrapConfig(', $a)
+if ($a -lt 0 -or $b -le $a) { throw 'Guest bounded config reader missing.' }
+Invoke-Expression $src.Substring($a, $b-$a)
+$real = __REAL__
+$valid = Read-GuestBootstrapConfig (Join-Path $real 'valid.json')
+if ($valid.worker_id -cne 'guest-40' -or $valid.machine -cne 'Çanakkale' -or
+    $valid.worker_port -ne 18080) {
+    throw 'Valid Unicode config was not preserved.'
+}
+$bom = Read-GuestBootstrapConfig (Join-Path $real 'bom.json')
+if ($bom.worker_id -cne 'guest-40') { throw 'BOM-bearing valid config was not preserved.' }
+foreach ($name in @('empty.json', 'oversize.json')) {
+    try {
+        Read-GuestBootstrapConfig (Join-Path $real $name)
+        throw 'Invalid config size passed.'
+    }
+    catch {
+        if ($_.Exception.Message -cne 'Guest bootstrap config has an invalid size.') {
+            throw ('Unexpected size failure: ' + $_.Exception.Message)
+        }
+    }
+}
+try {
+    Read-GuestBootstrapConfig (Join-Path $real 'invalid-utf8.json')
+    throw 'Invalid UTF-8 config passed.'
+}
+catch {
+    if ($_.Exception.GetBaseException().GetType().FullName -cne 'System.Text.DecoderFallbackException') {
+        throw ('Unexpected strict decoding error: ' + $_.Exception.GetBaseException().GetType().FullName)
+    }
+}
+$invalidJsonRejected = $false
+try {
+    Read-GuestBootstrapConfig (Join-Path $real 'invalid-json.json')
+}
+catch {
+    $invalidJsonRejected = $true
+}
+if (-not $invalidJsonRejected) { throw 'Invalid JSON was accepted.' }
+$link = Join-Path (Split-Path -Parent $real) 'linked-bootstrap'
+New-Item -ItemType Junction -Path $link -Target $real -ErrorAction Stop | Out-Null
+try {
+    try {
+        Read-GuestBootstrapConfig (Join-Path $link 'valid.json')
+        throw 'Junction config path passed.'
+    }
+    catch {
+        if ($_.Exception.Message -cne 'Guest bootstrap config has unsafe path or file type.') {
+            throw ('Unexpected junction failure: ' + $_.Exception.Message)
+        }
+    }
+}
+finally {
+    & cmd.exe /d /c ('rmdir "' + $link + '"')
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to safely delete fixture junction.' }
+}
+exit 0
+""".replace("__GUEST__", quote(GUEST)).replace("__REAL__", quote(real))
+                result = subprocess.run(
+                    [shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=50, check=False,
+                )
+                self.assertEqual(
+                    result.returncode, 0,
+                    shell + ": " + result.stdout + result.stderr,
+                )
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)
