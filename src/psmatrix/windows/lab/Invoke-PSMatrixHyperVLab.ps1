@@ -189,6 +189,59 @@ function New-Unattend([string]$Path, [string]$ComputerName, [string]$Password) {
         $xml = $null
     }
 }
+function Assert-SafeOfflineGuestWriteAncestors([string]$WindowsRoot) {
+    # The applied golden image is untrusted until checked. Reparse-point
+    # parents would redirect guest bootstrap files or the administrator
+    # password to a different mounted volume/location.
+    $root = [IO.Path]::GetFullPath($WindowsRoot)
+    $base = Get-Item -LiteralPath $root -Force -ErrorAction Stop
+    if (-not $base.PSIsContainer -or
+        (($base.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+        throw 'Offline guest write path contains an unsafe directory.'
+    }
+    foreach ($relative in @(
+        'ProgramData\PSMatrix\Bootstrap',
+        'Windows\Setup\Scripts',
+        'Windows\Panther'
+    )) {
+        $current = $root
+        foreach ($segment in $relative.Split([char]'\')) {
+            $current = Join-Path $current $segment
+            $item = $null
+            try {
+                $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+            }
+            catch [System.Management.Automation.ItemNotFoundException] {
+                # The offline writer may create missing directories later.
+                continue
+            }
+            if ($null -ne $item -and
+                (-not $item.PSIsContainer -or
+                    (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0))) {
+                throw 'Offline guest write path contains an unsafe directory.'
+            }
+        }
+    }
+    # Never overwrite a preexisting setup script or password-bearing answer
+    # file from an untrusted golden image, including symbolic-link targets.
+    foreach ($relative in @(
+        'Windows\Setup\Scripts\SetupComplete.cmd',
+        'Windows\Panther\Unattend.xml'
+    )) {
+        $target = Join-Path $root $relative
+        $existing = $null
+        try {
+            $existing = Get-Item -LiteralPath $target -Force -ErrorAction Stop
+        }
+        catch [System.Management.Automation.ItemNotFoundException] {
+            # Clean golden images have neither target.
+        }
+        if ($null -ne $existing -or (Test-Path -LiteralPath $target)) {
+            throw 'Offline guest setup target already exists; refusing overwrite.'
+        }
+    }
+}
+
 function Close-LabBuildMedia([string]$VhdPath, [string]$IsoPath, [bool]$WasMounted) {
     # Mount-VHD can attach a disk and then fail before returning an object.
     # In that case $WasMounted is false even though the output VHDX exists
@@ -291,6 +344,7 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
             Invoke-Checked 'dism.exe' @('/English',('/Image:' + $windowsRoot),'/Add-Package',('/PackagePath:' + [string]$Image.wmf_package.path),'/NoRestart')
         }
         Invoke-Checked (Join-Path $windowsRoot 'Windows\System32\bcdboot.exe') @((Join-Path $windowsRoot 'Windows'),('/s'),$efiRoot,'/f','UEFI')
+        Assert-SafeOfflineGuestWriteAncestors $windowsRoot
         $bootstrap = Join-Path $windowsRoot 'ProgramData\PSMatrix\Bootstrap'
         # A golden image must not provide a preexisting staging tree, which
         # could be a junction or contain files from an interrupted build.

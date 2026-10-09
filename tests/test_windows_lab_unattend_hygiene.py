@@ -3891,6 +3891,120 @@ exit 0
                     run.returncode, 0, shell + ": " + run.stdout + run.stderr,
                 )
 
+    def test_host_rejects_offline_guest_write_reparse_before_any_sensitive_staging(self):
+        host = HOST.read_text(encoding="utf-8")
+        self.assertIn("function Assert-SafeOfflineGuestWriteAncestors(", host)
+        section = host.split("function Assert-SafeOfflineGuestWriteAncestors(", 1)[1].split(
+            "function Close-LabBuildMedia(", 1
+        )[0]
+        for expected in (
+            "ProgramData\\PSMatrix\\Bootstrap",
+            "Windows\\Setup\\Scripts",
+            "Windows\\Panther",
+            "[IO.FileAttributes]::ReparsePoint",
+            "Offline guest write path contains an unsafe directory.",
+        ):
+            self.assertIn(expected, section)
+        staging = host.split("function New-LabVhd(", 1)[1].split(
+            "function Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        guard = "Assert-SafeOfflineGuestWriteAncestors $windowsRoot"
+        self.assertIn(guard, staging)
+        self.assertLess(staging.index(guard), staging.index("$bootstrap = Join-Path $windowsRoot"))
+        self.assertLess(staging.index(guard), staging.index("$setupDir = Join-Path $windowsRoot"))
+        self.assertLess(staging.index(guard), staging.index("$panther = Join-Path $windowsRoot"))
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_offline_guest_sensitive_write_paths_dynamic_junctions_and_occupied_targets(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        def quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-offline-guest-guard-") as root:
+            for shell in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(shell):
+                    continue
+                base = Path(root) / shell.replace(".", "-")
+                base.mkdir()
+                script = r"""
+$ErrorActionPreference = 'Stop'
+$source = Get-Content -LiteralPath __HOST__ -Raw
+$a = $source.IndexOf('function Assert-SafeOfflineGuestWriteAncestors(')
+$b = $source.IndexOf('function Close-LabBuildMedia(', $a)
+if ($a -lt 0 -or $b -le $a) { throw 'Offline guest write preflight unavailable.' }
+Invoke-Expression $source.Substring($a, $b - $a)
+$root = __ROOT__
+$outside = Join-Path $root 'outside'
+New-Item -ItemType Directory -Path $outside -ErrorAction Stop | Out-Null
+foreach ($dir in @('ProgramData\PSMatrix','Windows\Setup\Scripts','Windows\Panther')) {
+    New-Item -ItemType Directory -Path (Join-Path $root $dir) -Force -ErrorAction Stop | Out-Null
+}
+function Assert-FailsWith([string]$Expected) {
+    $threw = $false
+    try {
+        Assert-SafeOfflineGuestWriteAncestors $root
+    }
+    catch {
+        $threw = $true
+        if ($_.Exception.Message -cne $Expected) {
+            throw ('Unexpected guest write preflight error: ' + $_.Exception.Message)
+        }
+    }
+    if (-not $threw) { throw 'Unsafe golden-image write destination was accepted.' }
+}
+Assert-SafeOfflineGuestWriteAncestors $root
+# The preflight must also permit not-yet-created directories in a fresh image.
+$missing = Join-Path $root 'ProgramData\PSMatrix'
+Remove-Item -LiteralPath $missing -Force -ErrorAction Stop
+Assert-SafeOfflineGuestWriteAncestors $root
+New-Item -ItemType Directory -Path $missing -ErrorAction Stop | Out-Null
+foreach ($relative in @('ProgramData\PSMatrix','Windows\Setup\Scripts','Windows\Panther')) {
+    $target = Join-Path $root $relative
+    Remove-Item -LiteralPath $target -Force -ErrorAction Stop
+    New-Item -ItemType Junction -Path $target -Target $outside -ErrorAction Stop | Out-Null
+    try {
+        Assert-FailsWith 'Offline guest write path contains an unsafe directory.'
+        if (Test-Path -LiteralPath (Join-Path $outside 'Unattend.xml')) {
+            throw 'Password-bearing file reached redirected directory.'
+        }
+    }
+    finally {
+        & cmd.exe /d /c ('rmdir "' + $target + '"') | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'Failed to unlink test junction.' }
+        New-Item -ItemType Directory -Path $target -ErrorAction Stop | Out-Null
+    }
+}
+$badParent = Join-Path $root 'Windows\Setup\Scripts'
+Remove-Item -LiteralPath $badParent -Force -ErrorAction Stop
+[IO.File]::WriteAllText($badParent, 'regular file used as parent')
+Assert-FailsWith 'Offline guest write path contains an unsafe directory.'
+Remove-Item -LiteralPath $badParent -Force -ErrorAction Stop
+New-Item -ItemType Directory -Path $badParent -ErrorAction Stop | Out-Null
+foreach ($relative in @(
+    'Windows\Setup\Scripts\SetupComplete.cmd',
+    'Windows\Panther\Unattend.xml'
+)) {
+    $target = Join-Path $root $relative
+    [IO.File]::WriteAllText($target, 'preexisting golden image content')
+    Assert-FailsWith 'Offline guest setup target already exists; refusing overwrite.'
+    Remove-Item -LiteralPath $target -Force -ErrorAction Stop
+}
+Assert-SafeOfflineGuestWriteAncestors $root
+exit 0
+""".replace("__HOST__", quote(HOST)).replace("__ROOT__", quote(base))
+                run = subprocess.run(
+                    [shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=55, check=False,
+                )
+                self.assertEqual(
+                    run.returncode, 0,
+                    shell + ": " + run.stdout + run.stderr,
+                )
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)

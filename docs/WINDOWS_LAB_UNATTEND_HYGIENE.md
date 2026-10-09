@@ -544,6 +544,35 @@ modifications occurring *before* the baseline are not independently
 authenticated, and privileged concurrent file replacement remains a
 separate risk. No operator signing material is accessed.
 
+The offline host now validates the **golden Windows image's sensitive
+write-directory ancestors before staging any guest bootstrap files or
+writing the unattended administrator password**. After applying the
+Windows image (and before building the bootstrap tree), the
+`Assert-SafeOfflineGuestWriteAncestors` preflight checks existing
+ancestors beneath the mounted Windows volume for
+`ProgramData\PSMatrix\Bootstrap`,
+`Windows\Setup\Scripts` and
+`Windows\Panther`. Existing junctions, symbolic links,
+non-directory ancestors and reparse points fail closed. Missing
+subdirectories are allowed so clean golden images can be provisioned.
+Preexisting
+`Windows\Setup\Scripts\SetupComplete.cmd` and
+`Windows\Panther\Unattend.xml` leaf targets are
+rejected instead of overwritten, preventing a guest-provided setup
+target or file symlink from redirecting the generated answer file
+containing the administrator password. Previous post-boot Panther/
+Sysprep cleanup and offline no-secret checkpoint checks remain
+independent defense layers.
+
+Isolated WinPS5.1 and PowerShell 7 tests use disposable directory
+trees, **real NTFS junctions**, non-directory parents and preexisting
+setup targets. They confirm clean/missing directories remain valid
+and that unsafe paths are rejected **before writes**, without
+mounting actual Windows media or handling live passwords. This is
+pre-write path validation; it does not guarantee atomic exclusion of
+privileged concurrent changes, or replace real Hyper-V and NTFS ACL
+acceptance.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted
