@@ -312,6 +312,71 @@ foreach ($mode in @('ignored','error','success','queryError','noState')) {
                 exe + ": " + result.stdout + result.stderr,
             )
 
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_refuses_ambiguous_offline_windows_partitions(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        code = "function Get-WindowsPartitionRoot(" + host.split(
+            "function Get-WindowsPartitionRoot(", 1
+        )[1].split("\nfunction New-Unattend(", 1)[0]
+        script = code + r"""
+$ErrorActionPreference = 'Stop'
+$script:matches = @()
+function Get-Partition {
+    [CmdletBinding()]
+    param([int]$DiskNumber)
+    if ($DiskNumber -ne 42) { throw 'Unexpected disk number.' }
+    return @(
+        [pscustomobject]@{DriveLetter = 'C'},
+        [pscustomobject]@{DriveLetter = 'D'}
+    )
+}
+function Test-Path {
+    [CmdletBinding()]
+    param([string]$LiteralPath)
+    $drive = $LiteralPath.Substring(0, 1).ToUpperInvariant()
+    return ($script:matches -ccontains $drive)
+}
+foreach ($case in @(
+    [pscustomobject]@{Match=@(); Result='missing'},
+    [pscustomobject]@{Match=@('C'); Result='C:\'},
+    [pscustomobject]@{Match=@('D'); Result='D:\'},
+    [pscustomobject]@{Match=@('C','D'); Result='ambiguous'}
+)) {
+    $script:matches = $case.Match
+    $actual = ''
+    try { $actual = Get-WindowsPartitionRoot -DiskNumber 42 }
+    catch { $actual = $_.Exception.Message }
+    if ($case.Result -eq 'missing') {
+        if ($actual -notmatch 'could not be identified') {
+            throw ('Missing Windows partition was accepted: ' + $actual)
+        }
+    }
+    elseif ($case.Result -eq 'ambiguous') {
+        if ($actual -notmatch 'multiple|ambiguous') {
+            throw ('Ambiguous Windows roots were accepted: ' + $actual)
+        }
+    }
+    elseif ($actual -cne $case.Result) {
+        throw ('Wrong single Windows partition: ' + $actual)
+    }
+}
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(
+                result.returncode, 0,
+                exe + ": " + result.stdout + result.stderr,
+            )
+
     def test_host_reopens_shutdown_vhdx_and_fails_before_checkpoint(self):
         text = HOST.read_text(encoding="utf-8")
         self.assertIn("function Assert-NoGuestSetupAnswerFiles", text)

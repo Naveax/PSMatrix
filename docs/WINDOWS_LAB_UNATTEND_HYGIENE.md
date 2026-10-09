@@ -309,6 +309,17 @@ junctions, delete secret data, or constitute elevated Hyper-V acceptance.
 Concurrently replaced ancestors remain a separate race requiring controlled
 host and guest execution.
 
+The offline VHDX Windows partition locator no longer accepts the first
+partition containing a `Windows\System32\Config\SYSTEM` marker. It enumerates
+every matching drive-letter partition and requires **exactly one** match.
+A missing marker or two competing Windows roots is fail-closed before
+the host checks any bootstrap result or creates a checkpoint. Isolated
+Windows PowerShell 5.1 and PowerShell 7 mocked-partition regressions
+prove that zero and ambiguous matches are rejected, with the single
+match preserved. No physical disk or VHDX was mounted during these
+tests. File-system trust and real Hyper-V guest acceptance remain
+separate required controls.
+
 On first-boot timeout, the Hyper-V host no longer suppresses a failed
 `Stop-VM` and assumes the worker VM is off. The timeout path requests a
 terminating-error power-off, then independently queries `Get-VM` and requires

@@ -154,13 +154,25 @@ function Set-RestrictedDirectoryAcl([string]$Path) {
 }
 
 function Get-WindowsPartitionRoot([int]$DiskNumber) {
-    foreach ($partition in Get-Partition -DiskNumber $DiskNumber) {
+    # The mounted guest VHDX is untrusted. More than one partition with a
+    # Windows SYSTEM hive is ambiguous; selecting the first could verify the
+    # wrong volume and produce an invalid checkpoint acceptance.
+    $matches = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($partition in Get-Partition -DiskNumber $DiskNumber -ErrorAction Stop) {
         if ($partition.DriveLetter) {
             $root = ([string]$partition.DriveLetter + ':\')
-            if (Test-Path -LiteralPath (Join-Path $root 'Windows\System32\Config\SYSTEM')) { return $root }
+            if (Test-Path -LiteralPath (Join-Path $root 'Windows\System32\Config\SYSTEM')) {
+                $matches.Add($root)
+            }
         }
     }
-    throw 'Windows partition could not be identified.'
+    if ($matches.Count -gt 1) {
+        throw 'Multiple Windows partitions were identified; refusing checkpoint.'
+    }
+    if ($matches.Count -eq 0) {
+        throw 'Windows partition could not be identified.'
+    }
+    return $matches[0]
 }
 function New-Unattend([string]$Path, [string]$ComputerName, [string]$Password) {
     $computer = Escape-Xml $ComputerName
