@@ -367,6 +367,26 @@ function Get-LabIsoVolumeRoot($MountedIso) {
     }
     return ($letter.ToUpperInvariant() + ':\')
 }
+function Get-LabPartitionRoots($WindowsPartition, $EfiPartition) {
+    # Reject absent, malformed and overlapping assigned letters before DISM,
+    # BCDBoot or any offline guest write. Do not manufacture ':\' / ':' roots.
+    if ($null -eq $WindowsPartition -or $null -eq $EfiPartition) {
+        throw 'Lab Windows/EFI partition assignment is missing.'
+    }
+    $windowsLetter = [string]$WindowsPartition.DriveLetter
+    $efiLetter = [string]$EfiPartition.DriveLetter
+    if ($windowsLetter -cnotmatch '^[A-Za-z]$' -or
+        $efiLetter -cnotmatch '^[A-Za-z]$') {
+        throw 'Lab Windows/EFI partition drive letter is missing or invalid.'
+    }
+    if ([string]::Equals($windowsLetter, $efiLetter, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Lab Windows and EFI partitions share the same drive letter.'
+    }
+    return [pscustomobject]@{
+        WindowsRoot = $windowsLetter.ToUpperInvariant() + ':\'
+        EfiRoot = $efiLetter.ToUpperInvariant() + ':'
+    }
+}
 function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $BootstrapArtifact) {
     Assert-Artifact $BootstrapArtifact 'Guest bootstrap script'
     Assert-Artifact $Image.source_iso 'Windows ISO'
@@ -410,8 +430,9 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         New-Partition -DiskNumber $diskNumber -Size 16MB -GptType '{e3c9e316-0b5c-4db8-817d-f92df00215ae}' | Out-Null
         $windows = New-Partition -DiskNumber $diskNumber -UseMaximumSize -AssignDriveLetter
         Format-Volume -Partition $windows -FileSystem NTFS -NewFileSystemLabel 'Windows' -Confirm:$false | Out-Null
-        $windowsRoot = ([string]$windows.DriveLetter + ':\')
-        $efiRoot = ([string]$efi.DriveLetter + ':')
+        $partitionRoots = Get-LabPartitionRoots $windows $efi
+        $windowsRoot = $partitionRoots.WindowsRoot
+        $efiRoot = $partitionRoots.EfiRoot
         Invoke-HostDism @('/English','/Apply-Image',('/ImageFile:' + $imageFile),('/Index:' + [int]$Image.edition_index),('/ApplyDir:' + $windowsRoot))
         if ($Image.wmf_package) {
             Invoke-HostDism @('/English',('/Image:' + $windowsRoot),'/Add-Package',('/PackagePath:' + [string]$Image.wmf_package.path),'/NoRestart')

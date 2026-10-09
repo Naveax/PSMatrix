@@ -289,6 +289,16 @@ PowerShell 5.1/7 fixture tests exercise the valid and invalid shapes
 without mounting images or modifying host volumes. This check narrows
 ISO source selection, not authenticity of the underlying ISO bytes.
 
+The newly created EFI and Windows guest partitions are now checked for
+distinct, single alphabetical drive letters before the elevated host calls
+DISM or BCDBoot. A missing partition object, unassigned/malformed letter,
+or case-insensitive collision fails closed instead of constructing an invalid
+`:\` Windows root, using a relative EFI root or targeting the same drive
+twice. Isolated WinPS 5.1/PS7 fixtures cover both valid roots and rejected
+inputs without creating partitions or formatting volumes. This check does
+not establish real Storage provider correctness; elevated Hyper-V acceptance
+remains required.
+
 Failed guest bootstraps now also **attempt to remove staging credential and
 signing ZIPs plus plaintext Windows unattended answer files** before
 writing the `FAIL` bootstrap result. `Invoke-GuestBootstrapFailureCleanup`

@@ -466,6 +466,74 @@ foreach ($target in @('Windows','Windows\System32','Windows\System32\Config','Wi
             self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_lab_guest_efi_and_windows_drive_letters_are_checked_before_dism(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        helper_start = host.index("function Get-LabPartitionRoots(")
+        helper_end = host.index("\nfunction New-LabVhd(", helper_start)
+        helper_code = host[helper_start:helper_end]
+        build = host[helper_end:host.index("\nfunction Assert-NoGuestSetupAnswerFiles(", helper_end)]
+        assign = build.index("$partitionRoots = Get-LabPartitionRoots $windows $efi")
+        dism = build.index("Invoke-HostDism @('/English','/Apply-Image'")
+        self.assertLess(assign, dism)
+        self.assertIn("$windowsRoot = $partitionRoots.WindowsRoot", build)
+        self.assertIn("$efiRoot = $partitionRoots.EfiRoot", build)
+        self.assertNotIn("([string]$windows.DriveLetter + ':\\')", build)
+        self.assertNotIn("([string]$efi.DriveLetter + ':')", build)
+
+        script = helper_code + r"""
+$ErrorActionPreference='Stop'
+foreach ($case in @(
+    [pscustomobject]@{Win='C';Efi='F';WinRoot='C:\';EfiRoot='F:'},
+    [pscustomobject]@{Win='d';Efi='e';WinRoot='D:\';EfiRoot='E:'}
+)) {
+    $roots = Get-LabPartitionRoots ([pscustomobject]@{DriveLetter=$case.Win}) ([pscustomobject]@{DriveLetter=$case.Efi})
+    if ($roots.WindowsRoot -cne $case.WinRoot -or $roots.EfiRoot -cne $case.EfiRoot) {
+        throw ('Valid Windows/EFI roots rejected: ' + $roots.WindowsRoot + ' / ' + $roots.EfiRoot)
+    }
+}
+foreach ($case in @(
+    [pscustomobject]@{Win=$null;Efi='F'},
+    [pscustomobject]@{Win='';Efi='F'},
+    [pscustomobject]@{Win='CC';Efi='F'},
+    [pscustomobject]@{Win='1';Efi='F'},
+    [pscustomobject]@{Win='C';Efi=$null},
+    [pscustomobject]@{Win='C';Efi='?'},
+    [pscustomobject]@{Win='C';Efi='c'},
+    [pscustomobject]@{Win=$null;Efi=$null}
+)) {
+    $rejected = $false
+    try {
+        Get-LabPartitionRoots ([pscustomobject]@{DriveLetter=$case.Win}) ([pscustomobject]@{DriveLetter=$case.Efi}) | Out-Null
+    }
+    catch { $rejected = $true }
+    if (-not $rejected) {
+        throw ('Invalid or overlapping partition letters accepted: '+$case.Win+' / '+$case.Efi)
+    }
+}
+foreach ($case in @(
+    [pscustomobject]@{Win=$null;Efi=[pscustomobject]@{DriveLetter='F'}},
+    [pscustomobject]@{Win=[pscustomobject]@{DriveLetter='C'};Efi=$null}
+)) {
+    $rejected=$false
+    try { Get-LabPartitionRoots $case.Win $case.Efi | Out-Null }
+    catch { $rejected=$true }
+    if (-not $rejected) { throw 'Null guest partition was accepted.' }
+}
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
     def test_iso_mount_requires_exactly_one_valid_drive_before_vhd_creation(self):
         import shutil
         import subprocess
