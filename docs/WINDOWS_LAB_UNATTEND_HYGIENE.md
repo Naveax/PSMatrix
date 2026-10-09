@@ -221,6 +221,20 @@ signing hash and a missing third Python installer. Up-front hashing
 adds disk I/O and does not prevent post-verification content races;
 real elevated Hyper-V acceptance remains pending.
 
+The host also preflights the complete three-image plan's administrator
+password environment **variable names and presence** before constructing
+any VM/VHDX. Every name must follow the existing `PSMATRIX_*` process
+environment naming convention (ASCII alphanumeric/underscore, no more
+than 128 characters); names must be unique case-insensitively because
+`New-LabVhd` clears each consumed variable after writing the unattended
+answer file. Missing and whitespace-only values fail closed **without
+logging password contents or consuming environment values during the
+preflight**. Existing per-image secret consumption/clearing remains
+unchanged. Tests on WinPS 5.1 and PowerShell 7 use child-process-only
+dummy values, including invalid names, duplicate names, a missing third
+variable and a whitespace-only value. This preflight does not establish
+password strength, source provenance or elevated Hyper-V acceptance.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted

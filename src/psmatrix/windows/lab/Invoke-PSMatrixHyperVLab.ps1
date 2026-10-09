@@ -719,6 +719,35 @@ function Assert-LabHyperVTargetsReady([object[]]$Images) {
     }
 }
 
+function Assert-LabPlanPasswordEnvironment([object[]]$Images) {
+    # Each secret is consumed and cleared by New-LabVhd. A missing third
+    # variable or a reused name must fail before provisioning any VM.
+    # Never emit the password values in output, logs or error messages.
+    $seenNames = New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($image in $Images) {
+        $secretName = $image.admin_password_env
+        if ($secretName -isnot [string] -or
+            -not $secretName.StartsWith('PSMATRIX_', [StringComparison]::Ordinal) -or
+            $secretName.Length -gt 128 -or
+            $secretName -cnotmatch '^[A-Za-z0-9_]+$') {
+            throw 'Windows lab admin password environment variable name is invalid.'
+        }
+        if (-not $seenNames.Add($secretName)) {
+            throw 'Windows lab admin password environment variable name is duplicated.'
+        }
+        $password = $null
+        try {
+            $password = [Environment]::GetEnvironmentVariable($secretName, 'Process')
+            if ([string]::IsNullOrWhiteSpace($password)) {
+                throw ('Required secret environment variable is missing: ' + $secretName)
+            }
+        }
+        finally {
+            $password = $null
+        }
+    }
+}
+
 function Wait-FirstBoot([string]$VmName, [int]$TimeoutSeconds) {
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     $observedRunning = $false
@@ -755,6 +784,7 @@ Assert-LabPlanGuestIdentities $planValue.images
 Assert-LabPlanMachineAndOutputPaths $planValue.images
 Assert-LabHyperVTargetsReady $planValue.images
 Assert-LabPlanArtifactsReady $planValue.images
+Assert-LabPlanPasswordEnvironment $planValue.images
 $results = @()
 foreach ($image in $planValue.images) {
     $vmName = [string]$image.image_id

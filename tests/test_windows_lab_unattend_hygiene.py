@@ -1967,6 +1967,115 @@ exit 0
                     run.returncode, 0, shell + ": " + run.stdout + run.stderr,
                 )
 
+    def test_host_preflights_all_password_environment_names_before_vm_build(self):
+        host = HOST.read_text(encoding="utf-8")
+        self.assertIn("function Assert-LabPlanPasswordEnvironment(", host)
+        guard = host.split("function Assert-LabPlanPasswordEnvironment(", 1)[1].split(
+            "function Wait-FirstBoot(", 1
+        )[0]
+        for fragment in (
+            "^[A-Za-z0-9_]+$",
+            "$secretName.StartsWith('PSMATRIX_', [StringComparison]::Ordinal)",
+            "$secretName.Length -gt 128",
+            "[StringComparer]::OrdinalIgnoreCase",
+            "[Environment]::GetEnvironmentVariable($secretName, 'Process')",
+            "Windows lab admin password environment variable name is invalid.",
+            "Windows lab admin password environment variable name is duplicated.",
+            "Required secret environment variable is missing: ",
+        ):
+            self.assertIn(fragment, guard)
+        before = host.index("Assert-LabPlanPasswordEnvironment $planValue.images")
+        self.assertLess(before, host.index("$results = @()"))
+        self.assertLess(before, host.index("New-LabVhd $image"))
+        self.assertIn(
+            "[Environment]::SetEnvironmentVariable($secretName,$null,'Process')",
+            host,
+        )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_password_environment_preflight_dynamic_detects_missing_and_reused_names(self):
+        import shutil
+        import subprocess
+
+        script = """
+$ErrorActionPreference = 'Stop'
+$src = Get-Content -LiteralPath __HOST__ -Raw
+$a = $src.IndexOf('function Assert-LabPlanPasswordEnvironment(')
+$b = $src.IndexOf('function Wait-FirstBoot(', $a)
+if ($a -lt 0 -or $b -le $a) { throw 'Preflight function missing.' }
+Invoke-Expression $src.Substring($a, $b - $a)
+$names = @('PSMATRIX_PREFLIGHT_TEST_ONLY_ALPHA', 'PSMATRIX_PREFLIGHT_TEST_ONLY_BETA',
+           'PSMATRIX_PREFLIGHT_TEST_ONLY_GAMMA')
+try {
+    foreach ($name in $names) {
+        [Environment]::SetEnvironmentVariable($name, 'test-only-password-not-a-real-secret', 'Process')
+    }
+    $images = @(
+        [pscustomobject]@{admin_password_env=$names[0]},
+        [pscustomobject]@{admin_password_env=$names[1]},
+        [pscustomobject]@{admin_password_env=$names[2]}
+    )
+    Assert-LabPlanPasswordEnvironment $images
+    if ([Environment]::GetEnvironmentVariable($names[0], 'Process') -ne
+        'test-only-password-not-a-real-secret') { throw 'Preflight consumed an environment value.' }
+    $images[2].admin_password_env = 'PSMATRIX_' + $names[0].Substring(9).ToLowerInvariant()
+    try {
+        Assert-LabPlanPasswordEnvironment $images
+        throw 'Duplicate secret variable was allowed.'
+    } catch {
+        if ($_.Exception.Message -cne 'Windows lab admin password environment variable name is duplicated.') { throw }
+    }
+    $images[2].admin_password_env = ('PSMATRIX_' + ('A' * 120))
+    try {
+        Assert-LabPlanPasswordEnvironment $images
+        throw 'Overlength name was allowed.'
+    } catch {
+        if ($_.Exception.Message -cne 'Windows lab admin password environment variable name is invalid.') { throw }
+    }
+    $images[2].admin_password_env = 'PSMATRIX_BAD-CHAR'
+    try {
+        Assert-LabPlanPasswordEnvironment $images
+        throw 'Unsafe name was allowed.'
+    } catch {
+        if ($_.Exception.Message -cne 'Windows lab admin password environment variable name is invalid.') { throw }
+    }
+    $images[2].admin_password_env = $names[2]
+    [Environment]::SetEnvironmentVariable($names[2], $null, 'Process')
+    try {
+        Assert-LabPlanPasswordEnvironment $images
+        throw 'Missing third secret variable was allowed.'
+    } catch {
+        if ($_.Exception.Message -cne ('Required secret environment variable is missing: ' + $names[2])) { throw }
+    }
+    [Environment]::SetEnvironmentVariable($names[2], '   ', 'Process')
+    try {
+        Assert-LabPlanPasswordEnvironment $images
+        throw 'Whitespace third secret variable was allowed.'
+    } catch {
+        if ($_.Exception.Message -cne ('Required secret environment variable is missing: ' + $names[2])) { throw }
+    }
+    [Environment]::SetEnvironmentVariable($names[2], 'test-only-password-not-a-real-secret', 'Process')
+    Assert-LabPlanPasswordEnvironment $images
+} finally {
+    foreach ($name in $names) {
+        [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+    }
+}
+exit 0
+""".replace("__HOST__", "'" + str(HOST).replace("'", "''") + "'")
+        for executable in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(executable):
+                continue
+            result = subprocess.run(
+                [executable, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(
+                result.returncode, 0,
+                executable + ": " + result.stdout + result.stderr,
+            )
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)
