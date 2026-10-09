@@ -4094,6 +4094,104 @@ exit 0
                     exe + ": " + completed.stdout + completed.stderr,
                 )
 
+    def test_host_bcdboot_must_never_execute_untrusted_offline_guest_binary(self):
+        host = HOST.read_text(encoding="utf-8")
+        self.assertIn("function Invoke-HostBcdBoot(", host)
+        section = host.split("function Invoke-HostBcdBoot(", 1)[1].split(
+            "function Close-LabBuildMedia(", 1
+        )[0]
+        for fragment in (
+            "[Environment]::SystemDirectory",
+            "Join-Path $hostSystemDirectory 'bcdboot.exe'",
+            "Assert-SafeLabArtifactPath $hostBcdBoot",
+            "Invoke-Checked $hostBcdBoot",
+            "Host bcdboot.exe is unavailable.",
+        ):
+            self.assertIn(fragment, section)
+        self.assertIn("Invoke-HostBcdBoot $windowsRoot $efiRoot", host)
+        self.assertNotIn(
+            "Invoke-Checked (Join-Path $windowsRoot 'Windows\\System32\\bcdboot.exe')", host
+        )
+        self.assertLess(
+            host.index("Invoke-HostBcdBoot $windowsRoot $efiRoot"),
+            host.index("Assert-SafeOfflineGuestWriteAncestors $windowsRoot"),
+        )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_bcdboot_dynamic_uses_system32_executable_not_guest_image(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        def ps_quote(s):
+            return "'" + str(s).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-host-bcdboot-") as root:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                base = Path(root) / exe.replace(".", "-")
+                fake = base / "mounted-offline" / "Windows" / "System32"
+                fake.mkdir(parents=True)
+                (fake / "bcdboot.exe").write_bytes(b"DO-NOT-EXECUTE-GUEST-BINARY")
+                script = r"""
+$ErrorActionPreference = 'Stop'
+$src = Get-Content -LiteralPath __HOST__ -Raw
+$a = $src.IndexOf('function Invoke-HostBcdBoot(')
+$b = $src.IndexOf('function Close-LabBuildMedia(', $a)
+if ($a -lt 0 -or $b -le $a) { throw 'Host-only BCDBoot wrapper missing.' }
+Invoke-Expression $src.Substring($a, $b - $a)
+$script:calls = 0
+$script:pathChecks = 0
+$script:missing = $false
+function Test-Path {
+    param([string]$LiteralPath, [string]$PathType)
+    if ($script:missing) { return $false }
+    return (Microsoft.PowerShell.Management\Test-Path -LiteralPath $LiteralPath -PathType $PathType)
+}
+function Assert-SafeLabArtifactPath([string]$Path) {
+    $script:pathChecks++
+    if ($Path -cne (Join-Path ([Environment]::SystemDirectory) 'bcdboot.exe')) {
+        throw ('Unexpected executable path preflight: ' + $Path)
+    }
+}
+function Invoke-Checked([string]$File,[string[]]$Arguments) {
+    $script:calls++
+    if ($File -cne (Join-Path ([Environment]::SystemDirectory) 'bcdboot.exe')) {
+        throw ('Untrusted BCDBoot executed: ' + $File)
+    }
+    if ($Arguments.Count -ne 5 -or
+        $Arguments[0] -cne (Join-Path __OFFLINE__ 'Windows') -or
+        $Arguments[1] -cne '/s' -or $Arguments[2] -cne 'Y:' -or
+        $Arguments[3] -cne '/f' -or $Arguments[4] -cne 'UEFI') {
+        throw ('Unexpected BCDBoot invocation arguments: ' + ($Arguments -join ','))
+    }
+}
+Invoke-HostBcdBoot __OFFLINE__ 'Y:'
+if ($script:calls -ne 1 -or $script:pathChecks -ne 1) {
+    throw 'Expected exactly one host binary invocation and validation.'
+}
+$script:missing = $true
+try {
+    Invoke-HostBcdBoot __OFFLINE__ 'Y:'
+    throw 'Missing system BCDBoot was accepted.'
+} catch {
+    if ($_.Exception.Message -cne 'Host bcdboot.exe is unavailable.') { throw }
+}
+if ($script:calls -ne 1) { throw 'Missing host executable caused a second execution.' }
+exit 0
+""".replace("__HOST__", ps_quote(HOST)).replace(
+                    "__OFFLINE__", ps_quote(fake.parent.parent)
+                )
+                out = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=45, check=False,
+                )
+                self.assertEqual(
+                    out.returncode, 0, exe + ": " + out.stdout + out.stderr,
+                )
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)

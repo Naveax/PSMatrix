@@ -242,6 +242,21 @@ function Assert-SafeOfflineGuestWriteAncestors([string]$WindowsRoot) {
     }
 }
 
+function Invoke-HostBcdBoot([string]$WindowsRoot, [string]$EfiRoot) {
+    # Use only the local, OS-controlled deployment utility. The mounted
+    # golden image is untrusted input and must never supply an executable
+    # for elevated execution on the Hyper-V host.
+    $hostSystemDirectory = [Environment]::SystemDirectory
+    if ([string]::IsNullOrWhiteSpace($hostSystemDirectory)) {
+        throw 'Host bcdboot.exe is unavailable.'
+    }
+    $hostBcdBoot = Join-Path $hostSystemDirectory 'bcdboot.exe'
+    if (-not (Test-Path -LiteralPath $hostBcdBoot -PathType Leaf)) {
+        throw 'Host bcdboot.exe is unavailable.'
+    }
+    Assert-SafeLabArtifactPath $hostBcdBoot
+    Invoke-Checked $hostBcdBoot @((Join-Path $WindowsRoot 'Windows'),'/s',$EfiRoot,'/f','UEFI')
+}
 function Close-LabBuildMedia([string]$VhdPath, [string]$IsoPath, [bool]$WasMounted) {
     # Mount-VHD can attach a disk and then fail before returning an object.
     # In that case $WasMounted is false even though the output VHDX exists
@@ -343,7 +358,7 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         if ($Image.wmf_package) {
             Invoke-Checked 'dism.exe' @('/English',('/Image:' + $windowsRoot),'/Add-Package',('/PackagePath:' + [string]$Image.wmf_package.path),'/NoRestart')
         }
-        Invoke-Checked (Join-Path $windowsRoot 'Windows\System32\bcdboot.exe') @((Join-Path $windowsRoot 'Windows'),('/s'),$efiRoot,'/f','UEFI')
+        Invoke-HostBcdBoot $windowsRoot $efiRoot
         Assert-SafeOfflineGuestWriteAncestors $windowsRoot
         $bootstrap = Join-Path $windowsRoot 'ProgramData\PSMatrix\Bootstrap'
         # A golden image must not provide a preexisting staging tree, which

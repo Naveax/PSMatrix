@@ -586,6 +586,28 @@ VHDX files or accessing operator credentials. This bounds file-size
 resource use, not the overall time required by other Hyper-V
 operations or cryptographic authentication of guest contents.
 
+The offline VHDX builder now invokes **BCDBoot exclusively from the
+trusted local Windows host** (`[Environment]::SystemDirectory\bcdboot.exe`)
+rather than running `Windows\System32\bcdboot.exe` from the freshly
+applied, **untrusted golden guest image** with host Administrator
+privileges. The applied image supplies only the source
+`<mounted guest>\Windows` directory, while the host utility receives
+the existing explicit EFI partition (`/s`) and UEFI (`/f UEFI`)
+arguments. The host utility must exist as a regular file on a path
+with no NTFS reparse-point ancestors, or the operation fails before
+execution. This removes an elevated arbitrary-executable trust-boundary
+crossing when handling a hostile Windows image. WinPS5.1 and PS7
+tests use a dummy `bcdboot.exe` inside a disposable fake guest tree
+and mock the actual native invocation: they prove only the host
+System32 path is selected and missing host tooling fails closed.
+No production boot media or VM is modified by the tests.
+
+BCDBoot still **reads boot environment files from the offline image**
+to populate its EFI partition. This change does not authenticate the
+golden image, its boot binaries or BCD template, and cannot replace
+independent media signature/provenance verification and elevated
+Hyper-V boot acceptance.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted
