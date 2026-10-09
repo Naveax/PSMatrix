@@ -447,6 +447,23 @@ function Assert-LabCreatedPartition([int]$DiskNumber, $Partition, [string]$Expec
         throw ('New lab ' + $Label + ' partition could not be independently verified.')
     }
 }
+function Assert-NewLabVhdCreated([string]$VhdPath, [long]$ExpectedSizeBytes) {
+    # New-VHD must really create the requested detached dynamic guest disk.
+    # Verify its identity before mounting or initializing any block device.
+    $created = Get-VHD -Path $VhdPath -ErrorAction Stop
+    if ($null -eq $created -or $created -is [Array] -or
+        $created.Attached -isnot [bool] -or $created.Attached -ne $false -or
+        [string]::IsNullOrWhiteSpace([string]$created.Path) -or
+        -not [string]::Equals(
+            [IO.Path]::GetFullPath([string]$created.Path),
+            [IO.Path]::GetFullPath($VhdPath),
+            [StringComparison]::OrdinalIgnoreCase) -or
+        [string]$created.VhdType -ine 'Dynamic' -or
+        $null -eq $created.Size -or
+        [long]$created.Size -ne $ExpectedSizeBytes) {
+        throw 'New lab VHDX identity, size or detached state is invalid.'
+    }
+}
 function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $BootstrapArtifact) {
     Assert-Artifact $BootstrapArtifact 'Guest bootstrap script'
     Assert-Artifact $Image.source_iso 'Windows ISO'
@@ -481,7 +498,8 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         $imageFile = Join-Path $isoRoot 'sources\install.wim'
         if (-not (Test-Path -LiteralPath $imageFile)) { $imageFile = Join-Path $isoRoot 'sources\install.esd' }
         if (-not (Test-Path -LiteralPath $imageFile)) { throw 'Windows install.wim or install.esd was not found.' }
-        New-VHD -Path $output -Dynamic -SizeBytes 64GB | Out-Null
+        New-VHD -Path $output -Dynamic -SizeBytes 64GB -ErrorAction Stop | Out-Null
+        Assert-NewLabVhdCreated $output 64GB
         $vhdMounted = Mount-VHD -Path $output -PassThru -ErrorAction Stop
         $diskNumber = Assert-NewLabVhdDiskIdentity $output $vhdMounted
         Initialize-Disk -Number $diskNumber -PartitionStyle GPT -ErrorAction Stop | Out-Null

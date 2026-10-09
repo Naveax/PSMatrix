@@ -469,6 +469,72 @@ foreach ($target in @('Windows','Windows\System32','Windows\System32\Config','Wi
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_new_lab_vhd_pre_mount_identity_requires_expected_dynamic_image(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        helper_start = host.index("function Assert-NewLabVhdCreated(")
+        helper_end = host.index("\nfunction New-LabVhd(", helper_start)
+        helper = host[helper_start:helper_end]
+        build = host[helper_end:host.index("\nfunction Assert-NoGuestSetupAnswerFiles(", helper_end)]
+        self.assertIn("New-VHD -Path $output -Dynamic -SizeBytes 64GB -ErrorAction Stop", build)
+        self.assertLess(
+            build.index("Assert-NewLabVhdCreated $output 64GB"),
+            build.index("Mount-VHD -Path $output -PassThru -ErrorAction Stop"),
+        )
+        script = helper + r"""
+$ErrorActionPreference='Stop'
+$expected='D:\Fixture\new-guest.vhdx'
+$script:requestedPath=''
+$script:queryFails=$false
+$script:image=[pscustomobject]@{
+    Path=$expected
+    VhdType='Dynamic'
+    Size=[long]64GB
+    Attached=$false
+}
+function Get-VHD {
+    [CmdletBinding()]
+    param([string]$Path)
+    $script:requestedPath=$Path
+    if($script:queryFails){throw 'Mock VHD query error.'}
+    return $script:image
+}
+Assert-NewLabVhdCreated $expected 64GB
+if($script:requestedPath -cne $expected){throw 'Unexpected VHD queried.'}
+foreach($case in @(
+    [pscustomobject]@{Name='missing object';Object=$null},
+    [pscustomobject]@{Name='wrong target path';Object=([pscustomobject]@{Path='D:\Fixture\unrelated.vhdx';VhdType='Dynamic';Size=[long]64GB;Attached=$false})},
+    [pscustomobject]@{Name='already attached';Object=([pscustomobject]@{Path=$expected;VhdType='Dynamic';Size=[long]64GB;Attached=$true})},
+    [pscustomobject]@{Name='unknown attachment state';Object=([pscustomobject]@{Path=$expected;VhdType='Dynamic';Size=[long]64GB;Attached='false'})},
+    [pscustomobject]@{Name='fixed disk';Object=([pscustomobject]@{Path=$expected;VhdType='Fixed';Size=[long]64GB;Attached=$false})},
+    [pscustomobject]@{Name='different virtual size';Object=([pscustomobject]@{Path=$expected;VhdType='Dynamic';Size=[long]32GB;Attached=$false})},
+    [pscustomobject]@{Name='no size';Object=([pscustomobject]@{Path=$expected;VhdType='Dynamic';Size=$null;Attached=$false})}
+)) {
+    $script:image=$case.Object
+    $rejected=$false
+    try { Assert-NewLabVhdCreated $expected 64GB }
+    catch { $rejected=$true }
+    if(-not $rejected){throw ('Invalid new VHD accepted: '+$case.Name)}
+}
+$script:queryFails=$true
+$denied=$false
+try { Assert-NewLabVhdCreated $expected 64GB }
+catch { $denied=$true }
+if(-not $denied){throw 'Hyper-V query failure was accepted.'}
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
     def test_new_guest_partitions_are_checked_against_disk_before_format(self):
         import shutil
         import subprocess

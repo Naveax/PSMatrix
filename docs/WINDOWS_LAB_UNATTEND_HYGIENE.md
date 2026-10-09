@@ -312,6 +312,18 @@ touching or initializing any disk. These checks reduce wrong-disk risk,
 but concurrent host/storage races and actual elevated Hyper-V behavior
 still require independent acceptance.
 
+Immediately after `New-VHD` and before `Mount-VHD`, the host now checks
+the newly created image through `Get-VHD -Path`. The canonical source
+path must equal the intended output, the VHD must still be detached,
+its type must be Dynamic, and its reported virtual size must equal the
+requested 64 GiB. Creation now requests terminating errors, rather
+than permitting a non-terminating Hyper-V failure to reach the mount
+path. Disposable WinPS 5.1/PowerShell 7 mock tests reject missing,
+unrelated, already-attached, fixed, wrong-size or unreadable VHD
+results. No actual VHDX or physical storage was created for these tests.
+This does not eliminate external filesystem races or substitute for
+real elevated Hyper-V acceptance.
+
 Before formatting new EFI or Windows partitions, the host now checks the
 returned `New-Partition` object against an independent
 `Get-Partition -DiskNumber -PartitionNumber` result. The expected VHDX
