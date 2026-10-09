@@ -162,6 +162,25 @@ function Get-WindowsPartitionRoot([int]$DiskNumber) {
         if ($partition.DriveLetter) {
             $root = ([string]$partition.DriveLetter + ':\')
             if (Test-Path -LiteralPath (Join-Path $root 'Windows\System32\Config\SYSTEM')) {
+                # The SYSTEM hive marker is a selector for which offline disk
+                # the elevated host will trust. Do not follow redirected
+                # ancestors or a reparse-point hive into an unrelated volume.
+                $markerParts = @(
+                    'Windows',
+                    'Windows\System32',
+                    'Windows\System32\Config',
+                    'Windows\System32\Config\SYSTEM'
+                )
+                for ($i = 0; $i -lt $markerParts.Count; $i++) {
+                    $markerPath = Join-Path $root $markerParts[$i]
+                    $markerItem = Get-Item -LiteralPath $markerPath -Force -ErrorAction Stop
+                    $expectDirectory = $i -lt ($markerParts.Count - 1)
+                    if ($null -eq $markerItem -or
+                        [bool]$markerItem.PSIsContainer -ne $expectDirectory -or
+                        (($markerItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                        throw 'Windows SYSTEM hive marker has unsafe or redirected path; refusing checkpoint.'
+                    }
+                }
                 $matches.Add($root)
             }
         }

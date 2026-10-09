@@ -317,8 +317,16 @@ the host checks any bootstrap result or creates a checkpoint. Isolated
 Windows PowerShell 5.1 and PowerShell 7 mocked-partition regressions
 prove that zero and ambiguous matches are rejected, with the single
 match preserved. No physical disk or VHDX was mounted during these
-tests. File-system trust and real Hyper-V guest acceptance remain
-separate required controls.
+tests. The locator additionally checks that `Windows`,
+`Windows\System32`, and `Windows\System32\Config` are non-reparse
+directories and that the `SYSTEM` marker itself is a non-reparse file.
+A junction, symlink, or mismatched file type at any marker component now
+fails closed instead of selecting an offline Windows volume through
+a redirected path. The Windows PowerShell 5.1 and PowerShell 7 tests
+inject simulated reparse points at each of the four locations; no actual
+junctions or system hives are modified. These checks do not guarantee
+safety against concurrent filesystem changes, and real elevated Hyper-V
+guest acceptance remains required.
 
 On first-boot timeout, the Hyper-V host no longer suppresses a failed
 `Stop-VM` and assumes the worker VM is off. The timeout path requests a

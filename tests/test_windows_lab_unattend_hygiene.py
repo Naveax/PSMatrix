@@ -339,6 +339,17 @@ function Test-Path {
     $drive = $LiteralPath.Substring(0, 1).ToUpperInvariant()
     return ($script:matches -ccontains $drive)
 }
+function Get-Item {
+    [CmdletBinding()]
+    param([string]$LiteralPath,[switch]$Force)
+    # Partition inventory is deliberately synthetic; never inspect real
+    # host-drive files to decide whether a mocked guest marker is safe.
+    $isFile = $LiteralPath.EndsWith('\SYSTEM', [StringComparison]::OrdinalIgnoreCase)
+    return [pscustomobject]@{
+        Attributes = if ($isFile) { [IO.FileAttributes]::Normal } else { [IO.FileAttributes]::Directory }
+        PSIsContainer = (-not $isFile)
+    }
+}
 foreach ($case in @(
     [pscustomobject]@{Match=@(); Result='missing'},
     [pscustomobject]@{Match=@('C'); Result='C:\'},
@@ -376,6 +387,83 @@ foreach ($case in @(
                 result.returncode, 0,
                 exe + ": " + result.stdout + result.stderr,
             )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_rejects_reparse_in_offline_windows_partition_marker_path(self):
+        import shutil
+        import subprocess
+
+        source = HOST.read_text(encoding="utf-8")
+        code = "function Get-WindowsPartitionRoot(" + source.split(
+            "function Get-WindowsPartitionRoot(", 1
+        )[1].split("\nfunction New-Unattend(", 1)[0]
+        script = code + r"""
+$ErrorActionPreference = 'Stop'
+$script:unsafeRelative = ''
+$script:examined = @()
+function Get-Partition {
+    [CmdletBinding()]
+    param([int]$DiskNumber)
+    return [pscustomobject]@{DriveLetter = 'C'}
+}
+function Test-Path {
+    [CmdletBinding()]
+    param([string]$LiteralPath)
+    return $true
+}
+function Get-Item {
+    [CmdletBinding()]
+    param([string]$LiteralPath,[switch]$Force)
+    $relative = $LiteralPath.Substring(3).Replace('/','\')
+    $script:examined += $relative
+    $isFile = $relative -eq 'Windows\System32\Config\SYSTEM'
+    $attrs = if ($relative -ceq $script:unsafeRelative) {
+        [IO.FileAttributes]::ReparsePoint
+    } elseif ($isFile) { [IO.FileAttributes]::Normal }
+    else { [IO.FileAttributes]::Directory }
+    return [pscustomobject]@{
+        Attributes=$attrs
+        PSIsContainer=(-not $isFile)
+    }
+}
+foreach ($target in @(
+    'Windows',
+    'Windows\System32',
+    'Windows\System32\Config',
+    'Windows\System32\Config\SYSTEM'
+)) {
+    $script:unsafeRelative = $target
+    $script:examined = @()
+    $actual = ''
+    try { $actual = Get-WindowsPartitionRoot -DiskNumber 42 }
+    catch { $actual = $_.Exception.Message }
+    if ($actual -notmatch 'reparse|unsafe') {
+        throw ('Offline Windows marker accepted redirected ' + $target + ': ' + $actual)
+    }
+    if ($script:examined -cnotcontains $target) {
+        throw ('Marker path component was not inspected: ' + $target)
+    }
+}
+$script:unsafeRelative = ''
+$script:examined = @()
+if ((Get-WindowsPartitionRoot -DiskNumber 42) -cne 'C:\') {
+    throw 'Ordinary offline Windows marker was incorrectly rejected.'
+}
+foreach ($target in @('Windows','Windows\System32','Windows\System32\Config','Windows\System32\Config\SYSTEM')) {
+    if ($script:examined -cnotcontains $target) {
+        throw ('Valid marker path component was skipped: ' + $target)
+    }
+}
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
 
     def test_host_reopens_shutdown_vhdx_and_fails_before_checkpoint(self):
         text = HOST.read_text(encoding="utf-8")
