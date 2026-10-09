@@ -4005,6 +4005,95 @@ exit 0
                     shell + ": " + run.stdout + run.stderr,
                 )
 
+    def test_host_worker_proof_hash_is_bounded_before_sha_computation(self):
+        host = HOST.read_text(encoding="utf-8")
+        section = host.split("function Get-SafeGuestWorkerConfigHash(", 1)[1].split(
+            "function Read-BootstrapResult(", 1
+        )[0]
+        for part in (
+            "$stream.Length -le 0",
+            "$stream.Length -gt 1048576",
+            "Guest worker configuration has an invalid size; refusing checkpoint.",
+            "$sha.ComputeHash($stream)",
+        ):
+            self.assertIn(part, section)
+        self.assertLess(
+            section.index("$stream.Length -gt 1048576"),
+            section.index("$sha.ComputeHash($stream)"),
+        )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_worker_proof_hash_dynamic_rejects_empty_and_oversize_guest_files(self):
+        import hashlib
+        import shutil
+        import subprocess
+        import tempfile
+
+        def quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-worker-proof-bound-") as root:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                case = Path(root) / exe.replace(".", "-")
+                case.mkdir()
+                empty = case / "empty.json"
+                normal = case / "normal.json"
+                limit = case / "limit.json"
+                oversized = case / "oversized.json"
+                empty.write_bytes(b"")
+                contents = b'{"worker":"test","port":9443}'
+                normal.write_bytes(contents)
+                limit.write_bytes(b"x" * 1048576)
+                oversized.write_bytes(b"x" * 1048577)
+                script = r"""
+$ErrorActionPreference = 'Stop'
+$src = Get-Content -LiteralPath __HOST__ -Raw
+$a = $src.IndexOf('function Get-SafeGuestWorkerConfigHash(')
+$b = $src.IndexOf('function Read-BootstrapResult(', $a)
+if ($a -lt 0 -or $b -le $a) { throw 'Safe worker config verifier missing.' }
+Invoke-Expression $src.Substring($a,$b-$a)
+if ((Get-SafeGuestWorkerConfigHash __NORMAL__) -cne '__NORMAL_HASH__') {
+    throw 'Normal JSON proof hash differs from independent Python SHA-256.'
+}
+if ((Get-SafeGuestWorkerConfigHash __LIMIT__) -cne '__LIMIT_HASH__') {
+    throw 'Exactly 1 MiB worker config was not accepted.'
+}
+foreach ($candidate in @(__EMPTY__, __OVERSIZE__)) {
+    $rejected = $false
+    try {
+        Get-SafeGuestWorkerConfigHash $candidate | Out-Null
+    }
+    catch {
+        if ($_.Exception.Message -cne
+                'Guest worker configuration has an invalid size; refusing checkpoint.') {
+            throw ('Unexpected size-check failure: ' + $_.Exception.Message)
+        }
+        $rejected = $true
+    }
+    if (-not $rejected) { throw 'Invalid worker config size was accepted.' }
+}
+exit 0
+""".replace("__HOST__", quote(HOST)).replace(
+                    "__NORMAL__", quote(normal)
+                ).replace("__LIMIT__", quote(limit)).replace(
+                    "__EMPTY__", quote(empty)
+                ).replace("__OVERSIZE__", quote(oversized)).replace(
+                    "__NORMAL_HASH__", hashlib.sha256(contents).hexdigest()
+                ).replace(
+                    "__LIMIT_HASH__", hashlib.sha256(b"x" * 1048576).hexdigest()
+                )
+                completed = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=50, check=False,
+                )
+                self.assertEqual(
+                    completed.returncode, 0,
+                    exe + ": " + completed.stdout + completed.stderr,
+                )
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)

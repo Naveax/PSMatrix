@@ -573,6 +573,19 @@ pre-write path validation; it does not guarantee atomic exclusion of
 privileged concurrent changes, or replace real Hyper-V and NTFS ACL
 acceptance.
 
+The offline checkpoint verifier now places a **1 MiB upper bound**
+on untrusted guest `ProgramData\PSMatrix\WorkerConfig\worker.json`
+before computing its SHA-256. The existing exclusive file-handle,
+regular-file and reparse-point checks still apply. A zero-byte or
+oversized guest worker configuration now fails closed before the
+host attempts to hash unbounded input; a configuration of exactly
+1 MiB remains valid. WinPS5.1 and PowerShell 7 regressions use
+disposable 0-byte, normal, exactly-1-MiB and 1-MiB-plus-one files
+with hashes independently computed by Python, without mounting real
+VHDX files or accessing operator credentials. This bounds file-size
+resource use, not the overall time required by other Hyper-V
+operations or cryptographic authentication of guest contents.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted

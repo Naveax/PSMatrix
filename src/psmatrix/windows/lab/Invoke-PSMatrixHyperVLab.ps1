@@ -561,6 +561,11 @@ function Get-SafeGuestWorkerConfigHash([string]$Path) {
         $Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None
     )
     try {
+        # This file is written by an untrusted guest. Refuse huge or empty
+        # input before spending unbounded time hashing it on the host.
+        if ($stream.Length -le 0 -or $stream.Length -gt 1048576) {
+            throw 'Guest worker configuration has an invalid size; refusing checkpoint.'
+        }
         $sha = [Security.Cryptography.SHA256]::Create()
         try {
             return ([BitConverter]::ToString($sha.ComputeHash($stream)) -replace '-', '').ToLowerInvariant()
