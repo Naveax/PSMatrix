@@ -748,6 +748,31 @@ function Assert-LabPlanPasswordEnvironment([object[]]$Images) {
     }
 }
 
+function Assert-LabPlanVmShape([object[]]$Images) {
+    # The host installs GPT+EFI partitions and runs bcdboot /f UEFI.
+    # Accepting Gen1 BIOS images would fail only after constructing the VHDX.
+    foreach ($image in $Images) {
+        if ([string]$image.architecture -cne 'x64' -or
+            $image.generation -isnot [int] -or $image.generation -ne 2) {
+            throw 'Windows lab guest architecture or firmware generation is invalid.'
+        }
+        if ($image.processors -isnot [int] -or
+            $image.processors -lt 1 -or $image.processors -gt 64 -or
+            $image.memory_mb -isnot [int] -or
+            $image.memory_mb -lt 1024 -or $image.memory_mb -gt 262144) {
+            throw 'Windows lab guest CPU or memory configuration is invalid.'
+        }
+        if ($image.edition_index -isnot [int] -or
+            $image.edition_index -lt 1 -or $image.edition_index -gt 65535) {
+            throw 'Windows lab guest edition_index is invalid.'
+        }
+        $needsOfflineWmf = ([string]$image.runtime_id -ceq 'windows-powershell-5.0')
+        if ($needsOfflineWmf -ne ($null -ne $image.wmf_package)) {
+            throw 'Windows lab guest WMF package selection is invalid.'
+        }
+    }
+}
+
 function Wait-FirstBoot([string]$VmName, [int]$TimeoutSeconds) {
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     $observedRunning = $false
@@ -785,6 +810,7 @@ Assert-LabPlanMachineAndOutputPaths $planValue.images
 Assert-LabHyperVTargetsReady $planValue.images
 Assert-LabPlanArtifactsReady $planValue.images
 Assert-LabPlanPasswordEnvironment $planValue.images
+Assert-LabPlanVmShape $planValue.images
 $results = @()
 foreach ($image in $planValue.images) {
     $vmName = [string]$image.image_id

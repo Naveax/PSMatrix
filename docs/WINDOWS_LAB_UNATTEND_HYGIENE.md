@@ -235,6 +235,21 @@ dummy values, including invalid names, duplicate names, a missing third
 variable and a whitespace-only value. This preflight does not establish
 password strength, source provenance or elevated Hyper-V acceptance.
 
+The host now preflights **every guest's VM firmware and installation
+shape** before any VHDX/VM is created. The actual host builder always
+partitions GPT+EFI and invokes `bcdboot /f UEFI`, so the host requires
+x64 Hyper-V **Generation 2** and rejects Generation 1 before a doomed
+disk build. It also requires native integer processor counts (1–64),
+memory in MiB (1024–262144) and a positive native integer Windows image
+edition index (1–65535); the exact edition's existence is still checked
+by DISM at use time. Only WinPS 5.0 may and must specify the exact offline
+WMF package; WinPS 4.0 and 5.1 use their golden OS's included version.
+The upstream Python media manifest parser still permits Generation 1,
+whereas this host's EFI-only build path does not support it. This is an
+explicit host-specific rejection, not a claim that upstream plan generation
+has been rebaselined. Isolated dynamic WinPS 5.1/PowerShell 7 tests exercise
+boundary values and invalid plans without creating a real Hyper-V VM.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted

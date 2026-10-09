@@ -2076,6 +2076,92 @@ exit 0
                 executable + ": " + result.stdout + result.stderr,
             )
 
+    def test_host_preflights_all_vm_firmware_resources_and_wmf_contract(self):
+        host = HOST.read_text(encoding="utf-8")
+        self.assertIn("function Assert-LabPlanVmShape(", host)
+        guard = host.split("function Assert-LabPlanVmShape(", 1)[1].split(
+            "function Wait-FirstBoot(", 1
+        )[0]
+        for required in (
+            "Windows lab guest architecture or firmware generation is invalid.",
+            "Windows lab guest CPU or memory configuration is invalid.",
+            "Windows lab guest edition_index is invalid.",
+            "Windows lab guest WMF package selection is invalid.",
+            "$image.generation -isnot [int]",
+            "$image.generation -ne 2",
+            "$image.processors -isnot [int]",
+            "$image.memory_mb -isnot [int]",
+            "$image.edition_index -isnot [int]",
+            "'windows-powershell-5.0'",
+        ):
+            self.assertIn(required, guard)
+        start = host.index("Assert-LabPlanVmShape $planValue.images")
+        self.assertLess(start, host.index("$results = @()"))
+        self.assertLess(start, host.index("New-LabVhd $image"))
+        self.assertIn("'/f','UEFI'", host)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_vm_shape_dynamic_uefi_cpu_memory_edition_and_wmf(self):
+        import shutil
+        import subprocess
+
+        host_literal = "'" + str(HOST).replace("'", "''") + "'"
+        script = """
+$ErrorActionPreference = 'Stop'
+$source = Get-Content -LiteralPath __HOST__ -Raw
+$first = $source.IndexOf('function Assert-LabPlanVmShape(')
+$last = $source.IndexOf('function Wait-FirstBoot(', $first)
+if ($first -lt 0 -or $last -le $first) { throw 'Missing plan shape guard.' }
+Invoke-Expression $source.Substring($first, $last - $first)
+function New-ValidImages {
+    return @(
+        [pscustomobject]@{runtime_id='windows-powershell-4.0';architecture='x64';generation=2;processors=1;memory_mb=1024;edition_index=1;wmf_package=$null},
+        [pscustomobject]@{runtime_id='windows-powershell-5.0';architecture='x64';generation=2;processors=2;memory_mb=4096;edition_index=4;wmf_package=[pscustomobject]@{path='fixture.msu'}},
+        [pscustomobject]@{runtime_id='windows-powershell-5.1';architecture='x64';generation=2;processors=64;memory_mb=262144;edition_index=65535;wmf_package=$null}
+    )
+}
+Assert-LabPlanVmShape (New-ValidImages)
+$cases = @(
+    @{label='bios-gen1';index=2;field='generation';value=1;error='Windows lab guest architecture or firmware generation is invalid.'},
+    @{label='gen-string';index=0;field='generation';value='2';error='Windows lab guest architecture or firmware generation is invalid.'},
+    @{label='x86';index=1;field='architecture';value='x86';error='Windows lab guest architecture or firmware generation is invalid.'},
+    @{label='zero-processors';index=0;field='processors';value=0;error='Windows lab guest CPU or memory configuration is invalid.'},
+    @{label='many-processors';index=1;field='processors';value=65;error='Windows lab guest CPU or memory configuration is invalid.'},
+    @{label='processor-string';index=0;field='processors';value='2';error='Windows lab guest CPU or memory configuration is invalid.'},
+    @{label='too-little-memory';index=1;field='memory_mb';value=1023;error='Windows lab guest CPU or memory configuration is invalid.'},
+    @{label='too-much-memory';index=2;field='memory_mb';value=262145;error='Windows lab guest CPU or memory configuration is invalid.'},
+    @{label='memory-float';index=0;field='memory_mb';value=2048.5;error='Windows lab guest CPU or memory configuration is invalid.'},
+    @{label='edition-zero';index=1;field='edition_index';value=0;error='Windows lab guest edition_index is invalid.'},
+    @{label='edition-string';index=1;field='edition_index';value='4';error='Windows lab guest edition_index is invalid.'},
+    @{label='wmf-missing';index=1;field='wmf_package';value=$null;error='Windows lab guest WMF package selection is invalid.'},
+    @{label='wmf-unexpected';index=0;field='wmf_package';value=[pscustomobject]@{path='fixture.msu'};error='Windows lab guest WMF package selection is invalid.'}
+)
+foreach ($case in $cases) {
+    $images = New-ValidImages
+    $images[$case.index].PSObject.Properties[$case.field].Value = $case.value
+    try {
+        Assert-LabPlanVmShape $images
+        throw ('Invalid plan accepted: ' + $case.label)
+    } catch {
+        if ($_.Exception.Message -cne $case.error) {
+            throw ('Unexpected result for ' + $case.label + ': ' + $_.Exception.Message)
+        }
+    }
+}
+exit 0
+""".replace("__HOST__", host_literal)
+        for shell in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(shell):
+                continue
+            result = subprocess.run(
+                [shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=45, check=False,
+            )
+            self.assertEqual(
+                result.returncode, 0, shell + ": " + result.stdout + result.stderr,
+            )
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)
