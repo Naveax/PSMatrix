@@ -1759,6 +1759,100 @@ exit 0
                     run.returncode, 0, exe + ": " + run.stdout + run.stderr,
                 )
 
+    def test_host_preflights_all_hyperv_vms_and_switches_before_first_build(self):
+        host = HOST.read_text(encoding="utf-8")
+        self.assertIn("function Assert-LabHyperVTargetsReady(", host)
+        guard = host.split("function Assert-LabHyperVTargetsReady(", 1)[1].split(
+            "function Wait-FirstBoot(", 1
+        )[0]
+        for fragment in (
+            "@(Get-VM -ErrorAction Stop)",
+            "@(Get-VMSwitch -ErrorAction Stop)",
+            "[StringComparer]::OrdinalIgnoreCase",
+            "VM already exists:",
+            "Hyper-V switch not found:",
+        ):
+            self.assertIn(fragment, guard)
+        full_call = host.index("Assert-LabHyperVTargetsReady $planValue.images")
+        self.assertLess(full_call, host.index("$results = @()"))
+        self.assertLess(full_call, host.index("New-LabVhd $image"))
+        self.assertIn("Assert-LabHyperVTargetsReady @($image)", host)
+        self.assertLess(
+            host.index("Assert-LabHyperVTargetsReady @($image)"),
+            host.index("$vhd = New-LabVhd $image"),
+        )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_hyperv_inventory_dynamic_missing_switch_existing_third_vm_and_failures(self):
+        import shutil
+        import subprocess
+
+        host_path = "'" + str(HOST).replace("'", "''") + "'"
+        script = """
+$ErrorActionPreference = 'Stop'
+$source = Get-Content -LiteralPath __HOST__ -Raw
+$a = $source.IndexOf('function Assert-LabHyperVTargetsReady(')
+$b = $source.IndexOf('function Wait-FirstBoot(', $a)
+if ($a -lt 0 -or $b -le $a) { throw 'Preflight function missing.' }
+Invoke-Expression $source.Substring($a, $b-$a)
+$images = @(
+    [pscustomobject]@{image_id='vm-40';switch_name='isolated-switch'},
+    [pscustomobject]@{image_id='vm-50';switch_name='isolated-switch'},
+    [pscustomobject]@{image_id='vm-51';switch_name='other-switch'}
+)
+$script:mode = 'valid'
+function Get-VM {
+    param([string]$ErrorAction)
+    if ($script:mode -eq 'vm-provider-fail') { throw 'VM inventory failed.' }
+    if ($script:mode -eq 'occupied-third') {
+        return [pscustomobject]@{Name='VM-51'}
+    }
+    return @()
+}
+function Get-VMSwitch {
+    param([string]$ErrorAction)
+    if ($script:mode -eq 'switch-provider-fail') { throw 'Switch inventory failed.' }
+    if ($script:mode -eq 'missing-third-switch') {
+        return [pscustomobject]@{Name='ISOLATED-SWITCH'}
+    }
+    return @(
+        [pscustomobject]@{Name='ISOLATED-SWITCH'},
+        [pscustomobject]@{Name='OTHER-SWITCH'}
+    )
+}
+Assert-LabHyperVTargetsReady $images
+$cases = @(
+    @{name='occupied-third';error='VM already exists: vm-51'},
+    @{name='missing-third-switch';error='Hyper-V switch not found: other-switch'},
+    @{name='vm-provider-fail';error='VM inventory failed.'},
+    @{name='switch-provider-fail';error='Switch inventory failed.'}
+)
+foreach ($case in $cases) {
+    $script:mode = $case.name
+    try {
+        Assert-LabHyperVTargetsReady $images
+        throw ('Invalid Hyper-V inventory accepted: ' + $case.name)
+    } catch {
+        if ($_.Exception.Message -cne $case.error) {
+            throw ('Unexpected result for ' + $case.name + ': ' + $_.Exception.Message)
+        }
+    }
+}
+exit 0
+""".replace("__HOST__", host_path)
+        for executable in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(executable):
+                continue
+            run = subprocess.run(
+                [executable, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(
+                run.returncode, 0,
+                executable + ": " + run.stdout + run.stderr,
+            )
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)

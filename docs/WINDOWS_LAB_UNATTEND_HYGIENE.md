@@ -194,6 +194,19 @@ This avoids partial multi-VM provisioning from known occupied outputs;
 it does not eliminate concurrent filesystem races or replace elevated
 Hyper-V acceptance.
 
+The host now additionally enumerates the **complete Hyper-V VM and switch
+inventory** before creating any of the three lab VHDX/VM targets. A
+case-insensitive existing VM name (including one belonging to the third
+planned image), an absent required virtual switch, or an inventory query
+failure stops provisioning before the first VM. The same fail-closed
+inventory check is repeated immediately before each VM's disk creation,
+rather than relying on per-name queries with silenced provider errors.
+WinPS 5.1/PowerShell 7 regression tests mock the Hyper-V inventory provider
+to simulate occupied third-VM names, missing third-image switches and
+provider failures. They do **not** exercise a real elevated Hyper-V host;
+changes between inventory checks remain possible and require acceptance
+testing.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted

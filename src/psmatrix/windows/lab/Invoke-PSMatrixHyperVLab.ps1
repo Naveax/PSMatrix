@@ -676,6 +676,35 @@ function Assert-LabPlanMachineAndOutputPaths([object[]]$Images) {
     }
 }
 
+function Assert-LabHyperVTargetsReady([object[]]$Images) {
+    # Enumerate the complete Hyper-V inventory once before any VM/VHDX write.
+    # Unlike per-name SilentlyContinue queries, a provider/permission failure
+    # must fail closed, not look like an absent VM.
+    $knownVMs = New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList ([StringComparer]::OrdinalIgnoreCase)
+    $knownSwitches = New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($vm in @(Get-VM -ErrorAction Stop)) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$vm.Name)) {
+            [void]$knownVMs.Add([string]$vm.Name)
+        }
+    }
+    foreach ($vmSwitch in @(Get-VMSwitch -ErrorAction Stop)) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$vmSwitch.Name)) {
+            [void]$knownSwitches.Add([string]$vmSwitch.Name)
+        }
+    }
+    foreach ($image in $Images) {
+        $vmName = [string]$image.image_id
+        $switchName = [string]$image.switch_name
+        if ($knownVMs.Contains($vmName)) {
+            throw ('VM already exists: ' + $vmName)
+        }
+        if ([string]::IsNullOrWhiteSpace($switchName) -or
+            -not $knownSwitches.Contains($switchName)) {
+            throw ('Hyper-V switch not found: ' + $switchName)
+        }
+    }
+}
+
 function Wait-FirstBoot([string]$VmName, [int]$TimeoutSeconds) {
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     $observedRunning = $false
@@ -710,11 +739,12 @@ foreach ($requiredRuntime in $requiredRuntimes) {
 }
 Assert-LabPlanGuestIdentities $planValue.images
 Assert-LabPlanMachineAndOutputPaths $planValue.images
+Assert-LabHyperVTargetsReady $planValue.images
 $results = @()
 foreach ($image in $planValue.images) {
     $vmName = [string]$image.image_id
-    if (Get-VM -Name $vmName -ErrorAction SilentlyContinue) { throw ('VM already exists: ' + $vmName) }
-    if (-not (Get-VMSwitch -Name ([string]$image.switch_name) -ErrorAction SilentlyContinue)) { throw ('Hyper-V switch not found: ' + [string]$image.switch_name) }
+    # Re-check at use time in case the inventory changed after preflight.
+    Assert-LabHyperVTargetsReady @($image)
     $bootstrapNonce = New-LabBootstrapNonce
     $vhd = New-LabVhd $image (Join-Path $PSScriptRoot 'GuestBootstrap.ps1') $bootstrapNonce
     New-VM -Name $vmName -Generation ([int]$image.generation) -MemoryStartupBytes ([int64]$image.memory_mb * 1MB) -VHDPath $vhd -SwitchName ([string]$image.switch_name) | Out-Null
