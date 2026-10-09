@@ -659,6 +659,19 @@ function Assert-LabPlanMachineAndOutputPaths([object[]]$Images) {
         if (-not $seenDisks.Add($canonicalDisk)) {
             throw 'Windows lab plan output_vhdx is duplicated.'
         }
+        # Check every planned output before starting the FIRST VM. Previously
+        # an occupied third output could leave the earlier VMs half-provisioned.
+        # Get-Item -Force also detects hidden files or reparse-point entries.
+        $existingOutput = $null
+        try {
+            $existingOutput = Get-Item -LiteralPath $canonicalDisk -Force -ErrorAction Stop
+        }
+        catch [System.Management.Automation.ItemNotFoundException] {
+            # An unoccupied output is expected. Other IO errors are fatal.
+        }
+        if ($null -ne $existingOutput) {
+            throw 'Windows lab plan output VHDX already exists; refusing provisioning.'
+        }
         Assert-SafeLabOutputAncestors $canonicalDisk
     }
 }

@@ -182,6 +182,18 @@ This reduces redirection through pre-existing reparse points but does not
 eliminate filesystem races, concurrent junction swaps or untested elevated
 Hyper-V filesystem behavior.
 
+The host additionally checks whether **any of the three planned
+`output_vhdx` targets already exists** before starting the first VM.
+This catches pre-existing files (including case-insensitive Windows aliases),
+directories, and hidden disk targets up front rather than only when
+`New-LabVhd` reaches that image. The original last-moment output existence
+check remains in place. Windows PowerShell 5.1/PowerShell 7 tests use
+isolated dummy files and directories for occupied second/third outputs,
+verify rejection, and confirm the earlier output remains uncreated.
+This avoids partial multi-VM provisioning from known occupied outputs;
+it does not eliminate concurrent filesystem races or replace elevated
+Hyper-V acceptance.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted

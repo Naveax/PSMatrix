@@ -1681,6 +1681,84 @@ exit 0
                     result.returncode, 0, shell + ": " + result.stdout + result.stderr,
                 )
 
+    def test_host_preflights_existing_vhdx_targets_before_vm_creation(self):
+        host = HOST.read_text(encoding="utf-8")
+        validator = host.split("function Assert-LabPlanMachineAndOutputPaths(", 1)[1].split(
+            "function Wait-FirstBoot(", 1
+        )[0]
+        self.assertIn(
+            "Windows lab plan output VHDX already exists; refusing provisioning.",
+            validator,
+        )
+        self.assertIn("Get-Item -LiteralPath $canonicalDisk -Force -ErrorAction Stop", validator)
+        self.assertLess(
+            validator.index("Windows lab plan output VHDX already exists; refusing provisioning."),
+            validator.index("Assert-SafeLabOutputAncestors $canonicalDisk"),
+        )
+        self.assertLess(
+            host.index("Assert-LabPlanMachineAndOutputPaths $planValue.images"),
+            host.index("$results = @()"),
+        )
+        self.assertIn("if (Test-Path -LiteralPath $output)", host)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_plan_rejects_occupied_second_or_third_output_before_build(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        def quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-output-preflight-") as root:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                case_root = Path(root) / exe.replace(".", "-")
+                case_root.mkdir()
+                script = """
+$ErrorActionPreference = 'Stop'
+$src = Get-Content -LiteralPath {source} -Raw
+$a = $src.IndexOf('function Assert-SafeLabOutputAncestors(')
+$b = $src.IndexOf('function Wait-FirstBoot(', $a)
+if ($a -lt 0 -or $b -le $a) {{ throw 'Host preflight not found.' }}
+Invoke-Expression $src.Substring($a, $b - $a)
+$root = {root}
+$images = @(
+    [pscustomobject]@{{ computer_name='FIRST-VM';output_vhdx=(Join-Path $root 'first.vhdx') }},
+    [pscustomobject]@{{ computer_name='SECOND-VM';output_vhdx=(Join-Path $root 'second.vhdx') }},
+    [pscustomobject]@{{ computer_name='THIRD-VM';output_vhdx=(Join-Path $root 'third.vhdx') }}
+)
+Assert-LabPlanMachineAndOutputPaths $images
+Set-Content -LiteralPath (Join-Path $root 'THIRD.VHDX') -Value 'existing dummy disk'
+try {{
+    Assert-LabPlanMachineAndOutputPaths $images
+    throw 'Plan accepted existing third VHDX.'
+}} catch {{
+    if ($_.Exception.Message -ne 'Windows lab plan output VHDX already exists; refusing provisioning.') {{ throw }}
+}}
+Remove-Item -LiteralPath (Join-Path $root 'THIRD.VHDX') -Force
+New-Item -ItemType Directory -Path (Join-Path $root 'second.vhdx') | Out-Null
+try {{
+    Assert-LabPlanMachineAndOutputPaths $images
+    throw 'Plan accepted second output directory.'
+}} catch {{
+    if ($_.Exception.Message -ne 'Windows lab plan output VHDX already exists; refusing provisioning.') {{ throw }}
+}}
+if (Test-Path -LiteralPath (Join-Path $root 'first.vhdx')) {{
+    throw 'Preflight created the first VM disk.'
+}}
+exit 0
+""".format(source=quote(HOST), root=quote(case_root))
+                run = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=40, check=False,
+                )
+                self.assertEqual(
+                    run.returncode, 0, exe + ": " + run.stdout + run.stderr,
+                )
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)
