@@ -2838,6 +2838,135 @@ exit 0
                 run.returncode, 0, executable + ": " + run.stdout + run.stderr,
             )
 
+    def test_host_checks_provision_plan_digest_before_vm_creation(self):
+        host = HOST.read_text(encoding="utf-8")
+        self.assertIn("function ConvertTo-LabCanonicalJson(", host)
+        self.assertIn("function Assert-LabPlanDigest(", host)
+        guard = host.split("function Assert-LabPlanDigest(", 1)[1].split(
+            "function Wait-FirstBoot(", 1
+        )[0]
+        for item in (
+            "[Text.UTF8Encoding]::new($false, $true)",
+            "[Security.Cryptography.SHA256]::Create()",
+            "plan_sha256",
+            "Provision plan SHA-256 mismatch.",
+        ):
+            self.assertIn(item, guard)
+        assert_call = host.index("Assert-LabPlanDigest $planValue")
+        self.assertLess(assert_call, host.index("$results = @()"))
+        self.assertLess(assert_call, host.index("Assert-LabPlanSourceManifest $planValue.source_manifest"))
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_plan_digest_dynamic_matches_python_canonical_utf8_and_rejects_tampering(self):
+        import base64
+        import hashlib
+        import json
+        import shutil
+        import subprocess
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-plan-digest-") as root:
+            directory = Path(root)
+            plan = {
+                "kind": "psmatrix.windows-hyperv-provision-plan",
+                "schema": 1,
+                "host_id": "NAVEAX",
+                "lab_root": r"C:\PSMatrix\Lab",
+                "created_at": "2026-10-09T14:23:00Z",
+                "source_manifest": {
+                    "sha256": "1" * 64,
+                    "path": r"C:\PSMatrix\media\Çanakkale.json",
+                },
+                "images": [
+                    {
+                        "expected_os": {
+                            "product_name": 'Türkçe "Windows" \n\t\b\f\r ' + chr(1) + " \U0001F310",
+                            "version": "10.0.14393",
+                            "build": "14393",
+                        },
+                        "generation": 2,
+                        "worker_port": 9443,
+                        "wmf_package": None,
+                        "flags": [True, False, None, 123],
+                    },
+                    {"worker_id": "worker-50", "processors": 4, "memory_mb": 4096},
+                ],
+                "safety": {
+                    "require_hyperv": True,
+                    "require_administrator": True,
+                    "verify_all_artifact_hashes": True,
+                    "reject_existing_vm": True,
+                    "create_standard_checkpoint": True,
+                    "secrets_from_environment_only": True,
+                },
+            }
+            canonical = json.dumps(
+                plan, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+            plan["plan_sha256"] = hashlib.sha256(canonical).hexdigest()
+            fixture = directory / "plan.json"
+            fixture.write_text(
+                json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            expected_b64 = base64.b64encode(canonical).decode("ascii")
+            script = r"""
+$ErrorActionPreference = 'Stop'
+$hostSource = Get-Content -LiteralPath '__HOST__' -Raw
+$first = $hostSource.IndexOf('function Read-LabProvisionPlan(')
+$last = $hostSource.IndexOf('function Wait-FirstBoot(', $first)
+if ($first -lt 0 -or $last -le $first) { throw 'Canonical plan functions missing.' }
+Invoke-Expression $hostSource.Substring($first, $last - $first)
+$plan = Read-LabProvisionPlan '__PLAN__'
+$canonical = ConvertTo-LabCanonicalJson $plan -OmitPlanDigest
+$bytes = [Text.UTF8Encoding]::new($false,$true).GetBytes($canonical)
+if ([Convert]::ToBase64String($bytes) -cne '__EXPECTED_BASE64__') {
+    throw 'PowerShell canonicalization differs from the Python JSON bytes.'
+}
+Assert-LabPlanDigest $plan
+$plan.images[1].processors = 8
+try {
+    Assert-LabPlanDigest $plan
+    throw 'Altered image CPU was accepted.'
+} catch {
+    if ($_.Exception.Message -cne 'Provision plan SHA-256 mismatch.') { throw }
+}
+$plan.images[1].processors = 4
+$plan | Add-Member -NotePropertyName 'unapproved' -NotePropertyValue $true
+try {
+    Assert-LabPlanDigest $plan
+    throw 'Extra plan property was accepted.'
+} catch {
+    if ($_.Exception.Message -cne 'Provision plan SHA-256 mismatch.') { throw }
+}
+$plan.PSObject.Properties.Remove('unapproved')
+$plan.plan_sha256 = 'A' * 64
+try {
+    Assert-LabPlanDigest $plan
+    throw 'Noncanonical digest was accepted.'
+} catch {
+    if ($_.Exception.Message -cne 'Provision plan SHA-256 metadata is invalid.') { throw }
+}
+$plan.plan_sha256 = '__EXPECTED_SHA__'
+Assert-LabPlanDigest $plan
+exit 0
+""".replace("__HOST__", str(HOST).replace("'", "''")).replace(
+                "__PLAN__", str(fixture).replace("'", "''")
+            ).replace("__EXPECTED_BASE64__", expected_b64).replace(
+                "__EXPECTED_SHA__", plan["plan_sha256"]
+            )
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                result = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=50, check=False,
+                )
+                self.assertEqual(
+                    result.returncode, 0,
+                    exe + ": " + result.stdout + result.stderr,
+                )
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)

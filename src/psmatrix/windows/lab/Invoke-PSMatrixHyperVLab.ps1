@@ -897,6 +897,106 @@ function Assert-LabPlanExpectedOs([object[]]$Images) {
     }
 }
 
+function Read-LabProvisionPlan([string]$Path) {
+    # PowerShell 7.5+ otherwise auto-converts ISO timestamps into DateTime
+    # values, changing the canonical JSON bytes used by Python's digest.
+    # Windows PowerShell 5.1 keeps these JSON values as strings already.
+    $raw = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+    $convert = @{ InputObject = $raw }
+    if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
+        $convert['DateKind'] = 'String'
+    }
+    return (ConvertFrom-Json @convert)
+}
+
+function ConvertTo-LabCanonicalJsonString([string]$Value) {
+    # Python json.dumps(ensure_ascii=False, separators=(',', ':')) uses
+    # compact UTF-8 JSON and escapes JSON control characters, not Unicode.
+    $builder = New-Object Text.StringBuilder
+    [void]$builder.Append('"')
+    foreach ($character in $Value.ToCharArray()) {
+        $code = [int]$character
+        switch ($code) {
+            34 { [void]$builder.Append('\"'); break }
+            92 { [void]$builder.Append('\\'); break }
+            8  { [void]$builder.Append('\b'); break }
+            9  { [void]$builder.Append('\t'); break }
+            10 { [void]$builder.Append('\n'); break }
+            12 { [void]$builder.Append('\f'); break }
+            13 { [void]$builder.Append('\r'); break }
+            default {
+                if ($code -lt 32) {
+                    [void]$builder.Append('\u')
+                    [void]$builder.Append($code.ToString('x4', [Globalization.CultureInfo]::InvariantCulture))
+                }
+                else {
+                    [void]$builder.Append($character)
+                }
+            }
+        }
+    }
+    [void]$builder.Append('"')
+    return $builder.ToString()
+}
+
+function ConvertTo-LabCanonicalJson([object]$Value, [switch]$OmitPlanDigest) {
+    # Mirror the Python producer's sorted-key canonical_json_bytes exactly.
+    # Accepted plan JSON is comprised of objects, arrays, strings, booleans,
+    # nulls and integer values. Reject unsupported numeric representations.
+    if ($null -eq $Value) { return 'null' }
+    if ($Value -is [string]) { return (ConvertTo-LabCanonicalJsonString $Value) }
+    if ($Value -is [bool]) {
+        if ($Value) { return 'true' }
+        return 'false'
+    }
+    if ($Value -is [int] -or $Value -is [long]) {
+        return $Value.ToString([Globalization.CultureInfo]::InvariantCulture)
+    }
+    if ($Value -is [System.Array]) {
+        $elements = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($element in $Value) {
+            $elements.Add((ConvertTo-LabCanonicalJson $element))
+        }
+        return ('[' + [string]::Join(',', $elements.ToArray()) + ']')
+    }
+    if ($Value -is [pscustomobject]) {
+        $keys = [string[]]@($Value.PSObject.Properties | ForEach-Object { [string]$_.Name })
+        [Array]::Sort($keys, [StringComparer]::Ordinal)
+        $members = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($key in $keys) {
+            if ($OmitPlanDigest -and $key -ceq 'plan_sha256') { continue }
+            $members.Add(
+                (ConvertTo-LabCanonicalJsonString $key) + ':' +
+                (ConvertTo-LabCanonicalJson $Value.PSObject.Properties[$key].Value)
+            )
+        }
+        return ('{' + [string]::Join(',', $members.ToArray()) + '}')
+    }
+    throw 'Windows lab provision plan contains an unsupported JSON value type.'
+}
+
+function Assert-LabPlanDigest($PlanValue) {
+    if ($null -eq $PlanValue -or $PlanValue -isnot [pscustomobject] -or
+        $PlanValue.plan_sha256 -isnot [string] -or
+        $PlanValue.plan_sha256 -cnotmatch '^[0-9a-f]{64}$') {
+        throw 'Provision plan SHA-256 metadata is invalid.'
+    }
+    $canonical = ConvertTo-LabCanonicalJson $PlanValue -OmitPlanDigest
+    # A strict UTF-8 encoder rejects malformed surrogate pairs instead of
+    # silently replacing them and hashing a different byte representation.
+    $bytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($canonical)
+    $digest = [Security.Cryptography.SHA256]::Create()
+    try {
+        $actual = ([BitConverter]::ToString($digest.ComputeHash($bytes)) -replace '-', '').ToLowerInvariant()
+    }
+    finally {
+        $digest.Dispose()
+    }
+    if ($actual -cne $PlanValue.plan_sha256) {
+        throw 'Provision plan SHA-256 mismatch.'
+    }
+}
+
 function Wait-FirstBoot([string]$VmName, [int]$TimeoutSeconds) {
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     $observedRunning = $false
@@ -913,9 +1013,10 @@ function Wait-FirstBoot([string]$VmName, [int]$TimeoutSeconds) {
 Assert-Administrator
 Import-Module Hyper-V -ErrorAction Stop
 if (-not (Test-Path -LiteralPath $Plan -PathType Leaf)) { throw 'Lab plan is missing.' }
-$planValue = Get-Content -LiteralPath $Plan -Raw | ConvertFrom-Json
+$planValue = Read-LabProvisionPlan $Plan
 if ($planValue.schema -isnot [int] -or $planValue.schema -ne 1) { throw 'Windows lab plan schema is invalid.' }
 if ([string]$planValue.kind -ne 'psmatrix.windows-hyperv-provision-plan') { throw 'Lab plan kind is invalid.' }
+Assert-LabPlanDigest $planValue
 Assert-LabPlanSafetyContract $planValue.safety
 Assert-LabPlanSourceManifest $planValue.source_manifest
 Assert-LabPlanExpectedOs $planValue.images

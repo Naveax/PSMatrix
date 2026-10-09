@@ -352,6 +352,30 @@ strings on each intended Windows edition. The expected product name
 must match the actual CIM Caption exactly; mismatched operator manifests
 now fail instead of silently accepting the wrong OS.
 
+The host now verifies the generated plan's **`plan_sha256`** before
+the other plan preflights or any VM/VHDX side effect. Python computes
+this unkeyed digest over canonical UTF-8 JSON (sorted object keys,
+compact separators, Unicode retained) **excluding only the
+`plan_sha256` field**. The host implements the same restricted,
+deterministic serializer for the producer's supported JSON types
+(objects, arrays, strings, Boolean, null and integers), enforces a
+lowercase 64-character digest and rejects mismatches and unsupported
+numeric representations. Windows PowerShell 5.1 and PowerShell 7 have
+different JSON date parsing defaults: PowerShell 7.5+ can turn
+`created_at` strings into `DateTime`. The new plan loader requests
+`ConvertFrom-Json -DateKind String` when supported, preserving the
+Python input type; Windows PowerShell 5.1 already preserves date
+strings. Cross-version regression tests compare the **exact canonical
+UTF-8 bytes** to Python-generated fixtures with Unicode, JSON
+escapes, nested values and dates, then verify that changing CPU
+configuration or adding a property invalidates the digest.
+
+This is **accidental/tamper consistency detection, not
+authentication**: anyone who can rewrite the full plan can also
+recompute its SHA-256. The authorized operator must still independently
+establish the origin of the plan, source manifest and artifacts; a
+digest alone does not sign or authorize the contents.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted
