@@ -313,6 +313,97 @@ foreach ($mode in @('ignored','error','success','queryError','noState')) {
             )
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_offline_windows_drive_is_bound_to_selected_vhd_partition(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        start = host.index("function Get-WindowsPartitionRoot(")
+        end = host.index("\nfunction New-Unattend(", start)
+        function = host[start:end]
+        self.assertLess(
+            function.index("Get-Partition -DriveLetter $letter -ErrorAction Stop"),
+            function.index("Test-Path -LiteralPath (Join-Path $root"),
+        )
+        script = function + r"""
+$ErrorActionPreference='Stop'
+$script:letter = 'F'
+$script:returnedNumber = 42
+$script:returnedPart = 3
+$script:returnedLetter = 'F'
+$script:queryMode = 'normal'
+$script:markerReads = 0
+function Get-Partition {
+    [CmdletBinding()]
+    param([int]$DiskNumber, [char]$DriveLetter)
+    if($PSBoundParameters.ContainsKey('DriveLetter')){
+        if($script:queryMode -eq 'error'){throw 'mock partition ownership query failed'}
+        if($script:queryMode -eq 'none'){return $null}
+        $item = [pscustomobject]@{
+            DiskNumber=$script:returnedNumber
+            PartitionNumber=$script:returnedPart
+            DriveLetter=$script:returnedLetter
+        }
+        if($script:queryMode -eq 'multiple'){return @($item,$item)}
+        return $item
+    }
+    if($DiskNumber -ne 42){throw 'Unexpected parent disk'}
+    return [pscustomobject]@{
+        DiskNumber=42
+        PartitionNumber=3
+        DriveLetter=$script:letter
+    }
+}
+function Test-Path {
+    [CmdletBinding()]
+    param([string]$LiteralPath)
+    $script:markerReads++
+    return $true
+}
+function Get-Item {
+    [CmdletBinding()]
+    param([string]$LiteralPath,[switch]$Force)
+    $isFile = $LiteralPath.EndsWith('\SYSTEM', [StringComparison]::OrdinalIgnoreCase)
+    return [pscustomobject]@{
+        Attributes=if($isFile){[IO.FileAttributes]::Normal}else{[IO.FileAttributes]::Directory}
+        PSIsContainer=(-not $isFile)
+    }
+}
+if((Get-WindowsPartitionRoot -DiskNumber 42) -cne 'F:\'){
+    throw 'Correctly bound Windows volume was rejected.'
+}
+foreach($case in @(
+    [pscustomobject]@{Name='wrong disk';Property='returnedNumber';Value=0},
+    [pscustomobject]@{Name='wrong partition';Property='returnedPart';Value=4},
+    [pscustomobject]@{Name='wrong letter';Property='returnedLetter';Value='C'},
+    [pscustomobject]@{Name='missing query';Property='queryMode';Value='none'},
+    [pscustomobject]@{Name='ambiguous query';Property='queryMode';Value='multiple'},
+    [pscustomobject]@{Name='provider failure';Property='queryMode';Value='error'},
+    [pscustomobject]@{Name='malformed enumerated letter';Property='letter';Value='FF'}
+)) {
+    $old = Get-Variable -Name $case.Property -Scope Script -ValueOnly
+    Set-Variable -Name $case.Property -Scope Script -Value $case.Value
+    $script:markerReads=0
+    $rejected=$false
+    try { Get-WindowsPartitionRoot -DiskNumber 42 | Out-Null } catch { $rejected=$true }
+    Set-Variable -Name $case.Property -Scope Script -Value $old
+    if(-not $rejected){throw ('Unrelated Windows drive accepted: '+$case.Name)}
+    if($script:markerReads -ne 0){
+        throw ('Host Windows marker was accessed before drive ownership check: '+$case.Name)
+    }
+}
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
     def test_host_refuses_ambiguous_offline_windows_partitions(self):
         import shutil
         import subprocess
@@ -326,11 +417,20 @@ $ErrorActionPreference = 'Stop'
 $script:matches = @()
 function Get-Partition {
     [CmdletBinding()]
-    param([int]$DiskNumber)
+    param([int]$DiskNumber,[char]$DriveLetter)
+    if ($PSBoundParameters.ContainsKey('DriveLetter')) {
+        if ($DriveLetter -eq 'C') {
+            return [pscustomobject]@{DriveLetter='C';DiskNumber=42;PartitionNumber=1}
+        }
+        if ($DriveLetter -eq 'D') {
+            return [pscustomobject]@{DriveLetter='D';DiskNumber=42;PartitionNumber=2}
+        }
+        throw 'Unexpected drive letter.'
+    }
     if ($DiskNumber -ne 42) { throw 'Unexpected disk number.' }
     return @(
-        [pscustomobject]@{DriveLetter = 'C'},
-        [pscustomobject]@{DriveLetter = 'D'}
+        [pscustomobject]@{DriveLetter='C';DiskNumber=42;PartitionNumber=1},
+        [pscustomobject]@{DriveLetter='D';DiskNumber=42;PartitionNumber=2}
     )
 }
 function Test-Path {
@@ -403,8 +503,11 @@ $script:unsafeRelative = ''
 $script:examined = @()
 function Get-Partition {
     [CmdletBinding()]
-    param([int]$DiskNumber)
-    return [pscustomobject]@{DriveLetter = 'C'}
+    param([int]$DiskNumber,[char]$DriveLetter)
+    if ($PSBoundParameters.ContainsKey('DriveLetter') -and $DriveLetter -ne 'C') {
+        throw 'Unexpected drive letter.'
+    }
+    return [pscustomobject]@{DriveLetter='C';DiskNumber=42;PartitionNumber=1}
 }
 function Test-Path {
     [CmdletBinding()]

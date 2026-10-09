@@ -337,6 +337,19 @@ the Windows partition. Windows PowerShell 5.1/7 fixtures simulate these
 fail-closed cases without mounting any disk. It is not a guest integrity
 attestation or protection against concurrent storage identity races.
 
+The offline Windows SYSTEM-hive selector now verifies every candidate
+drive-letter mapping with an independent `Get-Partition -DriveLetter`
+query before reading any filesystem path. The selected partition must
+retain the same VHDX disk number, partition number and single-letter
+drive assignment; missing, ambiguous, reassigned and unqueryable
+mappings abort without inspecting a host/other-volume hive. The
+Windows root collection is named `$windowsRoots` rather than
+`$matches` to avoid colliding with PowerShell's case-insensitive
+automatic `$Matches` variable, which regex matching would overwrite.
+WinPS 5.1/PS7 mocks cover valid and invalid mappings, plus the
+existing multiple-hive and reparse-point scenarios. This does not
+eliminate concurrent drive-letter reassignment after the check.
+
 Before formatting new EFI or Windows partitions, the host now checks the
 returned `New-Partition` object against an independent
 `Get-Partition -DiskNumber -PartitionNumber` result. The expected VHDX

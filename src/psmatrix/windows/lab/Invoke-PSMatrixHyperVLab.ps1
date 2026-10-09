@@ -157,10 +157,29 @@ function Get-WindowsPartitionRoot([int]$DiskNumber) {
     # The mounted guest VHDX is untrusted. More than one partition with a
     # Windows SYSTEM hive is ambiguous; selecting the first could verify the
     # wrong volume and produce an invalid checkpoint acceptance.
-    $matches = New-Object 'System.Collections.Generic.List[string]'
+    $windowsRoots = New-Object 'System.Collections.Generic.List[string]'
     foreach ($partition in Get-Partition -DiskNumber $DiskNumber -ErrorAction Stop) {
         if ($partition.DriveLetter) {
-            $root = ([string]$partition.DriveLetter + ':\')
+            # A disk-scoped partition listing is not enough to trust its
+            # drive letter: re-query ownership before touching any hive path.
+            $letter = [string]$partition.DriveLetter
+            if ($letter -cnotmatch '^[A-Za-z]$' -or
+                $null -eq $partition.DiskNumber -or
+                $null -eq $partition.PartitionNumber -or
+                [long]$partition.DiskNumber -ne $DiskNumber -or
+                [long]$partition.PartitionNumber -lt 1) {
+                throw 'Guest Windows partition drive mapping is invalid.'
+            }
+            $byLetter = @(Get-Partition -DriveLetter $letter -ErrorAction Stop)
+            if ($byLetter.Count -ne 1 -or $null -eq $byLetter[0] -or
+                $null -eq $byLetter[0].DiskNumber -or
+                $null -eq $byLetter[0].PartitionNumber -or
+                [long]$byLetter[0].DiskNumber -ne $DiskNumber -or
+                [long]$byLetter[0].PartitionNumber -ne [long]$partition.PartitionNumber -or
+                ([string]$byLetter[0].DriveLetter) -ine $letter) {
+                throw 'Guest Windows partition drive letter does not belong to the expected VHDX disk.'
+            }
+            $root = ($letter.ToUpperInvariant() + ':\')
             if (Test-Path -LiteralPath (Join-Path $root 'Windows\System32\Config\SYSTEM')) {
                 # The SYSTEM hive marker is a selector for which offline disk
                 # the elevated host will trust. Do not follow redirected
@@ -181,17 +200,17 @@ function Get-WindowsPartitionRoot([int]$DiskNumber) {
                         throw 'Windows SYSTEM hive marker has unsafe or redirected path; refusing checkpoint.'
                     }
                 }
-                $matches.Add($root)
+                $windowsRoots.Add($root)
             }
         }
     }
-    if ($matches.Count -gt 1) {
+    if ($windowsRoots.Count -gt 1) {
         throw 'Multiple Windows partitions were identified; refusing checkpoint.'
     }
-    if ($matches.Count -eq 0) {
+    if ($windowsRoots.Count -eq 0) {
         throw 'Windows partition could not be identified.'
     }
-    return $matches[0]
+    return $windowsRoots[0]
 }
 function New-Unattend([string]$Path, [string]$ComputerName, [string]$Password) {
     $computer = Escape-Xml $ComputerName
