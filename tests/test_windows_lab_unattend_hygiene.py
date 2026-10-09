@@ -465,6 +465,72 @@ foreach ($target in @('Windows','Windows\System32','Windows\System32\Config','Wi
             )
             self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
 
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_iso_mount_requires_exactly_one_valid_drive_before_vhd_creation(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        self.assertLess(
+            host.index("Get-LabIsoVolumeRoot $iso"),
+            host.index("New-VHD -Path $output -Dynamic"),
+        )
+        head = host.index("function Get-LabIsoVolumeRoot(")
+        tail = host.index("function New-LabVhd(", head)
+        code = host[head:tail]
+        script = code + r"""
+$ErrorActionPreference = 'Stop'
+$script:volumeLetters = @()
+$script:queryFails = $false
+function Get-Volume {
+    [CmdletBinding()]
+    param([Parameter(ValueFromPipeline=$true)]$InputObject)
+    process {
+        if ($script:queryFails) { throw 'fixture ISO volume enumeration failed' }
+        foreach ($drive in @($script:volumeLetters)) {
+            [pscustomobject]@{DriveLetter = $drive}
+        }
+    }
+}
+foreach ($case in @(
+    [pscustomobject]@{Letters=@('D'); Expected='D:\'},
+    [pscustomobject]@{Letters=@('z'); Expected='Z:\'},
+    [pscustomobject]@{Letters=@(); Expected='invalid'},
+    [pscustomobject]@{Letters=@('D','E'); Expected='invalid'},
+    [pscustomobject]@{Letters=@($null); Expected='invalid'},
+    [pscustomobject]@{Letters=@(''); Expected='invalid'},
+    [pscustomobject]@{Letters=@('DD'); Expected='invalid'},
+    [pscustomobject]@{Letters=@('1'); Expected='invalid'}
+)) {
+    $script:volumeLetters = $case.Letters
+    $actual = ''
+    try { $actual = Get-LabIsoVolumeRoot ([pscustomobject]@{Object='mount'}) }
+    catch { $actual = $_.Exception.Message }
+    if ($case.Expected -ceq 'invalid') {
+        if ($actual -notmatch 'Windows ISO.*(volume|drive letter)') {
+            throw ('Unusable ISO volumes accepted: ' + $actual)
+        }
+    }
+    elseif ($actual -cne $case.Expected) {
+        throw ('Valid ISO root rejected: expected '+$case.Expected+' got '+$actual)
+    }
+}
+$script:queryFails = $true
+$rejected = $false
+try { Get-LabIsoVolumeRoot ([pscustomobject]@{Object='mount'}) | Out-Null }
+catch { $rejected = $true }
+if (-not $rejected) { throw 'Failed Storage volume query accepted.' }
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
     def test_host_reopens_shutdown_vhdx_and_fails_before_checkpoint(self):
         text = HOST.read_text(encoding="utf-8")
         self.assertIn("function Assert-NoGuestSetupAnswerFiles", text)

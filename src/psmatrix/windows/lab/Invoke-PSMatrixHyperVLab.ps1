@@ -354,6 +354,19 @@ function Assert-LabPlanArtifactsReady([object[]]$Images) {
     }
 }
 
+function Get-LabIsoVolumeRoot($MountedIso) {
+    # Storage can return no volume, multiple volumes, or a volume without an
+    # assigned letter. Never guess an ISO source root for elevated DISM.
+    $volumes = @($MountedIso | Get-Volume -ErrorAction Stop)
+    if ($volumes.Count -ne 1) {
+        throw 'Windows ISO must expose exactly one mounted volume.'
+    }
+    $letter = [string]$volumes[0].DriveLetter
+    if ($letter -cnotmatch '^[A-Za-z]$') {
+        throw 'Windows ISO volume drive letter is missing or invalid.'
+    }
+    return ($letter.ToUpperInvariant() + ':\')
+}
 function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $BootstrapArtifact) {
     Assert-Artifact $BootstrapArtifact 'Guest bootstrap script'
     Assert-Artifact $Image.source_iso 'Windows ISO'
@@ -384,8 +397,7 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         if ($null -eq $iso) {
             throw 'Windows source ISO mount returned no disk image object.'
         }
-        $isoVolume = $iso | Get-Volume
-        $isoRoot = ([string]$isoVolume.DriveLetter + ':\')
+        $isoRoot = Get-LabIsoVolumeRoot $iso
         $imageFile = Join-Path $isoRoot 'sources\install.wim'
         if (-not (Test-Path -LiteralPath $imageFile)) { $imageFile = Join-Path $isoRoot 'sources\install.esd' }
         if (-not (Test-Path -LiteralPath $imageFile)) { throw 'Windows install.wim or install.esd was not found.' }

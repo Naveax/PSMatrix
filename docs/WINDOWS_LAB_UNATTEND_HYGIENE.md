@@ -280,6 +280,15 @@ and verify the fail-closed third-image cases without mounting real media.
 This does not eliminate concurrent ISO attachment changes, nor replace
 real elevated Hyper-V acceptance.
 
+After mounting a Windows source ISO, the host now requires exactly one
+`Get-Volume` result with a single alphabetical drive letter before
+constructing its `sources\\install.wim`/`install.esd` path or creating the
+new VHDX. Zero/duplicate volume results, empty/malformed letters and
+Storage query failures abort within the existing ISO cleanup scope.
+PowerShell 5.1/7 fixture tests exercise the valid and invalid shapes
+without mounting images or modifying host volumes. This check narrows
+ISO source selection, not authenticity of the underlying ISO bytes.
+
 Failed guest bootstraps now also **attempt to remove staging credential and
 signing ZIPs plus plaintext Windows unattended answer files** before
 writing the `FAIL` bootstrap result. `Invoke-GuestBootstrapFailureCleanup`
