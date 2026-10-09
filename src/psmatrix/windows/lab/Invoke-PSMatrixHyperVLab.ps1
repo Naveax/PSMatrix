@@ -1258,7 +1258,23 @@ function Wait-FirstBoot([string]$VmName, [int]$TimeoutSeconds) {
         if ($observedRunning -and $vm.State -eq 'Off') { return }
         Start-Sleep -Seconds 5
     }
-    Stop-VM -Name $VmName -TurnOff -Force -ErrorAction SilentlyContinue
+    # Timeout is not proof that the guest was powered down. A best-effort
+    # Stop-VM can silently fail and leave unattended material in a live VM.
+    try {
+        Stop-VM -Name $VmName -TurnOff -Force -ErrorAction Stop
+    }
+    catch {
+        throw ('Guest bootstrap timeout stop failed: ' + $VmName)
+    }
+    try {
+        $afterStop = Get-VM -Name $VmName -ErrorAction Stop
+    }
+    catch {
+        throw ('Guest bootstrap timeout shutdown state unavailable: ' + $VmName)
+    }
+    if ($null -eq $afterStop -or [string]$afterStop.State -ne 'Off') {
+        throw ('Guest bootstrap VM still running or not Off after timeout stop: ' + $VmName)
+    }
     throw ('Guest bootstrap timed out: ' + $VmName)
 }
 

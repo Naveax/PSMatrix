@@ -297,6 +297,16 @@ boots, crashes before running the catch handler or loses filesystem
 access. The host still refuses any checkpoint unless it independently
 validates setup-file absence and restricted ACLs.
 
+On first-boot timeout, the Hyper-V host no longer suppresses a failed
+`Stop-VM` and assumes the worker VM is off. The timeout path requests a
+terminating-error power-off, then independently queries `Get-VM` and requires
+the resulting state to be `Off`. A failed stop, unreadable state, missing state
+or still-running guest is reported separately from a confirmed-power-off
+timeout. Disposable WinPS 5.1 and PowerShell 7 mock tests cover each case
+without creating or shutting down any real VM. This is best-effort shutdown
+verification, not secure cleanup of guest secrets or acceptance of a real
+elevated Hyper-V host.
+
 The host now validates the six **`safety` declarations in a generated
 Hyper-V provision plan** before any VHDX or VM creation. The Python
 plan producer includes `require_hyperv`, `require_administrator`,

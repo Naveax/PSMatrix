@@ -230,6 +230,88 @@ exit 0
                     result.returncode, 0, shell + ": " + result.stdout + result.stderr,
                 )
 
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_first_boot_timeout_confirms_vm_power_off_and_exposes_stop_failure(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        code = "function Wait-FirstBoot(" + host.split(
+            "function Wait-FirstBoot(", 1
+        )[1].split("\nAssert-Administrator", 1)[0]
+        script = code + r"""
+$ErrorActionPreference = 'Stop'
+$script:power = 'Running'
+$script:mode = 'ignored'
+$script:stops = 0
+$script:reads = 0
+function Get-VM {
+    [CmdletBinding()]
+    param([string]$Name)
+    $script:reads++
+    if ($script:mode -eq 'queryError') { Write-Error 'fixture state lookup failure' }
+    if ($script:mode -eq 'noState') { return [pscustomobject]@{State = $null} }
+    return [pscustomobject]@{State = $script:power}
+}
+function Stop-VM {
+    [CmdletBinding()]
+    param([string]$Name,[switch]$TurnOff,[switch]$Force)
+    $script:stops++
+    if ($script:mode -eq 'error') {
+        Write-Error 'fixture stop failure'
+        return
+    }
+    if ($script:mode -in @('success','queryError','noState')) { $script:power = 'Off' }
+}
+foreach ($mode in @('ignored','error','success','queryError','noState')) {
+    $script:mode = $mode
+    $script:power = 'Running'
+    $script:stops = 0
+    $script:reads = 0
+    $message = ''
+    try { Wait-FirstBoot -VmName 'fixture-vm' -TimeoutSeconds 0 }
+    catch { $message = $_.Exception.Message }
+    if ($script:stops -ne 1) { throw ('Timeout did not attempt stop: ' + $mode) }
+    if ($mode -eq 'ignored') {
+        if ($script:reads -eq 0 -or $message -notmatch 'still running|not off') {
+            throw 'Timeout accepted an unconfirmed VM shutdown.'
+        }
+    }
+    elseif ($mode -eq 'error') {
+        if ($message -notmatch 'stop failed') {
+            throw 'Timeout silently swallowed a failed Stop-VM.'
+        }
+    }
+    elseif ($mode -eq 'success') {
+        if ($script:reads -eq 0 -or $message -cne 'Guest bootstrap timed out: fixture-vm') {
+            throw 'Confirmed shutdown did not report ordinary timeout.'
+        }
+    }
+    elseif ($mode -eq 'queryError') {
+        if ($message -notmatch 'shutdown state unavailable') {
+            throw 'Timeout accepted an unreadable VM state.'
+        }
+    }
+    elseif ($mode -eq 'noState') {
+        if ($message -notmatch 'not Off') {
+            throw 'Timeout accepted a missing VM state.'
+        }
+    }
+}
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(
+                result.returncode, 0,
+                exe + ": " + result.stdout + result.stderr,
+            )
+
     def test_host_reopens_shutdown_vhdx_and_fails_before_checkpoint(self):
         text = HOST.read_text(encoding="utf-8")
         self.assertIn("function Assert-NoGuestSetupAnswerFiles", text)
