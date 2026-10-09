@@ -1698,21 +1698,31 @@ $Image = [pscustomobject]@{
 }
 $script:aclCalls = 0
 $script:copyCalls = 0
+$script:verifyCalls = 0
 function Copy-Item {
     param([string]$LiteralPath,[string]$Destination,[switch]$Force)
     $script:copyCalls++
+}
+function Assert-StagedLabArtifact {
+    param($SourceArtifact,[string]$Destination,[string]$Label)
+    $script:verifyCalls++
+    if ($script:aclCalls -ne 1 -or
+        $script:copyCalls -ne ($script:verifyCalls + 1)) {
+        throw 'Staged package was not verified directly after copy.'
+    }
 }
 function Set-RestrictedDirectoryAcl([string]$Path) {
     $script:aclCalls++
     if ($script:aclCalls -eq 1 -and $script:copyCalls -ne 0) {
         throw 'Copies happened before first ACL.'
     }
-    if ($script:aclCalls -eq 2 -and $script:copyCalls -ne 5) {
-        throw 'Staged files not copied by final ACL.'
+    if ($script:aclCalls -eq 2 -and
+        ($script:copyCalls -ne 5 -or $script:verifyCalls -ne 4)) {
+        throw 'Staged files not copied and verified by final ACL.'
     }
 }
 Invoke-Expression $section
-if ($script:aclCalls -ne 2 -or $script:copyCalls -ne 5) {
+if ($script:aclCalls -ne 2 -or $script:copyCalls -ne 5 -or $script:verifyCalls -ne 4) {
     throw 'Incorrect staging order.'
 }
 try {
@@ -1723,7 +1733,7 @@ try {
         throw
     }
 }
-if ($script:aclCalls -ne 2 -or $script:copyCalls -ne 5) {
+if ($script:aclCalls -ne 2 -or $script:copyCalls -ne 5 -or $script:verifyCalls -ne 4) {
     throw 'Existing target changed staging operations.'
 }
 exit 0
@@ -3371,6 +3381,130 @@ exit 0
                 result.returncode, 0,
                 executable + ": " + result.stdout + result.stderr,
             )
+
+    def test_host_rehashes_all_staged_artifacts_before_guest_boot(self):
+        host = HOST.read_text(encoding="utf-8")
+        self.assertIn("function Assert-StagedLabArtifact(", host)
+        helper = host.split("function Assert-StagedLabArtifact(", 1)[1].split(
+            "function Invoke-Checked(", 1
+        )[0]
+        for fragment in (
+            "Assert-Artifact $staged $Label",
+            "$SourceArtifact.sha256",
+            "$SourceArtifact.size",
+        ):
+            self.assertIn(fragment, helper)
+        stage = host.split("function New-LabVhd(", 1)[1].split(
+            "function Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        for field, filename in (
+            ("worker_package", "worker-package.zip"),
+            ("python_installer", "python-installer.exe"),
+            ("credential_bundle", "credential-bundle.zip"),
+            ("signing_bundle", "signing-bundle.zip"),
+        ):
+            copy_marker = (
+                "Copy-Item -LiteralPath ([string]$Image." + field + ".path)"
+            )
+            verify_marker = (
+                "Assert-StagedLabArtifact $Image." + field + " "
+                "(Join-Path $bootstrap '" + filename + "')"
+            )
+            self.assertIn(copy_marker, stage)
+            self.assertIn(verify_marker, stage)
+            self.assertLess(stage.index(copy_marker), stage.index(verify_marker))
+            self.assertLess(
+                stage.index(verify_marker),
+                stage.index("Set-RestrictedDirectoryAcl $bootstrap", stage.index(copy_marker)),
+            )
+        self.assertLess(stage.index("Assert-StagedLabArtifact $Image.signing_bundle"),
+                        stage.index("New-Unattend (Join-Path $panther"))
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_staged_package_hash_rejects_mutated_copy_and_junction(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        def quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-stage-digest-") as root:
+            for executable in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(executable):
+                    continue
+                case = Path(root) / executable.replace(".", "-")
+                case.mkdir()
+                script = r"""
+$ErrorActionPreference = 'Stop'
+$source = Get-Content -LiteralPath __HOST__ -Raw
+$a = $source.IndexOf('function Assert-SafeLabArtifactPath(')
+$b = $source.IndexOf('function Invoke-Checked(', $a)
+if ($a -lt 0 -or $b -le $a) { throw 'Stage integrity helper missing.' }
+Invoke-Expression $source.Substring($a, $b - $a)
+function Get-Sha256([string]$Path) {
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+$root = __ROOT__
+$sourcePath = Join-Path $root 'source.zip'
+$staged = Join-Path $root 'staged.zip'
+[IO.File]::WriteAllText($sourcePath, 'dummy test worker archive, no private data')
+$expected = [pscustomobject]@{
+    path = $sourcePath
+    sha256 = Get-Sha256 $sourcePath
+    size = (Get-Item -LiteralPath $sourcePath).Length
+}
+Assert-Artifact $expected 'Dummy source'
+Copy-Item -LiteralPath $sourcePath -Destination $staged
+Assert-StagedLabArtifact $expected $staged 'Staged worker package'
+[IO.File]::WriteAllText($sourcePath, 'MUTATED AFTER PRE-FLIGHT')
+Copy-Item -LiteralPath $sourcePath -Destination $staged -Force
+try {
+    Assert-StagedLabArtifact $expected $staged 'Staged worker package'
+    throw 'Mutated source copy passed staging verification.'
+} catch {
+    if ($_.Exception.Message -cne 'Staged worker package SHA-256 mismatch.') { throw }
+}
+[IO.File]::WriteAllText($staged, 'dummy test worker archive, no private data')
+$badSize = [pscustomobject]@{
+    path = $sourcePath
+    sha256 = $expected.sha256
+    size = $expected.size + 1
+}
+try {
+    Assert-StagedLabArtifact $badSize $staged 'Staged Python installer'
+    throw 'Incorrect staged artifact size passed.'
+} catch {
+    if ($_.Exception.Message -cne 'Staged Python installer size mismatch.') { throw }
+}
+$real = Join-Path $root 'real'
+$link = Join-Path $root 'redirected'
+New-Item -ItemType Directory -Path $real -ErrorAction Stop | Out-Null
+Copy-Item -LiteralPath $staged -Destination (Join-Path $real 'payload.zip')
+New-Item -ItemType Junction -Path $link -Target $real -ErrorAction Stop | Out-Null
+try {
+    try {
+        Assert-StagedLabArtifact $expected (Join-Path $link 'payload.zip') 'Staged signing bundle'
+        throw 'Junction-mediated staged content passed verification.'
+    } catch {
+        if ($_.Exception.Message -cne 'Windows lab artifact path contains a reparse point.') { throw }
+    }
+}
+finally {
+    & cmd.exe /d /c ('rmdir "' + $link + '"')
+    if ($LASTEXITCODE -ne 0) { throw 'Could not remove fixture junction safely.' }
+}
+exit 0
+""".replace("__HOST__", quote(HOST)).replace("__ROOT__", quote(case))
+                result = subprocess.run(
+                    [executable, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=50, check=False,
+                )
+                self.assertEqual(
+                    result.returncode, 0,
+                    executable + ": " + result.stdout + result.stderr,
+                )
 
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")

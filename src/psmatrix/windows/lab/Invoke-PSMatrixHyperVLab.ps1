@@ -47,6 +47,17 @@ function Assert-Artifact($Artifact, [string]$Label) {
     if ($actual -ne ([string]$Artifact.sha256).ToLowerInvariant()) { throw ($Label + ' SHA-256 mismatch.') }
     if ($Artifact.size -and (Get-Item -LiteralPath $path).Length -ne [int64]$Artifact.size) { throw ($Label + ' size mismatch.') }
 }
+function Assert-StagedLabArtifact($SourceArtifact, [string]$Destination, [string]$Label) {
+    # Recheck the actual bytes staged inside the offline Windows image,
+    # not just the earlier source-file hash. A source modified or swapped
+    # after Assert-Artifact must never reach first boot unverified.
+    $staged = [pscustomobject]@{
+        path = $Destination
+        sha256 = $SourceArtifact.sha256
+        size = $SourceArtifact.size
+    }
+    Assert-Artifact $staged $Label
+}
 function Invoke-Checked([string]$File, [string[]]$Arguments) {
     & $File @Arguments
     if ($LASTEXITCODE -ne 0) { throw ($File + ' failed with exit code ' + $LASTEXITCODE) }
@@ -271,9 +282,13 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce) {
         Set-RestrictedDirectoryAcl $bootstrap
         Copy-Item -LiteralPath $GuestBootstrap -Destination (Join-Path $bootstrap 'GuestBootstrap.ps1') -Force
         Copy-Item -LiteralPath ([string]$Image.worker_package.path) -Destination (Join-Path $bootstrap 'worker-package.zip') -Force
+        Assert-StagedLabArtifact $Image.worker_package (Join-Path $bootstrap 'worker-package.zip') 'Staged worker package'
         Copy-Item -LiteralPath ([string]$Image.python_installer.path) -Destination (Join-Path $bootstrap 'python-installer.exe') -Force
+        Assert-StagedLabArtifact $Image.python_installer (Join-Path $bootstrap 'python-installer.exe') 'Staged Python installer'
         Copy-Item -LiteralPath ([string]$Image.credential_bundle.path) -Destination (Join-Path $bootstrap 'credential-bundle.zip') -Force
+        Assert-StagedLabArtifact $Image.credential_bundle (Join-Path $bootstrap 'credential-bundle.zip') 'Staged credential bundle'
         Copy-Item -LiteralPath ([string]$Image.signing_bundle.path) -Destination (Join-Path $bootstrap 'signing-bundle.zip') -Force
+        Assert-StagedLabArtifact $Image.signing_bundle (Join-Path $bootstrap 'signing-bundle.zip') 'Staged signing bundle'
         [ordered]@{
             schema = 1; worker_id = [string]$Image.worker_id; expected_version = [string]$Image.expected_version
             computer_name = [string]$Image.computer_name; worker_port = [int]$Image.worker_port

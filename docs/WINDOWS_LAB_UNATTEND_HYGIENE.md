@@ -451,6 +451,29 @@ operator authorization signature. This is path-based containment,
 not a substitute for ACL isolation or protection against privileged
 concurrent filesystem changes.
 
+The VHDX builder now **verifies the bytes of all four copied guest
+packages after staging**, not only their source-media hashes before
+the `Copy-Item` calls. `Assert-StagedLabArtifact` uses the existing
+`Assert-Artifact` hash, optional exact-size and NTFS reparse-point
+checks against the actual offline guest destinations for the worker
+ZIP, Python installer, credential ZIP and signing ZIP. Each copied
+file is verified immediately before proceeding to the next; all four
+must pass before the restricted bootstrap ACLs are reasserted, the
+unattended administrator password is staged, or the VM first boots.
+This detects a source-file replacement between earlier full-plan or
+use-time hashing and the actual file copy. The earlier source preflight
+and use-time verification, pre-write bootstrap ACLs and post-staging
+ACL verification remain in place.
+
+WinPS5.1 and PowerShell 7 tests use disposable dummy packages to
+verify an unchanged staged copy, a deliberately modified source copied
+after a passing source hash, a wrong reported size and an actual NTFS
+junction in the staged destination path. No real credentials or signing
+material are used. The post-copy hash is **not** a cryptographic
+identity lock: a privileged actor replacing guest files after this
+check, or concurrently modifying the VHDX, still requires separate
+host hardening and genuine elevated offline acceptance.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted
