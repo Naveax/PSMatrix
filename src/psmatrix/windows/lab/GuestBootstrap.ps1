@@ -405,6 +405,16 @@ function Set-RestrictedDirectoryAcl([string]$Path) {
 }
 
 function Remove-GuestSetupAnswerFiles([string]$WindowsRoot = ($env:SystemDrive + '\')) {
+    # Refuse setup-cleanup ancestors that could redirect file removal outside
+    # the intended Windows tree. Both parents precede the Panther/Sysprep scans.
+    foreach ($relativeParent in @('Windows', 'Windows\System32')) {
+        $parentPath = Join-Path $WindowsRoot $relativeParent
+        $parentItem = Get-Item -LiteralPath $parentPath -Force -ErrorAction Stop
+        if ($null -eq $parentItem -or -not $parentItem.PSIsContainer -or
+            (($parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            throw 'Setup cleanup ancestor is an unsafe directory.'
+        }
+    }
     # A missing Panther directory is not proof that the setup secrets were removed.
     $panther = Join-Path $WindowsRoot 'Windows\Panther'
     if (-not (Test-Path -LiteralPath $panther -PathType Container)) {

@@ -297,6 +297,18 @@ boots, crashes before running the catch handler or loses filesystem
 access. The host still refuses any checkpoint unless it independently
 validates setup-file absence and restricted ACLs.
 
+The guest's setup-answer cleanup and the host's later offline setup scan now
+independently verify the `Windows` and `Windows\\System32` directory entries
+before traversing `Panther` or `Sysprep`. A redirected ancestor can appear
+after the host's initial golden-image preflight, so checking only each
+leaf search directory is insufficient. Non-directory or reparse-point
+ancestors are rejected without traversing them. Isolated Windows PowerShell
+5.1 / PowerShell 7 mocks show that both guest cleanup and the checkpoint
+gate refuse simulated redirected ancestors. These tests do not use real
+junctions, delete secret data, or constitute elevated Hyper-V acceptance.
+Concurrently replaced ancestors remain a separate race requiring controlled
+host and guest execution.
+
 On first-boot timeout, the Hyper-V host no longer suppresses a failed
 `Stop-VM` and assumes the worker VM is off. The timeout path requests a
 terminating-error power-off, then independently queries `Get-VM` and requires

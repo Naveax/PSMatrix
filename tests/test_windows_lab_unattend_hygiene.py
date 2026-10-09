@@ -4795,6 +4795,81 @@ exit 0
         self.assertIn("Windows Panther setup directory is missing.", guest)
         self.assertIn("Guest Windows Panther setup directory is missing; refusing checkpoint.", host)
 
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_guest_and_host_refuse_redirected_setup_ancestors_before_scan(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        def quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-setup-parent-fixture-") as root:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                case = Path(root) / exe.replace(".", "-")
+                (case / "Windows" / "Panther").mkdir(parents=True)
+                (case / "Windows" / "System32" / "Sysprep").mkdir(parents=True)
+                script = r"""
+$ErrorActionPreference = 'Stop'
+$guest = Get-Content -LiteralPath __GUEST__ -Raw
+$ga = $guest.IndexOf('function Remove-GuestSetupAnswerFiles(')
+$gb = $guest.IndexOf('function Remove-GuestBootstrapStagingSecrets(', $ga)
+$hostCode = Get-Content -LiteralPath __HOST__ -Raw
+$ha = $hostCode.IndexOf('function Assert-NoGuestSetupAnswerFiles(')
+$hb = $hostCode.IndexOf('function Assert-RestrictedGuestDirectoryAcl(', $ha)
+if ($ga -lt 0 -or $gb -le $ga -or $ha -lt 0 -or $hb -le $ha) {
+    throw 'Missing setup verification functions.'
+}
+Invoke-Expression $guest.Substring($ga, $gb - $ga)
+Invoke-Expression $hostCode.Substring($ha, $hb - $ha)
+$root = __ROOT__
+$script:unsafeAncestor = ''
+$script:ancestorVisits = 0
+function Get-Item {
+    [CmdletBinding()]
+    param([string]$LiteralPath, [switch]$Force)
+    if ([string]::Equals($LiteralPath, $script:unsafeAncestor,
+                         [StringComparison]::OrdinalIgnoreCase)) {
+        $script:ancestorVisits++
+        return [pscustomobject]@{
+            FullName = $LiteralPath
+            PSIsContainer = $true
+            Attributes = [IO.FileAttributes]::ReparsePoint
+        }
+    }
+    Microsoft.PowerShell.Management\Get-Item -LiteralPath $LiteralPath -Force -ErrorAction Stop
+}
+foreach ($relative in @('Windows', 'Windows\System32')) {
+    $script:unsafeAncestor = Join-Path $root $relative
+    foreach ($mode in @('guest', 'host')) {
+        $script:ancestorVisits = 0
+        $rejected = $false
+        try {
+            if ($mode -eq 'guest') { Remove-GuestSetupAnswerFiles -WindowsRoot $root }
+            else { Assert-NoGuestSetupAnswerFiles -WindowsRoot $root }
+        }
+        catch { $rejected = $true }
+        if (-not $rejected -or $script:ancestorVisits -eq 0) {
+            throw ('Setup scan accepted redirected ' + $relative + ' in ' + $mode)
+        }
+    }
+}
+"""
+                script = script.replace("__GUEST__", quote(GUEST)).replace(
+                    "__HOST__", quote(HOST)
+                ).replace("__ROOT__", quote(case))
+                result = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=40, check=False,
+                )
+                self.assertEqual(
+                    result.returncode, 0,
+                    exe + ": " + result.stdout + result.stderr,
+                )
+
     def test_directory_reparse_rejected_without_recursive_traversal(self):
         for path in (HOST, GUEST):
             with self.subTest(path=path):

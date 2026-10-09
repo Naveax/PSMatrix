@@ -453,6 +453,17 @@ exit /b %ERRORLEVEL%
     return $output
 }
 function Assert-NoGuestSetupAnswerFiles([string]$WindowsRoot) {
+    # Re-check the guest Windows ancestors after first boot. The guest may
+    # have changed its filesystem since the host's initial VHDX staging.
+    # A redirected parent must not lead this elevated offline scan elsewhere.
+    foreach ($relativeParent in @('Windows', 'Windows\System32')) {
+        $parentPath = Join-Path $WindowsRoot $relativeParent
+        $parentItem = Get-Item -LiteralPath $parentPath -Force -ErrorAction Stop
+        if ($null -eq $parentItem -or -not $parentItem.PSIsContainer -or
+            (($parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            throw 'Guest setup ancestor is an unsafe directory; refusing checkpoint.'
+        }
+    }
     # A missing Panther directory must not yield a false-clean checkpoint.
     $panther = Join-Path $WindowsRoot 'Windows\Panther'
     if (-not (Test-Path -LiteralPath $panther -PathType Container)) {
