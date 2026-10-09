@@ -1853,6 +1853,120 @@ exit 0
                 executable + ": " + run.stdout + run.stderr,
             )
 
+    def test_host_preflights_all_artifact_hashes_before_first_vm(self):
+        host = HOST.read_text(encoding="utf-8")
+        self.assertIn("function Assert-LabPlanArtifactsReady(", host)
+        section = host.split("function Assert-LabPlanArtifactsReady(", 1)[1].split(
+            "function New-LabVhd(", 1
+        )[0]
+        for fragment in (
+            "Assert-Artifact $image.source_iso 'Windows ISO'",
+            "Assert-Artifact $image.worker_package 'Worker package'",
+            "Assert-Artifact $image.python_installer 'Python installer'",
+            "Assert-Artifact $image.credential_bundle 'Credential bundle'",
+            "Assert-Artifact $image.signing_bundle 'Signing bundle'",
+            "if ($image.wmf_package)",
+            "Assert-Artifact $image.wmf_package 'WMF package'",
+        ):
+            self.assertIn(fragment, section)
+        start = host.index("Assert-LabPlanArtifactsReady $planValue.images")
+        self.assertLess(start, host.index("$results = @()"))
+        self.assertLess(start, host.index("New-LabVhd $image"))
+        new_lab = host.split("function New-LabVhd(", 1)[1].split(
+            "function Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        self.assertIn("Assert-Artifact $Image.credential_bundle 'Credential bundle'", new_lab)
+        self.assertIn("Assert-Artifact $Image.signing_bundle 'Signing bundle'", new_lab)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_preflights_third_guest_media_hash_before_vm_side_effects(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        def quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-all-guest-media-") as root:
+            for shell in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(shell):
+                    continue
+                temp_root = Path(root) / shell.replace(".", "-")
+                temp_root.mkdir()
+                script = """
+$ErrorActionPreference = 'Stop'
+$raw = Get-Content -LiteralPath __HOST__ -Raw
+$start = $raw.IndexOf('function Assert-LabPlanArtifactsReady(')
+$end = $raw.IndexOf('function New-LabVhd(', $start)
+if ($start -lt 0 -or $end -le $start) { throw 'Missing media preflight.' }
+Invoke-Expression $raw.Substring($start, $end - $start)
+$root = __ROOT__
+$artifactStart = $raw.IndexOf('function Assert-Artifact(')
+$artifactEnd = $raw.IndexOf('function Invoke-Checked(', $artifactStart)
+if ($artifactStart -lt 0 -or $artifactEnd -le $artifactStart) { throw 'Original hash guard is missing.' }
+function Get-Sha256([string]$Path) {
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+Invoke-Expression $raw.Substring($artifactStart, $artifactEnd - $artifactStart)
+$artifacts = @()
+foreach ($i in 1..3) {
+    $path = Join-Path $root ($i.ToString() + '.dat')
+    [IO.File]::WriteAllText($path, ('dummy media input ' + $i))
+    $artifacts += [pscustomobject]@{
+        path = $path
+        sha256 = Get-Sha256 $path
+        size = (Get-Item -LiteralPath $path).Length
+    }
+}
+$images = @()
+foreach ($i in 0..2) {
+    $images += [pscustomobject]@{
+        source_iso = $artifacts[$i]
+        worker_package = $artifacts[$i]
+        python_installer = $artifacts[$i]
+        credential_bundle = $artifacts[$i]
+        signing_bundle = $artifacts[$i]
+        wmf_package = $null
+    }
+}
+$images[1].wmf_package = $artifacts[1]
+Assert-LabPlanArtifactsReady $images
+$originalSigning = $images[2].signing_bundle
+$images[2].signing_bundle = [pscustomobject]@{
+    path = $artifacts[2].path
+    sha256 = ('0' * 64)
+}
+try {
+    Assert-LabPlanArtifactsReady $images
+    throw 'Corrupt third-image signing hash accepted.'
+} catch {
+    if ($_.Exception.Message -cne 'Signing bundle SHA-256 mismatch.') { throw }
+}
+$images[2].signing_bundle = $originalSigning
+$originalPython = $images[2].python_installer
+$images[2].python_installer = [pscustomobject]@{
+    path = (Join-Path $root 'missing-third-installer.dat')
+    sha256 = $artifacts[2].sha256
+}
+try {
+    Assert-LabPlanArtifactsReady $images
+    throw 'Missing third-image Python installer accepted.'
+} catch {
+    if (-not $_.Exception.Message.StartsWith('Python installer not found:')) { throw }
+}
+$images[2].python_installer = $originalPython
+Assert-LabPlanArtifactsReady $images
+exit 0
+""".replace("__HOST__", quote(HOST)).replace("__ROOT__", quote(temp_root))
+                run = subprocess.run(
+                    [shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=45, check=False,
+                )
+                self.assertEqual(
+                    run.returncode, 0, shell + ": " + run.stdout + run.stderr,
+                )
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)

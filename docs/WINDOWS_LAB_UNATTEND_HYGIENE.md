@@ -207,6 +207,20 @@ provider failures. They do **not** exercise a real elevated Hyper-V host;
 changes between inventory checks remain possible and require acceptance
 testing.
 
+Before the first guest is provisioned, the host now validates **every
+artifact for all three planned VM images** (Windows ISO, worker ZIP,
+Python installer, credential/signing bundles, and each applicable offline
+WMF package) using the existing file-presence, SHA-256 and optional
+file-size checks. This ensures a missing or corrupt third-image input
+fails before the first VM is created, rather than after earlier guests
+were provisioned. The existing `New-LabVhd` checks remain in place so
+files are checked again near actual consumption. Windows PowerShell 5.1
+and PowerShell 7 tests execute the real artifact verification function
+on temporary, non-sensitive dummy files, including an incorrect third
+signing hash and a missing third Python installer. Up-front hashing
+adds disk I/O and does not prevent post-verification content races;
+real elevated Hyper-V acceptance remains pending.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted

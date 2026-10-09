@@ -174,6 +174,20 @@ function Close-LabBuildMedia([string]$VhdPath, [string]$IsoPath, [bool]$WasMount
         }
     }
 }
+function Assert-LabPlanArtifactsReady([object[]]$Images) {
+    # Validate every media/package input before creating the first guest.
+    # A missing or corrupt third image's input must not leave earlier VMs
+    # partially provisioned. New-LabVhd re-verifies at use time.
+    foreach ($image in $Images) {
+        Assert-Artifact $image.source_iso 'Windows ISO'
+        Assert-Artifact $image.worker_package 'Worker package'
+        Assert-Artifact $image.python_installer 'Python installer'
+        Assert-Artifact $image.credential_bundle 'Credential bundle'
+        Assert-Artifact $image.signing_bundle 'Signing bundle'
+        if ($image.wmf_package) { Assert-Artifact $image.wmf_package 'WMF package' }
+    }
+}
+
 function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce) {
     Assert-Artifact $Image.source_iso 'Windows ISO'
     Assert-Artifact $Image.worker_package 'Worker package'
@@ -740,6 +754,7 @@ foreach ($requiredRuntime in $requiredRuntimes) {
 Assert-LabPlanGuestIdentities $planValue.images
 Assert-LabPlanMachineAndOutputPaths $planValue.images
 Assert-LabHyperVTargetsReady $planValue.images
+Assert-LabPlanArtifactsReady $planValue.images
 $results = @()
 foreach ($image in $planValue.images) {
     $vmName = [string]$image.image_id
