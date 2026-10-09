@@ -158,6 +158,18 @@ detects collisions in the resulting names. These are preflight guards,
 not proof against filesystem aliasing through pre-existing junctions or
 a real elevated Hyper-V installation.
 
+The offline host now locks the **guest Bootstrap staging directory's
+SYSTEM/Administrators ACL before copying** the worker payload, credential and
+signing archives into a newly built VHDX. It reasserts recursive ACLs after
+writing `bootstrap-config.json`, instead of waiting until after the
+unattend answer file is written. A pre-existing Bootstrap staging
+destination (including a junction or interrupted build remnant) is rejected
+without overwrite. Non-elevated WinPS 5.1/PS7 regression tests verify the
+first ACL precedes the five copy operations, the second follows staging, and
+a second attempt does not modify the destination. The ACL operation is
+stubbed in those tests; actual elevated offline NTFS ACL enforcement and
+guest boot functionality still require Hyper-V acceptance.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted

@@ -1497,6 +1497,102 @@ exit 0
             )
             self.assertEqual(proc.returncode, 0, exe + ": " + proc.stdout + proc.stderr)
 
+    def test_host_locks_staging_acl_before_copying_guest_secrets(self):
+        host = HOST.read_text(encoding="utf-8")
+        begin = host.index("        $bootstrap = Join-Path $windowsRoot 'ProgramData\\PSMatrix\\Bootstrap'")
+        stop = host.index("        $setupDir = Join-Path $windowsRoot 'Windows\\Setup\\Scripts'", begin)
+        staging = host[begin:stop]
+        for required in (
+            "Guest bootstrap staging directory already exists; refusing overwrite.",
+            "Set-RestrictedDirectoryAcl $bootstrap",
+            "Copy-Item -LiteralPath ([string]$Image.credential_bundle.path)",
+            "Copy-Item -LiteralPath ([string]$Image.signing_bundle.path)",
+        ):
+            self.assertIn(required, staging)
+        self.assertEqual(staging.count("Set-RestrictedDirectoryAcl $bootstrap"), 2)
+        first_acl = staging.index("Set-RestrictedDirectoryAcl $bootstrap")
+        second_acl = staging.index("Set-RestrictedDirectoryAcl $bootstrap", first_acl + 1)
+        credential = staging.index("Copy-Item -LiteralPath ([string]$Image.credential_bundle.path)")
+        signing = staging.index("Copy-Item -LiteralPath ([string]$Image.signing_bundle.path)")
+        creation = staging.index("New-Item -ItemType Directory -Path $bootstrap")
+        self.assertLess(creation, first_acl)
+        self.assertLess(first_acl, credential)
+        self.assertLess(first_acl, signing)
+        self.assertLess(credential, second_acl)
+        self.assertLess(signing, second_acl)
+        self.assertNotIn("New-Item -ItemType Directory -Path $bootstrap -Force", staging)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_staging_dynamic_acl_order_and_existing_target(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        def q(value):
+            return "'" + str(value).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-stage-fixture-") as root:
+            for shell in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(shell):
+                    continue
+                location = Path(root) / shell.replace(".", "-")
+                (location / "ProgramData" / "PSMatrix").mkdir(parents=True)
+                script = """
+$ErrorActionPreference = 'Stop'
+$src = Get-Content -LiteralPath __SOURCE__ -Raw
+$a = $src.IndexOf('        $bootstrap = Join-Path $windowsRoot')
+$b = $src.IndexOf('        $setupDir = Join-Path $windowsRoot', $a)
+if ($a -lt 0 -or $b -le $a) { throw 'Staging block missing.' }
+$section = $src.Substring($a, $b - $a)
+$windowsRoot = __MOUNT__
+$GuestBootstrap = 'mock-script.ps1'
+$BootstrapNonce = ('b' * 64)
+$Image = [pscustomobject]@{
+    worker_id='test-worker'; expected_version='5.1'; computer_name='TEST-PS51'; worker_port=9443
+    worker_package=[pscustomobject]@{path='worker.zip'}
+    python_installer=[pscustomobject]@{path='python.exe'}
+    credential_bundle=[pscustomobject]@{path='cred.zip'}
+    signing_bundle=[pscustomobject]@{path='sign.zip'}
+}
+$script:aclCalls = 0
+$script:copyCalls = 0
+function Copy-Item {
+    param([string]$LiteralPath,[string]$Destination,[switch]$Force)
+    $script:copyCalls++
+}
+function Set-RestrictedDirectoryAcl([string]$Path) {
+    $script:aclCalls++
+    if ($script:aclCalls -eq 1 -and $script:copyCalls -ne 0) {
+        throw 'Copies happened before first ACL.'
+    }
+    if ($script:aclCalls -eq 2 -and $script:copyCalls -ne 5) {
+        throw 'Staged files not copied by final ACL.'
+    }
+}
+Invoke-Expression $section
+if ($script:aclCalls -ne 2 -or $script:copyCalls -ne 5) {
+    throw 'Incorrect staging order.'
+}
+try {
+    Invoke-Expression $section
+    throw 'Existing target was overwritten.'
+} catch {
+    if ($_.Exception.Message -ne 'Guest bootstrap staging directory already exists; refusing overwrite.') {
+        throw
+    }
+}
+if ($script:aclCalls -ne 2 -or $script:copyCalls -ne 5) {
+    throw 'Existing target changed staging operations.'
+}
+exit 0
+""".replace("__SOURCE__", q(HOST)).replace("__MOUNT__", q(location))
+                result = subprocess.run(
+                    [shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=35, check=False,
+                )
+                self.assertEqual(result.returncode, 0, shell + ": " + result.stdout + result.stderr)
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)
@@ -1666,11 +1762,13 @@ exit 0
         write = text.index("New-Unattend (Join-Path $panther 'Unattend.xml')")
         clear_ref = text.index("$password = $null", write)
         clear_env = text.index("[Environment]::SetEnvironmentVariable($secretName,$null,'Process')", write)
-        acl = text.index("Set-RestrictedDirectoryAcl $bootstrap", write)
+        first_acl = text.index("Set-RestrictedDirectoryAcl $bootstrap")
+        final_acl = text.index("Set-RestrictedDirectoryAcl $bootstrap", first_acl + 1)
+        self.assertLess(first_acl, final_acl)
+        self.assertLess(final_acl, read)
         self.assertLess(read, write)
         self.assertLess(write, clear_ref)
         self.assertLess(clear_ref, clear_env)
-        self.assertLess(clear_env, acl)
         self.assertIn("$secret = $null", text)
         self.assertIn("$xml = $null", text)
 

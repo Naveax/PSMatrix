@@ -223,7 +223,16 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce) {
         }
         Invoke-Checked (Join-Path $windowsRoot 'Windows\System32\bcdboot.exe') @((Join-Path $windowsRoot 'Windows'),('/s'),$efiRoot,'/f','UEFI')
         $bootstrap = Join-Path $windowsRoot 'ProgramData\PSMatrix\Bootstrap'
-        New-Item -ItemType Directory -Path $bootstrap -Force | Out-Null
+        # A golden image must not provide a preexisting staging tree, which
+        # could be a junction or contain files from an interrupted build.
+        $existingBootstrap = Get-Item -LiteralPath $bootstrap -Force -ErrorAction SilentlyContinue
+        if ($null -ne $existingBootstrap -or (Test-Path -LiteralPath $bootstrap)) {
+            throw 'Guest bootstrap staging directory already exists; refusing overwrite.'
+        }
+        New-Item -ItemType Directory -Path $bootstrap -ErrorAction Stop | Out-Null
+        # Restrict the parent ACL before copying credential and signing ZIPs;
+        # otherwise they could temporarily inherit broad guest permissions.
+        Set-RestrictedDirectoryAcl $bootstrap
         Copy-Item -LiteralPath $GuestBootstrap -Destination (Join-Path $bootstrap 'GuestBootstrap.ps1') -Force
         Copy-Item -LiteralPath ([string]$Image.worker_package.path) -Destination (Join-Path $bootstrap 'worker-package.zip') -Force
         Copy-Item -LiteralPath ([string]$Image.python_installer.path) -Destination (Join-Path $bootstrap 'python-installer.exe') -Force
@@ -234,6 +243,9 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce) {
             computer_name = [string]$Image.computer_name; worker_port = [int]$Image.worker_port
             bootstrap_nonce = $BootstrapNonce
         } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $bootstrap 'bootstrap-config.json') -Encoding UTF8
+        # Reassert exact ACLs on the newly created files immediately after
+        # staging, before writing Windows setup material elsewhere.
+        Set-RestrictedDirectoryAcl $bootstrap
         $setupDir = Join-Path $windowsRoot 'Windows\Setup\Scripts'
         New-Item -ItemType Directory -Path $setupDir -Force | Out-Null
         '@echo off
@@ -252,7 +264,6 @@ exit /b %ERRORLEVEL%
             $password = $null
             [Environment]::SetEnvironmentVariable($secretName,$null,'Process')
         }
-        Set-RestrictedDirectoryAcl $bootstrap
     }
     finally {
         Close-LabBuildMedia -VhdPath $output -IsoPath $isoPath -WasMounted ([bool]$vhdMounted)
