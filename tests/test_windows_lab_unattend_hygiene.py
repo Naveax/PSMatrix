@@ -470,6 +470,70 @@ foreach ($target in @('Windows','Windows\System32','Windows\System32\Config','Wi
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_guest_partition_letter_collision_rejected_before_windows_format(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        roots_start = host.index("function Get-LabPartitionRoots(")
+        roots_end = host.index("\nfunction Assert-NewLabVhdDiskIdentity(", roots_start)
+        roots = host[roots_start:roots_end]
+        section_start = host.index(
+            "$windows = New-Partition -DiskNumber $diskNumber -UseMaximumSize"
+        )
+        final_line = ("Format-Volume -Partition $windows -FileSystem NTFS "
+                      "-NewFileSystemLabel 'Windows' -Confirm:$false -ErrorAction Stop | Out-Null")
+        section_end = host.index(final_line, section_start) + len(final_line)
+        section = host[section_start:section_end]
+        self.assertLess(
+            section.index("$partitionRoots = Get-LabPartitionRoots $windows $efi"),
+            section.index("Format-Volume -Partition $windows -FileSystem NTFS"),
+        )
+        script = roots + r"""
+$ErrorActionPreference='Stop'
+$diskNumber=42
+$script:formatCalls=0
+$script:windowsLetter='F'
+function New-Partition {
+    [CmdletBinding()]
+    param([int]$DiskNumber,[switch]$UseMaximumSize,[switch]$AssignDriveLetter)
+    return [pscustomobject]@{DiskNumber=$DiskNumber;PartitionNumber=3;DriveLetter=$script:windowsLetter}
+}
+function Assert-LabCreatedPartition { param($DiskNumber,$Partition,$ExpectedGptType,$Label) }
+function Format-Volume {
+    [CmdletBinding(SupportsShouldProcess=$true)]
+    param($Partition,[string]$FileSystem,[string]$NewFileSystemLabel)
+    $script:formatCalls++
+}
+function Invoke-Case([string]$EfiLetter) {
+    $efi = [pscustomobject]@{DriveLetter=$EfiLetter}
+    $windows = $null
+""" + "\n" + section + r"""
+    return $partitionRoots
+}
+$failed = $false
+try { Invoke-Case 'f' | Out-Null } catch { $failed = $true }
+if (-not $failed) { throw 'Overlapping guest Windows/EFI letters accepted.' }
+if ($script:formatCalls -ne 0) {
+    throw 'Guest Windows partition was formatted before letter collision rejection.'
+}
+$script:formatCalls=0
+$roots = Invoke-Case 'E'
+if ($script:formatCalls -ne 1 -or $roots.WindowsRoot -cne 'F:\' -or $roots.EfiRoot -cne 'E:') {
+    throw 'Valid distinct partition roots were not formatted exactly once.'
+}
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
     def test_new_lab_vhd_pre_mount_identity_requires_expected_dynamic_image(self):
         import shutil
         import subprocess
