@@ -3275,6 +3275,103 @@ exit 0
                 result.returncode, 0, shell + ": " + result.stdout + result.stderr,
             )
 
+    def test_host_confines_all_vhdx_outputs_to_plan_lab_root_before_provisioning(self):
+        host = HOST.read_text(encoding="utf-8")
+        self.assertIn("function Assert-LabPlanOutputRoot(", host)
+        guard = host.split("function Assert-LabPlanOutputRoot(", 1)[1].split(
+            "function Wait-FirstBoot(", 1
+        )[0]
+        for fragment in (
+            "Windows lab plan lab_root is invalid.",
+            "Windows lab plan VHDX output escapes lab_root.",
+            "[IO.Path]::GetFullPath(",
+            "[StringComparison]::OrdinalIgnoreCase",
+            "TrimEnd(",
+            "StartsWith($prefix,",
+        ):
+            self.assertIn(fragment, guard)
+        check = host.index("Assert-LabPlanOutputRoot $planValue.lab_root $planValue.images")
+        self.assertLess(check, host.index("Assert-LabPlanMachineAndOutputPaths $planValue.images"))
+        self.assertLess(check, host.index("$results = @()"))
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_lab_root_dynamic_rejects_siblings_traversal_and_other_drives(self):
+        import shutil
+        import subprocess
+
+        host_literal = "'" + str(HOST).replace("'", "''") + "'"
+        script = r"""
+$ErrorActionPreference = 'Stop'
+$source = Get-Content -LiteralPath __HOST__ -Raw
+$a = $source.IndexOf('function Assert-LabPlanOutputRoot(')
+$b = $source.IndexOf('function Wait-FirstBoot(', $a)
+if ($a -lt 0 -or $b -le $a) { throw 'Output root guard missing.' }
+Invoke-Expression $source.Substring($a, $b - $a)
+function Get-Plan {
+    return @(
+        [pscustomobject]@{output_vhdx='C:\PSMatrix Lab\Images\winps40.vhdx'},
+        [pscustomobject]@{output_vhdx='c:\psmatrix lab\Images\sub\..\winps50.vhdx'},
+        [pscustomobject]@{output_vhdx='C:\PSMatrix Lab\Images\winps51.vhdx'}
+    )
+}
+function Assert-Rejected([string]$Root, [object[]]$Images, [string]$Expected) {
+    try {
+        Assert-LabPlanOutputRoot $Root $Images
+        throw ('Unexpectedly accepted root=' + $Root)
+    }
+    catch {
+        if ($_.Exception.Message -cne $Expected) {
+            throw ('Unexpected failure for root ' + $Root + ': ' + $_.Exception.Message)
+        }
+    }
+}
+Assert-LabPlanOutputRoot 'C:\PSMatrix Lab' (Get-Plan)
+Assert-LabPlanOutputRoot 'c:\psmatrix lab\' (Get-Plan)
+$uncImages = @(
+    [pscustomobject]@{output_vhdx='\\server\share\Lab\Images\one.vhdx'}
+)
+Assert-LabPlanOutputRoot '\\server\share\Lab' $uncImages
+$uncImages[0].output_vhdx='\\server\share\Lab-Other\outside.vhdx'
+Assert-Rejected '\\server\share\Lab' $uncImages 'Windows lab plan VHDX output escapes lab_root.'
+$uncImages[0].output_vhdx='\\server\share\Lab\..\Windows\outside.vhdx'
+Assert-Rejected '\\server\share\Lab' $uncImages 'Windows lab plan VHDX output escapes lab_root.'
+foreach ($root in @($null,'','   ','C:relative','relative','C:\','D:\','\\server\share\','\\?\C:\PSMatrix Lab','\\.\C:\PSMatrix Lab')) {
+    Assert-Rejected $root (Get-Plan) 'Windows lab plan lab_root is invalid.'
+}
+foreach ($output in @(
+    'C:\PSMatrix Lab-Other\Images\third.vhdx',
+    'C:\PSMatrix Lab\..\Windows\third.vhdx',
+    'D:\PSMatrix Lab\Images\third.vhdx',
+    'C:PSMatrix Lab\Images\third.vhdx',
+    'relative\third.vhdx',
+    '\\server\share\Lab\third.vhdx',
+    '\\?\C:\PSMatrix Lab\Images\third.vhdx',
+    '\\.\C:\PSMatrix Lab\Images\third.vhdx',
+    'C:\PSMatrix Lab',
+    'C:\'
+)) {
+    $images = Get-Plan
+    $images[2].output_vhdx = $output
+    Assert-Rejected 'C:\PSMatrix Lab' $images 'Windows lab plan VHDX output escapes lab_root.'
+}
+$images = Get-Plan
+$images[2].output_vhdx = $null
+Assert-Rejected 'C:\PSMatrix Lab' $images 'Windows lab plan VHDX output escapes lab_root.'
+exit 0
+""".replace("__HOST__", host_literal)
+        for executable in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(executable):
+                continue
+            result = subprocess.run(
+                [executable, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=45, check=False,
+            )
+            self.assertEqual(
+                result.returncode, 0,
+                executable + ": " + result.stdout + result.stderr,
+            )
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)

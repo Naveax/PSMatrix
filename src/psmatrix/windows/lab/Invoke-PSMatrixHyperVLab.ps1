@@ -1056,6 +1056,50 @@ function Assert-LabPlanCheckpointNames([object[]]$Images) {
     }
 }
 
+function Assert-LabPlanOutputRoot([string]$LabRoot, [object[]]$Images) {
+    # The declared lab_root must actually bound all planned disk writes.
+    # Comparing normalized directories + a separator prevents sibling
+    # prefix collisions (C:\Lab vs C:\Lab-other) and .. path traversal.
+    if ([string]::IsNullOrWhiteSpace($LabRoot) -or
+        $LabRoot.StartsWith('\\?\') -or $LabRoot.StartsWith('\\.\') -or
+        $LabRoot -cnotmatch '^(?:[A-Za-z]:\\|\\\\[^\\]+\\[^\\]+\\)') {
+        throw 'Windows lab plan lab_root is invalid.'
+    }
+    try {
+        $root = [IO.Path]::GetFullPath($LabRoot).TrimEnd([char[]]@('\','/'))
+        $volume = [IO.Path]::GetPathRoot($root)
+    }
+    catch {
+        throw 'Windows lab plan lab_root is invalid.'
+    }
+    if ([string]::IsNullOrEmpty($root) -or
+        [string]::IsNullOrEmpty($volume) -or
+        [string]::Equals($root, $volume.TrimEnd([char[]]@('\','/')),
+            [StringComparison]::OrdinalIgnoreCase)) {
+        # A drive/share root gives no meaningful output confinement.
+        throw 'Windows lab plan lab_root is invalid.'
+    }
+    $prefix = $root + '\'
+    foreach ($image in $Images) {
+        if ($image.output_vhdx -isnot [string] -or
+            [string]::IsNullOrWhiteSpace($image.output_vhdx) -or
+            ([string]$image.output_vhdx).StartsWith('\\?\') -or
+            ([string]$image.output_vhdx).StartsWith('\\.\') -or
+            [string]$image.output_vhdx -cnotmatch '^(?:[A-Za-z]:\\|\\\\[^\\]+\\[^\\]+\\)') {
+            throw 'Windows lab plan VHDX output escapes lab_root.'
+        }
+        try {
+            $output = [IO.Path]::GetFullPath([string]$image.output_vhdx)
+        }
+        catch {
+            throw 'Windows lab plan VHDX output escapes lab_root.'
+        }
+        if (-not $output.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Windows lab plan VHDX output escapes lab_root.'
+        }
+    }
+}
+
 function Wait-FirstBoot([string]$VmName, [int]$TimeoutSeconds) {
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     $observedRunning = $false
@@ -1093,6 +1137,7 @@ foreach ($requiredRuntime in $requiredRuntimes) {
     }
 }
 Assert-LabPlanGuestIdentities $planValue.images
+Assert-LabPlanOutputRoot $planValue.lab_root $planValue.images
 Assert-LabPlanMachineAndOutputPaths $planValue.images
 Assert-LabHyperVTargetsReady $planValue.images
 Assert-LabPlanArtifactsReady $planValue.images

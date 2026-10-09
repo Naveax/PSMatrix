@@ -427,6 +427,30 @@ selection are unchanged. Isolated WinPS5.1 and PS7 tests exercise
 accepted name boundaries and malformed third-image names without
 creating or modifying Hyper-V VMs.
 
+The host now enforces the manifest's `lab_root` as a **VHDX
+output boundary**, rather than merely carrying the declaration into
+the plan. `Assert-LabPlanOutputRoot` runs for all three guests before
+any VHDX/VM creation, requiring an absolute, non-volume-root Windows
+directory and checking that each canonical `output_vhdx` path lies
+strictly beneath it. Case-insensitive comparison uses the normalized
+root **plus a directory separator**, rejecting sibling prefix collisions
+(e.g. `C:\Lab` versus `C:\Lab-other`), `.. ` traversal, another
+drive/share, relative paths and `\\?\` / `\\.\` device-namespace
+paths. Genuine UNC share subdirectories remain supported, while a
+bare UNC share root is rejected. Existing per-output VHDX extension,
+absence and ancestor reparse-point checks are still enforced. Dynamic
+WinPS5.1/PowerShell 7 tests use dummy paths, including valid case
+variants and a UNC root, and never create an actual VHDX.
+
+**Compatibility:** an older operator manifest that deliberately puts
+`output_vhdx` outside its declared `hyperv_host.lab_root` now fails
+closed. Align the manifest's root with the actual intended output
+directory before generating a new plan. The original plan's
+`plan_sha256` is still an unkeyed self-consistency digest, not an
+operator authorization signature. This is path-based containment,
+not a substitute for ACL isolation or protection against privileged
+concurrent filesystem changes.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted
