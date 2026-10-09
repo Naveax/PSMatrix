@@ -1062,6 +1062,7 @@ function Read-BootstrapResult([string]$VhdPath, [string]$ExpectedBootstrapNonce)
         # Inspect the real state and recover any partial attachment before
         # returning to the checkpoint path. A failed query is fatal.
         $vhdState = Get-VHD -Path $VhdPath -ErrorAction Stop
+        Assert-LabCleanupVhdIdentity $VhdPath $vhdState
         if ($null -eq $vhdState -or $vhdState.Attached -isnot [bool]) {
             throw 'Guest VHDX cleanup state is unavailable; refusing checkpoint.'
         }
@@ -1069,6 +1070,7 @@ function Read-BootstrapResult([string]$VhdPath, [string]$ExpectedBootstrapNonce)
             Dismount-VHD -Path $VhdPath -ErrorAction Stop
         }
         $vhdState = Get-VHD -Path $VhdPath -ErrorAction Stop
+        Assert-LabCleanupVhdIdentity $VhdPath $vhdState
         if ($null -eq $vhdState -or $vhdState.Attached -isnot [bool] -or
             $vhdState.Attached -ne $false) {
             throw 'Guest VHDX remains attached after offline validation; refusing checkpoint.'

@@ -837,6 +837,110 @@ foreach($initiallyMounted in @($true,$false)) {
             )
             self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
 
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_checkpoint_cleanup_verifies_vhdx_identity_before_and_after_detach(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        helper_start = host.index("function Assert-LabCleanupVhdIdentity(")
+        helper_end = host.index("\nfunction Assert-LabCleanupIsoIdentity(", helper_start)
+        helper = host[helper_start:helper_end]
+        start = host.index("function Read-BootstrapResult(")
+        end = host.index("\nfunction Assert-LabPlanGuestIdentities(", start)
+        reader = host[start:end]
+        before = reader.index("$vhdState = Get-VHD -Path $VhdPath -ErrorAction Stop")
+        dismount = reader.index("Dismount-VHD -Path $VhdPath -ErrorAction Stop")
+        after = reader.rindex("$vhdState = Get-VHD -Path $VhdPath -ErrorAction Stop")
+        guard = "Assert-LabCleanupVhdIdentity $VhdPath $vhdState"
+        self.assertIn(guard, reader[before:dismount])
+        self.assertIn(guard, reader[after:])
+        self.assertLess(before, dismount)
+        self.assertLess(dismount, after)
+        finally_start = reader.rindex("\n    finally {")
+        close = reader.rfind("\n}")
+        cleanup = reader[finally_start:close]
+        script = helper + "\nfunction Invoke-CheckpointCleanup([string]$VhdPath) {\ntry { }\n" + cleanup + "\n}\n" + r"""
+$ErrorActionPreference='Stop'
+$expected='D:\Fixture\checkpoint-guest.vhdx'
+$script:queriedPath=$expected
+$script:afterDismountPath=$null
+$script:attached=$true
+$script:dismounts=0
+$script:reads=0
+$script:queryFails=$false
+function Get-VHD {
+    [CmdletBinding()]
+    param([string]$Path)
+    $script:reads++
+    if ($script:queryFails) { throw 'VHD provider unavailable.' }
+    $path = if ($script:dismounts -gt 0 -and $null -ne $script:afterDismountPath) {
+        $script:afterDismountPath
+    } else { $script:queriedPath }
+    return [pscustomobject]@{Path=$path;Attached=$script:attached}
+}
+function Dismount-VHD {
+    [CmdletBinding()]
+    param([string]$Path)
+    $script:dismounts++
+    $script:attached=$false
+}
+foreach($case in @(
+    [pscustomobject]@{Name='unrelated VHD';Path='D:\Fixture\host.vhdx';Attached=$true;Failure=$false},
+    [pscustomobject]@{Name='unrelated already detached VHD';Path='D:\Fixture\host.vhdx';Attached=$false;Failure=$false},
+    [pscustomobject]@{Name='missing VHD path';Path=$null;Attached=$true;Failure=$false},
+    [pscustomobject]@{Name='unknown attachment state';Path=$expected;Attached=$null;Failure=$false},
+    [pscustomobject]@{Name='string attachment';Path=$expected;Attached='True';Failure=$false},
+    [pscustomobject]@{Name='provider lookup failure';Path=$expected;Attached=$true;Failure=$true}
+)) {
+    $script:queriedPath=$case.Path
+    $script:attached=$case.Attached
+    $script:queryFails=$case.Failure
+    $script:afterDismountPath=$null
+    $script:dismounts=0
+    $script:reads=0
+    $denied=$false
+    try { Invoke-CheckpointCleanup $expected } catch { $denied=$true }
+    if (-not $denied) { throw ('Unexpected checkpoint cleanup accepted: '+$case.Name) }
+    if ($script:dismounts -ne 0) { throw ('Unrelated VHD detached: '+$case.Name) }
+}
+$script:queriedPath=$expected
+$script:queryFails=$false
+$script:afterDismountPath=$null
+$script:attached=$true
+$script:dismounts=0
+$script:reads=0
+Invoke-CheckpointCleanup $expected
+if($script:dismounts -ne 1 -or $script:attached -ne $false -or $script:reads -ne 2){
+    throw 'Valid attached VHD cleanup did not detach once and confirm.'
+}
+$script:attached=$false
+$script:dismounts=0
+$script:reads=0
+Invoke-CheckpointCleanup $expected
+if($script:dismounts -ne 0 -or $script:reads -ne 2){
+    throw 'Already detached VHD was not checked without detaching.'
+}
+$script:attached=$true
+$script:dismounts=0
+$script:reads=0
+$script:afterDismountPath='D:\Fixture\host.vhdx'
+$denied=$false
+try { Invoke-CheckpointCleanup $expected } catch { $denied=$true }
+if(-not $denied -or $script:dismounts -ne 1){
+    throw 'Substituted VHD identity after dismount was accepted.'
+}
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
     def test_checkpoint_mount_disk_number_is_bound_to_guest_vhd_before_scan(self):
         import shutil
         import subprocess

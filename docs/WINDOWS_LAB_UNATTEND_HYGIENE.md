@@ -366,6 +366,16 @@ the Windows partition. Windows PowerShell 5.1/7 fixtures simulate these
 fail-closed cases without mounting any disk. It is not a guest integrity
 attestation or protection against concurrent storage identity races.
 
+Checkpoint `Read-BootstrapResult` cleanup now also independently verifies
+the **exact VHDX file path** and native Boolean attachment state before
+attempting `Dismount-VHD`, and repeats the identity check after the
+dismount. This reuses the guarded build-cleanup VHDX identity contract.
+A substituted, malformed, or unqueryable VHDX is rejected rather than
+detaching an unrelated disk; an already detached expected VHDX is
+verified without detaching again. Isolated WinPS 5.1/PS7 tests cover
+valid, substituted, and broken Storage responses, without attaching
+real VHDX files. These checks do not eliminate external races.
+
 The offline Windows SYSTEM-hive selector now verifies every candidate
 drive-letter mapping with an independent `Get-Partition -DriveLetter`
 query before reading any filesystem path. The selected partition must
