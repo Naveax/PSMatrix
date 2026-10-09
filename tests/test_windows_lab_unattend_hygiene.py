@@ -1441,7 +1441,7 @@ exit 0
         script = """
 $ErrorActionPreference = 'Stop'
 $source = Get-Content -LiteralPath __HOST_PATH__ -Raw
-$a = $source.IndexOf('function Assert-LabPlanMachineAndOutputPaths(')
+$a = $source.IndexOf('function Assert-SafeLabOutputAncestors(')
 $b = $source.IndexOf('function Wait-FirstBoot(', $a)
 if ($a -lt 0 -or $b -le $a) { throw 'Missing host preflight.' }
 Invoke-Expression $source.Substring($a, $b-$a)
@@ -1592,6 +1592,94 @@ exit 0
                     timeout=35, check=False,
                 )
                 self.assertEqual(result.returncode, 0, shell + ": " + result.stdout + result.stderr)
+
+    def test_host_rejects_output_vhdx_ancestor_reparse_before_any_vm_provisioning(self):
+        host = HOST.read_text(encoding="utf-8")
+        self.assertIn("function Assert-SafeLabOutputAncestors(", host)
+        guard = host.split("function Assert-SafeLabOutputAncestors(", 1)[1].split(
+            "function Assert-LabPlanMachineAndOutputPaths(", 1
+        )[0]
+        for fragment in (
+            "[IO.Path]::GetDirectoryName($fullOutput)",
+            "Get-Item -LiteralPath $ancestor -Force",
+            "[IO.FileAttributes]::ReparsePoint",
+            "Windows lab output VHDX ancestor is an unsafe directory.",
+        ):
+            self.assertIn(fragment, guard)
+        plan = host.split("function Assert-LabPlanMachineAndOutputPaths(", 1)[1].split(
+            "function Wait-FirstBoot(", 1
+        )[0]
+        self.assertIn("Assert-SafeLabOutputAncestors $canonicalDisk", plan)
+        self.assertLess(
+            host.index("Assert-LabPlanMachineAndOutputPaths $planValue.images"),
+            host.index("$results = @()"),
+        )
+        new_lab = host.split("function New-LabVhd(", 1)[1].split(
+            "function Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        self.assertIn("Assert-SafeLabOutputAncestors $output", new_lab)
+        self.assertLess(
+            new_lab.index("Assert-SafeLabOutputAncestors $output"),
+            new_lab.index("New-Item -ItemType Directory -Path (Split-Path -Parent $output)"),
+        )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_output_vhdx_ancestors_dynamic_junction_file_parent_and_missing_paths(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        def quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-vhdx-ancestor-") as root:
+            for shell in ("powershell.exe", "pwsh.exe"):
+                if shutil.which(shell) is None:
+                    continue
+                shell_root = Path(root) / shell.replace('.', '-')
+                shell_root.mkdir()
+                script = """
+$ErrorActionPreference = 'Stop'
+$src = Get-Content -LiteralPath {host} -Raw
+$a = $src.IndexOf('function Assert-SafeLabOutputAncestors(')
+$b = $src.IndexOf('function Assert-LabPlanMachineAndOutputPaths(', $a)
+if ($a -lt 0 -or $b -le $a) {{ throw 'Guard not found.' }}
+Invoke-Expression $src.Substring($a, $b - $a)
+$root = {root}
+$real = Join-Path $root 'real'
+$link = Join-Path $root 'linked'
+New-Item -ItemType Directory -Path $real -ErrorAction Stop | Out-Null
+New-Item -ItemType Junction -Path $link -Target $real -ErrorAction Stop | Out-Null
+try {{
+    Assert-SafeLabOutputAncestors (Join-Path $root 'future\\nested\\valid.vhdx')
+    $fileParent = Join-Path $root 'existing-file'
+    Set-Content -LiteralPath $fileParent -Value 'fixture'
+    foreach ($case in @(
+        (Join-Path $link 'nested\\redirected.vhdx'),
+        (Join-Path $fileParent 'child.vhdx')
+    )) {{
+        try {{
+            Assert-SafeLabOutputAncestors $case
+            throw 'Unsafe VHDX ancestor was allowed.'
+        }} catch {{
+            if ($_.Exception.Message -ne 'Windows lab output VHDX ancestor is an unsafe directory.') {{
+                throw
+            }}
+        }}
+    }}
+}} finally {{
+    Remove-Item -LiteralPath $link -Force -ErrorAction Stop
+}}
+exit 0
+""".format(host=quote(HOST), root=quote(shell_root))
+                result = subprocess.run(
+                    [shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=40, check=False,
+                )
+                self.assertEqual(
+                    result.returncode, 0, shell + ": " + result.stdout + result.stderr,
+                )
 
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")

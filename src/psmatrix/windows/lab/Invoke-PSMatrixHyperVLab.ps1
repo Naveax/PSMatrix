@@ -182,6 +182,8 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce) {
     Assert-Artifact $Image.signing_bundle 'Signing bundle'
     if ($Image.wmf_package) { Assert-Artifact $Image.wmf_package 'WMF package' }
     $output = [string]$Image.output_vhdx
+    # Recheck near the actual disk write: the plan preflight may be stale.
+    Assert-SafeLabOutputAncestors $output
     if (Test-Path -LiteralPath $output) { throw ('Output VHDX already exists: ' + $output) }
     New-Item -ItemType Directory -Path (Split-Path -Parent $output) -Force | Out-Null
     $isoPath = [string]$Image.source_iso.path
@@ -600,6 +602,30 @@ function Assert-LabPlanGuestIdentities([object[]]$Images) {
     }
 }
 
+function Assert-SafeLabOutputAncestors([string]$Output) {
+    # Reject existing file parents and reparse-point ancestors (junctions,
+    # symlinks, mount points) before writing or creating a Windows VHDX.
+    # Missing directories are allowed and can be created by the builder.
+    $fullOutput = [IO.Path]::GetFullPath($Output)
+    $ancestor = [IO.Path]::GetDirectoryName($fullOutput)
+    while (-not [string]::IsNullOrEmpty($ancestor)) {
+        $item = $null
+        try {
+            $item = Get-Item -LiteralPath $ancestor -Force -ErrorAction Stop
+        }
+        catch [System.Management.Automation.ItemNotFoundException] {
+            # A future directory does not exist yet. Its parent still must
+            # be inspected, and other IO/access errors remain fatal.
+        }
+        if ($null -ne $item -and
+            (-not $item.PSIsContainer -or
+             (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0))) {
+            throw 'Windows lab output VHDX ancestor is an unsafe directory.'
+        }
+        $ancestor = [IO.Path]::GetDirectoryName($ancestor)
+    }
+}
+
 function Assert-LabPlanMachineAndOutputPaths([object[]]$Images) {
     # Plan building can truncate the requested Windows computer name to
     # 15 chars. Check the resulting names and disk targets before any VM
@@ -633,6 +659,7 @@ function Assert-LabPlanMachineAndOutputPaths([object[]]$Images) {
         if (-not $seenDisks.Add($canonicalDisk)) {
             throw 'Windows lab plan output_vhdx is duplicated.'
         }
+        Assert-SafeLabOutputAncestors $canonicalDisk
     }
 }
 

@@ -170,6 +170,18 @@ a second attempt does not modify the destination. The ACL operation is
 stubbed in those tests; actual elevated offline NTFS ACL enforcement and
 guest boot functionality still require Hyper-V acceptance.
 
+The host also rejects existing **VHDX output parent junctions, symlinks,
+mount points and file ancestors**, inspecting every existing ancestor of
+the canonical destination across the three-image plan before creating any
+VM or disk. It repeats this check in `New-LabVhd` near the actual output
+directory creation to reduce the interval between preflight and use.
+Absent future parent directories are permitted. Tests use real NTFS
+directory junctions and ordinary files in isolated temporary fixtures under
+Windows PowerShell 5.1 and PowerShell 7; no production disk is touched.
+This reduces redirection through pre-existing reparse points but does not
+eliminate filesystem races, concurrent junction swaps or untested elevated
+Hyper-V filesystem behavior.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted
