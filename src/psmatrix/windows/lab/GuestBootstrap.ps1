@@ -313,7 +313,16 @@ try {
 
     $template = Find-File $credentialRoot 'worker.json'
     $configRoot = 'C:\ProgramData\PSMatrix\WorkerConfig'
-    New-Item -ItemType Directory -Path $configRoot -Force | Out-Null
+    # First boot must not overwrite a pre-existing worker configuration (or
+    # follow an existing junction). Refuse interrupted installs for review.
+    $existingConfigRoot = Get-Item -LiteralPath $configRoot -Force -ErrorAction SilentlyContinue
+    if ($null -ne $existingConfigRoot -or (Test-Path -LiteralPath $configRoot)) {
+        throw 'Guest worker config destination already exists; refusing overwrite.'
+    }
+    New-Item -ItemType Directory -Path $configRoot -ErrorAction Stop | Out-Null
+    # Set the parent ACL before writing potentially sensitive worker.json.
+    # Reassert the recursive ACL after creation so the new file is checked.
+    Set-RestrictedDirectoryAcl $configRoot
     $workerConfig = Join-Path $configRoot 'worker.json'
     $text = Get-Content -LiteralPath $template -Raw
     $text = $text.Replace('{{WORKER_ID}}',[string]$config.worker_id)
@@ -322,7 +331,7 @@ try {
     $text = $text.Replace('{{CREDENTIAL_ROOT}}',$credentialRoot.Replace('\','\\'))
     $text = $text.Replace('{{SIGNING_ROOT}}',$signingRoot.Replace('\','\\'))
     $text = $text.Replace('{{WORKSPACE_ROOT}}','C:\\ProgramData\\PSMatrix\\Workspace')
-    $text | Set-Content -LiteralPath $workerConfig -Encoding UTF8
+    $text | Set-Content -LiteralPath $workerConfig -Encoding UTF8 -ErrorAction Stop
     Set-RestrictedDirectoryAcl $configRoot
 
     $installScript = Find-File $workerRoot 'install-worker.ps1'

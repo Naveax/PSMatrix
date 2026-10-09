@@ -464,15 +464,99 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
             host.index("    Checkpoint-VM -Name $vmName"),
         )
 
-    def test_worker_config_is_written_before_recursive_acl_lock(self):
+    def test_worker_config_is_acl_locked_before_sensitive_write_and_rechecked(self):
         text = GUEST.read_text(encoding="utf-8")
+        guard = text.index("Guest worker config destination already exists; refusing overwrite.")
+        mkdir = text.index("New-Item -ItemType Directory -Path $configRoot -ErrorAction Stop")
         create = text.index("$workerConfig = Join-Path $configRoot 'worker.json'")
-        write = text.index("$text | Set-Content -LiteralPath $workerConfig -Encoding UTF8")
-        restrict = text.index("Set-RestrictedDirectoryAcl $configRoot")
+        write = text.index(
+            "$text | Set-Content -LiteralPath $workerConfig -Encoding UTF8 -ErrorAction Stop"
+        )
+        first_acl = text.index("Set-RestrictedDirectoryAcl $configRoot", mkdir)
+        second_acl = text.index("Set-RestrictedDirectoryAcl $configRoot", first_acl + 1)
         install = text.index("$installScript = Find-File $workerRoot 'install-worker.ps1'")
+        self.assertLess(guard, mkdir)
+        self.assertLess(mkdir, first_acl)
+        self.assertLess(first_acl, create)
         self.assertLess(create, write)
-        self.assertLess(write, restrict)
-        self.assertLess(restrict, install)
+        self.assertLess(write, second_acl)
+        self.assertLess(second_acl, install)
+        self.assertEqual(text.count("Set-RestrictedDirectoryAcl $configRoot"), 2)
+        self.assertNotIn("New-Item -ItemType Directory -Path $configRoot -Force", text)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_worker_config_dynamic_acl_order_and_existing_destination(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        def ps_quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-worker-config-acl-") as root:
+            for executable in ("powershell.exe", "pwsh.exe"):
+                if shutil.which(executable) is None:
+                    continue
+                dest = Path(root) / executable.replace(".", "-")
+                template = Path(root) / (executable.replace(".", "-") + "-template.json")
+                template.write_text(
+                    '{"worker":"{{WORKER_ID}}","version":"{{EXPECTED_VERSION}}"}',
+                    encoding="utf-8",
+                )
+                # Isolate the real guest block; stub only the privileged ACL
+                # implementation. This tests ordering, not real ACL rights.
+                script = """
+$ErrorActionPreference = 'Stop'
+$source = Get-Content -LiteralPath {guest} -Raw
+$start = $source.IndexOf({marker})
+$end = $source.IndexOf({stop}, $start)
+if ($start -lt 0 -or $end -lt 0) {{ throw 'WorkerConfig block missing.' }}
+$section = $source.Substring($start, $end - $start)
+$section = $section.Replace('C:\\ProgramData\\PSMatrix\\WorkerConfig', {destination})
+$config = [pscustomobject]@{{ worker_id = 'test-worker' }}
+$expected = '4.0'
+$credentialRoot = 'C:\\Credentials'
+$signingRoot = 'C:\\Signing'
+$template = {template}
+$script:aclChecks = 0
+function Set-RestrictedDirectoryAcl([string]$Path) {{
+    $script:aclChecks++
+    $target = Join-Path $Path 'worker.json'
+    if ($script:aclChecks -eq 1 -and (Test-Path -LiteralPath $target)) {{
+        throw 'Worker config existed before initial ACL.'
+    }}
+    if ($script:aclChecks -eq 2 -and -not (Test-Path -LiteralPath $target)) {{
+        throw 'Worker config missing at post-write ACL.'
+    }}
+}}
+Invoke-Expression $section
+if ($script:aclChecks -ne 2) {{ throw 'Expected two ACL checks.' }}
+$written = Get-Content -LiteralPath (Join-Path {destination} 'worker.json') -Raw
+if ($written -notmatch 'test-worker') {{ throw 'Rendered worker content is missing.' }}
+try {{
+    Invoke-Expression $section
+    throw 'Existing worker configuration was overwritten.'
+}} catch {{
+    if ($_.Exception.Message -ne 'Guest worker config destination already exists; refusing overwrite.') {{ throw }}
+}}
+if ($script:aclChecks -ne 2) {{ throw 'Existing destination modified ACL state.' }}
+$writtenAfter = Get-Content -LiteralPath (Join-Path {destination} 'worker.json') -Raw
+if ($writtenAfter -cne $written) {{ throw 'Existing worker content changed.' }}
+""".format(
+                    guest=ps_quote(GUEST),
+                    marker=ps_quote("    $configRoot = 'C:\\ProgramData\\PSMatrix\\WorkerConfig'"),
+                    stop=ps_quote("    $installScript = Find-File $workerRoot 'install-worker.ps1'"),
+                    destination=ps_quote(dest),
+                    template=ps_quote(template),
+                )
+                result = subprocess.run(
+                    [executable, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, timeout=45, check=False,
+                )
+                self.assertEqual(
+                    result.returncode, 0,
+                    executable + ": " + result.stdout + result.stderr,
+                )
 
     def test_sensitive_acl_controls_cover_entire_tree(self):
         guest = GUEST.read_text(encoding="utf-8")
