@@ -376,6 +376,22 @@ recompute its SHA-256. The authorized operator must still independently
 establish the origin of the plan, source manifest and artifacts; a
 digest alone does not sign or authorize the contents.
 
+The offline checkpoint verifier now also rejects an NTFS reparse
+point (including a file symlink) at
+`ProgramData\PSMatrix\WorkerConfig\worker.json` before hashing the
+guest's reported worker configuration. Previously `Get-FileHash`
+would follow a redirected `worker.json` file after the parent
+WorkerConfig ACL checks. `Get-SafeGuestWorkerConfigHash` now validates
+the leaf file type with `Get-Item -Force` and computes SHA-256 using
+one exclusive file handle, rejecting an unsafe file before opening it.
+Existing parent-directory reparse and ACL checks, the reported
+`worker_config_sha256` comparison and checkpoint refusal remain in
+place. Non-elevated WinPS5.1/PS7 tests calculate the real SHA-256 of
+disposable worker JSON and mock reparse/directory file metadata to
+verify both fail-closed branches. This does not provide atomic
+file-identity binding against privileged concurrent replacements,
+and elevated offline Hyper-V acceptance remains necessary.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted

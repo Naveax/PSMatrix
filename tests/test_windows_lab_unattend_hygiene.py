@@ -586,17 +586,17 @@ exit 0
             "Assert-NoGuestSetupAnswerFiles -WindowsRoot $root",
             "$result.worker_config_sha256 -cnotmatch '^[0-9a-f]{64}$'",
             "ProgramData\\PSMatrix\\WorkerConfig\\worker.json",
-            "Get-FileHash -LiteralPath $workerConfig -Algorithm SHA256",
+            "Get-SafeGuestWorkerConfigHash $workerConfig",
             "$actualConfigHash -cne $result.worker_config_sha256",
             "Guest worker configuration SHA-256 mismatch; refusing checkpoint.",
         ):
             self.assertIn(fragment, read)
         self.assertLess(
             read.index("Assert-RestrictedGuestDirectoryAcl -Path"),
-            read.index("Get-FileHash -LiteralPath $workerConfig"),
+            read.index("Get-SafeGuestWorkerConfigHash $workerConfig"),
         )
         self.assertLess(
-            read.index("Get-FileHash -LiteralPath $workerConfig"),
+            read.index("Get-SafeGuestWorkerConfigHash $workerConfig"),
             read.index("return $result"),
         )
         self.assertIn("$bootstrap.worker_id -cne [string]$image.worker_id", host)
@@ -2965,6 +2965,110 @@ exit 0
                 self.assertEqual(
                     result.returncode, 0,
                     exe + ": " + result.stdout + result.stderr,
+                )
+
+    def test_host_worker_config_hash_rejects_reparse_before_opening_file(self):
+        host = HOST.read_text(encoding="utf-8")
+        self.assertIn("function Get-SafeGuestWorkerConfigHash(", host)
+        guard = host.split("function Get-SafeGuestWorkerConfigHash(", 1)[1].split(
+            "function Read-BootstrapResult(", 1
+        )[0]
+        for term in (
+            "Get-Item -LiteralPath $Path -Force -ErrorAction Stop",
+            "[IO.FileAttributes]::ReparsePoint",
+            "Guest worker configuration is an unsafe file type; refusing checkpoint.",
+            "[IO.File]::Open(",
+            "[IO.FileShare]::None",
+            "$sha.ComputeHash($stream)",
+        ):
+            self.assertIn(term, guard)
+        self.assertLess(
+            guard.index("[IO.FileAttributes]::ReparsePoint"),
+            guard.index("[IO.File]::Open("),
+        )
+        self.assertIn(
+            "$actualConfigHash = Get-SafeGuestWorkerConfigHash $workerConfig",
+            host,
+        )
+        self.assertNotIn(
+            "Get-FileHash -LiteralPath $workerConfig -Algorithm SHA256",
+            host,
+        )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_worker_config_safe_hash_uses_real_bytes_and_rejects_mocked_link(self):
+        import hashlib
+        import shutil
+        import subprocess
+        import tempfile
+
+        quote = lambda value: "'" + str(value).replace("'", "''") + "'"
+        with tempfile.TemporaryDirectory(prefix="psmatrix-worker-proof-") as root:
+            base = Path(root)
+            payload = base / "worker.json"
+            raw = b'{"worker":"non-sensitive-dummy","port":9443}\n'
+            payload.write_bytes(raw)
+            correct = hashlib.sha256(raw).hexdigest()
+            script = r"""
+$ErrorActionPreference = 'Stop'
+$source = Get-Content -LiteralPath __HOST__ -Raw
+$a = $source.IndexOf('function Get-SafeGuestWorkerConfigHash(')
+$b = $source.IndexOf('function Read-BootstrapResult(', $a)
+if ($a -lt 0 -or $b -le $a) { throw 'Safe worker hash helper missing.' }
+Invoke-Expression $source.Substring($a, $b - $a)
+$path = __WORKER__
+$script:mode = 'normal'
+function Get-Item {
+    param([string]$LiteralPath, [switch]$Force, [string]$ErrorAction)
+    if ($script:mode -eq 'reparse') {
+        return [pscustomobject]@{
+            PSIsContainer = $false
+            Attributes = [IO.FileAttributes]::ReparsePoint
+        }
+    }
+    if ($script:mode -eq 'directory') {
+        return [pscustomobject]@{
+            PSIsContainer = $true
+            Attributes = [IO.FileAttributes]::Directory
+        }
+    }
+    return Microsoft.PowerShell.Management\Get-Item -LiteralPath $LiteralPath -Force -ErrorAction Stop
+}
+if ((Get-SafeGuestWorkerConfigHash $path) -cne '__EXPECTED__') {
+    throw 'Worker JSON real hash differs from Python SHA-256.'
+}
+foreach ($mode in @('reparse','directory')) {
+    $script:mode = $mode
+    try {
+        Get-SafeGuestWorkerConfigHash $path
+        throw ('Unsafe worker file accepted: ' + $mode)
+    } catch {
+        if ($_.Exception.Message -cne 'Guest worker configuration is an unsafe file type; refusing checkpoint.') {
+            throw ('Unexpected error: ' + $_.Exception.Message)
+        }
+    }
+}
+$script:mode = 'normal'
+[IO.File]::AppendAllText($path, 'tampered')
+if ((Get-SafeGuestWorkerConfigHash $path) -ceq '__EXPECTED__') {
+    throw 'Modified worker file retained stale SHA-256.'
+}
+exit 0
+""".replace("__HOST__", quote(HOST)).replace(
+                "__WORKER__", quote(payload)
+            ).replace("__EXPECTED__", correct)
+            for shell in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(shell):
+                    continue
+                payload.write_bytes(raw)
+                result = subprocess.run(
+                    [shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=45, check=False,
+                )
+                self.assertEqual(
+                    result.returncode, 0,
+                    shell + ": " + result.stdout + result.stderr,
                 )
 
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):

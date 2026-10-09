@@ -437,6 +437,28 @@ function Assert-NoGuestBootstrapStagingSecrets([string]$WindowsRoot) {
     }
 }
 
+function Get-SafeGuestWorkerConfigHash([string]$Path) {
+    # The guest VHDX is untrusted even after the guest has shut down.
+    # Refuse a redirected worker.json rather than allowing Get-FileHash to
+    # follow a file-level NTFS symlink from the elevated offline verifier.
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if ($item.PSIsContainer -or
+        (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+        throw 'Guest worker configuration is an unsafe file type; refusing checkpoint.'
+    }
+    $stream = [IO.File]::Open(
+        $Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None
+    )
+    try {
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try {
+            return ([BitConverter]::ToString($sha.ComputeHash($stream)) -replace '-', '').ToLowerInvariant()
+        }
+        finally { $sha.Dispose() }
+    }
+    finally { $stream.Dispose() }
+}
+
 function Read-BootstrapResult([string]$VhdPath, [string]$ExpectedBootstrapNonce) {
     # Never detach an unrelated pre-existing mount. Do not treat a partial
     # Mount-VHD failure as proof that the guest disk is unattached.
@@ -587,7 +609,7 @@ function Read-BootstrapResult([string]$VhdPath, [string]$ExpectedBootstrapNonce)
             if (-not (Test-Path -LiteralPath $workerConfig -PathType Leaf)) {
                 throw 'Guest worker configuration is missing; refusing checkpoint.'
             }
-            $actualConfigHash = (Get-FileHash -LiteralPath $workerConfig -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+            $actualConfigHash = Get-SafeGuestWorkerConfigHash $workerConfig
             if ($actualConfigHash -cne $result.worker_config_sha256) {
                 throw 'Guest worker configuration SHA-256 mismatch; refusing checkpoint.'
             }
