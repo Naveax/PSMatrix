@@ -2586,6 +2586,95 @@ exit 0
                 executable + ": " + result.stdout + result.stderr,
             )
 
+    def test_host_validates_source_manifest_provenance_before_vm_creation(self):
+        host = HOST.read_text(encoding="utf-8")
+        self.assertIn("function Assert-LabPlanSourceManifest(", host)
+        guard = host.split("function Assert-LabPlanSourceManifest(", 1)[1].split(
+            "function Wait-FirstBoot(", 1
+        )[0]
+        for required in (
+            "Source manifest metadata is invalid.",
+            "Assert-Artifact $SourceManifest 'Source manifest'",
+            "[IO.Path]::IsPathRooted([string]$SourceManifest.path)",
+            "[StringComparer]::Ordinal",
+            "-isnot [pscustomobject]",
+        ):
+            self.assertIn(required, guard)
+        call = host.index("Assert-LabPlanSourceManifest $planValue.source_manifest")
+        self.assertLess(call, host.index("$results = @()"))
+        self.assertLess(call, host.index("New-LabVhd $image"))
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_source_manifest_dynamic_hash_and_exact_metadata(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        def quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-manifest-proof-") as root:
+            for shell in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(shell):
+                    continue
+                case = Path(root) / shell.replace(".", "-")
+                case.mkdir()
+                script = r"""
+$ErrorActionPreference = 'Stop'
+$source = Get-Content -LiteralPath __HOST__ -Raw
+$start = $source.IndexOf('function Assert-SafeLabArtifactPath(')
+$stop = $source.IndexOf('function Invoke-Checked(', $start)
+$a = $source.IndexOf('function Assert-LabPlanSourceManifest(')
+$b = $source.IndexOf('function Wait-FirstBoot(', $a)
+if ($start -lt 0 -or $stop -le $start -or $a -lt 0 -or $b -le $a) {
+    throw 'Source manifest integrity helpers missing.'
+}
+function Get-Sha256([string]$Path) {
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+Invoke-Expression $source.Substring($start, $stop-$start)
+Invoke-Expression $source.Substring($a, $b-$a)
+$root = __ROOT__
+$manifest = Join-Path $root 'lab-media.json'
+[IO.File]::WriteAllText($manifest, '{"fixture":true}')
+$hash = Get-Sha256 $manifest
+$meta = [pscustomobject]@{path=$manifest;sha256=$hash}
+Assert-LabPlanSourceManifest $meta
+function Assert-Invalid([object]$Value, [string]$Expected) {
+    try {
+        Assert-LabPlanSourceManifest $Value
+        throw 'Invalid manifest metadata was accepted.'
+    } catch {
+        if ($_.Exception.Message -cne $Expected) {
+            throw ('Wrong failure: ' + $_.Exception.Message)
+        }
+    }
+}
+foreach ($name in @('sha256','path')) {
+    $invalid = [pscustomobject]@{path=$manifest;sha256=$hash}
+    $invalid.PSObject.Properties.Remove($name)
+    Assert-Invalid $invalid 'Source manifest metadata is invalid.'
+}
+Assert-Invalid $null 'Source manifest metadata is invalid.'
+Assert-Invalid @{path=$manifest;sha256=$hash} 'Source manifest metadata is invalid.'
+Assert-Invalid ([pscustomobject]@{path='relative\lab-media.json';sha256=$hash}) 'Source manifest metadata is invalid.'
+Assert-Invalid ([pscustomobject]@{path=$manifest;sha256=$hash.ToUpperInvariant()}) 'Source manifest metadata is invalid.'
+$extra = [pscustomobject]@{path=$manifest;sha256=$hash}
+$extra | Add-Member -NotePropertyName 'source_authorized' -NotePropertyValue $true
+Assert-Invalid $extra 'Source manifest metadata is invalid.'
+[IO.File]::AppendAllText($manifest, 'TAMPERED')
+Assert-Invalid $meta 'Source manifest SHA-256 mismatch.'
+exit 0
+""".replace("__HOST__", quote(HOST)).replace("__ROOT__", quote(case))
+                run = subprocess.run(
+                    [shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=45, check=False,
+                )
+                self.assertEqual(
+                    run.returncode, 0, shell + ": " + run.stdout + run.stderr,
+                )
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)

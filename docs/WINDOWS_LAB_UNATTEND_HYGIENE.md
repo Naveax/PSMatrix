@@ -312,6 +312,25 @@ host-enforced safety measures. Dynamic Windows PowerShell 5.1 and
 PowerShell 7 regressions cover the valid producer shape and malformed
 variants without real Hyper-V provisioning.
 
+The host now verifies the provision plan's **source manifest binding**
+before creating any VHDX or VM. The Python plan producer records
+`source_manifest.path` and the SHA-256 of the original media manifest;
+the host previously ignored them. `Assert-LabPlanSourceManifest`
+now accepts only an exact two-property object with a typed absolute
+Windows path and lowercase 64-character SHA-256, then invokes the
+existing artifact verifier. This rejects missing, modified or
+reparse-point-redirected source media manifests, and avoids starting
+a partial three-VM build if the manifest changed after plan creation.
+WinPS 5.1 and PowerShell 7 tests use disposable dummy manifest files,
+including a real post-hash modification, missing and extra metadata
+fields, malformed hashes and relative paths. The original manifest
+must remain accessible on the provisioning host; a plan copied from
+another computer without that source manifest now fails by design.
+This confirms only content consistency: the plan's self-declared
+hash is not a signature or independent authorization, and the
+`plan_sha256` is not independently authenticated by this check.
+Concurrent filesystem replacement remains a separate limitation.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted

@@ -843,6 +843,33 @@ function Assert-LabPlanSafetyContract($Safety) {
     }
 }
 
+function Assert-LabPlanSourceManifest($SourceManifest) {
+    # Verify the exact input manifest that the Python plan producer hashed.
+    # A valid plan_sha256 is not a signature; do not mistake the declared
+    # manifest hash for independent author authorization.
+    if ($null -eq $SourceManifest -or $SourceManifest -isnot [pscustomobject]) {
+        throw 'Source manifest metadata is invalid.'
+    }
+    $expected = New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList ([StringComparer]::Ordinal)
+    [void]$expected.Add('path')
+    [void]$expected.Add('sha256')
+    foreach ($property in @($SourceManifest.PSObject.Properties)) {
+        if (-not $expected.Remove([string]$property.Name)) {
+            throw 'Source manifest metadata is invalid.'
+        }
+    }
+    if ($expected.Count -ne 0 -or
+        $SourceManifest.path -isnot [string] -or
+        [string]::IsNullOrWhiteSpace($SourceManifest.path) -or
+        -not [IO.Path]::IsPathRooted([string]$SourceManifest.path) -or
+        $SourceManifest.sha256 -isnot [string] -or
+        $SourceManifest.sha256 -cnotmatch '^[0-9a-f]{64}$') {
+        throw 'Source manifest metadata is invalid.'
+    }
+    # Includes the existing ancestor/symlink defense plus real SHA-256.
+    Assert-Artifact $SourceManifest 'Source manifest'
+}
+
 function Wait-FirstBoot([string]$VmName, [int]$TimeoutSeconds) {
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     $observedRunning = $false
@@ -863,6 +890,7 @@ $planValue = Get-Content -LiteralPath $Plan -Raw | ConvertFrom-Json
 if ($planValue.schema -isnot [int] -or $planValue.schema -ne 1) { throw 'Windows lab plan schema is invalid.' }
 if ([string]$planValue.kind -ne 'psmatrix.windows-hyperv-provision-plan') { throw 'Lab plan kind is invalid.' }
 Assert-LabPlanSafetyContract $planValue.safety
+Assert-LabPlanSourceManifest $planValue.source_manifest
 # Require the three unique canonical Windows PowerShell targets before any
 # VM provisioning. An incomplete or duplicated plan cannot produce PASS.
 $requiredRuntimes = @('windows-powershell-4.0', 'windows-powershell-5.0', 'windows-powershell-5.1')
