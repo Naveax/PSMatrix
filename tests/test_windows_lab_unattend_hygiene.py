@@ -468,6 +468,86 @@ foreach ($target in @('Windows','Windows\System32','Windows\System32\Config','Wi
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_new_guest_partitions_are_checked_against_disk_before_format(self):
+        import shutil
+        import subprocess
+
+        source = HOST.read_text(encoding="utf-8")
+        helper_start = source.index("function Assert-LabCreatedPartition(")
+        helper_end = source.index("\nfunction New-LabVhd(", helper_start)
+        code = source[helper_start:helper_end]
+        build = source[helper_end:source.index("\nfunction Assert-NoGuestSetupAnswerFiles(", helper_end)]
+        self.assertLess(
+            build.index("Assert-LabCreatedPartition $diskNumber $efi"),
+            build.index("Format-Volume -Partition $efi"),
+        )
+        self.assertLess(
+            build.index("Assert-LabCreatedPartition $diskNumber $windows"),
+            build.index("Format-Volume -Partition $windows"),
+        )
+        self.assertIn("New-Partition -DiskNumber $diskNumber -Size 260MB", build)
+        self.assertIn("Format-Volume -Partition $efi -FileSystem FAT32", build)
+        self.assertIn("Format-Volume -Partition $windows -FileSystem NTFS", build)
+        script = code + r"""
+$ErrorActionPreference = 'Stop'
+$script:returned = $null
+$script:queryFails = $false
+$efiGuid = '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}'
+$winGuid = '{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}'
+function Get-Partition {
+    [CmdletBinding()]
+    param([int]$DiskNumber, [uint32]$PartitionNumber)
+    if ($script:queryFails) { throw 'Provider unavailable.' }
+    return $script:returned
+}
+$efi = [pscustomobject]@{
+    DiskNumber = 42; PartitionNumber = 1; DriveLetter='F'
+}
+$win = [pscustomobject]@{
+    DiskNumber = 42; PartitionNumber = 3; DriveLetter='G'
+}
+$script:returned = [pscustomobject]@{
+    DiskNumber=42; PartitionNumber=1; DriveLetter='F'; GptType=$efiGuid
+}
+Assert-LabCreatedPartition 42 $efi $efiGuid 'EFI' | Out-Null
+$script:returned = [pscustomobject]@{
+    DiskNumber=42; PartitionNumber=3; DriveLetter='G'; GptType=$winGuid
+}
+Assert-LabCreatedPartition 42 $win $winGuid 'Windows' | Out-Null
+foreach ($case in @(
+    [pscustomobject]@{Name='wrong return disk';Object=([pscustomobject]@{DiskNumber=7;PartitionNumber=3;DriveLetter='G'});Result=$script:returned},
+    [pscustomobject]@{Name='missing return';Object=$null;Result=$script:returned},
+    [pscustomobject]@{Name='missing partition number';Object=([pscustomobject]@{DiskNumber=42;PartitionNumber=$null;DriveLetter='G'});Result=$script:returned},
+    [pscustomobject]@{Name='zero partition number';Object=([pscustomobject]@{DiskNumber=42;PartitionNumber=0;DriveLetter='G'});Result=$script:returned},
+    [pscustomobject]@{Name='wrong query disk';Object=$win;Result=([pscustomobject]@{DiskNumber=0;PartitionNumber=3;DriveLetter='G';GptType=$winGuid})},
+    [pscustomobject]@{Name='wrong query partition';Object=$win;Result=([pscustomobject]@{DiskNumber=42;PartitionNumber=2;DriveLetter='G';GptType=$winGuid})},
+    [pscustomobject]@{Name='wrong gpt type';Object=$win;Result=([pscustomobject]@{DiskNumber=42;PartitionNumber=3;DriveLetter='G';GptType=$efiGuid})},
+    [pscustomobject]@{Name='changed drive letter';Object=$win;Result=([pscustomobject]@{DiskNumber=42;PartitionNumber=3;DriveLetter='D';GptType=$winGuid})},
+    [pscustomobject]@{Name='missing query result';Object=$win;Result=$null}
+)) {
+    $script:returned = $case.Result
+    $rejected = $false
+    try { Assert-LabCreatedPartition 42 $case.Object $winGuid 'Windows' | Out-Null }
+    catch { $rejected = $true }
+    if (-not $rejected) { throw ('Unsafe formatting candidate accepted: ' + $case.Name) }
+}
+$script:queryFails = $true
+$rejected = $false
+try { Assert-LabCreatedPartition 42 $win $winGuid 'Windows' | Out-Null }
+catch { $rejected = $true }
+if (-not $rejected) { throw 'Storage query failure was accepted.' }
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
     def test_new_vhd_identity_guard_refuses_wrong_host_disk_before_initialize(self):
         import shutil
         import subprocess

@@ -420,6 +420,33 @@ function Assert-NewLabVhdDiskIdentity([string]$VhdPath, $MountedVhd) {
     }
     return [int]$diskNumber
 }
+function Assert-LabCreatedPartition([int]$DiskNumber, $Partition, [string]$ExpectedGptType, [string]$Label) {
+    # Format-Volume is destructive. Validate the freshly returned partition
+    # against an independent Storage query before passing it to the formatter.
+    if ($null -eq $Partition -or $Partition -is [Array] -or
+        $null -eq $Partition.DiskNumber -or $null -eq $Partition.PartitionNumber -or
+        ($Partition.DiskNumber -isnot [int] -and $Partition.DiskNumber -isnot [uint32] -and
+         $Partition.DiskNumber -isnot [long]) -or
+        ($Partition.PartitionNumber -isnot [int] -and $Partition.PartitionNumber -isnot [uint32] -and
+         $Partition.PartitionNumber -isnot [long])) {
+        throw ('New lab ' + $Label + ' partition identity is missing or invalid.')
+    }
+    $partNumber = [long]$Partition.PartitionNumber
+    if ([long]$Partition.DiskNumber -ne $DiskNumber -or
+        $partNumber -lt 1 -or $partNumber -gt [int]::MaxValue -or
+        ([string]$Partition.DriveLetter) -cnotmatch '^[A-Za-z]$') {
+        throw ('New lab ' + $Label + ' partition is not a valid assigned guest volume.')
+    }
+    $actual = Get-Partition -DiskNumber $DiskNumber -PartitionNumber ([uint32]$partNumber) -ErrorAction Stop
+    if ($null -eq $actual -or $actual -is [Array] -or
+        $null -eq $actual.DiskNumber -or $null -eq $actual.PartitionNumber -or
+        [long]$actual.DiskNumber -ne $DiskNumber -or
+        [long]$actual.PartitionNumber -ne $partNumber -or
+        ([string]$actual.DriveLetter) -cne ([string]$Partition.DriveLetter) -or
+        [guid]::Parse([string]$actual.GptType) -ne [guid]::Parse($ExpectedGptType)) {
+        throw ('New lab ' + $Label + ' partition could not be independently verified.')
+    }
+}
 function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $BootstrapArtifact) {
     Assert-Artifact $BootstrapArtifact 'Guest bootstrap script'
     Assert-Artifact $Image.source_iso 'Windows ISO'
@@ -458,11 +485,13 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         $vhdMounted = Mount-VHD -Path $output -PassThru -ErrorAction Stop
         $diskNumber = Assert-NewLabVhdDiskIdentity $output $vhdMounted
         Initialize-Disk -Number $diskNumber -PartitionStyle GPT -ErrorAction Stop | Out-Null
-        $efi = New-Partition -DiskNumber $diskNumber -Size 260MB -AssignDriveLetter -GptType '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}'
-        Format-Volume -Partition $efi -FileSystem FAT32 -NewFileSystemLabel 'SYSTEM' -Confirm:$false | Out-Null
-        New-Partition -DiskNumber $diskNumber -Size 16MB -GptType '{e3c9e316-0b5c-4db8-817d-f92df00215ae}' | Out-Null
-        $windows = New-Partition -DiskNumber $diskNumber -UseMaximumSize -AssignDriveLetter
-        Format-Volume -Partition $windows -FileSystem NTFS -NewFileSystemLabel 'Windows' -Confirm:$false | Out-Null
+        $efi = New-Partition -DiskNumber $diskNumber -Size 260MB -AssignDriveLetter -GptType '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' -ErrorAction Stop
+        Assert-LabCreatedPartition $diskNumber $efi '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' 'EFI'
+        Format-Volume -Partition $efi -FileSystem FAT32 -NewFileSystemLabel 'SYSTEM' -Confirm:$false -ErrorAction Stop | Out-Null
+        New-Partition -DiskNumber $diskNumber -Size 16MB -GptType '{e3c9e316-0b5c-4db8-817d-f92df00215ae}' -ErrorAction Stop | Out-Null
+        $windows = New-Partition -DiskNumber $diskNumber -UseMaximumSize -AssignDriveLetter -ErrorAction Stop
+        Assert-LabCreatedPartition $diskNumber $windows '{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}' 'Windows'
+        Format-Volume -Partition $windows -FileSystem NTFS -NewFileSystemLabel 'Windows' -Confirm:$false -ErrorAction Stop | Out-Null
         $partitionRoots = Get-LabPartitionRoots $windows $efi
         $windowsRoot = $partitionRoots.WindowsRoot
         $efiRoot = $partitionRoots.EfiRoot

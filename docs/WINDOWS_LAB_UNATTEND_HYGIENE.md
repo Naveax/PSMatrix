@@ -312,6 +312,18 @@ touching or initializing any disk. These checks reduce wrong-disk risk,
 but concurrent host/storage races and actual elevated Hyper-V behavior
 still require independent acceptance.
 
+Before formatting new EFI or Windows partitions, the host now checks the
+returned `New-Partition` object against an independent
+`Get-Partition -DiskNumber -PartitionNumber` result. The expected VHDX
+disk number, partition number, assigned drive letter and EFI/basic-data
+GPT type must agree. Missing, substituted, differently typed or
+cross-disk partition results abort before `Format-Volume`. Partition
+creation and formatting now require terminating Storage errors.
+Isolated WinPS 5.1/PS7 fixtures demonstrate valid and rejected
+responses without performing any disk formatting. Provider races
+remain outside the scope of these mocks and require controlled
+Hyper-V acceptance.
+
 Failed guest bootstraps now also **attempt to remove staging credential and
 signing ZIPs plus plaintext Windows unattended answer files** before
 writing the `FAIL` bootstrap result. `Invoke-GuestBootstrapFailureCleanup`
