@@ -420,6 +420,39 @@ function Assert-NewLabVhdDiskIdentity([string]$VhdPath, $MountedVhd) {
     }
     return [int]$diskNumber
 }
+function Assert-CheckpointVhdDiskIdentity([string]$VhdPath, $MountedVhd) {
+    # Guest checkpoint inspection is read-only, but a wrong disk number could
+    # make elevated host code inspect an unrelated Windows installation.
+    if ($null -eq $MountedVhd -or $null -eq $MountedVhd.DiskNumber -or
+        ($MountedVhd.DiskNumber -isnot [int] -and
+         $MountedVhd.DiskNumber -isnot [uint32] -and
+         $MountedVhd.DiskNumber -isnot [long])) {
+        throw 'Guest checkpoint VHDX mount returned an invalid disk number.'
+    }
+    $diskNumber = [long]$MountedVhd.DiskNumber
+    if ($diskNumber -lt 0 -or $diskNumber -gt [int]::MaxValue) {
+        throw 'Guest checkpoint VHDX disk number is outside the valid range.'
+    }
+    $vhd = Get-VHD -DiskNumber ([uint32]$diskNumber) -ErrorAction Stop
+    if ($null -eq $vhd -or $vhd -is [Array] -or
+        $vhd.Attached -isnot [bool] -or $vhd.Attached -ne $true -or
+        [string]::IsNullOrWhiteSpace([string]$vhd.Path) -or
+        -not [string]::Equals(
+            [IO.Path]::GetFullPath([string]$vhd.Path),
+            [IO.Path]::GetFullPath($VhdPath),
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Guest checkpoint disk does not belong to the expected attached VHDX.'
+    }
+    $disk = Get-Disk -Number ([int]$diskNumber) -ErrorAction Stop
+    if ($null -eq $disk -or $disk -is [Array] -or
+        $null -eq $disk.Number -or [long]$disk.Number -ne $diskNumber -or
+        $disk.IsBoot -isnot [bool] -or $disk.IsSystem -isnot [bool] -or
+        $disk.IsBoot -ne $false -or $disk.IsSystem -ne $false -or
+        [string]$disk.PartitionStyle -ine 'GPT') {
+        throw 'Guest checkpoint VHDX disk is not a valid non-system GPT disk.'
+    }
+    return [int]$diskNumber
+}
 function Assert-LabCreatedPartition([int]$DiskNumber, $Partition, [string]$ExpectedGptType, [string]$Label) {
     # Format-Volume is destructive. Validate the freshly returned partition
     # against an independent Storage query before passing it to the formatter.
@@ -796,7 +829,8 @@ function Read-BootstrapResult([string]$VhdPath, [string]$ExpectedBootstrapNonce)
         if ($null -eq $mounted -or $null -eq $mounted.DiskNumber) {
             throw 'Guest VHDX mount did not return a valid disk number; refusing checkpoint.'
         }
-        $root = Get-WindowsPartitionRoot $mounted.DiskNumber
+        $diskNumber = Assert-CheckpointVhdDiskIdentity $VhdPath $mounted
+        $root = Get-WindowsPartitionRoot $diskNumber
         # A mounted guest volume is untrusted input. Inspect ancestor links
         # before reading a result file so a junction cannot redirect host I/O.
         foreach ($relative in @('ProgramData', 'ProgramData\PSMatrix')) {

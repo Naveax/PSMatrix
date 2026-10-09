@@ -327,6 +327,16 @@ results. No actual VHDX or physical storage was created for these tests.
 This does not eliminate external filesystem races or substitute for
 real elevated Hyper-V acceptance.
 
+Before post-shutdown checkpoint inspection reads any guest filesystem,
+the host now binds the disk number returned by `Mount-VHD` to the exact
+expected attached VHDX with `Get-VHD -DiskNumber`, then independently
+checks `Get-Disk` reports the same number, a GPT partition style, and
+native `IsBoot=false` / `IsSystem=false` flags. Missing, malformed,
+unrelated, host boot/system or RAW-disk responses abort before scanning
+the Windows partition. Windows PowerShell 5.1/7 fixtures simulate these
+fail-closed cases without mounting any disk. It is not a guest integrity
+attestation or protection against concurrent storage identity races.
+
 Before formatting new EFI or Windows partitions, the host now checks the
 returned `New-Partition` object against an independent
 `Get-Partition -DiskNumber -PartitionNumber` result. The expected VHDX

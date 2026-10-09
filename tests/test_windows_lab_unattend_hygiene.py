@@ -472,6 +472,99 @@ foreach ($target in @('Windows','Windows\System32','Windows\System32\Config','Wi
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_checkpoint_mount_disk_number_is_bound_to_guest_vhd_before_scan(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        beginning = host.index("function Assert-CheckpointVhdDiskIdentity(")
+        end = host.index("\nfunction New-LabVhd(", beginning)
+        code = host[beginning:end]
+        reader = host.split("function Read-BootstrapResult(", 1)[1].split(
+            "\nfunction ", 1
+        )[0]
+        self.assertLess(
+            reader.index("$diskNumber = Assert-CheckpointVhdDiskIdentity $VhdPath $mounted"),
+            reader.index("$root = Get-WindowsPartitionRoot $diskNumber"),
+        )
+        self.assertNotIn("Get-WindowsPartitionRoot $mounted.DiskNumber", reader)
+        script = code + r"""
+$ErrorActionPreference = 'Stop'
+$expected = 'D:\Fixture\checkpoint-guest.vhdx'
+$script:vhdPath = $expected
+$script:attached = $true
+$script:diskNumber = 42
+$script:boot = $false
+$script:system = $false
+$script:style = 'GPT'
+$script:queryFails = $false
+function Get-VHD {
+    [CmdletBinding()]
+    param([uint32]$DiskNumber)
+    if($script:queryFails){throw 'mock Get-VHD failed'}
+    return [pscustomobject]@{
+        Path = $script:vhdPath
+        Attached = $script:attached
+    }
+}
+function Get-Disk {
+    [CmdletBinding()]
+    param([int]$Number)
+    if($script:queryFails){throw 'mock Get-Disk failed'}
+    return [pscustomobject]@{
+        Number = $script:diskNumber
+        IsBoot = $script:boot
+        IsSystem = $script:system
+        PartitionStyle = $script:style
+    }
+}
+$mounted = [pscustomobject]@{DiskNumber=42}
+if((Assert-CheckpointVhdDiskIdentity $expected $mounted) -ne 42){
+    throw 'Valid guest checkpoint disk was rejected.'
+}
+foreach($case in @(
+    [pscustomobject]@{Name='unrelated VHD';Prop='vhdPath';Value='D:\Fixture\other.vhdx'},
+    [pscustomobject]@{Name='unattached VHD';Prop='attached';Value=$false},
+    [pscustomobject]@{Name='missing attachment';Prop='attached';Value=$null},
+    [pscustomobject]@{Name='another disk number';Prop='diskNumber';Value=7},
+    [pscustomobject]@{Name='host boot disk';Prop='boot';Value=$true},
+    [pscustomobject]@{Name='host system disk';Prop='system';Value=$true},
+    [pscustomobject]@{Name='raw disk';Prop='style';Value='RAW'},
+    [pscustomobject]@{Name='unknown style';Prop='style';Value=$null}
+)) {
+    $old = Get-Variable -Name $case.Prop -Scope Script -ValueOnly
+    Set-Variable -Name $case.Prop -Scope Script -Value $case.Value
+    $rejected=$false
+    try { Assert-CheckpointVhdDiskIdentity $expected $mounted | Out-Null }
+    catch { $rejected=$true }
+    Set-Variable -Name $case.Prop -Scope Script -Value $old
+    if(-not $rejected){throw ('Unsafe checkpoint disk accepted: '+$case.Name)}
+}
+foreach($num in @($null,-1,'not-a-number')) {
+    $rejected=$false
+    try {
+        Assert-CheckpointVhdDiskIdentity $expected ([pscustomobject]@{DiskNumber=$num}) | Out-Null
+    }
+    catch { $rejected=$true }
+    if(-not $rejected){throw ('Invalid mount disk number accepted: '+$num)}
+}
+$script:queryFails = $true
+$rejected=$false
+try { Assert-CheckpointVhdDiskIdentity $expected $mounted | Out-Null }
+catch { $rejected=$true }
+if(-not $rejected){throw 'Provider failure accepted.'}
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
     def test_guest_volume_format_result_is_verified_before_deployment(self):
         import shutil
         import subprocess
