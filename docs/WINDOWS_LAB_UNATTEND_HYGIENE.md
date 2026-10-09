@@ -265,6 +265,21 @@ open-by-file-ID guarantee against concurrent link swaps, and installations
 that intentionally locate lab media behind junctions must use direct
 non-reparse paths.
 
+All three source ISO attachment states are now checked **before any VM or
+VHDX creation**, not only when each image reaches `New-LabVhd`. A
+pre-mounted third-image ISO could otherwise leave the first two lab
+guests provisioned before the host refused to touch someone else's
+attachment. `Assert-LabPlanSourceIsoDetached` queries every distinct
+canonical ISO path with `Get-DiskImage -ErrorAction Stop`, rejects
+existing mounts, absent or non-Boolean attachment state, and propagates
+Storage provider errors. Case-insensitive identical ISO paths shared
+between images are checked once at initial preflight; the original
+per-image ISO pre-mount check remains at use time. Isolated Windows
+PowerShell 5.1/PowerShell 7 tests mock only the Storage provider response
+and verify the fail-closed third-image cases without mounting real media.
+This does not eliminate concurrent ISO attachment changes, nor replace
+real elevated Hyper-V acceptance.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted

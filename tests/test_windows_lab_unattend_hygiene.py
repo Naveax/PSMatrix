@@ -2245,6 +2245,98 @@ exit 0
                     run.returncode, 0, exe + ": " + run.stdout + run.stderr,
                 )
 
+    def test_host_preflights_all_source_iso_attachment_states_before_first_vm(self):
+        host = HOST.read_text(encoding="utf-8")
+        self.assertIn("function Assert-LabPlanSourceIsoDetached(", host)
+        section = host.split("function Assert-LabPlanSourceIsoDetached(", 1)[1].split(
+            "function Wait-FirstBoot(", 1
+        )[0]
+        for expected in (
+            "Get-DiskImage -ImagePath $isoPath -ErrorAction Stop",
+            "Windows source ISO pre-mount state is unavailable; refusing provisioning.",
+            "Windows source ISO was already mounted; refusing to touch a pre-existing attachment.",
+            "[StringComparer]::OrdinalIgnoreCase",
+        ):
+            self.assertIn(expected, section)
+        before = host.index("Assert-LabPlanSourceIsoDetached $planValue.images")
+        self.assertLess(before, host.index("$results = @()"))
+        self.assertLess(before, host.index("New-LabVhd $image"))
+        new_lab = host.split("function New-LabVhd(", 1)[1].split(
+            "function Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        self.assertIn("Get-DiskImage -ImagePath $isoPath -ErrorAction Stop", new_lab)
+        self.assertIn("if ($preMount.Attached)", new_lab)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_iso_preflight_dynamic_shared_and_attached_third_image(self):
+        import shutil
+        import subprocess
+
+        src_path = "'" + str(HOST).replace("'", "''") + "'"
+        script = """
+$ErrorActionPreference = 'Stop'
+$source = Get-Content -LiteralPath __HOST__ -Raw
+$a = $source.IndexOf('function Assert-LabPlanSourceIsoDetached(')
+$b = $source.IndexOf('function Wait-FirstBoot(', $a)
+if ($a -lt 0 -or $b -le $a) { throw 'Missing host ISO preflight.' }
+Invoke-Expression $source.Substring($a, $b - $a)
+$root = Join-Path $env:TEMP 'psmatrix-fake-source-isos'
+$isoA = Join-Path $root 'shared.iso'
+$isoB = Join-Path $root 'third.iso'
+$images = @(
+    [pscustomobject]@{source_iso=[pscustomobject]@{path=$isoA}},
+    [pscustomobject]@{source_iso=[pscustomobject]@{path=(Join-Path $root 'SHARED.ISO')}},
+    [pscustomobject]@{source_iso=[pscustomobject]@{path=$isoB}}
+)
+$script:mode = 'all-clear'
+$script:queries = @()
+function Get-DiskImage {
+    param([string]$ImagePath, [string]$ErrorAction)
+    $script:queries += $ImagePath
+    if ($script:mode -eq 'provider-fail' -and $ImagePath -eq $isoB) {
+        throw 'Storage provider query failed.'
+    }
+    if ($ImagePath -eq $isoB) {
+        if ($script:mode -eq 'third-attached') { return [pscustomobject]@{Attached=$true} }
+        if ($script:mode -eq 'missing-state') { return [pscustomobject]@{Attached=$null} }
+        if ($script:mode -eq 'invalid-state') { return [pscustomobject]@{Attached='False'} }
+        if ($script:mode -eq 'no-object') { return $null }
+    }
+    return [pscustomobject]@{Attached=$false}
+}
+Assert-LabPlanSourceIsoDetached $images
+if (@($script:queries).Count -ne 2) { throw 'Shared ISO was queried more than once.' }
+$cases = @(
+    @{mode='third-attached';error='Windows source ISO was already mounted; refusing to touch a pre-existing attachment.'},
+    @{mode='missing-state';error='Windows source ISO pre-mount state is unavailable; refusing provisioning.'},
+    @{mode='invalid-state';error='Windows source ISO pre-mount state is unavailable; refusing provisioning.'},
+    @{mode='no-object';error='Windows source ISO pre-mount state is unavailable; refusing provisioning.'},
+    @{mode='provider-fail';error='Storage provider query failed.'}
+)
+foreach ($case in $cases) {
+    $script:mode = $case.mode
+    $script:queries = @()
+    try {
+        Assert-LabPlanSourceIsoDetached $images
+        throw ('Unsafe third ISO accepted: ' + $case.mode)
+    } catch {
+        if ($_.Exception.Message -cne $case.error) {
+            throw ('Wrong failure for ' + $case.mode + ': ' + $_.Exception.Message)
+        }
+    }
+}
+exit 0
+""".replace("__HOST__", src_path)
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            r = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=45, check=False,
+            )
+            self.assertEqual(r.returncode, 0, exe + ": " + r.stdout + r.stderr)
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)

@@ -793,6 +793,24 @@ function Assert-LabPlanVmShape([object[]]$Images) {
     }
 }
 
+function Assert-LabPlanSourceIsoDetached([object[]]$Images) {
+    # Refuse an ISO already mounted for ANY planned image before the first
+    # VHDX/VM side effect. WinPS 4.0 and 5.0 commonly share one source ISO.
+    # Keep the use-time Get-DiskImage check inside New-LabVhd as well.
+    $seenIsoPaths = New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($image in $Images) {
+        $isoPath = [IO.Path]::GetFullPath([string]$image.source_iso.path)
+        if (-not $seenIsoPaths.Add($isoPath)) { continue }
+        $preMount = Get-DiskImage -ImagePath $isoPath -ErrorAction Stop
+        if ($null -eq $preMount -or $preMount.Attached -isnot [bool]) {
+            throw 'Windows source ISO pre-mount state is unavailable; refusing provisioning.'
+        }
+        if ($preMount.Attached) {
+            throw 'Windows source ISO was already mounted; refusing to touch a pre-existing attachment.'
+        }
+    }
+}
+
 function Wait-FirstBoot([string]$VmName, [int]$TimeoutSeconds) {
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     $observedRunning = $false
@@ -831,6 +849,7 @@ Assert-LabHyperVTargetsReady $planValue.images
 Assert-LabPlanArtifactsReady $planValue.images
 Assert-LabPlanPasswordEnvironment $planValue.images
 Assert-LabPlanVmShape $planValue.images
+Assert-LabPlanSourceIsoDetached $planValue.images
 $results = @()
 foreach ($image in $planValue.images) {
     $vmName = [string]$image.image_id
