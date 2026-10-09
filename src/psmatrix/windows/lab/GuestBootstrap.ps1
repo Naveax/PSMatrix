@@ -22,6 +22,23 @@ function Write-Result([string]$Status, [string]$Message, [hashtable]$Extra) {
     $result | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $path -Encoding UTF8
 }
 
+function Assert-GuestBootstrapConfig($Config) {
+    # Validate untrusted first-boot configuration before extracting packages or
+    # rendering a credential JSON template. Installer uses the same 64-char ID.
+    if ($null -eq $Config -or $Config.schema -isnot [int] -or
+        $Config.schema -ne 1) {
+        throw 'Bootstrap configuration schema is invalid.'
+    }
+    if ($Config.worker_id -isnot [string] -or
+        $Config.worker_id -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') {
+        throw 'Bootstrap worker_id is invalid.'
+    }
+    if ($Config.worker_port -isnot [int] -or
+        $Config.worker_port -lt 1 -or $Config.worker_port -gt 65535) {
+        throw 'Bootstrap worker_port is invalid.'
+    }
+}
+
 function Expand-Zip([string]$Archive, [string]$Destination) {
     if (-not (Test-Path -LiteralPath $Archive -PathType Leaf)) { throw ('Archive not found: ' + $Archive) }
     $archiveItem = Get-Item -LiteralPath $Archive -Force -ErrorAction Stop
@@ -306,6 +323,7 @@ function Remove-GuestBootstrapStagingSecrets([string]$Root) {
 try {
     if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) { throw 'Bootstrap configuration is missing.' }
     $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+    Assert-GuestBootstrapConfig $config
     # Refuse a missing/invalid nonce before side effects or service install.
     if ($config.bootstrap_nonce -isnot [string] -or
         $config.bootstrap_nonce -cnotmatch '^[0-9a-f]{64}$') {

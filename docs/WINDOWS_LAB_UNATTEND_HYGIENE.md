@@ -124,6 +124,17 @@ at different package paths now fail closed rather than selecting the first
 result from a recursive scan. Tests exercise missing, unique and duplicate
 cases on WinPS 5.1 and PowerShell 7; real legacy-guest acceptance is pending.
 
+Before creating the extraction roots or rendering worker credentials,
+the guest now checks the first-boot configuration contract: native integer
+`schema=1`, `worker_id` matching the 1–64-character Windows installer-safe
+ASCII identity format, and a native integer TCP `worker_port` in `1..65535`.
+Invalid and JSON-injection-like worker identifiers, absent or nonnumeric
+ports, and incorrect schema versions fail closed. The limit matches the
+Windows worker installer's narrower identity restriction; upstream media
+planning permits some longer IDs, which are not guest-installable without a
+separate reviewed contract change. These preflight controls do not validate
+the provenance of the plan or replace real elevated guest acceptance.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted

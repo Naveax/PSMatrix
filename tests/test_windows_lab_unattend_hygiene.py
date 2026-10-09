@@ -1260,6 +1260,82 @@ exit 0
                     shell + ": " + result.stdout + result.stderr,
                 )
 
+    def test_bootstrap_config_identity_and_port_validation_precedes_extraction(self):
+        guest = GUEST.read_text(encoding="utf-8")
+        checker = guest.split("function Assert-GuestBootstrapConfig(", 1)[1].split(
+            "function Expand-Zip(", 1
+        )[0]
+        for fragment in (
+            "Bootstrap configuration schema is invalid.",
+            "Bootstrap worker_id is invalid.",
+            "Bootstrap worker_port is invalid.",
+            "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+            "$Config.worker_port -isnot [int]",
+            "$Config.worker_port -gt 65535",
+        ):
+            self.assertIn(fragment, checker)
+        self.assertLess(
+            guest.index("    Assert-GuestBootstrapConfig $config"),
+            guest.index("    Expand-Zip (Join-Path $bootstrapRoot 'worker-package.zip')"),
+        )
+        self.assertLess(
+            guest.index("    Assert-GuestBootstrapConfig $config"),
+            guest.index("    $workerConfig = Join-Path $configRoot 'worker.json'"),
+        )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_bootstrap_config_identity_rejects_json_injection_and_bad_ports(self):
+        import shutil
+        import subprocess
+
+        script = """
+$ErrorActionPreference = 'Stop'
+$raw = Get-Content -LiteralPath '__SCRIPT__' -Raw
+$start = $raw.IndexOf('function Assert-GuestBootstrapConfig(')
+$end = $raw.IndexOf('function Expand-Zip(', $start)
+if ($start -lt 0 -or $end -le $start) { throw 'Missing bootstrap preflight function.' }
+Invoke-Expression $raw.Substring($start, $end - $start)
+$good = [pscustomobject]@{ schema = 1; worker_id = 'winps40_worker.a'; worker_port = 18080 }
+Assert-GuestBootstrapConfig $good
+$good.worker_id = 'a' * 64
+Assert-GuestBootstrapConfig $good
+$cases = @(
+    @{ type='schema'; value=[pscustomobject]@{schema=2;worker_id='valid-worker';worker_port=18080}; expected='Bootstrap configuration schema is invalid.' },
+    @{ type='missing-schema'; value=[pscustomobject]@{worker_id='valid-worker';worker_port=18080}; expected='Bootstrap configuration schema is invalid.' },
+    @{ type='id-injection'; value=[pscustomobject]@{schema=1;worker_id='a","admin":true,"b';worker_port=18080}; expected='Bootstrap worker_id is invalid.' },
+    @{ type='id-space'; value=[pscustomobject]@{schema=1;worker_id='a b';worker_port=18080}; expected='Bootstrap worker_id is invalid.' },
+    @{ type='id-too-long'; value=[pscustomobject]@{schema=1;worker_id=('a' * 65);worker_port=18080}; expected='Bootstrap worker_id is invalid.' },
+    @{ type='id-missing'; value=[pscustomobject]@{schema=1;worker_port=18080}; expected='Bootstrap worker_id is invalid.' },
+    @{ type='port-zero'; value=[pscustomobject]@{schema=1;worker_id='valid-worker';worker_port=0}; expected='Bootstrap worker_port is invalid.' },
+    @{ type='port-overflow'; value=[pscustomobject]@{schema=1;worker_id='valid-worker';worker_port=65536}; expected='Bootstrap worker_port is invalid.' },
+    @{ type='port-string'; value=[pscustomobject]@{schema=1;worker_id='valid-worker';worker_port='18080'}; expected='Bootstrap worker_port is invalid.' },
+    @{ type='port-missing'; value=[pscustomobject]@{schema=1;worker_id='valid-worker'}; expected='Bootstrap worker_port is invalid.' }
+)
+foreach ($test in $cases) {
+    try {
+        Assert-GuestBootstrapConfig $test.value
+        throw ('Unexpected success: ' + $test.type)
+    } catch {
+        if ($_.Exception.Message -cne $test.expected) {
+            throw ('Unexpected result for ' + $test.type + ': ' + $_.Exception.Message)
+        }
+    }
+}
+exit 0
+""".replace("__SCRIPT__", str(GUEST).replace("'", "''"))
+        for shell in ("powershell.exe", "pwsh.exe"):
+            if shutil.which(shell) is None:
+                continue
+            result = subprocess.run(
+                [shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=30, check=False,
+            )
+            self.assertEqual(
+                result.returncode, 0,
+                shell + ": " + result.stdout + result.stderr,
+            )
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)
