@@ -3191,6 +3191,90 @@ exit 0
                     executable + ": " + result.stdout + result.stderr,
                 )
 
+    def test_host_preflights_all_checkpoint_names_before_creating_first_vm(self):
+        host = HOST.read_text(encoding="utf-8")
+        self.assertIn("function Assert-LabPlanCheckpointNames(", host)
+        section = host.split("function Assert-LabPlanCheckpointNames(", 1)[1].split(
+            "function Wait-FirstBoot(", 1
+        )[0]
+        self.assertIn(
+            "Windows lab plan checkpoint_name is invalid.", section
+        )
+        self.assertIn(
+            "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", section
+        )
+        self.assertIn(
+            "$image.checkpoint_name -isnot [string]", section
+        )
+        self.assertIn(
+            "Assert-LabPlanCheckpointNames $planValue.images", host
+        )
+        self.assertLess(
+            host.index("Assert-LabPlanCheckpointNames $planValue.images"),
+            host.index("$results = @()"),
+        )
+        self.assertLess(
+            host.index("Assert-LabPlanCheckpointNames $planValue.images"),
+            host.index("Checkpoint-VM -Name $vmName"),
+        )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_checkpoint_name_preflight_dynamic_rejects_invalid_third_image(self):
+        import shutil
+        import subprocess
+
+        path_literal = "'" + str(HOST).replace("'", "''") + "'"
+        script = """
+$ErrorActionPreference = 'Stop'
+$hostSource = Get-Content -LiteralPath __HOST__ -Raw
+$start = $hostSource.IndexOf('function Assert-LabPlanCheckpointNames(')
+$stop = $hostSource.IndexOf('function Wait-FirstBoot(', $start)
+if ($start -lt 0 -or $stop -le $start) { throw 'Checkpoint preflight missing.' }
+Invoke-Expression $hostSource.Substring($start, $stop - $start)
+function New-ValidImagePlan {
+    return @(
+        [pscustomobject]@{checkpoint_name='clean-image'},
+        [pscustomobject]@{checkpoint_name='clean-image'},
+        [pscustomobject]@{checkpoint_name=('A' + ('.' * 126) + '9')}
+    )
+}
+Assert-LabPlanCheckpointNames (New-ValidImagePlan)
+$cases = @(
+    $null, '', ' ', '.invalid', '-invalid', '_invalid',
+    'bad name', 'bad/name', 'bad\name', 'bad:name',
+    'bad*name', 'bad?name', 'bad#name',
+    ('bad' + [char]10 + 'name'), ('A' * 129), 1234, $true
+)
+foreach ($bad in $cases) {
+    $images = New-ValidImagePlan
+    $images[2].checkpoint_name = $bad
+    try {
+        Assert-LabPlanCheckpointNames $images
+        throw 'Bad third checkpoint was accepted.'
+    }
+    catch {
+        if ($_.Exception.Message -cne 'Windows lab plan checkpoint_name is invalid.') {
+            throw ('Wrong failure: ' + $_.Exception.Message)
+        }
+    }
+}
+$images = New-ValidImagePlan
+$images[2].checkpoint_name = 'a.b_9-X'
+Assert-LabPlanCheckpointNames $images
+exit 0
+""".replace("__HOST__", path_literal)
+        for shell in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(shell):
+                continue
+            result = subprocess.run(
+                [shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(
+                result.returncode, 0, shell + ": " + result.stdout + result.stderr,
+            )
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)

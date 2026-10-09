@@ -413,6 +413,20 @@ all privileged concurrent filesystem replacement races. Operators
 should keep plans in a controlled non-reparse directory, not rely on
 a self-declared SHA-256 as an authorization signature.
 
+Before creating any VM/VHDX, the host now checks the **checkpoint
+names of all three images** against the Python provisioner's existing
+`_safe_id` contract: native strings with 1–128 ASCII characters,
+starting with an alphanumeric character and containing only letters,
+numbers, dot, underscore or hyphen. Previously `checkpoint_name`
+was passed directly to `Checkpoint-VM` as each image finished. An
+invalid label on the third guest could therefore leave earlier guests
+partially provisioned. Reusing the same label on different VMs remains
+valid because checkpoint names are scoped to individual VMs. The
+existing `Checkpoint-VM -SnapshotName` operation and Standard checkpoint
+selection are unchanged. Isolated WinPS5.1 and PS7 tests exercise
+accepted name boundaries and malformed third-image names without
+creating or modifying Hyper-V VMs.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted

@@ -1044,6 +1044,18 @@ function Assert-LabPlanDigest($PlanValue) {
     }
 }
 
+function Assert-LabPlanCheckpointNames([object[]]$Images) {
+    # Mirror the Python producer's _safe_id contract before the first VM.
+    # Do not let an invalid third snapshot label strand earlier VM builds.
+    # Identical names are allowed for different, uniquely named VMs.
+    foreach ($image in $Images) {
+        if ($image.checkpoint_name -isnot [string] -or
+            $image.checkpoint_name -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$') {
+            throw 'Windows lab plan checkpoint_name is invalid.'
+        }
+    }
+}
+
 function Wait-FirstBoot([string]$VmName, [int]$TimeoutSeconds) {
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     $observedRunning = $false
@@ -1087,6 +1099,7 @@ Assert-LabPlanArtifactsReady $planValue.images
 Assert-LabPlanPasswordEnvironment $planValue.images
 Assert-LabPlanVmShape $planValue.images
 Assert-LabPlanSourceIsoDetached $planValue.images
+Assert-LabPlanCheckpointNames $planValue.images
 $results = @()
 foreach ($image in $planValue.images) {
     $vmName = [string]$image.image_id
