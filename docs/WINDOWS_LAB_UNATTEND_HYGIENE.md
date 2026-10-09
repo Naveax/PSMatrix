@@ -308,8 +308,15 @@ identity fails closed without detaching an unrelated image. The
 `finally` scope still performs ISO cleanup after earlier VHD errors
 when identity is valid. Isolated Windows PowerShell 5.1 / PowerShell 7
 mocks verify zero dismounts for wrong-image responses, exactly one for
-the expected ISO, and rejection of substituted post-dismount state.
-This does not eliminate races between Storage queries and dismount.
+the expected attached ISO, and rejection of substituted post-dismount
+state. The cleanup now also **skips the dismount command if an independent
+Storage query confirms the ISO is already detached**, as can happen
+after a failed/partial mount. It still re-queries and verifies the
+detached state before returning. Windows PowerShell 5.1/7 mocks cover
+both initially detached and attached cases without touching real
+media. This prevents a spurious second dismount error from obscuring
+the original mount error, but does not eliminate races between Storage
+queries and dismount.
 
 The newly created EFI and Windows guest partitions are now checked for
 distinct, single alphabetical drive letters before the elevated host calls

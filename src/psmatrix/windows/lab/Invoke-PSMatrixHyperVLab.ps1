@@ -384,7 +384,11 @@ function Close-LabBuildMedia([string]$VhdPath, [string]$IsoPath, [bool]$WasMount
     finally {
         $isoBefore = Get-DiskImage -ImagePath $IsoPath -ErrorAction Stop
         Assert-LabCleanupIsoIdentity $IsoPath $isoBefore
-        Dismount-DiskImage -ImagePath $IsoPath -ErrorAction Stop
+        # A failed/partial mount may leave the ISO detached. Dismounting an
+        # already detached source can mask the original mount failure.
+        if ($isoBefore.Attached) {
+            Dismount-DiskImage -ImagePath $IsoPath -ErrorAction Stop
+        }
         # A successful dismount command does not establish that the ISO has
         # detached. Verify its actual Storage module attachment state.
         $isoState = Get-DiskImage -ImagePath $IsoPath -ErrorAction Stop

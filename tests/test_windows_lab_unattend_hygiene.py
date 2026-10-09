@@ -578,6 +578,78 @@ foreach ($target in @('Windows','Windows\System32','Windows\System32\Config','Wi
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_iso_cleanup_skips_dismount_when_already_detached(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        helper_start = host.index("function Assert-LabCleanupVhdIdentity(")
+        cleanup_end = host.index("\nfunction Assert-LabPlanArtifactsReady(", helper_start)
+        source = host[helper_start:cleanup_end]
+        cleanup = source.split("function Close-LabBuildMedia(", 1)[1]
+        self.assertIn("if ($isoBefore.Attached) {", cleanup)
+        self.assertLess(
+            cleanup.index("Assert-LabCleanupIsoIdentity $IsoPath $isoBefore"),
+            cleanup.index("if ($isoBefore.Attached) {"),
+        )
+        self.assertLess(
+            cleanup.index("if ($isoBefore.Attached) {"),
+            cleanup.index("Dismount-DiskImage -ImagePath $IsoPath -ErrorAction Stop"),
+        )
+        script = source + r"""
+$ErrorActionPreference = 'Stop'
+$iso = 'D:\Fixture\source.iso'
+$script:attached = $false
+$script:isoDismounts = 0
+$script:imageReads = 0
+function Test-Path {
+    [CmdletBinding()]
+    param([string]$LiteralPath,[string]$PathType)
+    return $false
+}
+function Get-DiskImage {
+    [CmdletBinding()]
+    param([string]$ImagePath)
+    $script:imageReads++
+    return [pscustomobject]@{
+        ImagePath = $ImagePath
+        Attached = $script:attached
+    }
+}
+function Dismount-DiskImage {
+    [CmdletBinding()]
+    param([string]$ImagePath)
+    $script:isoDismounts++
+    if (-not $script:attached) {
+        throw 'Dismount called for already detached source.'
+    }
+    $script:attached = $false
+}
+# Mount-DiskImage can fail before creating an attachment. Cleanup must not
+# introduce a second failure or attempt a dismount against an unattached ISO.
+Close-LabBuildMedia 'D:\Fixture\missing-output.vhdx' $iso $false
+if ($script:isoDismounts -ne 0 -or $script:imageReads -ne 2) {
+    throw 'Already detached ISO was needlessly dismounted or not verified.'
+}
+$script:attached = $true
+$script:isoDismounts = 0
+$script:imageReads = 0
+Close-LabBuildMedia 'D:\Fixture\missing-output.vhdx' $iso $false
+if ($script:isoDismounts -ne 1 -or $script:imageReads -ne 2 -or $script:attached) {
+    throw 'Attached ISO was not dismounted exactly once and independently verified.'
+}
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
     def test_iso_cleanup_identity_guard_blocks_unrelated_image_before_dismount(self):
         import shutil
         import subprocess
