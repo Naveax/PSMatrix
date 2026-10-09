@@ -117,8 +117,9 @@ destination uncreated. These checks do not authenticate the supplied ZIP or
 replace review of the archive publisher and real elevated guest acceptance.
 
 The guest also requires an **unambiguous required-file selection** when it
-locates the credential `worker.json` template or the worker
-`install-worker.ps1` helper. A missing file or multiple matching filenames
+locates the credential `worker.json` template, the worker
+`install-worker.ps1` helper, or the offline `psmatrix-*.whl` installation
+artifact. A missing file or multiple matching wheel/helper/template files
 at different package paths now fail closed rather than selecting the first
 result from a recursive scan. Tests exercise missing, unique and duplicate
 cases on WinPS 5.1 and PowerShell 7; real legacy-guest acceptance is pending.

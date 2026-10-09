@@ -147,6 +147,15 @@ function Find-File([string]$Root, [string]$Name) {
     return $candidates[0].FullName
 }
 
+function Find-UniqueWorkerWheel([string]$Root) {
+    # A staged worker package must not choose between multiple possible
+    # install artifacts by filesystem enumeration order.
+    $wheels = @(Get-ChildItem -LiteralPath $Root -Recurse -File -Filter 'psmatrix-*.whl' -ErrorAction Stop)
+    if ($wheels.Count -eq 0) { throw 'PSMatrix wheel is missing from worker package.' }
+    if ($wheels.Count -ne 1) { throw 'Multiple PSMatrix wheels found in worker package.' }
+    return $wheels[0].FullName
+}
+
 function Set-RestrictedDirectoryAcl([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
         throw ('Restricted directory is missing: ' + $Path)
@@ -333,9 +342,8 @@ try {
     }
     if ($python -eq $null) { throw 'python.exe was not found after installation.' }
 
-    $wheel = Get-ChildItem -LiteralPath $workerRoot -Recurse -File -Filter 'psmatrix-*.whl' | Select-Object -First 1
-    if ($wheel -eq $null) { throw 'PSMatrix wheel is missing from worker package.' }
-    & $python.Source -m pip install --no-index --disable-pip-version-check $wheel.FullName
+    $wheelPath = Find-UniqueWorkerWheel $workerRoot
+    & $python.Source -m pip install --no-index --disable-pip-version-check $wheelPath
     if ($LASTEXITCODE -ne 0) { throw 'Offline PSMatrix wheel installation failed.' }
 
     $template = Find-File $credentialRoot 'worker.json'

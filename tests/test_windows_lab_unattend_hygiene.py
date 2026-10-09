@@ -1177,6 +1177,89 @@ exit 0
                     run.returncode, 0, shell + ": " + run.stdout + run.stderr,
                 )
 
+    def test_worker_wheel_selection_requires_exactly_one_match(self):
+        guest = GUEST.read_text(encoding="utf-8")
+        selector = guest.split("function Find-UniqueWorkerWheel(", 1)[1].split(
+            "function Set-RestrictedDirectoryAcl(", 1
+        )[0]
+        for fragment in (
+            "-LiteralPath $Root -Recurse -File -Filter 'psmatrix-*.whl' -ErrorAction Stop",
+            "$wheels.Count -eq 0",
+            "$wheels.Count -ne 1",
+            "Multiple PSMatrix wheels found in worker package.",
+            "return $wheels[0].FullName",
+        ):
+            self.assertIn(fragment, selector)
+        self.assertNotIn("Select-Object -First 1", selector)
+        self.assertIn("$wheelPath = Find-UniqueWorkerWheel $workerRoot", guest)
+        self.assertIn(
+            "& $python.Source -m pip install --no-index --disable-pip-version-check $wheelPath",
+            guest,
+        )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_worker_wheel_selection_dynamic_unique_duplicate_and_missing(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        def quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-unique-wheel-") as root:
+            folder = Path(root)
+            unique_root = folder / "unique"
+            duplicates_root = folder / "duplicates"
+            missing_root = folder / "missing"
+            for path in (unique_root, duplicates_root, missing_root):
+                path.mkdir()
+            wheel_name = "psmatrix-2.0.0-py3-none-any.whl"
+            wheel_path = unique_root / wheel_name
+            wheel_path.write_bytes(b"test")
+            (duplicates_root / wheel_name).write_bytes(b"test")
+            nested = duplicates_root / "other"
+            nested.mkdir()
+            (nested / "psmatrix-2.0.1-py3-none-any.whl").write_bytes(b"test")
+            script = """
+$ErrorActionPreference = 'Stop'
+$raw = Get-Content -LiteralPath {guest} -Raw
+$start = $raw.IndexOf('function Find-UniqueWorkerWheel(')
+$end = $raw.IndexOf('function Set-RestrictedDirectoryAcl(', $start)
+if ($start -lt 0 -or $end -le $start) {{ throw 'Missing selector function.' }}
+Invoke-Expression $raw.Substring($start, $end - $start)
+$selected = Find-UniqueWorkerWheel {unique_root}
+if ($selected -cne {wheel_path}) {{ throw 'Incorrect unique wheel selected.' }}
+try {{
+    Find-UniqueWorkerWheel {duplicates_root} | Out-Null
+    throw 'Duplicate wheels were accepted.'
+}} catch {{
+    if ($_.Exception.Message -ne 'Multiple PSMatrix wheels found in worker package.') {{ throw }}
+}}
+try {{
+    Find-UniqueWorkerWheel {missing_root} | Out-Null
+    throw 'Missing wheel was accepted.'
+}} catch {{
+    if ($_.Exception.Message -ne 'PSMatrix wheel is missing from worker package.') {{ throw }}
+}}
+exit 0
+""".format(
+                guest=quote(GUEST), unique_root=quote(unique_root),
+                wheel_path=quote(wheel_path),
+                duplicates_root=quote(duplicates_root), missing_root=quote(missing_root),
+            )
+            for shell in ("powershell.exe", "pwsh.exe"):
+                if shutil.which(shell) is None:
+                    continue
+                result = subprocess.run(
+                    [shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=30, check=False,
+                )
+                self.assertEqual(
+                    result.returncode, 0,
+                    shell + ": " + result.stdout + result.stderr,
+                )
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)
