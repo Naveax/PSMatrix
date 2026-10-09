@@ -39,6 +39,30 @@ function Assert-GuestBootstrapConfig($Config) {
     }
 }
 
+function Assert-GuestExpectedOs($ExpectedOs) {
+    # A matching PowerShell version alone does not establish that the
+    # intended Windows golden image booted. Check the OS before unpacking
+    # sensitive archives, installing services or changing firewall rules.
+    if ($null -eq $ExpectedOs -or $ExpectedOs -isnot [pscustomobject]) {
+        throw 'Guest Windows expected OS identity is missing or invalid.'
+    }
+    $names = @($ExpectedOs.PSObject.Properties.Name)
+    foreach ($key in @('product_name','version','build')) {
+        if ($names -cnotcontains $key -or
+            $ExpectedOs.PSObject.Properties[$key].Value -isnot [string] -or
+            [string]::IsNullOrWhiteSpace($ExpectedOs.PSObject.Properties[$key].Value)) {
+            throw 'Guest Windows expected OS identity is missing or invalid.'
+        }
+    }
+    $actual = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+    if ($null -eq $actual -or
+        [string]$actual.Caption -cne [string]$ExpectedOs.product_name -or
+        [string]$actual.Version -cne [string]$ExpectedOs.version -or
+        [string]$actual.BuildNumber -cne [string]$ExpectedOs.build) {
+        throw 'Guest Windows OS identity does not match the provision plan.'
+    }
+}
+
 function Expand-Zip([string]$Archive, [string]$Destination) {
     if (-not (Test-Path -LiteralPath $Archive -PathType Leaf)) { throw ('Archive not found: ' + $Archive) }
     $archiveItem = Get-Item -LiteralPath $Archive -Force -ErrorAction Stop
@@ -345,6 +369,7 @@ try {
     if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) { throw 'Bootstrap configuration is missing.' }
     $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
     Assert-GuestBootstrapConfig $config
+    Assert-GuestExpectedOs $config.expected_os
     # Refuse a missing/invalid nonce before side effects or service install.
     if ($config.bootstrap_nonce -isnot [string] -or
         $config.bootstrap_nonce -cnotmatch '^[0-9a-f]{64}$') {

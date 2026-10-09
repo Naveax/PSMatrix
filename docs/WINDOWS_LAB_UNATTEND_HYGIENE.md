@@ -331,6 +331,27 @@ hash is not a signature or independent authorization, and the
 `plan_sha256` is not independently authenticated by this check.
 Concurrent filesystem replacement remains a separate limitation.
 
+The host now verifies each image's declared **exact Windows OS identity**
+(`expected_os.product_name`, `version`, `build`) for typed, nonempty
+values before provisioning the first VM, and embeds those three fields
+into the existing ACL-protected guest `bootstrap-config.json`.
+At first boot, `Assert-GuestExpectedOs` queries
+`Win32_OperatingSystem` with `Get-CimInstance` and requires an exact
+match against CIM `Caption`, `Version` and `BuildNumber` before
+unpacking the worker/credential/signing archives or installing services.
+A PowerShell version match alone can no longer authorize a different
+Windows golden image. Missing/malformed expected values, incorrect
+Windows identity and CIM query failure all fail closed; the existing
+guest FAIL-path cleanup and host checkpoint denial remain in place.
+
+Non-elevated Windows PowerShell 5.1 and PowerShell 7 regressions exercise
+the real host and guest validators with isolated dummy OS identities and
+a mocked CIM provider. **Real Windows PowerShell 4.0/5.0/5.1 guest
+acceptance is still required** to establish the precise CIM Caption
+strings on each intended Windows edition. The expected product name
+must match the actual CIM Caption exactly; mismatched operator manifests
+now fail instead of silently accepting the wrong OS.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted

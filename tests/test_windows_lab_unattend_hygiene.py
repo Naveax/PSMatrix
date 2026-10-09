@@ -2675,6 +2675,169 @@ exit 0
                     run.returncode, 0, shell + ": " + run.stdout + run.stderr,
                 )
 
+    def test_expected_os_identity_is_staged_and_checked_before_guest_side_effects(self):
+        host = HOST.read_text(encoding="utf-8")
+        guest = GUEST.read_text(encoding="utf-8")
+        self.assertIn("function Assert-LabPlanExpectedOs(", host)
+        self.assertIn("Assert-LabPlanExpectedOs $planValue.images", host)
+        self.assertLess(
+            host.index("Assert-LabPlanExpectedOs $planValue.images"),
+            host.index("$results = @()"),
+        )
+        self.assertIn("expected_os = [ordered]@{", host)
+        for field in ("product_name", "version", "build"):
+            self.assertIn(field + " = [string]$Image.expected_os." + field, host)
+        self.assertIn("function Assert-GuestExpectedOs(", guest)
+        self.assertIn("Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop", guest)
+        self.assertIn("Guest Windows OS identity does not match the provision plan.", guest)
+        self.assertIn("Assert-GuestExpectedOs $config.expected_os", guest)
+        self.assertLess(
+            guest.index("Assert-GuestExpectedOs $config.expected_os"),
+            guest.index("    $bootstrapRoot = Split-Path -Parent $ConfigPath"),
+        )
+        self.assertLess(
+            guest.index("Assert-GuestExpectedOs $config.expected_os"),
+            guest.index("    Expand-Zip (Join-Path $bootstrapRoot 'worker-package.zip')"),
+        )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_guest_expected_os_dynamic_rejects_wrong_windows_identity_and_missing_fields(self):
+        import shutil
+        import subprocess
+
+        guest_literal = "'" + str(GUEST).replace("'", "''") + "'"
+        script = """
+$ErrorActionPreference = 'Stop'
+$source = Get-Content -LiteralPath __GUEST__ -Raw
+$a = $source.IndexOf('function Assert-GuestExpectedOs(')
+$b = $source.IndexOf('function Expand-Zip(', $a)
+if ($a -lt 0 -or $b -le $a) { throw 'Expected OS guest guard missing.' }
+Invoke-Expression $source.Substring($a,$b-$a)
+$script:mode = 'match'
+function Get-CimInstance {
+    param([string]$ClassName, [string]$ErrorAction)
+    if ($ClassName -cne 'Win32_OperatingSystem') { throw 'Unexpected CIM class.' }
+    if ($script:mode -eq 'provider-error') { throw 'CIM provider failure.' }
+    if ($script:mode -eq 'no-object') { return $null }
+    $os = [pscustomobject]@{
+        Caption = 'Microsoft Windows Server 2016 Datacenter'
+        Version = '10.0.14393'
+        BuildNumber = '14393'
+    }
+    if ($script:mode -eq 'caption') { $os.Caption = 'Other Windows' }
+    if ($script:mode -eq 'version') { $os.Version = '10.0.19045' }
+    if ($script:mode -eq 'build') { $os.BuildNumber = '19045' }
+    return $os
+}
+function Assert-Rejected($Expected, [string]$Message) {
+    try {
+        Assert-GuestExpectedOs $Expected
+        throw 'Invalid OS identity accepted.'
+    } catch {
+        if ($_.Exception.Message -cne $Message) {
+            throw ('Unexpected error: ' + $_.Exception.Message)
+        }
+    }
+}
+$expected = [pscustomobject]@{
+    product_name = 'Microsoft Windows Server 2016 Datacenter'
+    version = '10.0.14393'
+    build = '14393'
+}
+Assert-GuestExpectedOs $expected
+foreach ($mode in @('caption','version','build','no-object')) {
+    $script:mode = $mode
+    Assert-Rejected $expected 'Guest Windows OS identity does not match the provision plan.'
+}
+$script:mode = 'provider-error'
+Assert-Rejected $expected 'CIM provider failure.'
+$script:mode = 'match'
+foreach ($name in @('product_name','version','build')) {
+    $bad = [pscustomobject]@{
+        product_name='Microsoft Windows Server 2016 Datacenter'; version='10.0.14393'; build='14393'
+    }
+    $bad.PSObject.Properties.Remove($name)
+    Assert-Rejected $bad 'Guest Windows expected OS identity is missing or invalid.'
+}
+Assert-Rejected $null 'Guest Windows expected OS identity is missing or invalid.'
+Assert-Rejected @{product_name='Microsoft Windows Server 2016 Datacenter';version='10.0.14393';build='14393'} 'Guest Windows expected OS identity is missing or invalid.'
+exit 0
+""".replace("__GUEST__", guest_literal)
+        for executable in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(executable):
+                continue
+            run = subprocess.run(
+                [executable, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=45, check=False,
+            )
+            self.assertEqual(
+                run.returncode, 0, executable + ": " + run.stdout + run.stderr,
+            )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_expected_os_preflight_dynamic_rejects_invalid_third_image(self):
+        import shutil
+        import subprocess
+
+        host_literal = "'" + str(HOST).replace("'", "''") + "'"
+        script = """
+$ErrorActionPreference = 'Stop'
+$source = Get-Content -LiteralPath __HOST__ -Raw
+$a = $source.IndexOf('function Assert-LabPlanExpectedOs(')
+$b = $source.IndexOf('function Wait-FirstBoot(', $a)
+if ($a -lt 0 -or $b -le $a) { throw 'Expected OS host preflight missing.' }
+Invoke-Expression $source.Substring($a,$b-$a)
+function New-Images {
+    return @(
+        [pscustomobject]@{expected_os=[pscustomobject]@{product_name='Windows A';version='6.3.9600';build='9600'}},
+        [pscustomobject]@{expected_os=[pscustomobject]@{product_name='Windows B';version='6.3.9600';build='9600'}},
+        [pscustomobject]@{expected_os=[pscustomobject]@{product_name='Windows C';version='10.0.14393';build='14393'}}
+    )
+}
+Assert-LabPlanExpectedOs (New-Images)
+foreach ($badValue in @($null, '', '    ', 42)) {
+    $images = New-Images
+    $images[2].expected_os.build = $badValue
+    try {
+        Assert-LabPlanExpectedOs $images
+        throw 'Bad third-image OS identity accepted.'
+    } catch {
+        if ($_.Exception.Message -cne 'Windows lab plan expected_os identity is invalid.') {
+            throw ('Unexpected failure: ' + $_.Exception.Message)
+        }
+    }
+}
+$images = New-Images
+$images[2].expected_os.PSObject.Properties.Remove('product_name')
+try {
+    Assert-LabPlanExpectedOs $images
+    throw 'Missing third product name accepted.'
+} catch {
+    if ($_.Exception.Message -cne 'Windows lab plan expected_os identity is invalid.') { throw }
+}
+$images = New-Images
+$images[2].expected_os = $null
+try {
+    Assert-LabPlanExpectedOs $images
+    throw 'Missing third OS object accepted.'
+} catch {
+    if ($_.Exception.Message -cne 'Windows lab plan expected_os identity is invalid.') { throw }
+}
+exit 0
+""".replace("__HOST__", host_literal)
+        for executable in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(executable):
+                continue
+            run = subprocess.run(
+                [executable, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=45, check=False,
+            )
+            self.assertEqual(
+                run.returncode, 0, executable + ": " + run.stdout + run.stderr,
+            )
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)

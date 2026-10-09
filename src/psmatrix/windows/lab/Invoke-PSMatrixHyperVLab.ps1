@@ -278,6 +278,11 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce) {
             schema = 1; worker_id = [string]$Image.worker_id; expected_version = [string]$Image.expected_version
             computer_name = [string]$Image.computer_name; worker_port = [int]$Image.worker_port
             bootstrap_nonce = $BootstrapNonce
+            expected_os = [ordered]@{
+                product_name = [string]$Image.expected_os.product_name
+                version = [string]$Image.expected_os.version
+                build = [string]$Image.expected_os.build
+            }
         } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $bootstrap 'bootstrap-config.json') -Encoding UTF8
         # Reassert exact ACLs on the newly created files immediately after
         # staging, before writing Windows setup material elsewhere.
@@ -870,6 +875,28 @@ function Assert-LabPlanSourceManifest($SourceManifest) {
     Assert-Artifact $SourceManifest 'Source manifest'
 }
 
+function Assert-LabPlanExpectedOs([object[]]$Images) {
+    # Do not let a plan silently omit the exact golden-OS identity that
+    # the guest must verify before installing any worker or secrets.
+    foreach ($image in $Images) {
+        $expected = $image.expected_os
+        if ($null -eq $expected -or $expected -isnot [pscustomobject]) {
+            throw 'Windows lab plan expected_os identity is invalid.'
+        }
+        $names = @($expected.PSObject.Properties.Name)
+        foreach ($key in @('product_name','version','build')) {
+            if ($names -cnotcontains $key) {
+                throw 'Windows lab plan expected_os identity is invalid.'
+            }
+            $value = $expected.PSObject.Properties[$key].Value
+            if ($value -isnot [string] -or
+                [string]::IsNullOrWhiteSpace($value) -or $value.Length -gt 255) {
+                throw 'Windows lab plan expected_os identity is invalid.'
+            }
+        }
+    }
+}
+
 function Wait-FirstBoot([string]$VmName, [int]$TimeoutSeconds) {
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     $observedRunning = $false
@@ -891,6 +918,7 @@ if ($planValue.schema -isnot [int] -or $planValue.schema -ne 1) { throw 'Windows
 if ([string]$planValue.kind -ne 'psmatrix.windows-hyperv-provision-plan') { throw 'Lab plan kind is invalid.' }
 Assert-LabPlanSafetyContract $planValue.safety
 Assert-LabPlanSourceManifest $planValue.source_manifest
+Assert-LabPlanExpectedOs $planValue.images
 # Require the three unique canonical Windows PowerShell targets before any
 # VM provisioning. An incomplete or duplicated plan cannot produce PASS.
 $requiredRuntimes = @('windows-powershell-4.0', 'windows-powershell-5.0', 'windows-powershell-5.1')
