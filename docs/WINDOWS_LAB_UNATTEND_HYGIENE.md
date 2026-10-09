@@ -280,6 +280,23 @@ and verify the fail-closed third-image cases without mounting real media.
 This does not eliminate concurrent ISO attachment changes, nor replace
 real elevated Hyper-V acceptance.
 
+Failed guest bootstraps now also **attempt to remove staging credential and
+signing ZIPs plus plaintext Windows unattended answer files** before
+writing the `FAIL` bootstrap result. `Invoke-GuestBootstrapFailureCleanup`
+calls the two existing bounded, reparse-point-aware cleanup routines
+independently so an error in one does not skip the other. It preserves the
+original error identity and stack in the FAIL record and adds only a
+generic "failure cleanup incomplete" marker if either cleanup could not
+finish; it does not log cleanup exceptions or secret contents. The normal
+PASS-path cleanup is unchanged. Non-elevated WinPS 5.1/PowerShell 7 tests
+exercise both cleanup-failure combinations with isolated mock functions
+and execute the *real* cleanup routines against disposable dummy files,
+verifying that ordinary staging files remain untouched. This is
+**best-effort failure cleanup**, not a guarantee for a guest that never
+boots, crashes before running the catch handler or loses filesystem
+access. The host still refuses any checkpoint unless it independently
+validates setup-file absence and restricted ACLs.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted

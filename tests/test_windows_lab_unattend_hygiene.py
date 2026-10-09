@@ -31,8 +31,150 @@ class WindowsLabUnattendHygieneTests(unittest.TestCase):
         self.assertIn("Setup file scan encountered a reparse point.", text)
         self.assertIn("Post-cleanup setup scan encountered a reparse point.", text)
         self.assertIn("A setup answer file remains after cleanup.", text)
-        self.assertIn("catch {\n    Write-Result 'FAIL'", text)
+        self.assertIn("catch {\n    $failure = $_", text)
+        self.assertIn("Invoke-GuestBootstrapFailureCleanup -BootstrapRoot", text)
+        self.assertIn("Write-Result 'FAIL' $failureMessage", text)
         self.assertNotIn("Get-Content -LiteralPath $candidate.FullName", text)
+
+    def test_guest_failures_attempt_both_staging_and_unattend_cleanup_before_fail_result(self):
+        guest = GUEST.read_text(encoding="utf-8")
+        self.assertIn("function Invoke-GuestBootstrapFailureCleanup(", guest)
+        section = guest.split("function Invoke-GuestBootstrapFailureCleanup(", 1)[1].split(
+            "\ntry {\n    if (-not (Test-Path -LiteralPath $ConfigPath", 1
+        )[0]
+        self.assertIn("Remove-GuestBootstrapStagingSecrets -Root $BootstrapRoot", section)
+        self.assertIn("Remove-GuestSetupAnswerFiles", section)
+        self.assertIn("$succeeded = $false", section)
+        failed = guest.rsplit("\ncatch {\n", 1)[1].split("\nfinally {", 1)[0]
+        self.assertIn("Invoke-GuestBootstrapFailureCleanup", failed)
+        self.assertIn("Write-Result 'FAIL'", failed)
+        self.assertIn("Guest bootstrap failure cleanup incomplete.", failed)
+        self.assertLess(
+            failed.index("Invoke-GuestBootstrapFailureCleanup"),
+            failed.index("Write-Result 'FAIL'"),
+        )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_guest_failure_cleanup_dynamic_attempts_both_even_if_one_fails(self):
+        import shutil
+        import subprocess
+
+        guest_path = "'" + str(GUEST).replace("'", "''") + "'"
+        script = """
+$ErrorActionPreference = 'Stop'
+$src = Get-Content -LiteralPath __GUEST__ -Raw
+$a = $src.IndexOf('function Invoke-GuestBootstrapFailureCleanup(')
+$b = $src.IndexOf(([string][char]10 + 'try {' + [char]10 + '    if (-not (Test-Path -LiteralPath $ConfigPath'), $a)
+if ($a -lt 0 -or $b -le $a) { throw 'Failure cleanup function not found.' }
+Invoke-Expression $src.Substring($a, $b - $a)
+$script:mode = 'none'
+$script:calls = @()
+function Remove-GuestBootstrapStagingSecrets {
+    param([string]$Root)
+    $script:calls += 'staging'
+    if ($Root -cne 'fixture-bootstrap') { throw 'Wrong bootstrap root.' }
+    if ($script:mode -in @('staging','both')) { throw 'test-only staging cleanup fault' }
+}
+function Remove-GuestSetupAnswerFiles {
+    $script:calls += 'unattend'
+    if ($script:mode -in @('unattend','both')) { throw 'test-only unattended cleanup fault' }
+}
+foreach ($mode in @('none','staging','unattend','both')) {
+    $script:mode = $mode
+    $script:calls = @()
+    $status = Invoke-GuestBootstrapFailureCleanup -BootstrapRoot 'fixture-bootstrap'
+    if (($status -isnot [bool]) -or ($status -ne ($mode -eq 'none'))) {
+        throw ('Incorrect cleanup outcome: ' + $mode)
+    }
+    if ((@($script:calls) -join ',') -cne 'staging,unattend') {
+        throw ('Cleanup did not try both actions: ' + $mode)
+    }
+}
+exit 0
+""".replace("__GUEST__", guest_path)
+        for executable in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(executable):
+                continue
+            result = subprocess.run(
+                [executable, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(
+                result.returncode, 0,
+                executable + ": " + result.stdout + result.stderr,
+            )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_guest_failure_cleanup_removes_only_dummy_setup_and_staging_files(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        def quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-fail-guest-scrub-") as root:
+            for shell in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(shell):
+                    continue
+                case = Path(root) / shell.replace(".", "-")
+                case.mkdir()
+                script = r"""
+$ErrorActionPreference = 'Stop'
+$source = Get-Content -LiteralPath __GUEST__ -Raw
+$a = $source.IndexOf('function Remove-GuestSetupAnswerFiles(')
+$b = $source.IndexOf('function Invoke-GuestBootstrapFailureCleanup(', $a)
+$c = $source.IndexOf(([string][char]10 + 'try {' + [char]10 + '    if (-not (Test-Path -LiteralPath $ConfigPath'), $b)
+if ($a -lt 0 -or $b -le $a -or $c -le $b) { throw 'Real guest cleanup functions are missing.' }
+$sanitize = $source.Substring($a, $b - $a)
+$sanitize = $sanitize.Replace('function Remove-GuestSetupAnswerFiles(', 'function Invoke-RealGuestSetupCleanup(')
+Invoke-Expression $sanitize
+Invoke-Expression $source.Substring($b, $c - $b)
+$script:fakeWindowsRoot = __ROOT__
+function Remove-GuestSetupAnswerFiles {
+    Invoke-RealGuestSetupCleanup -WindowsRoot $script:fakeWindowsRoot
+}
+$bootstrap = Join-Path $script:fakeWindowsRoot 'ProgramData\PSMatrix\Bootstrap'
+$panther = Join-Path $script:fakeWindowsRoot 'Windows\Panther'
+$sysprep = Join-Path $script:fakeWindowsRoot 'Windows\System32\Sysprep'
+foreach ($dir in @($bootstrap,$panther,$sysprep)) {
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+}
+foreach ($pair in @(
+    @($bootstrap,'credential-bundle.zip'),
+    @($bootstrap,'signing-bundle.zip'),
+    @($panther,'Unattend.xml'),
+    @($sysprep,'AutoUnattend.xml')
+)) {
+    [IO.File]::WriteAllText((Join-Path $pair[0] $pair[1]), 'dummy text only')
+}
+$keep = Join-Path $bootstrap 'worker-package.zip'
+[IO.File]::WriteAllText($keep, 'ordinary fixture')
+if (-not (Invoke-GuestBootstrapFailureCleanup -BootstrapRoot $bootstrap)) {
+    throw 'Expected complete failure cleanup.'
+}
+foreach ($file in @(
+    (Join-Path $bootstrap 'credential-bundle.zip'),
+    (Join-Path $bootstrap 'signing-bundle.zip'),
+    (Join-Path $panther 'Unattend.xml'),
+    (Join-Path $sysprep 'AutoUnattend.xml')
+)) {
+    if (Test-Path -LiteralPath $file) { throw ('Dummy sensitive file was not removed: ' + $file) }
+}
+if (-not (Test-Path -LiteralPath $keep)) {
+    throw 'Unrelated staging input was removed.'
+}
+exit 0
+""".replace("__GUEST__", quote(GUEST)).replace("__ROOT__", quote(case))
+                result = subprocess.run(
+                    [shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=45, check=False,
+                )
+                self.assertEqual(
+                    result.returncode, 0, shell + ": " + result.stdout + result.stderr,
+                )
 
     def test_host_reopens_shutdown_vhdx_and_fails_before_checkpoint(self):
         text = HOST.read_text(encoding="utf-8")

@@ -320,6 +320,27 @@ function Remove-GuestBootstrapStagingSecrets([string]$Root) {
     }
 }
 
+function Invoke-GuestBootstrapFailureCleanup([string]$BootstrapRoot) {
+    # A failed first boot must attempt to remove both staged credential ZIPs
+    # and the plaintext unattended administrator password. Each cleanup is
+    # independent: failure in one must not prevent attempting the other.
+    # Never copy the cleanup exception text into the guest result.
+    $succeeded = $true
+    try {
+        Remove-GuestBootstrapStagingSecrets -Root $BootstrapRoot
+    }
+    catch {
+        $succeeded = $false
+    }
+    try {
+        Remove-GuestSetupAnswerFiles
+    }
+    catch {
+        $succeeded = $false
+    }
+    return $succeeded
+}
+
 try {
     if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) { throw 'Bootstrap configuration is missing.' }
     $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
@@ -414,7 +435,16 @@ try {
     Write-Result 'PASS' 'Guest bootstrap completed.' $identity
 }
 catch {
-    Write-Result 'FAIL' $_.Exception.Message @{ error_type = $_.Exception.GetType().FullName; script_stack = $_.ScriptStackTrace }
+    $failure = $_
+    $cleanupOk = Invoke-GuestBootstrapFailureCleanup -BootstrapRoot (Split-Path -Parent $ConfigPath)
+    $failureMessage = [string]$failure.Exception.Message
+    if (-not $cleanupOk) {
+        $failureMessage += ' Guest bootstrap failure cleanup incomplete.'
+    }
+    Write-Result 'FAIL' $failureMessage @{
+        error_type = $failure.Exception.GetType().FullName
+        script_stack = $failure.ScriptStackTrace
+    }
 }
 finally {
     Start-Sleep -Seconds 2
