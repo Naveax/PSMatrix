@@ -98,8 +98,13 @@ archives exceeding 16,384 entries, and archives declaring more than 4 GiB of
 expanded content (limits applied separately to each ZIP). The guest also
 rejects reparse-point ancestors of the extraction destination (including
 junctions and mount points), rather than trusting a safe-looking leaf path.
-These metadata and ancestor checks reduce accidental overwrite and resource
-exhaustion; they do not guarantee
+The preflight also refuses Windows-invalid or ambiguous path segments: empty
+intermediate names, dot/dot-dot components, trailing spaces or periods, ASCII
+control/forbidden filename characters, and reserved DOS device names (including
+COM/LPT variants). An archive whose preflight reader exposes zero entries is
+rejected before extraction; a separate extraction pass must never proceed after
+inspecting no entries. These metadata, name and ancestor checks reduce
+accidental overwrite and resource exhaustion; they do not guarantee
 protection against filesystem races or forged ZIP metadata. The guest applies
 the strict SYSTEM and Administrators ACL **before** extracting archive contents,
 then reasserts exact recursive ACLs on the extracted tree. A failed validation leaves the

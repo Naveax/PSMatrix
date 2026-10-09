@@ -738,6 +738,110 @@ if (Test-Path -LiteralPath {destination}) {{ throw 'Rejected junction caused a w
                 )
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_guest_zip_windows_segment_preflight_is_before_directory_creation(self):
+        guest = GUEST.read_text(encoding="utf-8")
+        extract = guest.split("function Expand-Zip(", 1)[1].split(
+            "function Find-File(", 1
+        )[0]
+        for fragment in (
+            "$relativeName.TrimEnd([char[]]@('\\', '/')).Split([char[]]@('\\', '/'))",
+            "$segment -eq '.' -or $segment -eq '..'",
+            "$segment.EndsWith('.') -or $segment.EndsWith(' ')",
+            "$segment -match '[<>|?*\\x00-\\x1f]'",
+            "CON|PRN|AUX|NUL|CONIN\\$|CONOUT\\$",
+            "Guest bootstrap ZIP contains an unsafe Windows entry segment.",
+            "Guest bootstrap ZIP contains no inspectable entries.",
+        ):
+            self.assertIn(fragment, extract)
+        self.assertLess(
+            extract.index("Guest bootstrap ZIP contains an unsafe Windows entry segment."),
+            extract.index("New-Item -ItemType Directory -Path $Destination"),
+        )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_guest_zip_windows_unsafe_segments_rejected_before_write(self):
+        import shutil
+        import subprocess
+        import tempfile
+        import zipfile
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-zip-windows-names-") as root:
+            root_path = Path(root)
+            bad_names = (
+                "dir./payload.txt",
+                "dir /payload.txt",
+                "CON.txt",
+                "pkg/LPT9",
+                "pkg//payload.txt",
+                "pkg/../payload.txt",
+                "pkg/payload?.txt",
+                "pkg/payload|.txt",
+            )
+            bad_archives = []
+            for index, name in enumerate(bad_names):
+                archive_path = root_path / ("unsafe-" + str(index) + ".zip")
+                with zipfile.ZipFile(archive_path, "w") as archive:
+                    archive.writestr(name, "harmless")
+                bad_archives.append(archive_path)
+            empty_archive = root_path / "empty.zip"
+            with zipfile.ZipFile(empty_archive, "w"):
+                pass
+            bad_archives.append(empty_archive)
+            good_archive = root_path / "legal.zip"
+            with zipfile.ZipFile(good_archive, "w") as archive:
+                archive.writestr("safe/config.txt", "harmless")
+            quote = lambda value: "'" + str(value).replace("'", "''") + "'"
+            paths = "@(" + ", ".join(quote(p) for p in bad_archives) + ")"
+            script = """
+$ErrorActionPreference = 'Stop'
+$source = Get-Content -LiteralPath {source} -Raw
+$start = $source.IndexOf('function Expand-Zip(')
+$end = $source.IndexOf('function Find-File(', $start)
+Invoke-Expression $source.Substring($start, $end - $start)
+function Set-RestrictedDirectoryAcl([string]$Path) {{ }}
+$badArchives = {bad_archives}
+$index = 0
+foreach ($badArchive in $badArchives) {{
+    $destination = Join-Path {root} ('rejected-' + $index)
+    try {{
+        Expand-Zip $badArchive $destination
+        throw ('Unsafe ZIP was accepted: ' + $index)
+    }} catch {{
+        $expected = @('Guest bootstrap ZIP contains an unsafe Windows entry segment.')
+        # Different supported .NET readers can expose an invalid entry as
+        # malformed or as an empty archive; both must fail before any write.
+        if ($index -eq 7 -or $index -eq 8) {{
+            $expected += 'Guest bootstrap ZIP contains no inspectable entries.'
+        }}
+        if ($expected -notcontains $_.Exception.Message) {{
+            throw ('Case ' + $index + ' exception: ' + $_.Exception.Message)
+        }}
+    }}
+    if (Test-Path -LiteralPath $destination) {{ throw 'Unsafe ZIP wrote a destination.' }}
+    $index++
+}}
+Expand-Zip {good_archive} {good_destination}
+if (-not (Test-Path -LiteralPath (Join-Path {good_destination} 'safe/config.txt'))) {{
+    throw 'Known-safe ZIP path was rejected.'
+}}
+""".format(
+                source=quote(GUEST), bad_archives=paths, root=quote(root_path),
+                good_archive=quote(good_archive),
+                good_destination=quote(root_path / "allowed"),
+            )
+            for executable in ("powershell.exe", "pwsh.exe"):
+                if shutil.which(executable) is None:
+                    continue
+                if (root_path / "allowed").exists():
+                    shutil.rmtree(root_path / "allowed")
+                result = subprocess.run(
+                    [executable, "-NoProfile", "-NonInteractive", "-Command", script],
+                    text=True, capture_output=True, timeout=45, check=False,
+                )
+                self.assertEqual(
+                    result.returncode, 0, executable + ": " + result.stdout + result.stderr,
+                )
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)

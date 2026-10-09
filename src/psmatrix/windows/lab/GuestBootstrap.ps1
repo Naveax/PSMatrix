@@ -61,6 +61,11 @@ function Expand-Zip([string]$Archive, [string]$Destination) {
     $expandedBytes = [long]0
     $zip = [IO.Compression.ZipFile]::OpenRead($Archive)
     try {
+        # Some malformed archives can expose no entries through the reader.
+        # Never continue to an independent extraction pass after inspecting none.
+        if ($zip.Entries.Count -eq 0) {
+            throw 'Guest bootstrap ZIP contains no inspectable entries.'
+        }
         foreach ($entry in $zip.Entries) {
             $entryCount++
             if ($entryCount -gt $maxEntries) {
@@ -70,6 +75,19 @@ function Expand-Zip([string]$Archive, [string]$Destination) {
             if ([string]::IsNullOrWhiteSpace($relativeName) -or
                 $relativeName.StartsWith('\') -or $relativeName.IndexOf(':') -ge 0) {
                 throw 'Guest bootstrap ZIP contains an unsafe entry path.'
+            }
+            # Windows may alias trailing-dot/space names and DOS devices to
+            # targets different from their lexical ZIP names. Reject unsafe
+            # segments before allocating the extraction directory.
+            $segments = $relativeName.TrimEnd([char[]]@('\', '/')).Split([char[]]@('\', '/'))
+            foreach ($segment in $segments) {
+                if ([string]::IsNullOrEmpty($segment) -or
+                    $segment -eq '.' -or $segment -eq '..' -or
+                    $segment.EndsWith('.') -or $segment.EndsWith(' ') -or
+                    $segment -match '[<>|?*\x00-\x1f]' -or
+                    $segment -match '^(CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|(?:COM|LPT)(?:[1-9]|\u00B9|\u00B2|\u00B3))(?:\..*)?$') {
+                    throw 'Guest bootstrap ZIP contains an unsafe Windows entry segment.'
+                }
             }
             $entryFull = [IO.Path]::GetFullPath([IO.Path]::Combine($destFull, $relativeName))
             if (-not $entryFull.StartsWith($destPrefix, [StringComparison]::OrdinalIgnoreCase)) {
