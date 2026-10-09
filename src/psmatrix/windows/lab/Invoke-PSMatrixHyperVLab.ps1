@@ -293,6 +293,24 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce) {
             schema = 1; worker_id = [string]$Image.worker_id; expected_version = [string]$Image.expected_version
             computer_name = [string]$Image.computer_name; worker_port = [int]$Image.worker_port
             bootstrap_nonce = $BootstrapNonce
+            staged_artifacts = [ordered]@{
+                worker_package = [ordered]@{
+                    sha256 = [string]$Image.worker_package.sha256
+                    size = $Image.worker_package.size
+                }
+                python_installer = [ordered]@{
+                    sha256 = [string]$Image.python_installer.sha256
+                    size = $Image.python_installer.size
+                }
+                credential_bundle = [ordered]@{
+                    sha256 = [string]$Image.credential_bundle.sha256
+                    size = $Image.credential_bundle.size
+                }
+                signing_bundle = [ordered]@{
+                    sha256 = [string]$Image.signing_bundle.sha256
+                    size = $Image.signing_bundle.size
+                }
+            }
             expected_os = [ordered]@{
                 product_name = [string]$Image.expected_os.product_name
                 version = [string]$Image.expected_os.version

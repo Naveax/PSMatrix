@@ -63,6 +63,76 @@ function Assert-GuestExpectedOs($ExpectedOs) {
     }
 }
 
+function Assert-GuestStagedPackages($Artifacts, [string]$BootstrapRoot) {
+    # Revalidate each staged package on its actual guest filesystem before
+    # extracting ZIPs or executing Python. The host includes the expected
+    # original artifact digests in the ACL-protected bootstrap config.
+    $packageNames = [ordered]@{
+        worker_package = 'worker-package.zip'
+        python_installer = 'python-installer.exe'
+        credential_bundle = 'credential-bundle.zip'
+        signing_bundle = 'signing-bundle.zip'
+    }
+    if ($null -eq $Artifacts -or $Artifacts -isnot [pscustomobject] -or
+        @($Artifacts.PSObject.Properties).Count -ne $packageNames.Count) {
+        throw 'Guest staged package metadata is invalid.'
+    }
+    $rootPath = [IO.Path]::GetFullPath($BootstrapRoot)
+    # Reject a redirected bootstrap folder or any existing parent link.
+    $ancestor = $rootPath
+    while (-not [string]::IsNullOrEmpty($ancestor)) {
+        $item = Get-Item -LiteralPath $ancestor -Force -ErrorAction Stop
+        if (-not $item.PSIsContainer -or
+            (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            throw 'Guest staged package has unsafe path or file type.'
+        }
+        $ancestor = [IO.Path]::GetDirectoryName($ancestor)
+    }
+    foreach ($key in $packageNames.Keys) {
+        if (@($Artifacts.PSObject.Properties.Name) -cnotcontains $key) {
+            throw 'Guest staged package metadata is invalid.'
+        }
+        $spec = $Artifacts.PSObject.Properties[$key].Value
+        if ($null -eq $spec -or $spec -isnot [pscustomobject] -or
+            @($spec.PSObject.Properties).Count -ne 2 -or
+            @($spec.PSObject.Properties.Name) -cnotcontains 'sha256' -or
+            @($spec.PSObject.Properties.Name) -cnotcontains 'size' -or
+            $spec.sha256 -isnot [string] -or
+            $spec.sha256 -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'Guest staged package metadata is invalid.'
+        }
+        $size = $spec.size
+        if ($null -ne $size -and
+            (($size -isnot [int] -and $size -isnot [long]) -or $size -le 0)) {
+            throw 'Guest staged package metadata is invalid.'
+        }
+        $path = Join-Path $rootPath $packageNames[$key]
+        $file = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+        if ($file.PSIsContainer -or
+            (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            throw 'Guest staged package has unsafe path or file type.'
+        }
+        $stream = [IO.File]::Open(
+            $path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None
+        )
+        try {
+            if ($stream.Length -le 0 -or
+                ($null -ne $size -and $stream.Length -ne [long]$size)) {
+                throw 'Guest staged package size mismatch.'
+            }
+            $sha = [Security.Cryptography.SHA256]::Create()
+            try {
+                $actual = ([BitConverter]::ToString($sha.ComputeHash($stream)) -replace '-', '').ToLowerInvariant()
+            }
+            finally { $sha.Dispose() }
+            if ($actual -cne $spec.sha256) {
+                throw 'Guest staged package SHA-256 mismatch.'
+            }
+        }
+        finally { $stream.Dispose() }
+    }
+}
+
 function Expand-Zip([string]$Archive, [string]$Destination) {
     if (-not (Test-Path -LiteralPath $Archive -PathType Leaf)) { throw ('Archive not found: ' + $Archive) }
     $archiveItem = Get-Item -LiteralPath $Archive -Force -ErrorAction Stop
@@ -385,6 +455,7 @@ try {
     }
 
     $bootstrapRoot = Split-Path -Parent $ConfigPath
+    Assert-GuestStagedPackages $config.staged_artifacts $bootstrapRoot
     $workerRoot = 'C:\ProgramData\PSMatrix\WorkerPayload'
     $credentialRoot = 'C:\ProgramData\PSMatrix\Credentials'
     $signingRoot = 'C:\ProgramData\PSMatrix\Signing'

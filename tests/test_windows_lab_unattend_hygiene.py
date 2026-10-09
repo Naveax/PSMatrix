@@ -3506,6 +3506,133 @@ exit 0
                     executable + ": " + result.stdout + result.stderr,
                 )
 
+    def test_guest_requires_staged_archive_hashes_before_extraction_or_python_execution(self):
+        host = HOST.read_text(encoding="utf-8")
+        guest = GUEST.read_text(encoding="utf-8")
+        self.assertIn("staged_artifacts = [ordered]@{", host)
+        for key in ("worker_package", "python_installer", "credential_bundle", "signing_bundle"):
+            self.assertIn(key + " = [ordered]@{", host)
+            self.assertIn("sha256 = [string]$Image." + key + ".sha256", host)
+        self.assertIn("function Assert-GuestStagedPackages(", guest)
+        guard = guest.split("function Assert-GuestStagedPackages(", 1)[1].split(
+            "function Expand-Zip(", 1
+        )[0]
+        for expected in (
+            "[IO.FileAttributes]::ReparsePoint",
+            "[IO.File]::Open(",
+            "[IO.FileShare]::None",
+            "$sha.ComputeHash($stream)",
+            "Guest staged package SHA-256 mismatch.",
+            "Guest staged package metadata is invalid.",
+            "Guest staged package has unsafe path or file type.",
+        ):
+            self.assertIn(expected, guard)
+        call = "Assert-GuestStagedPackages $config.staged_artifacts $bootstrapRoot"
+        self.assertIn(call, guest)
+        self.assertLess(guest.index(call), guest.index("Expand-Zip (Join-Path $bootstrapRoot 'worker-package.zip')"))
+        self.assertLess(guest.index(call), guest.index("Start-Process -FilePath $pythonInstaller"))
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_guest_staged_packages_dynamic_hash_size_metadata_and_junction(self):
+        import hashlib
+        import json
+        import shutil
+        import subprocess
+        import tempfile
+
+        def quoted(value):
+            return "'" + str(value).replace("'", "''") + "'"
+
+        mapping = {
+            "worker_package": "worker-package.zip",
+            "python_installer": "python-installer.exe",
+            "credential_bundle": "credential-bundle.zip",
+            "signing_bundle": "signing-bundle.zip",
+        }
+        with tempfile.TemporaryDirectory(prefix="psmatrix-guest-stage-sha-") as root:
+            for shell in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(shell):
+                    continue
+                case = Path(root) / shell.replace(".", "-")
+                staging = case / "Bootstrap"
+                staging.mkdir(parents=True)
+                metadata = {}
+                for identifier, filename in mapping.items():
+                    contents = ("fixture-" + filename + "-not-a-real-archive").encode()
+                    (staging / filename).write_bytes(contents)
+                    metadata[identifier] = {
+                        "sha256": hashlib.sha256(contents).hexdigest(),
+                        "size": len(contents),
+                    }
+                config_file = case / "hashes.json"
+                config_file.write_text(json.dumps(metadata), encoding="utf-8")
+                script = r"""
+$ErrorActionPreference = 'Stop'
+$guestCode = Get-Content -LiteralPath __GUEST__ -Raw
+$start = $guestCode.IndexOf('function Assert-GuestStagedPackages(')
+$end = $guestCode.IndexOf('function Expand-Zip(', $start)
+if ($start -lt 0 -or $end -le $start) { throw 'Missing guest package guard.' }
+Invoke-Expression $guestCode.Substring($start, $end - $start)
+$meta = Get-Content -LiteralPath __METADATA__ -Raw | ConvertFrom-Json
+$root = __STAGING__
+Assert-GuestStagedPackages $meta $root
+function Assert-Rejects($Spec, [string]$ExpectedError) {
+    try {
+        Assert-GuestStagedPackages $Spec $root
+        throw 'Invalid package or metadata accepted.'
+    }
+    catch {
+        if ($_.Exception.Message -cne $ExpectedError) {
+            throw ('Unexpected package failure: ' + $_.Exception.Message)
+        }
+    }
+}
+$target = Join-Path $root 'credential-bundle.zip'
+$original = [IO.File]::ReadAllBytes($target)
+[IO.File]::AppendAllText($target, 'corrupted after staging')
+Assert-Rejects $meta 'Guest staged package size mismatch.'
+[IO.File]::WriteAllBytes($target, $original)
+$meta.credential_bundle.size = $null
+[IO.File]::AppendAllText($target, 'tampered but size was omitted')
+Assert-Rejects $meta 'Guest staged package SHA-256 mismatch.'
+[IO.File]::WriteAllBytes($target, $original)
+$meta.credential_bundle.size = $original.Length
+$meta.worker_package.sha256 = 'not-a-sha256'
+Assert-Rejects $meta 'Guest staged package metadata is invalid.'
+$meta = Get-Content -LiteralPath __METADATA__ -Raw | ConvertFrom-Json
+$meta.PSObject.Properties.Remove('signing_bundle')
+Assert-Rejects $meta 'Guest staged package metadata is invalid.'
+$meta = Get-Content -LiteralPath __METADATA__ -Raw | ConvertFrom-Json
+$meta | Add-Member -NotePropertyName 'unexpected' -NotePropertyValue $true
+Assert-Rejects $meta 'Guest staged package metadata is invalid.'
+$meta = Get-Content -LiteralPath __METADATA__ -Raw | ConvertFrom-Json
+$meta.python_installer.size = '20'
+Assert-Rejects $meta 'Guest staged package metadata is invalid.'
+$meta = Get-Content -LiteralPath __METADATA__ -Raw | ConvertFrom-Json
+$fakeRoot = Join-Path (Split-Path -Parent $root) 'link'
+New-Item -ItemType Junction -Path $fakeRoot -Target $root -ErrorAction Stop | Out-Null
+try {
+    $root = $fakeRoot
+    Assert-Rejects $meta 'Guest staged package has unsafe path or file type.'
+}
+finally {
+    & cmd.exe /d /c ('rmdir "' + $fakeRoot + '"')
+    if ($LASTEXITCODE -ne 0) { throw 'Could not remove fixture junction safely.' }
+}
+exit 0
+""".replace("__GUEST__", quoted(GUEST)).replace(
+                    "__METADATA__", quoted(config_file)
+                ).replace("__STAGING__", quoted(staging))
+                result = subprocess.run(
+                    [shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=55, check=False,
+                )
+                self.assertEqual(
+                    result.returncode, 0,
+                    shell + ": " + result.stdout + result.stderr,
+                )
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)

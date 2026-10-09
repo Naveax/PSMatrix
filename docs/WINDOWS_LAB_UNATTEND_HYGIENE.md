@@ -474,6 +474,31 @@ identity lock: a privileged actor replacing guest files after this
 check, or concurrently modifying the VHDX, still requires separate
 host hardening and genuine elevated offline acceptance.
 
+The guest now performs an **independent first-boot verification** of
+the four offline staged packages before extracting any ZIP or running
+the Python installer. The host embeds the source manifest's original
+SHA-256 and optional file-size values for `worker_package`,
+`python_installer`, `credential_bundle` and `signing_bundle` into
+the pre-ACL-protected `bootstrap-config.json`. At first boot,
+`Assert-GuestStagedPackages` requires exactly these four typed
+metadata objects, validates lowercase SHA-256 and optional positive
+size, rejects file or ancestor NTFS reparse points, then hashes the
+actual guest files through exclusive read handles. All four must match
+before any ZIP extraction, installer execution or service setup.
+The earlier host source checks, post-copy staged-file checks, guest
+FAIL-path cleanup and host checkpoint gates remain in effect.
+
+Dynamic WinPS5.1/PowerShell 7 tests exercise the actual guest verifier
+against four disposable dummy packages, checking exact contents,
+changed-size and same-metadata modified contents, missing/extra
+metadata, malformed hashes and a real NTFS junction. No genuine
+credential, signing key or Python executable is touched. **This
+adds consistency checks, not an independent trust root:** the
+bootstrap config and packages both live on the guest VHDX, so a
+privileged attacker with the ability to edit both can recalculate
+hashes. Authorized manifest/signing material, offline ACL checks and
+real Windows PowerShell 4.0/5.0/5.1 guest acceptance remain essential.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted
