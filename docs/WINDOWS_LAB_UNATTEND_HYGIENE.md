@@ -519,6 +519,31 @@ the guest filesystem against privileged concurrent replacements.
 Real WinPS4.0/5.0/5.1 Hyper-V and offline NTFS ACL acceptance remain
 mandatory before authorizing a release.
 
+The privileged guest `GuestBootstrap.ps1` executable is now bound to
+a **single source hash across all three VM images**. Previously it was
+copied into each offline VHDX without a separate integrity check,
+unlike the four media packages. Before creating the first VM,
+`New-LabGuestBootstrapReference` requires a regular, non-reparse
+source path with a nonempty file no larger than **1 MiB**, records its
+SHA-256 and exact byte size, and verifies the reference. `New-LabVhd`
+rechecks this frozen source reference before building and immediately
+before each copy, then checks the **actual staged
+`Bootstrap\GuestBootstrap.ps1`** against the same hash/size before
+copying any other package, writing unattended setup material or
+starting the guest. Changes to the source between guests, staging
+corruption, unexpected oversized scripts and redirected NTFS paths
+now fail closed.
+
+Dynamic WinPS5.1/PowerShell 7 tests use harmless dummy scripts to
+verify valid staging, source changes after the first baseline,
+mutated staged bytes, empty/oversized files and a real NTFS junction.
+Existing staging/ACL-order and bootstrap-nonce regressions were
+extended for the fifth integrity-checked staged file. This remains
+**content-consistency verification**, not an operator signature:
+modifications occurring *before* the baseline are not independently
+authenticated, and privileged concurrent file replacement remains a
+separate risk. No operator signing material is accessed.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted

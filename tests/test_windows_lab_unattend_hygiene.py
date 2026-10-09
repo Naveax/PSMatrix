@@ -479,10 +479,10 @@ exit 0
             "function New-LabBootstrapNonce {",
             "[Security.Cryptography.RandomNumberGenerator]::Create()",
             "$rng.GetBytes($bytes)",
-            "function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce)",
+            "function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $BootstrapArtifact)",
             "bootstrap_nonce = $BootstrapNonce",
             "$bootstrapNonce = New-LabBootstrapNonce",
-            "New-LabVhd $image (Join-Path $PSScriptRoot 'GuestBootstrap.ps1') $bootstrapNonce",
+            "New-LabVhd $image $guestBootstrapReference.path $bootstrapNonce $guestBootstrapReference",
             "function Read-BootstrapResult([string]$VhdPath, [string]$ExpectedBootstrapNonce)",
             "'worker_config_sha256','service_name','bootstrap_nonce'",
             "$result.bootstrap_nonce -isnot [string]",
@@ -1688,6 +1688,7 @@ if ($a -lt 0 -or $b -le $a) { throw 'Staging block missing.' }
 $section = $src.Substring($a, $b - $a)
 $windowsRoot = __MOUNT__
 $GuestBootstrap = 'mock-script.ps1'
+$BootstrapArtifact = [pscustomobject]@{sha256=('a' * 64);size=128;path='mock-script.ps1'}
 $BootstrapNonce = ('b' * 64)
 $Image = [pscustomobject]@{
     worker_id='test-worker'; expected_version='5.1'; computer_name='TEST-PS51'; worker_port=9443
@@ -1699,6 +1700,12 @@ $Image = [pscustomobject]@{
 $script:aclCalls = 0
 $script:copyCalls = 0
 $script:verifyCalls = 0
+function Assert-Artifact {
+    param($Artifact,[string]$Label)
+    if ($script:copyCalls -ne 0 -or $script:aclCalls -ne 1) {
+        throw 'Guest bootstrap source was checked after staging began.'
+    }
+}
 function Copy-Item {
     param([string]$LiteralPath,[string]$Destination,[switch]$Force)
     $script:copyCalls++
@@ -1707,8 +1714,8 @@ function Assert-StagedLabArtifact {
     param($SourceArtifact,[string]$Destination,[string]$Label)
     $script:verifyCalls++
     if ($script:aclCalls -ne 1 -or
-        $script:copyCalls -ne ($script:verifyCalls + 1)) {
-        throw 'Staged package was not verified directly after copy.'
+        $script:copyCalls -ne $script:verifyCalls) {
+        throw 'Staged file was not verified directly after copy.'
     }
 }
 function Set-RestrictedDirectoryAcl([string]$Path) {
@@ -1717,12 +1724,12 @@ function Set-RestrictedDirectoryAcl([string]$Path) {
         throw 'Copies happened before first ACL.'
     }
     if ($script:aclCalls -eq 2 -and
-        ($script:copyCalls -ne 5 -or $script:verifyCalls -ne 4)) {
+        ($script:copyCalls -ne 5 -or $script:verifyCalls -ne 5)) {
         throw 'Staged files not copied and verified by final ACL.'
     }
 }
 Invoke-Expression $section
-if ($script:aclCalls -ne 2 -or $script:copyCalls -ne 5 -or $script:verifyCalls -ne 4) {
+if ($script:aclCalls -ne 2 -or $script:copyCalls -ne 5 -or $script:verifyCalls -ne 5) {
     throw 'Incorrect staging order.'
 }
 try {
@@ -1733,7 +1740,7 @@ try {
         throw
     }
 }
-if ($script:aclCalls -ne 2 -or $script:copyCalls -ne 5 -or $script:verifyCalls -ne 4) {
+if ($script:aclCalls -ne 2 -or $script:copyCalls -ne 5 -or $script:verifyCalls -ne 5) {
     throw 'Existing target changed staging operations.'
 }
 exit 0
@@ -3759,6 +3766,129 @@ exit 0
                 self.assertEqual(
                     result.returncode, 0,
                     shell + ": " + result.stdout + result.stderr,
+                )
+
+    def test_host_freezes_guest_bootstrap_script_digest_before_first_vm(self):
+        host = HOST.read_text(encoding="utf-8")
+        self.assertIn("function New-LabGuestBootstrapReference(", host)
+        builder = host.split("function New-LabGuestBootstrapReference(", 1)[1].split(
+            "function Invoke-Checked(", 1
+        )[0]
+        self.assertIn("Assert-SafeLabArtifactPath $Path", builder)
+        self.assertIn("Guest bootstrap script has invalid size.", builder)
+        self.assertIn("Assert-Artifact $reference 'Guest bootstrap script'", builder)
+        preflight = "$guestBootstrapReference = New-LabGuestBootstrapReference"
+        self.assertIn(preflight, host)
+        self.assertLess(host.index(preflight), host.index("$results = @()"))
+        self.assertIn(
+            "New-LabVhd $image $guestBootstrapReference.path $bootstrapNonce $guestBootstrapReference",
+            host,
+        )
+        build = host.split("function New-LabVhd(", 1)[1].split(
+            "function Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        self.assertIn("Assert-Artifact $BootstrapArtifact 'Guest bootstrap script'", build)
+        self.assertIn(
+            "Assert-StagedLabArtifact $BootstrapArtifact (Join-Path $bootstrap 'GuestBootstrap.ps1')",
+            build,
+        )
+        self.assertLess(
+            build.index("Copy-Item -LiteralPath $GuestBootstrap"),
+            build.index("Assert-StagedLabArtifact $BootstrapArtifact"),
+        )
+        self.assertLess(
+            build.index("Assert-StagedLabArtifact $BootstrapArtifact"),
+            build.index("Copy-Item -LiteralPath ([string]$Image.worker_package.path)"),
+        )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_guest_bootstrap_script_reference_rejects_source_drift_and_staged_mutation(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        def quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-guestscript-baseline-") as root:
+            for shell in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(shell):
+                    continue
+                case = Path(root) / shell.replace(".", "-")
+                case.mkdir()
+                src = case / "GuestBootstrap.ps1"
+                src.write_text("# dummy fixture, no executable commands\n", encoding="utf-8")
+                stage = case / "staged.ps1"
+                script = r"""
+$ErrorActionPreference = 'Stop'
+$hostSource = Get-Content -LiteralPath __HOST__ -Raw
+$a = $hostSource.IndexOf('function Get-Sha256(')
+$b = $hostSource.IndexOf('function Invoke-Checked(', $a)
+if ($a -lt 0 -or $b -le $a) { throw 'Guest bootstrap baseline functions are missing.' }
+Invoke-Expression $hostSource.Substring($a,$b-$a)
+$source = __SOURCE__
+$staged = __STAGED__
+$ref = New-LabGuestBootstrapReference $source
+if ($ref.sha256 -cne (Get-Sha256 $source)) { throw 'Incorrect bootstrap script baseline.' }
+Assert-Artifact $ref 'Guest bootstrap script'
+Copy-Item -LiteralPath $source -Destination $staged -ErrorAction Stop
+Assert-StagedLabArtifact $ref $staged 'Staged guest bootstrap script'
+[IO.File]::AppendAllText($staged, 'unexpected-change')
+try {
+    Assert-StagedLabArtifact $ref $staged 'Staged guest bootstrap script'
+    throw 'Changed staged bootstrap script was accepted.'
+} catch {
+    if ($_.Exception.Message -cne 'Staged guest bootstrap script SHA-256 mismatch.') { throw }
+}
+[IO.File]::AppendAllText($source, 'changed-after-guest-1')
+try {
+    Assert-Artifact $ref 'Guest bootstrap script'
+    throw 'Changed source bootstrap script was accepted for a later VM.'
+} catch {
+    if ($_.Exception.Message -cne 'Guest bootstrap script SHA-256 mismatch.') { throw }
+}
+$empty = Join-Path (Split-Path -Parent $source) 'empty.ps1'
+[IO.File]::WriteAllBytes($empty,[byte[]]@())
+try {
+    New-LabGuestBootstrapReference $empty | Out-Null
+    throw 'Empty guest bootstrap script passed.'
+} catch {
+    if ($_.Exception.Message -cne 'Guest bootstrap script has invalid size.') { throw }
+}
+$huge = Join-Path (Split-Path -Parent $source) 'huge.ps1'
+[IO.File]::WriteAllBytes($huge, (New-Object 'System.Byte[]' 1048577))
+try {
+    New-LabGuestBootstrapReference $huge | Out-Null
+    throw 'Oversized guest bootstrap script passed.'
+} catch {
+    if ($_.Exception.Message -cne 'Guest bootstrap script has invalid size.') { throw }
+}
+$originalDirectory = Split-Path -Parent $source
+$link = Join-Path $originalDirectory 'script-redirect'
+New-Item -ItemType Junction -Path $link -Target $originalDirectory -ErrorAction Stop | Out-Null
+try {
+    try {
+        New-LabGuestBootstrapReference (Join-Path $link 'GuestBootstrap.ps1') | Out-Null
+        throw 'Reparse-redirected bootstrap script passed.'
+    } catch {
+        if ($_.Exception.Message -cne 'Windows lab artifact path contains a reparse point.') { throw }
+    }
+}
+finally {
+    & cmd.exe /d /c ('rmdir "' + $link + '"')
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to remove dummy junction.' }
+}
+exit 0
+""".replace("__HOST__", quote(HOST)).replace(
+                    "__SOURCE__", quote(src)
+                ).replace("__STAGED__", quote(stage))
+                run = subprocess.run(
+                    [shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=50, check=False,
+                )
+                self.assertEqual(
+                    run.returncode, 0, shell + ": " + run.stdout + run.stderr,
                 )
 
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):

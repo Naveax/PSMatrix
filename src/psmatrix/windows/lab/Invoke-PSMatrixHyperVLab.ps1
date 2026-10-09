@@ -58,6 +58,27 @@ function Assert-StagedLabArtifact($SourceArtifact, [string]$Destination, [string
     }
     Assert-Artifact $staged $Label
 }
+function New-LabGuestBootstrapReference([string]$Path) {
+    # Freeze the exact source script for every guest before provisioning.
+    # The script itself executes with high privilege on first boot.
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw 'Guest bootstrap script is missing.'
+    }
+    Assert-SafeLabArtifactPath $Path
+    $file = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if ($file.PSIsContainer -or
+        (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) -or
+        $file.Length -le 0 -or $file.Length -gt 1048576) {
+        throw 'Guest bootstrap script has invalid size.'
+    }
+    $reference = [pscustomobject]@{
+        path = [IO.Path]::GetFullPath($Path)
+        sha256 = Get-Sha256 $Path
+        size = [long]$file.Length
+    }
+    Assert-Artifact $reference 'Guest bootstrap script'
+    return $reference
+}
 function Invoke-Checked([string]$File, [string[]]$Arguments) {
     & $File @Arguments
     if ($LASTEXITCODE -ne 0) { throw ($File + ' failed with exit code ' + $LASTEXITCODE) }
@@ -219,7 +240,8 @@ function Assert-LabPlanArtifactsReady([object[]]$Images) {
     }
 }
 
-function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce) {
+function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $BootstrapArtifact) {
+    Assert-Artifact $BootstrapArtifact 'Guest bootstrap script'
     Assert-Artifact $Image.source_iso 'Windows ISO'
     Assert-Artifact $Image.worker_package 'Worker package'
     Assert-Artifact $Image.python_installer 'Python installer'
@@ -280,7 +302,9 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce) {
         # Restrict the parent ACL before copying credential and signing ZIPs;
         # otherwise they could temporarily inherit broad guest permissions.
         Set-RestrictedDirectoryAcl $bootstrap
+        Assert-Artifact $BootstrapArtifact 'Guest bootstrap script'
         Copy-Item -LiteralPath $GuestBootstrap -Destination (Join-Path $bootstrap 'GuestBootstrap.ps1') -Force
+        Assert-StagedLabArtifact $BootstrapArtifact (Join-Path $bootstrap 'GuestBootstrap.ps1') 'Staged guest bootstrap script'
         Copy-Item -LiteralPath ([string]$Image.worker_package.path) -Destination (Join-Path $bootstrap 'worker-package.zip') -Force
         Assert-StagedLabArtifact $Image.worker_package (Join-Path $bootstrap 'worker-package.zip') 'Staged worker package'
         Copy-Item -LiteralPath ([string]$Image.python_installer.path) -Destination (Join-Path $bootstrap 'python-installer.exe') -Force
@@ -1178,13 +1202,14 @@ Assert-LabPlanPasswordEnvironment $planValue.images
 Assert-LabPlanVmShape $planValue.images
 Assert-LabPlanSourceIsoDetached $planValue.images
 Assert-LabPlanCheckpointNames $planValue.images
+$guestBootstrapReference = New-LabGuestBootstrapReference (Join-Path $PSScriptRoot 'GuestBootstrap.ps1')
 $results = @()
 foreach ($image in $planValue.images) {
     $vmName = [string]$image.image_id
     # Re-check at use time in case the inventory changed after preflight.
     Assert-LabHyperVTargetsReady @($image)
     $bootstrapNonce = New-LabBootstrapNonce
-    $vhd = New-LabVhd $image (Join-Path $PSScriptRoot 'GuestBootstrap.ps1') $bootstrapNonce
+    $vhd = New-LabVhd $image $guestBootstrapReference.path $bootstrapNonce $guestBootstrapReference
     New-VM -Name $vmName -Generation ([int]$image.generation) -MemoryStartupBytes ([int64]$image.memory_mb * 1MB) -VHDPath $vhd -SwitchName ([string]$image.switch_name) | Out-Null
     Set-VMProcessor -VMName $vmName -Count ([int]$image.processors)
     Set-VMMemory -VMName $vmName -DynamicMemoryEnabled $false
