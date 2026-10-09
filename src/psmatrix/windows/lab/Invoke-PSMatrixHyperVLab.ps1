@@ -334,6 +334,20 @@ function Assert-LabCleanupVhdIdentity([string]$VhdPath, $Vhd) {
         throw 'Lab cleanup VHDX identity is missing or mismatched; refusing dismount.'
     }
 }
+function Assert-LabCleanupIsoIdentity([string]$IsoPath, $DiskImage) {
+    # Before detaching the source ISO, verify that Storage resolved the
+    # requested file and that the response has an actual Boolean state.
+    # A path-only dismount must never act on a substituted image.
+    if ($null -eq $DiskImage -or $DiskImage -is [Array] -or
+        $DiskImage.Attached -isnot [bool] -or
+        [string]::IsNullOrWhiteSpace([string]$DiskImage.ImagePath) -or
+        -not [string]::Equals(
+            [IO.Path]::GetFullPath([string]$DiskImage.ImagePath),
+            [IO.Path]::GetFullPath($IsoPath),
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Lab cleanup ISO identity or attachment state is invalid; refusing dismount.'
+    }
+}
 function Close-LabBuildMedia([string]$VhdPath, [string]$IsoPath, [bool]$WasMounted) {
     # Mount-VHD can attach a disk and then fail before returning an object.
     # In that case $WasMounted is false even though the output VHDX exists
@@ -368,10 +382,13 @@ function Close-LabBuildMedia([string]$VhdPath, [string]$IsoPath, [bool]$WasMount
         }
     }
     finally {
+        $isoBefore = Get-DiskImage -ImagePath $IsoPath -ErrorAction Stop
+        Assert-LabCleanupIsoIdentity $IsoPath $isoBefore
         Dismount-DiskImage -ImagePath $IsoPath -ErrorAction Stop
         # A successful dismount command does not establish that the ISO has
         # detached. Verify its actual Storage module attachment state.
         $isoState = Get-DiskImage -ImagePath $IsoPath -ErrorAction Stop
+        Assert-LabCleanupIsoIdentity $IsoPath $isoState
         if ($null -eq $isoState -or $isoState.Attached -isnot [bool] -or
             $isoState.Attached -ne $false) {
             throw 'New lab Windows ISO remains attached after cleanup; refusing provisioning.'

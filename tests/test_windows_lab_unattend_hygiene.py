@@ -577,6 +577,105 @@ foreach ($target in @('Windows','Windows\System32','Windows\System32\Config','Wi
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_iso_cleanup_identity_guard_blocks_unrelated_image_before_dismount(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        marker = "function Assert-LabCleanupIsoIdentity("
+        helper_start = host.index(marker)
+        cleanup_start = host.index("\nfunction Close-LabBuildMedia(", helper_start)
+        helper = host[helper_start:cleanup_start]
+        cleanup_end = host.index("\nfunction Assert-LabPlanArtifactsReady(", cleanup_start)
+        cleanup = host[cleanup_start:cleanup_end]
+        self.assertLess(
+            cleanup.index("Assert-LabCleanupIsoIdentity $IsoPath $isoBefore"),
+            cleanup.index("Dismount-DiskImage -ImagePath $IsoPath -ErrorAction Stop"),
+        )
+        self.assertLess(
+            cleanup.index("Dismount-DiskImage -ImagePath $IsoPath -ErrorAction Stop"),
+            cleanup.index("Assert-LabCleanupIsoIdentity $IsoPath $isoState"),
+        )
+        script = helper + cleanup + r"""
+$ErrorActionPreference='Stop'
+$iso='D:\Fixture\expected-windows.iso'
+$script:returnedPath=$iso
+$script:returnedAttached=$true
+$script:queryFails=$false
+$script:postWrongPath=$false
+$script:isoDismounts=0
+function Test-Path {
+    [CmdletBinding()]
+    param([string]$LiteralPath,[string]$PathType)
+    return $false
+}
+function Get-DiskImage {
+    [CmdletBinding()]
+    param([string]$ImagePath)
+    if($script:queryFails){throw 'mock Storage lookup failure'}
+    $path = if($script:postWrongPath -and $script:isoDismounts -gt 0){
+        'D:\Fixture\other.iso'
+    } else { $script:returnedPath }
+    return [pscustomobject]@{
+        ImagePath=$path
+        Attached=$script:returnedAttached
+    }
+}
+function Dismount-DiskImage {
+    [CmdletBinding()]
+    param([string]$ImagePath)
+    $script:isoDismounts++
+    $script:returnedAttached=$false
+}
+$cases=@(
+    [pscustomobject]@{Name='different ISO';Path='D:\Fixture\other.iso';Attached=$true;Fail=$false},
+    [pscustomobject]@{Name='missing ISO';Path=$null;Attached=$true;Fail=$false},
+    [pscustomobject]@{Name='missing attached flag';Path=$iso;Attached=$null;Fail=$false},
+    [pscustomobject]@{Name='string attachment';Path=$iso;Attached='True';Fail=$false},
+    [pscustomobject]@{Name='provider failure';Path=$iso;Attached=$true;Fail=$true}
+)
+foreach($case in $cases){
+    $script:returnedPath=$case.Path
+    $script:returnedAttached=$case.Attached
+    $script:queryFails=$case.Fail
+    $script:isoDismounts=0
+    $refused=$false
+    try { Close-LabBuildMedia 'D:\Fixture\not-created.vhdx' $iso $false }
+    catch { $refused=$true }
+    if(-not $refused){throw ('Unrelated/malformed ISO cleanup accepted: '+$case.Name)}
+    if($script:isoDismounts -ne 0){throw ('ISO dismounted before identity check: '+$case.Name)}
+}
+$script:queryFails=$false
+$script:returnedPath=$iso
+$script:returnedAttached=$true
+$script:postWrongPath=$false
+$script:isoDismounts=0
+Close-LabBuildMedia 'D:\Fixture\not-created.vhdx' $iso $false
+if($script:isoDismounts -ne 1){
+    throw 'Valid ISO did not dismount exactly once.'
+}
+$script:returnedPath=$iso
+$script:returnedAttached=$true
+$script:postWrongPath=$true
+$script:isoDismounts=0
+$refused=$false
+try { Close-LabBuildMedia 'D:\Fixture\not-created.vhdx' $iso $false }
+catch { $refused=$true }
+if(-not $refused -or $script:isoDismounts -ne 1){
+    throw 'Post-dismount substitute ISO was not detected.'
+}
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
     def test_build_cleanup_never_dismounts_unrelated_vhdx(self):
         import shutil
         import subprocess
@@ -628,7 +727,10 @@ function Dismount-DiskImage {
 function Get-DiskImage {
     [CmdletBinding()]
     param([string]$ImagePath)
-    return [pscustomobject]@{Attached=$false}
+    return [pscustomobject]@{
+        ImagePath=$ImagePath
+        Attached=($script:isoDismounts -eq 0)
+    }
 }
 foreach($initiallyMounted in @($true,$false)) {
     $script:targetPath='D:\Fixture\other.vhdx'
@@ -1464,11 +1566,23 @@ if (-not $rejected) { throw 'Failed Storage volume query accepted.' }
         ):
             self.assertIn(fragment, helper)
         self.assertLess(
-            helper.index("Dismount-DiskImage -ImagePath $IsoPath -ErrorAction Stop"),
-            helper.index("Get-DiskImage -ImagePath $IsoPath -ErrorAction Stop"),
+            helper.index("$isoBefore = Get-DiskImage -ImagePath $IsoPath -ErrorAction Stop"),
+            helper.index("Assert-LabCleanupIsoIdentity $IsoPath $isoBefore"),
         )
         self.assertLess(
-            helper.index("Get-DiskImage -ImagePath $IsoPath -ErrorAction Stop"),
+            helper.index("Assert-LabCleanupIsoIdentity $IsoPath $isoBefore"),
+            helper.index("Dismount-DiskImage -ImagePath $IsoPath -ErrorAction Stop"),
+        )
+        self.assertLess(
+            helper.index("Dismount-DiskImage -ImagePath $IsoPath -ErrorAction Stop"),
+            helper.index("$isoState = Get-DiskImage -ImagePath $IsoPath -ErrorAction Stop"),
+        )
+        self.assertLess(
+            helper.index("$isoState = Get-DiskImage -ImagePath $IsoPath -ErrorAction Stop"),
+            helper.index("Assert-LabCleanupIsoIdentity $IsoPath $isoState"),
+        )
+        self.assertLess(
+            helper.index("Assert-LabCleanupIsoIdentity $IsoPath $isoState"),
             host.index("function New-LabVhd(") - host.index("function Close-LabBuildMedia("),
         )
         self.assertIn(

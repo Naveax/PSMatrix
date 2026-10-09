@@ -300,6 +300,17 @@ Isolated Windows PowerShell 5.1 and PowerShell 7 mocks cover these cases
 without mounting media. This does not prove the ISO bytes themselves are
 trusted or rule out concurrent host mount changes.
 
+The ISO cleanup path now separately verifies the `Get-DiskImage`
+response's **exact ISO file path** and native Boolean attachment state
+before invoking `Dismount-DiskImage`, and checks identity again after
+the dismount. A mismatched, malformed, duplicate or unavailable ISO
+identity fails closed without detaching an unrelated image. The
+`finally` scope still performs ISO cleanup after earlier VHD errors
+when identity is valid. Isolated Windows PowerShell 5.1 / PowerShell 7
+mocks verify zero dismounts for wrong-image responses, exactly one for
+the expected ISO, and rejection of substituted post-dismount state.
+This does not eliminate races between Storage queries and dismount.
+
 The newly created EFI and Windows guest partitions are now checked for
 distinct, single alphabetical drive letters before the elevated host calls
 DISM or BCDBoot. A missing partition object, unassigned/malformed letter,
