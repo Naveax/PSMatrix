@@ -571,8 +571,11 @@ function Assert-NoGuestBootstrapStagingSecrets([string]$WindowsRoot) {
         [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw 'Guest bootstrap staging directory is a reparse point; refusing checkpoint.'
     }
-    foreach ($name in @('credential-bundle.zip', 'signing-bundle.zip')) {
-        if (Test-Path -LiteralPath (Join-Path $staging $name)) {
+    # Inspect the directory entries, not Test-Path on each target.
+    # Test-Path can hide dangling symlinks, even when a sensitive archive
+    # name still exists as an NTFS reparse-point directory entry.
+    foreach ($entry in @(Get-ChildItem -LiteralPath $staging -Force -ErrorAction Stop)) {
+        if ($entry.Name -iin @('credential-bundle.zip', 'signing-bundle.zip')) {
             throw 'Guest bootstrap credential/signing staging archive remains; refusing checkpoint.'
         }
     }

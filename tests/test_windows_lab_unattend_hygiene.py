@@ -4298,6 +4298,117 @@ exit 0
                     exe + ": " + result.stdout + result.stderr,
                 )
 
+    def test_guest_cleanup_checks_directory_entries_even_when_test_path_hides_leaf(self):
+        guest = GUEST.read_text(encoding="utf-8")
+        section = guest.split("function Remove-GuestBootstrapStagingSecrets(", 1)[1].split(
+            "function Invoke-GuestBootstrapFailureCleanup(", 1
+        )[0]
+        self.assertIn("Get-ChildItem -LiteralPath $Root -Force -ErrorAction Stop", section)
+        self.assertIn("Guest bootstrap staging material is an unsafe file type.", section)
+        self.assertIn("Guest bootstrap staging material remains after cleanup.", section)
+        self.assertNotIn("if (Test-Path -LiteralPath $path)", section)
+        host = HOST.read_text(encoding="utf-8")
+        check = host.split("function Assert-NoGuestBootstrapStagingSecrets(", 1)[1].split(
+            "function Get-SafeGuestWorkerConfigHash(", 1
+        )[0]
+        self.assertIn("Get-ChildItem -LiteralPath $staging -Force -ErrorAction Stop", check)
+        self.assertNotIn("Test-Path -LiteralPath (Join-Path $staging $name)", check)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_guest_cleanup_and_host_gate_find_hidden_archive_directory_entries(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        def quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-entry-cleanup-") as root:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                base = Path(root) / exe.replace(".", "-")
+                stage = base / "ProgramData" / "PSMatrix" / "Bootstrap"
+                stage.mkdir(parents=True)
+                for name in ("credential-bundle.zip", "signing-bundle.zip"):
+                    (stage / name).write_bytes(b"fake test material only")
+                script = r"""
+$ErrorActionPreference = 'Stop'
+$hostCode = Get-Content -LiteralPath __HOST__ -Raw
+$a = $hostCode.IndexOf('function Assert-NoGuestBootstrapStagingSecrets(')
+$b = $hostCode.IndexOf('function Get-SafeGuestWorkerConfigHash(', $a)
+if ($a -lt 0 -or $b -le $a) { throw 'Missing host staging verifier.' }
+Invoke-Expression $hostCode.Substring($a,$b-$a)
+$guestCode = Get-Content -LiteralPath __GUEST__ -Raw
+$c = $guestCode.IndexOf('function Remove-GuestBootstrapStagingSecrets(')
+$e = $guestCode.IndexOf('function Invoke-GuestBootstrapFailureCleanup(', $c)
+if ($c -lt 0 -or $e -le $c) { throw 'Missing guest cleanup function.' }
+Invoke-Expression $guestCode.Substring($c,$e-$c)
+$root = __ROOT__
+$stage = Join-Path $root 'ProgramData\PSMatrix\Bootstrap'
+function Test-Path {
+    param([string]$LiteralPath, [string]$PathType)
+    if ([IO.Path]::GetFileName($LiteralPath) -in @('credential-bundle.zip','signing-bundle.zip')) {
+        # Model a dangling-link lookup returning false.
+        return $false
+    }
+    return (Microsoft.PowerShell.Management\Test-Path -LiteralPath $LiteralPath -PathType $PathType)
+}
+$script:fakeLink = $false
+function Get-ChildItem {
+    param([string]$LiteralPath,[switch]$Force,[string]$ErrorAction)
+    if ($script:fakeLink -and $LiteralPath -eq $stage) {
+        return [pscustomobject]@{
+            Name='signing-bundle.zip'
+            FullName=(Join-Path $stage 'signing-bundle.zip')
+            PSIsContainer=$false
+            Attributes=[IO.FileAttributes]::ReparsePoint
+        }
+    }
+    return (Microsoft.PowerShell.Management\Get-ChildItem -LiteralPath $LiteralPath -Force -ErrorAction Stop)
+}
+$hostRejected = $false
+try { Assert-NoGuestBootstrapStagingSecrets $root } catch {
+    if ($_.Exception.Message -cne
+        'Guest bootstrap credential/signing staging archive remains; refusing checkpoint.') { throw }
+    $hostRejected = $true
+}
+if (-not $hostRejected) { throw 'Host accepted hidden credential archive.' }
+Remove-GuestBootstrapStagingSecrets $stage
+foreach ($name in @('credential-bundle.zip','signing-bundle.zip')) {
+    if ([IO.File]::Exists((Join-Path $stage $name))) {
+        throw 'Guest left a credential/signing file after cleanup.'
+    }
+}
+Assert-NoGuestBootstrapStagingSecrets $root
+$script:fakeLink = $true
+$hostRejected = $false
+try { Assert-NoGuestBootstrapStagingSecrets $root } catch {
+    if ($_.Exception.Message -cne
+        'Guest bootstrap credential/signing staging archive remains; refusing checkpoint.') { throw }
+    $hostRejected = $true
+}
+if (-not $hostRejected) { throw 'Host accepted a dangling signing link directory entry.' }
+$guestRejected = $false
+try { Remove-GuestBootstrapStagingSecrets $stage } catch {
+    if ($_.Exception.Message -cne 'Guest bootstrap staging material is an unsafe file type.') { throw }
+    $guestRejected = $true
+}
+if (-not $guestRejected) { throw 'Guest accepted an unsafe signing link.' }
+exit 0
+""".replace("__HOST__", quote(HOST)).replace(
+                    "__GUEST__", quote(GUEST)
+                ).replace("__ROOT__", quote(base))
+                completed = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=55, check=False,
+                )
+                self.assertEqual(
+                    completed.returncode, 0,
+                    exe + ": " + completed.stdout + completed.stderr,
+                )
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)

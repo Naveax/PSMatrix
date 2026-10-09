@@ -443,17 +443,21 @@ function Remove-GuestBootstrapStagingSecrets([string]$Root) {
         [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw 'Guest bootstrap staging directory is a reparse point.'
     }
+    # Enumerate actual directory entries. Test-Path on a missing target
+    # can report false for a dangling file symlink which still exists.
     foreach ($name in @('credential-bundle.zip', 'signing-bundle.zip')) {
-        $path = Join-Path $Root $name
-        if (Test-Path -LiteralPath $path) {
-            $file = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+        $found = @(Get-ChildItem -LiteralPath $Root -Force -ErrorAction Stop |
+            Where-Object { $_.Name -ieq $name })
+        foreach ($file in $found) {
             if ($file.PSIsContainer -or
                 (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
                 throw 'Guest bootstrap staging material is an unsafe file type.'
             }
-            Remove-Item -LiteralPath $path -Force -ErrorAction Stop
+            Remove-Item -LiteralPath $file.FullName -Force -ErrorAction Stop
         }
-        if (Test-Path -LiteralPath $path) {
+        $remaining = @(Get-ChildItem -LiteralPath $Root -Force -ErrorAction Stop |
+            Where-Object { $_.Name -ieq $name })
+        if ($remaining.Count -ne 0) {
             throw 'Guest bootstrap staging material remains after cleanup.'
         }
     }

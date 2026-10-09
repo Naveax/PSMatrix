@@ -629,6 +629,27 @@ is applied by these tests. Using the host's real DISM/BCDBoot utilities
 does **not** authenticate untrusted WIM/ESD/WMF contents, nor replace
 real elevated Hyper-V and guest acceptance.
 
+Guest cleanup and the host's offline checkpoint gate now check
+**actual bootstrap directory entries** for `credential-bundle.zip`
+and `signing-bundle.zip`, rather than relying on `Test-Path` for
+the individual leaf paths. On Windows, lookup of a broken/dangling
+symlink target can report absence even when the link remains as an
+NTFS directory entry. The guest enumerates matching names, refuses
+reparse-point or directory entries without dereferencing them, removes
+regular archives, then enumerates again to prove removal. The host
+independently refuses any remaining matching directory entry before
+accepting the checkpoint. Its existing recursive NTFS ACL verifier
+is an additional independent guard against reparse points.
+
+WinPS5.1 and PowerShell 7 regression tests use disposable packages
+and simulated `Test-Path` false-negatives plus reparse metadata to
+confirm the host refuses hidden staging names, normal files are
+removed by guest cleanup, and a dangling-link-shaped entry fails
+closed. These checks prevent a missing-target lookup from being
+mistaken for completed cleanup, but do not make deletion atomic
+against privileged concurrent replacement or replace elevated
+guest/Hyper-V acceptance.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted
