@@ -116,9 +116,12 @@ function Expand-Zip([string]$Archive, [string]$Destination) {
 }
 
 function Find-File([string]$Root, [string]$Name) {
-    $item = Get-ChildItem -LiteralPath $Root -Recurse -File -Filter $Name | Select-Object -First 1
-    if ($item -eq $null) { throw ('Required file not found: ' + $Name) }
-    return $item.FullName
+    # First-match selection is ambiguous if a staged package contains several
+    # config templates or installers. Fail closed rather than choosing one.
+    $candidates = @(Get-ChildItem -LiteralPath $Root -Recurse -File -Filter $Name -ErrorAction Stop)
+    if ($candidates.Count -eq 0) { throw ('Required file not found: ' + $Name) }
+    if ($candidates.Count -ne 1) { throw ('Multiple matching bootstrap files found: ' + $Name) }
+    return $candidates[0].FullName
 }
 
 function Set-RestrictedDirectoryAcl([string]$Path) {

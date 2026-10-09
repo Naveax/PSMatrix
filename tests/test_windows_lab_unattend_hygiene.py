@@ -1010,6 +1010,71 @@ $afterFailure.Dispose()
                     shell + ": " + test_run.stdout + test_run.stderr,
                 )
 
+    def test_guest_requires_unique_bootstrap_template_or_install_script(self):
+        guest = GUEST.read_text(encoding="utf-8")
+        find_file = guest.split("function Find-File(", 1)[1].split(
+            "function Set-RestrictedDirectoryAcl(", 1
+        )[0]
+        self.assertIn(
+            "$candidates = @(Get-ChildItem -LiteralPath $Root -Recurse -File -Filter $Name -ErrorAction Stop)",
+            find_file,
+        )
+        self.assertIn("$candidates.Count -eq 0", find_file)
+        self.assertIn("$candidates.Count -ne 1", find_file)
+        self.assertIn("Multiple matching bootstrap files found:", find_file)
+        self.assertNotIn("Select-Object -First 1", find_file)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_find_file_dynamic_missing_duplicate_and_unique_cases(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        quote = lambda value: "'" + str(value).replace("'", "''") + "'"
+        with tempfile.TemporaryDirectory(prefix="psmatrix-unique-file-") as root:
+            folder = Path(root)
+            first = folder / "first"
+            duplicate = folder / "other" / "nested"
+            first.mkdir()
+            duplicate.mkdir(parents=True)
+            expected = first / "worker.json"
+            expected.write_text('{"template":1}', encoding="utf-8")
+            (duplicate / "worker.json").write_text('{"template":2}', encoding="utf-8")
+            script = """
+$ErrorActionPreference = 'Stop'
+$source = Get-Content -LiteralPath {guest} -Raw
+$begin = $source.IndexOf('function Find-File(')
+$end = $source.IndexOf('function Set-RestrictedDirectoryAcl(', $begin)
+if ($begin -lt 0 -or $end -lt 0) {{ throw 'Missing file selector.' }}
+Invoke-Expression $source.Substring($begin, $end - $begin)
+$actual = Find-File {first} 'worker.json'
+if ($actual -cne {expected}) {{ throw 'Wrong unique file selected.' }}
+try {{
+    Find-File {root} 'worker.json' | Out-Null
+    throw 'Ambiguous templates were accepted.'
+}} catch {{
+    if ($_.Exception.Message -ne 'Multiple matching bootstrap files found: worker.json') {{ throw }}
+}}
+try {{
+    Find-File {root} 'missing.json' | Out-Null
+    throw 'Missing bootstrap template was accepted.'
+}} catch {{
+    if ($_.Exception.Message -ne 'Required file not found: missing.json') {{ throw }}
+}}
+exit 0
+""".format(
+                guest=quote(GUEST), first=quote(first),
+                root=quote(folder), expected=quote(expected),
+            )
+            for shell in ("powershell.exe", "pwsh.exe"):
+                if shutil.which(shell) is None:
+                    continue
+                run = subprocess.run(
+                    [shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, timeout=30, check=False,
+                )
+                self.assertEqual(run.returncode, 0, shell + ": " + run.stdout + run.stderr)
+
     def test_guest_ps40_does_not_depend_on_powershell5_intrinsic_new(self):
         guest = GUEST.read_text(encoding="utf-8")
         self.assertNotIn("::new(", guest)
