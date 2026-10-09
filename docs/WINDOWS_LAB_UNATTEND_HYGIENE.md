@@ -339,6 +339,15 @@ responses without performing any disk formatting. Provider races
 remain outside the scope of these mocks and require controlled
 Hyper-V acceptance.
 
+Successful formatting commands are now followed by independent
+`Get-Volume -Partition` checks for the intended drive letter, expected
+file system (EFI FAT32, Windows NTFS), exact label and a unique volume.
+A missing/misidentified volume, wrong file system or label, duplicate
+results or Storage lookup failure stops provisioning before the next
+partition stage or DISM/BCDBoot. Windows PowerShell 5.1 and PowerShell 7
+tests use isolated Storage mocks; they do not format real media.
+Post-format checks cannot rule out concurrent storage reconfiguration.
+
 Failed guest bootstraps now also **attempt to remove staging credential and
 signing ZIPs plus plaintext Windows unattended answer files** before
 writing the `FAIL` bootstrap result. `Invoke-GuestBootstrapFailureCleanup`

@@ -464,6 +464,20 @@ function Assert-NewLabVhdCreated([string]$VhdPath, [long]$ExpectedSizeBytes) {
         throw 'New lab VHDX identity, size or detached state is invalid.'
     }
 }
+function Assert-LabFormattedVolume($Partition, [string]$FileSystem, [string]$FileSystemLabel) {
+    # A successful Format-Volume invocation is not proof that the expected
+    # filesystem was actually mounted at the new guest partition letter.
+    if ($null -eq $Partition -or ([string]$Partition.DriveLetter) -cnotmatch '^[A-Za-z]$') {
+        throw 'Lab post-format partition identity is missing or invalid.'
+    }
+    $volumes = @(Get-Volume -Partition $Partition -ErrorAction Stop)
+    if ($volumes.Count -ne 1 -or $null -eq $volumes[0] -or
+        ([string]$volumes[0].DriveLetter) -ine ([string]$Partition.DriveLetter) -or
+        ([string]$volumes[0].FileSystem) -ine $FileSystem -or
+        ([string]$volumes[0].FileSystemLabel) -cne $FileSystemLabel) {
+        throw 'New lab guest partition format did not match its expected filesystem or volume label.'
+    }
+}
 function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $BootstrapArtifact) {
     Assert-Artifact $BootstrapArtifact 'Guest bootstrap script'
     Assert-Artifact $Image.source_iso 'Windows ISO'
@@ -506,6 +520,7 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         $efi = New-Partition -DiskNumber $diskNumber -Size 260MB -AssignDriveLetter -GptType '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' -ErrorAction Stop
         Assert-LabCreatedPartition $diskNumber $efi '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' 'EFI'
         Format-Volume -Partition $efi -FileSystem FAT32 -NewFileSystemLabel 'SYSTEM' -Confirm:$false -ErrorAction Stop | Out-Null
+        Assert-LabFormattedVolume $efi 'FAT32' 'SYSTEM'
         New-Partition -DiskNumber $diskNumber -Size 16MB -GptType '{e3c9e316-0b5c-4db8-817d-f92df00215ae}' -ErrorAction Stop | Out-Null
         $windows = New-Partition -DiskNumber $diskNumber -UseMaximumSize -AssignDriveLetter -ErrorAction Stop
         Assert-LabCreatedPartition $diskNumber $windows '{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}' 'Windows'
@@ -515,6 +530,7 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         $windowsRoot = $partitionRoots.WindowsRoot
         $efiRoot = $partitionRoots.EfiRoot
         Format-Volume -Partition $windows -FileSystem NTFS -NewFileSystemLabel 'Windows' -Confirm:$false -ErrorAction Stop | Out-Null
+        Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
         Invoke-HostDism @('/English','/Apply-Image',('/ImageFile:' + $imageFile),('/Index:' + [int]$Image.edition_index),('/ApplyDir:' + $windowsRoot))
         if ($Image.wmf_package) {
             Invoke-HostDism @('/English',('/Image:' + $windowsRoot),'/Add-Package',('/PackagePath:' + [string]$Image.wmf_package.path),'/NoRestart')

@@ -471,6 +471,86 @@ foreach ($target in @('Windows','Windows\System32','Windows\System32\Config','Wi
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_guest_volume_format_result_is_verified_before_deployment(self):
+        import shutil
+        import subprocess
+
+        source = HOST.read_text(encoding="utf-8")
+        start = source.index("function Assert-LabFormattedVolume(")
+        end = source.index("\nfunction New-LabVhd(", start)
+        code = source[start:end]
+        build = source[end:source.index("\nfunction Assert-NoGuestSetupAnswerFiles(", end)]
+        self.assertLess(
+            build.index("Format-Volume -Partition $efi -FileSystem FAT32"),
+            build.index("Assert-LabFormattedVolume $efi 'FAT32' 'SYSTEM'"),
+        )
+        self.assertLess(
+            build.index("Assert-LabFormattedVolume $efi 'FAT32' 'SYSTEM'"),
+            build.index("New-Partition -DiskNumber $diskNumber -Size 16MB"),
+        )
+        self.assertLess(
+            build.index("Format-Volume -Partition $windows -FileSystem NTFS"),
+            build.index("Assert-LabFormattedVolume $windows 'NTFS' 'Windows'"),
+        )
+        self.assertLess(
+            build.index("Assert-LabFormattedVolume $windows 'NTFS' 'Windows'"),
+            build.index("Invoke-HostDism @('/English','/Apply-Image'"),
+        )
+        script = code + r"""
+$ErrorActionPreference='Stop'
+$script:volumes=@()
+$script:queryFails=$false
+$script:queriedPartition=$null
+function Get-Volume {
+    [CmdletBinding()]
+    param([object]$Partition)
+    $script:queriedPartition=$Partition
+    if($script:queryFails){throw 'mock Storage provider lookup failed'}
+    return $script:volumes
+}
+$efi=[pscustomobject]@{DriveLetter='F';DiskNumber=42;PartitionNumber=1}
+$windows=[pscustomobject]@{DriveLetter='G';DiskNumber=42;PartitionNumber=3}
+$script:volumes=@([pscustomobject]@{DriveLetter='F';FileSystem='FAT32';FileSystemLabel='SYSTEM'})
+Assert-LabFormattedVolume $efi 'FAT32' 'SYSTEM'
+if(-not [object]::ReferenceEquals($script:queriedPartition,$efi)){
+    throw 'EFI volume query did not use the target partition.'
+}
+$script:volumes=@([pscustomobject]@{DriveLetter='G';FileSystem='NTFS';FileSystemLabel='Windows'})
+Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
+foreach($case in @(
+    [pscustomobject]@{Name='no matching volume';Volumes=@()},
+    [pscustomobject]@{Name='wrong drive';Volumes=@([pscustomobject]@{DriveLetter='D';FileSystem='NTFS';FileSystemLabel='Windows'})},
+    [pscustomobject]@{Name='wrong filesystem';Volumes=@([pscustomobject]@{DriveLetter='G';FileSystem='ReFS';FileSystemLabel='Windows'})},
+    [pscustomobject]@{Name='wrong label';Volumes=@([pscustomobject]@{DriveLetter='G';FileSystem='NTFS';FileSystemLabel='Guest'})},
+    [pscustomobject]@{Name='missing FS';Volumes=@([pscustomobject]@{DriveLetter='G';FileSystem=$null;FileSystemLabel='Windows'})},
+    [pscustomobject]@{Name='multiple results';Volumes=@(
+        [pscustomobject]@{DriveLetter='G';FileSystem='NTFS';FileSystemLabel='Windows'},
+        [pscustomobject]@{DriveLetter='G';FileSystem='NTFS';FileSystemLabel='Windows'}
+    )}
+)) {
+    $script:volumes=$case.Volumes
+    $rejected=$false
+    try { Assert-LabFormattedVolume $windows 'NTFS' 'Windows' }
+    catch { $rejected=$true }
+    if(-not $rejected){throw ('Invalid post-format result accepted: '+$case.Name)}
+}
+$script:queryFails=$true
+$rejected=$false
+try { Assert-LabFormattedVolume $windows 'NTFS' 'Windows' }
+catch { $rejected=$true }
+if(-not $rejected){throw 'Storage provider error was accepted'}
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
     def test_guest_partition_letter_collision_rejected_before_windows_format(self):
         import shutil
         import subprocess
