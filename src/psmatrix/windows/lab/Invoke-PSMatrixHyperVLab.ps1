@@ -303,6 +303,18 @@ function Invoke-HostDism([string[]]$Arguments) {
     Assert-SafeLabArtifactPath $hostDism
     Invoke-Checked $hostDism $Arguments
 }
+function Assert-LabCleanupVhdIdentity([string]$VhdPath, $Vhd) {
+    # A cleanup path is not authority to detach a different attached disk.
+    if ($null -eq $Vhd -or $Vhd -is [Array] -or
+        $Vhd.Attached -isnot [bool] -or
+        [string]::IsNullOrWhiteSpace([string]$Vhd.Path) -or
+        -not [string]::Equals(
+            [IO.Path]::GetFullPath([string]$Vhd.Path),
+            [IO.Path]::GetFullPath($VhdPath),
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Lab cleanup VHDX identity is missing or mismatched; refusing dismount.'
+    }
+}
 function Close-LabBuildMedia([string]$VhdPath, [string]$IsoPath, [bool]$WasMounted) {
     # Mount-VHD can attach a disk and then fail before returning an object.
     # In that case $WasMounted is false even though the output VHDX exists
@@ -310,6 +322,11 @@ function Close-LabBuildMedia([string]$VhdPath, [string]$IsoPath, [bool]$WasMount
     $vhdExists = $WasMounted -or (Test-Path -LiteralPath $VhdPath -PathType Leaf)
     try {
         if ($WasMounted) {
+            $before = Get-VHD -Path $VhdPath -ErrorAction Stop
+            Assert-LabCleanupVhdIdentity $VhdPath $before
+            if (-not $before.Attached) {
+                throw 'New lab VHDX detached unexpectedly before cleanup.'
+            }
             Dismount-VHD -Path $VhdPath -ErrorAction Stop
         }
         elseif ($vhdExists) {
@@ -317,12 +334,14 @@ function Close-LabBuildMedia([string]$VhdPath, [string]$IsoPath, [bool]$WasMount
             if ($null -eq $before -or $before.Attached -isnot [bool]) {
                 throw 'New lab VHDX attachment state is unavailable; refusing provisioning.'
             }
+            Assert-LabCleanupVhdIdentity $VhdPath $before
             if ($before.Attached) {
                 Dismount-VHD -Path $VhdPath -ErrorAction Stop
             }
         }
         if ($vhdExists) {
             $vhdState = Get-VHD -Path $VhdPath -ErrorAction Stop
+            Assert-LabCleanupVhdIdentity $VhdPath $vhdState
             if ($null -eq $vhdState -or $vhdState.Attached -isnot [bool] -or
                 $vhdState.Attached -ne $false) {
                 throw 'New lab VHDX remains attached after cleanup; refusing provisioning.'

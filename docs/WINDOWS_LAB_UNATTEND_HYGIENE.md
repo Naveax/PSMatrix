@@ -358,6 +358,18 @@ partition stage or DISM/BCDBoot. Windows PowerShell 5.1 and PowerShell 7
 tests use isolated Storage mocks; they do not format real media.
 Post-format checks cannot rule out concurrent storage reconfiguration.
 
+The VHDX build cleanup now also verifies that each `Get-VHD -Path`
+response identifies the **expected VHDX path** and includes native
+Boolean attachment state before any `Dismount-VHD` command.
+This check applies when the build returned an attached VHD object and
+when a partial mount attached the disk without returning a result.
+An unrelated or unreadable VHDX fails closed instead of being detached,
+while ISO cleanup is still attempted through the existing `finally`
+scope. A final VHDX identity and detached-state check is required before
+cleanup succeeds. Windows PowerShell 5.1/7 mocks verify that an unrelated
+image receives zero dismount calls and a legitimate newly created image
+is detached exactly once. Real Hyper-V timing races remain out of scope.
+
 Failed guest bootstraps now also **attempt to remove staging credential and
 signing ZIPs plus plaintext Windows unattended answer files** before
 writing the `FAIL` bootstrap result. `Invoke-GuestBootstrapFailureCleanup`

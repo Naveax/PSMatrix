@@ -473,6 +473,93 @@ foreach ($target in @('Windows','Windows\System32','Windows\System32\Config','Wi
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_build_cleanup_never_dismounts_unrelated_vhdx(self):
+        import shutil
+        import subprocess
+
+        source = HOST.read_text(encoding="utf-8")
+        begin = source.index("function Close-LabBuildMedia(")
+        end = source.index("\nfunction Assert-LabPlanArtifactsReady(", begin)
+        code = source[begin:end]
+        self.assertIn("Assert-LabCleanupVhdIdentity $VhdPath $before", code)
+        self.assertLess(
+            code.index("Assert-LabCleanupVhdIdentity $VhdPath $before"),
+            code.index("Dismount-VHD -Path $VhdPath -ErrorAction Stop"),
+        )
+        helper_begin = source.index("function Assert-LabCleanupVhdIdentity(")
+        helper_end = source.index("\nfunction Close-LabBuildMedia(", helper_begin)
+        script = source[helper_begin:helper_end] + code + r"""
+$ErrorActionPreference = 'Stop'
+$expected = 'D:\Fixture\guest-output.vhdx'
+$script:targetPath = 'D:\Fixture\other.vhdx'
+$script:attached = $true
+$script:vhdDismounts = 0
+$script:isoDismounts = 0
+$script:queryCount = 0
+function Test-Path {
+    [CmdletBinding()]
+    param([string]$LiteralPath,[string]$PathType)
+    return $true
+}
+function Get-VHD {
+    [CmdletBinding()]
+    param([string]$Path)
+    $script:queryCount++
+    return [pscustomobject]@{
+        Path=$script:targetPath
+        Attached=$script:attached
+    }
+}
+function Dismount-VHD {
+    [CmdletBinding()]
+    param([string]$Path)
+    $script:vhdDismounts++
+    $script:attached=$false
+}
+function Dismount-DiskImage {
+    [CmdletBinding()]
+    param([string]$ImagePath)
+    $script:isoDismounts++
+}
+function Get-DiskImage {
+    [CmdletBinding()]
+    param([string]$ImagePath)
+    return [pscustomobject]@{Attached=$false}
+}
+foreach($initiallyMounted in @($true,$false)) {
+    $script:targetPath='D:\Fixture\other.vhdx'
+    $script:attached=$true
+    $script:vhdDismounts=0
+    $script:isoDismounts=0
+    $rejected=$false
+    try { Close-LabBuildMedia $expected 'D:\Fixture\source.iso' $initiallyMounted }
+    catch { $rejected=$true }
+    if(-not $rejected){throw 'Unrelated VHDX cleanup was accepted.'}
+    if($script:vhdDismounts -ne 0){throw 'Unrelated VHDX was detached.'}
+    if($script:isoDismounts -ne 1){throw 'ISO cleanup was not attempted.'}
+}
+foreach($initiallyMounted in @($true,$false)) {
+    $script:targetPath=$expected
+    $script:attached=$true
+    $script:vhdDismounts=0
+    $script:isoDismounts=0
+    Close-LabBuildMedia $expected 'D:\Fixture\source.iso' $initiallyMounted
+    if($script:vhdDismounts -ne 1 -or $script:isoDismounts -ne 1){
+        throw 'Correct guest VHDX did not clean up exactly once.'
+    }
+}
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
     def test_checkpoint_mount_disk_number_is_bound_to_guest_vhd_before_scan(self):
         import shutil
         import subprocess
@@ -1098,9 +1185,19 @@ if (-not $rejected) { throw 'Failed Storage volume query accepted.' }
             "Dismount-DiskImage -ImagePath $IsoPath -ErrorAction Stop",
         ):
             self.assertIn(required, cleanup)
+        # New cleanup contract: verify VHD identity before dismounting;
+        # then query the VHD a second time to confirm it really detached.
+        self.assertLess(
+            cleanup.index("$before = Get-VHD -Path $VhdPath -ErrorAction Stop"),
+            cleanup.index("Assert-LabCleanupVhdIdentity $VhdPath $before"),
+        )
+        self.assertLess(
+            cleanup.index("Assert-LabCleanupVhdIdentity $VhdPath $before"),
+            cleanup.index("Dismount-VHD -Path $VhdPath -ErrorAction Stop"),
+        )
         self.assertLess(
             cleanup.index("Dismount-VHD -Path $VhdPath -ErrorAction Stop"),
-            cleanup.index("Get-VHD -Path $VhdPath -ErrorAction Stop"),
+            cleanup.index("$vhdState = Get-VHD -Path $VhdPath -ErrorAction Stop"),
         )
         self.assertIn(
             "Close-LabBuildMedia -VhdPath $output -IsoPath $isoPath -WasMounted ([bool]$vhdMounted)",
