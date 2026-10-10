@@ -920,6 +920,9 @@ function Read-BootstrapResult([string]$VhdPath, [string]$ExpectedBootstrapNonce)
     if ($null -eq $preMount -or $preMount.Attached -isnot [bool]) {
         throw 'Guest VHDX initial attachment state is unavailable; refusing checkpoint.'
     }
+    # The detached flag must refer to the exact guest image we plan to
+    # mount; a substituted Storage response is not safe to trust.
+    Assert-LabCleanupVhdIdentity $VhdPath $preMount
     if ($preMount.Attached) {
         throw 'Guest VHDX was already attached before validation; refusing checkpoint.'
     }

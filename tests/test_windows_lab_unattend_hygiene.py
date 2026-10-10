@@ -845,6 +845,75 @@ foreach($initiallyMounted in @($true,$false)) {
             self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_checkpoint_vhdx_premount_binds_detached_state_to_expected_file(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        begin = host.index("function Assert-LabCleanupVhdIdentity(")
+        end = host.index("\nfunction Assert-LabCleanupIsoIdentity(", begin)
+        helper = host[begin:end]
+        reader_begin = host.index("function Read-BootstrapResult(")
+        reader_end = host.index("\nfunction Assert-LabPlanGuestIdentities(", reader_begin)
+        reader = host[reader_begin:reader_end]
+        preflight_start = reader.index("$preMount = Get-VHD -Path $VhdPath -ErrorAction Stop")
+        preflight_end = reader.index("    try {\n        $mounted = Mount-VHD", preflight_start)
+        preflight = reader[preflight_start:preflight_end]
+        self.assertLess(
+            preflight.index("Assert-LabCleanupVhdIdentity $VhdPath $preMount"),
+            preflight.index("if ($preMount.Attached)"),
+        )
+        self.assertLess(
+            preflight.index("$preMount = Get-VHD -Path $VhdPath -ErrorAction Stop"),
+            preflight.index("Assert-LabCleanupVhdIdentity $VhdPath $preMount"),
+        )
+        script = helper + "\nfunction Invoke-CheckpointVhdPremount([string]$VhdPath) {\n" + preflight + "\n}\n" + r"""
+$ErrorActionPreference = 'Stop'
+$expected='D:\Fixture\checkpoint.vhdx'
+$script:returnedPath=$expected
+$script:attached=$false
+$script:queryFails=$false
+$script:reads=0
+function Get-VHD {
+    [CmdletBinding()]
+    param([string]$Path)
+    if($Path -cne $expected){throw 'Unexpected pre-mount query'}
+    $script:reads++
+    if($script:queryFails){throw 'VHD provider unavailable'}
+    return [pscustomobject]@{
+        Path=$script:returnedPath
+        Attached=$script:attached
+    }
+}
+Invoke-CheckpointVhdPremount $expected
+if($script:reads -ne 1){throw 'Valid guest VHDX queried incorrectly'}
+foreach($case in @(
+    [pscustomobject]@{Name='unrelated VHDX';Path='D:\Fixture\other.vhdx';Attached=$false;QueryFails=$false},
+    [pscustomobject]@{Name='missing path';Path=$null;Attached=$false;QueryFails=$false},
+    [pscustomobject]@{Name='pre-attached';Path=$expected;Attached=$true;QueryFails=$false},
+    [pscustomobject]@{Name='missing attached';Path=$expected;Attached=$null;QueryFails=$false},
+    [pscustomobject]@{Name='string attached';Path=$expected;Attached='False';QueryFails=$false},
+    [pscustomobject]@{Name='provider failure';Path=$expected;Attached=$false;QueryFails=$true}
+)) {
+    $script:returnedPath=$case.Path
+    $script:attached=$case.Attached
+    $script:queryFails=$case.QueryFails
+    $denied=$false
+    try { Invoke-CheckpointVhdPremount $expected } catch { $denied=$true }
+    if(-not $denied){throw ('Wrong VHDX pre-mount state was accepted: '+$case.Name)}
+}
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
     def test_checkpoint_cleanup_verifies_vhdx_identity_before_and_after_detach(self):
         import shutil
         import subprocess

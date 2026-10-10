@@ -388,6 +388,15 @@ the Windows partition. Windows PowerShell 5.1/7 fixtures simulate these
 fail-closed cases without mounting any disk. It is not a guest integrity
 attestation or protection against concurrent storage identity races.
 
+Checkpoint `Read-BootstrapResult` now checks the **pre-mount**
+`Get-VHD -Path` response against the exact requested VHDX path and a
+native Boolean attachment state before considering whether the image
+is already attached. A substituted, missing, malformed or pre-attached
+VHDX fails closed before `Mount-VHD`. Mock Windows PowerShell 5.1
+and PowerShell 7 tests cover the expected detached guest image as
+well as wrong-file and invalid Storage responses, without mounting
+actual media. Races after the check remain outside this mock coverage.
+
 Checkpoint `Read-BootstrapResult` cleanup now also independently verifies
 the **exact VHDX file path** and native Boolean attachment state before
 attempting `Dismount-VHD`, and repeats the identity check after the
