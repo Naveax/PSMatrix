@@ -771,6 +771,17 @@ a 0-byte declaration for nonempty data fails even when its SHA-256 matches.
 Disposable WinPS5.1/PS7 tests verify explicit zero and positive mismatches,
 optional missing sizes, truly empty artifacts, and staged artifact behavior.
 
+The same exact-size guard now requires a real nonnegative integral CLR
+numeric type for any supplied `size`. PowerShell's conversion from
+`double` to `Int64` may round fractional values, so a forged
+`size: 4.2` previously matched a four-byte file after coercion.
+Fractional and decimal numeric values, booleans, strings and negative
+sizes now fail closed instead of being silently coerced; valid
+integer 0/positive counts and omitted optional metadata still work.
+WinPS5.1/PowerShell 7 fixtures cover those malformed declarations on
+both original and copied/staged artifacts. The SHA-256 check remains
+independent and unchanged.
+
 WinPS5.1 and PowerShell 7 tests use disposable dummy packages to
 verify an unchanged staged copy, a deliberately modified source copied
 after a passing source hash, a wrong reported size and an actual NTFS

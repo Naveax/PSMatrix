@@ -4952,7 +4952,6 @@ exit 0
         self.assertLess(host.index("Assert-LabPlanArtifactsReady $planValue.images"),host.index("$results = @()"))
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
-    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     def test_host_artifact_enforces_explicit_zero_byte_size_metadata(self):
         import shutil
         import subprocess
@@ -5011,6 +5010,79 @@ if(-not $rejected){throw 'Staged artifact explicit zero size was ignored.'}
                 )
                 self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
 
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_artifact_size_requires_integral_numeric_metadata(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        host = HOST.read_text(encoding="utf-8")
+        start = host.index("function Get-Sha256(")
+        end = host.index("\nfunction Copy-LabFreshStagedArtifact(", start)
+        helpers = host[start:end]
+        self.assertIn("size metadata is invalid.", helpers)
+        with tempfile.TemporaryDirectory(prefix="psmatrix-artifact-integer-size-") as temp:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                source = Path(temp) / (exe.replace(".", "-") + ".bin")
+                literal = "'" + str(source).replace("'", "''") + "'"
+                script = helpers + r"""
+$ErrorActionPreference='Stop'
+$source=__SOURCE__
+[IO.File]::WriteAllBytes($source,[byte[]](1,2,3,4))
+$hash=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
+$meta=[pscustomobject]@{path=$source;sha256=$hash;size=[int64]4}
+Assert-Artifact $meta 'Synthetic artifact'
+$meta.size=[int32]4
+Assert-Artifact $meta 'Synthetic artifact'
+$meta.size=$null
+Assert-Artifact $meta 'Synthetic artifact'
+foreach($bad in @(
+    [double]4.2,
+    [double]4.0,
+    [decimal]4.25,
+    [string]'4',
+    [bool]$true,
+    [int64]-1,
+    [double]::NaN
+)) {
+    $meta.size=$bad
+    $denied=$false
+    try { Assert-Artifact $meta 'Synthetic artifact' }
+    catch {
+        $denied=$true
+        if($_.Exception.Message -cne 'Synthetic artifact size metadata is invalid.'){
+            throw
+        }
+    }
+    if(-not $denied){throw ('Invalid artifact size metadata accepted: '+[string]$bad)}
+}
+$empty=($source+'.empty')
+[IO.File]::WriteAllBytes($empty,[byte[]]@())
+$hash0=(Get-FileHash -LiteralPath $empty -Algorithm SHA256).Hash.ToLowerInvariant()
+Assert-Artifact ([pscustomobject]@{path=$empty;sha256=$hash0;size=[int32]0}) 'Synthetic empty'
+$meta.size=[int64]4
+$staged=($source+'.staged')
+[IO.File]::WriteAllBytes($staged,[byte[]](1,2,3,4))
+Assert-StagedLabArtifact $meta $staged 'Staged artifact'
+$meta.size=[double]4.2
+$denied=$false
+try { Assert-StagedLabArtifact $meta $staged 'Staged artifact' }
+catch {$denied=$true}
+if(-not $denied){throw 'Invalid staged size metadata was accepted.'}
+"""
+                result = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command",
+                     script.replace("__SOURCE__", literal)],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=45, check=False,
+                )
+                self.assertEqual(
+                    result.returncode, 0, exe + ": " + result.stdout + result.stderr
+                )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     def test_host_artifact_hash_cannot_authorize_junction_media_path(self):
         import shutil
         import subprocess

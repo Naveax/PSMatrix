@@ -45,9 +45,27 @@ function Assert-Artifact($Artifact, [string]$Label) {
     Assert-SafeLabArtifactPath $path
     $actual = Get-Sha256 $path
     if ($actual -ne ([string]$Artifact.sha256).ToLowerInvariant()) { throw ($Label + ' SHA-256 mismatch.') }
-    # A supplied size is a separate binding check even when it is zero;
-    # PowerShell truthiness would otherwise silently skip size=0.
-    if ($null -ne $Artifact.size -and (Get-Item -LiteralPath $path).Length -ne [int64]$Artifact.size) { throw ($Label + ' size mismatch.') }
+    # Exact byte counts must be integral CLR numbers, not fractions,
+    # booleans or numeric-looking strings. Casting a double to Int64 can
+    # silently round it to the actual length and bypass the size binding.
+    if ($null -ne $Artifact.size) {
+        $declaredSize = $Artifact.size
+        $typeCode = [Type]::GetTypeCode($declaredSize.GetType())
+        if ($typeCode -notin @(
+            [TypeCode]::Byte, [TypeCode]::SByte,
+            [TypeCode]::Int16, [TypeCode]::UInt16,
+            [TypeCode]::Int32, [TypeCode]::UInt32,
+            [TypeCode]::Int64, [TypeCode]::UInt64
+        )) {
+            throw ($Label + ' size metadata is invalid.')
+        }
+        try { $expectedSize = [Convert]::ToInt64($declaredSize) }
+        catch { throw ($Label + ' size metadata is invalid.') }
+        if ($expectedSize -lt 0) { throw ($Label + ' size metadata is invalid.') }
+        if ((Get-Item -LiteralPath $path).Length -ne $expectedSize) {
+            throw ($Label + ' size mismatch.')
+        }
+    }
 }
 function Assert-StagedLabArtifact($SourceArtifact, [string]$Destination, [string]$Label) {
     # Recheck the actual bytes staged inside the offline Windows image,
