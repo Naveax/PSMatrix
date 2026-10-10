@@ -355,6 +355,13 @@ function Get-Partition {
         DriveLetter=$script:letter
     }
 }
+# This test uses a fictional F: partition and must not depend on which
+# physical/removable drive letters happen to exist on the Windows host.
+function Join-Path {
+    [CmdletBinding()]
+    param([string]$Path,[string]$ChildPath)
+    return [IO.Path]::Combine($Path,$ChildPath)
+}
 function Test-Path {
     [CmdletBinding()]
     param([string]$LiteralPath)
@@ -4007,6 +4014,72 @@ exit 0
                     run.returncode, 0, exe + ": " + run.stdout + run.stderr,
                 )
 
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_plan_and_use_time_iso_premount_identity_must_match_requested_image(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        helper_begin = host.index("function Assert-LabCleanupIsoIdentity(")
+        helper_end = host.index("\nfunction Close-LabBuildMedia(", helper_begin)
+        helper = host[helper_begin:helper_end]
+        plan_begin = host.index("function Assert-LabPlanSourceIsoDetached(")
+        plan_end = host.index("\nfunction Assert-LabPlanSafetyContract(", plan_begin)
+        plan = host[plan_begin:plan_end]
+        use = host.split("function New-LabVhd(", 1)[1].split(
+            "\nfunction Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        marker = "Assert-LabCleanupIsoIdentity $isoPath $preMount"
+        self.assertIn(marker, plan)
+        self.assertIn(marker, use)
+        for segment in (plan, use):
+            self.assertLess(
+                segment.index("$preMount = Get-DiskImage -ImagePath $isoPath -ErrorAction Stop"),
+                segment.index(marker),
+            )
+            self.assertLess(segment.index(marker), segment.index("if ($preMount.Attached)"))
+        self.assertLess(use.index(marker), use.index("Mount-DiskImage -ImagePath $isoPath"))
+        script = helper + plan + r"""
+$ErrorActionPreference='Stop'
+$expected='D:\Fixture\source-windows.iso'
+$script:queries=0
+$script:response=[pscustomobject]@{ImagePath=$expected;Attached=$false}
+function Get-DiskImage {
+    [CmdletBinding()]
+    param([string]$ImagePath)
+    $script:queries++
+    return $script:response
+}
+$images=@([pscustomobject]@{source_iso=[pscustomobject]@{path=$expected}})
+Assert-LabPlanSourceIsoDetached $images
+if($script:queries -ne 1){throw 'Valid source ISO was not checked exactly once'}
+foreach($case in @(
+    [pscustomobject]@{Name='wrong ISO';Value=([pscustomobject]@{ImagePath='D:\Fixture\other.iso';Attached=$false})},
+    [pscustomobject]@{Name='missing path';Value=([pscustomobject]@{ImagePath=$null;Attached=$false})},
+    [pscustomobject]@{Name='no image';Value=$null},
+    [pscustomobject]@{Name='ambiguous images';Value=@(
+        [pscustomobject]@{ImagePath=$expected;Attached=$false},
+        [pscustomobject]@{ImagePath=$expected;Attached=$false}
+    )},
+    [pscustomobject]@{Name='malformed attachment';Value=([pscustomobject]@{ImagePath=$expected;Attached='False'})},
+    [pscustomobject]@{Name='pre-existing mount';Value=([pscustomobject]@{ImagePath=$expected;Attached=$true})}
+)) {
+    $script:response=$case.Value
+    $denied=$false
+    try { Assert-LabPlanSourceIsoDetached $images } catch { $denied=$true }
+    if(-not $denied){throw ('Unsafe ISO preflight accepted: '+$case.Name)}
+}
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
     def test_host_preflights_all_source_iso_attachment_states_before_first_vm(self):
         host = HOST.read_text(encoding="utf-8")
         self.assertIn("function Assert-LabPlanSourceIsoDetached(", host)
@@ -4038,6 +4111,10 @@ exit 0
         script = """
 $ErrorActionPreference = 'Stop'
 $source = Get-Content -LiteralPath __HOST__ -Raw
+$c = $source.IndexOf('function Assert-LabCleanupIsoIdentity(')
+$d = $source.IndexOf('function Close-LabBuildMedia(', $c)
+if ($c -lt 0 -or $d -le $c) { throw 'Missing host ISO identity helper.' }
+Invoke-Expression $source.Substring($c, $d - $c)
 $a = $source.IndexOf('function Assert-LabPlanSourceIsoDetached(')
 $b = $source.IndexOf('function Wait-FirstBoot(', $a)
 if ($a -lt 0 -or $b -le $a) { throw 'Missing host ISO preflight.' }
@@ -4059,12 +4136,12 @@ function Get-DiskImage {
         throw 'Storage provider query failed.'
     }
     if ($ImagePath -eq $isoB) {
-        if ($script:mode -eq 'third-attached') { return [pscustomobject]@{Attached=$true} }
-        if ($script:mode -eq 'missing-state') { return [pscustomobject]@{Attached=$null} }
-        if ($script:mode -eq 'invalid-state') { return [pscustomobject]@{Attached='False'} }
+        if ($script:mode -eq 'third-attached') { return [pscustomobject]@{ImagePath=$ImagePath;Attached=$true} }
+        if ($script:mode -eq 'missing-state') { return [pscustomobject]@{ImagePath=$ImagePath;Attached=$null} }
+        if ($script:mode -eq 'invalid-state') { return [pscustomobject]@{ImagePath=$ImagePath;Attached='False'} }
         if ($script:mode -eq 'no-object') { return $null }
     }
-    return [pscustomobject]@{Attached=$false}
+    return [pscustomobject]@{ImagePath=$ImagePath;Attached=$false}
 }
 Assert-LabPlanSourceIsoDetached $images
 if (@($script:queries).Count -ne 2) { throw 'Shared ISO was queried more than once.' }

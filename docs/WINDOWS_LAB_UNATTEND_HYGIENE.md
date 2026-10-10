@@ -289,6 +289,16 @@ PowerShell 5.1/7 fixture tests exercise the valid and invalid shapes
 without mounting images or modifying host volumes. This check narrows
 ISO source selection, not authenticity of the underlying ISO bytes.
 
+Both the full-plan ISO preflight and the per-guest use-time check now
+validate the **identity of the detached source ISO**, not merely its
+`Attached=false` flag. The `Get-DiskImage -ImagePath` response must
+identify exactly the requested ISO path and report a native Boolean
+attachment state. A wrong, absent, ambiguous or malformed Storage image
+aborts before the first VM or any ISO mount. Windows PowerShell 5.1/7
+tests exercise shared ISO sources, the third-image preflight and
+substituted image responses. These are identity checks, not content
+authenticity proofs or protection against concurrent mount changes.
+
 After `Mount-DiskImage` returns, the host now verifies its result is
 the **requested attached ISO**, with a full-path comparison and a native
 Boolean `Attached=true` state. An independent

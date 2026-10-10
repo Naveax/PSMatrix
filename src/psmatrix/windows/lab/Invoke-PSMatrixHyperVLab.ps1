@@ -626,6 +626,8 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
     if ($null -eq $preMount -or $preMount.Attached -isnot [bool]) {
         throw 'Windows source ISO pre-mount state is unavailable; refusing provisioning.'
     }
+    # A detached flag alone does not establish source ISO identity.
+    Assert-LabCleanupIsoIdentity $isoPath $preMount
     if ($preMount.Attached) {
         throw 'Windows source ISO was already mounted; refusing to touch a pre-existing attachment.'
     }
@@ -1287,6 +1289,8 @@ function Assert-LabPlanSourceIsoDetached([object[]]$Images) {
         if ($null -eq $preMount -or $preMount.Attached -isnot [bool]) {
             throw 'Windows source ISO pre-mount state is unavailable; refusing provisioning.'
         }
+        # Reject a substituted Storage response before the first VM/VHDX.
+        Assert-LabCleanupIsoIdentity $isoPath $preMount
         if ($preMount.Attached) {
             throw 'Windows source ISO was already mounted; refusing to touch a pre-existing attachment.'
         }
