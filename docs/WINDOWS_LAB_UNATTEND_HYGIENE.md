@@ -331,6 +331,18 @@ one expected format operation. No actual partitions were formatted or
 created in these tests. This does not establish real Storage provider
 correctness; elevated Hyper-V acceptance remains required.
 
+Each freshly created EFI and Windows partition must now pass a second,
+independent `Get-Partition -DriveLetter` ownership lookup before
+`Format-Volume`. The assigned letter must resolve to exactly one
+partition on the **same new VHDX disk and partition number** reported by
+`New-Partition` and its disk-scoped Storage query. A missing,
+substituted, ambiguous, or unqueryable drive mapping fails closed before
+the formatter and before DISM/BCDBoot can address the drive root.
+Mocked Windows PowerShell 5.1 and PowerShell 7 regressions exercise
+valid and invalid mappings without formatting any actual media.
+These checks narrow drive-letter confusion, not external concurrency
+races; elevated Hyper-V acceptance is still required.
+
 Before the newly created VHDX is initialized, the host now treats the
 `Mount-VHD` disk-number response as untrusted. It obtains the actual attached
 VHD with `Get-VHD -DiskNumber`, checks that its canonical path matches the

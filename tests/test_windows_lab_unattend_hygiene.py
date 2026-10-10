@@ -1240,6 +1240,95 @@ if(-not $denied){throw 'Hyper-V query failure was accepted.'}
             )
             self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
 
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_new_guest_partition_drive_letter_ownership_checked_before_format(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        helper_start = host.index("function Assert-LabCreatedPartition(")
+        helper_end = host.index("\nfunction Assert-NewLabVhdCreated(", helper_start)
+        helper = host[helper_start:helper_end]
+        self.assertIn("Get-Partition -DriveLetter $letter -ErrorAction Stop", helper)
+        self.assertLess(
+            helper.index("Get-Partition -DiskNumber $DiskNumber -PartitionNumber"),
+            helper.index("Get-Partition -DriveLetter $letter -ErrorAction Stop"),
+        )
+        build = host.split("function New-LabVhd(", 1)[1].split(
+            "\nfunction Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        for role in ("efi", "windows"):
+            self.assertLess(
+                build.index("Assert-LabCreatedPartition $diskNumber $" + role),
+                build.index("Format-Volume -Partition $" + role),
+            )
+
+        script = helper + r"""
+$ErrorActionPreference='Stop'
+$script:byDisk=[pscustomobject]@{
+    DiskNumber=42;PartitionNumber=3;DriveLetter='G'
+    GptType='{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}'
+}
+$script:byLetter=[pscustomobject]@{
+    DiskNumber=42;PartitionNumber=3;DriveLetter='G'
+}
+$script:letterLookupCount=0
+$script:letterQueryFails=$false
+function Get-Partition {
+    [CmdletBinding()]
+    param([int]$DiskNumber,[uint32]$PartitionNumber,[string]$DriveLetter)
+    if($PSBoundParameters.ContainsKey('DriveLetter')){
+        $script:letterLookupCount++
+        if($DriveLetter -cne 'G'){throw 'Unexpected drive letter query'}
+        if($script:letterQueryFails){throw 'Storage drive ownership unavailable'}
+        return $script:byLetter
+    }
+    if($DiskNumber -ne 42 -or $PartitionNumber -ne 3) {
+        throw 'Unexpected disk-scoped query'
+    }
+    return $script:byDisk
+}
+$part=[pscustomobject]@{DiskNumber=42;PartitionNumber=3;DriveLetter='G'}
+$guid='{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}'
+Assert-LabCreatedPartition 42 $part $guid 'Windows' | Out-Null
+if($script:letterLookupCount -ne 1) {
+    throw 'Fresh Windows drive letter was not independently checked.'
+}
+foreach($case in @(
+    [pscustomobject]@{Name='host disk owner';Value=([pscustomobject]@{DiskNumber=0;PartitionNumber=3;DriveLetter='G'})},
+    [pscustomobject]@{Name='wrong guest partition';Value=([pscustomobject]@{DiskNumber=42;PartitionNumber=5;DriveLetter='G'})},
+    [pscustomobject]@{Name='changed drive letter';Value=([pscustomobject]@{DiskNumber=42;PartitionNumber=3;DriveLetter='H'})},
+    [pscustomobject]@{Name='missing disk number';Value=([pscustomobject]@{DiskNumber=$null;PartitionNumber=3;DriveLetter='G'})},
+    [pscustomobject]@{Name='missing partition number';Value=([pscustomobject]@{DiskNumber=42;PartitionNumber=$null;DriveLetter='G'})},
+    [pscustomobject]@{Name='absent assignment';Value=$null},
+    [pscustomobject]@{Name='ambiguous assignment';Value=@(
+        [pscustomobject]@{DiskNumber=42;PartitionNumber=3;DriveLetter='G'},
+        [pscustomobject]@{DiskNumber=42;PartitionNumber=3;DriveLetter='G'}
+    )}
+)) {
+    $script:byLetter=$case.Value
+    $denied=$false
+    try { Assert-LabCreatedPartition 42 $part $guid 'Windows' | Out-Null }
+    catch {$denied=$true}
+    if(-not $denied){throw ('Unsafe drive owner was accepted: '+$case.Name)}
+}
+$script:byLetter=[pscustomobject]@{DiskNumber=42;PartitionNumber=3;DriveLetter='G'}
+$script:letterQueryFails=$true
+$denied=$false
+try { Assert-LabCreatedPartition 42 $part $guid 'Windows' | Out-Null }
+catch {$denied=$true}
+if(-not $denied){throw 'Drive-letter provider failure accepted'}
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
     def test_new_guest_partitions_are_checked_against_disk_before_format(self):
         import shutil
         import subprocess
@@ -1268,8 +1357,12 @@ $efiGuid = '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}'
 $winGuid = '{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}'
 function Get-Partition {
     [CmdletBinding()]
-    param([int]$DiskNumber, [uint32]$PartitionNumber)
+    param([int]$DiskNumber, [uint32]$PartitionNumber, [string]$DriveLetter)
     if ($script:queryFails) { throw 'Provider unavailable.' }
+    if ($PSBoundParameters.ContainsKey('DriveLetter') -and
+        $DriveLetter -cne ([string]$script:returned.DriveLetter)) {
+        throw 'Unexpected drive letter owner lookup.'
+    }
     return $script:returned
 }
 $efi = [pscustomobject]@{

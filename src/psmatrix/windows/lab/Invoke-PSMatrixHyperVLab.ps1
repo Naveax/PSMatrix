@@ -562,6 +562,19 @@ function Assert-LabCreatedPartition([int]$DiskNumber, $Partition, [string]$Expec
         [guid]::Parse([string]$actual.GptType) -ne [guid]::Parse($ExpectedGptType)) {
         throw ('New lab ' + $Label + ' partition could not be independently verified.')
     }
+    # The disk-scoped query alone does not prove that an assigned letter
+    # actually resolves to this guest partition. DISM and BCDBoot use the
+    # letter, so reject a substituted host-volume mapping before formatting.
+    $letter = [string]$Partition.DriveLetter
+    $owners = @(Get-Partition -DriveLetter $letter -ErrorAction Stop)
+    if ($owners.Count -ne 1 -or $null -eq $owners[0] -or
+        $null -eq $owners[0].DiskNumber -or
+        $null -eq $owners[0].PartitionNumber -or
+        [long]$owners[0].DiskNumber -ne $DiskNumber -or
+        [long]$owners[0].PartitionNumber -ne $partNumber -or
+        ([string]$owners[0].DriveLetter) -ine $letter) {
+        throw ('New lab ' + $Label + ' partition drive letter does not resolve to the expected guest disk.')
+    }
 }
 function Assert-NewLabVhdCreated([string]$VhdPath, [long]$ExpectedSizeBytes) {
     # New-VHD must really create the requested detached dynamic guest disk.
