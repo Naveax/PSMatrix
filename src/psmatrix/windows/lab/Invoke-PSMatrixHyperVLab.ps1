@@ -868,6 +868,9 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
             # Image application can take time; confirm the offline Windows
             # target still belongs to this guest before the package write.
             Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
+            # Applying the base image may take minutes. Revalidate the
+            # source package immediately before privileged DISM reads it.
+            Assert-Artifact $Image.wmf_package 'WMF package'
             Invoke-HostDism @('/English',('/Image:' + $windowsRoot),'/Add-Package',('/PackagePath:' + [string]$Image.wmf_package.path),'/NoRestart')
         }
         # DISM may take time; do not let a reassigned EFI/Windows letter

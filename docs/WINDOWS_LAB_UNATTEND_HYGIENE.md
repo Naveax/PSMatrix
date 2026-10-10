@@ -502,6 +502,18 @@ of each. There is still an unavoidable gap between each final query and
 the corresponding external command, so a real elevated Hyper-V host
 must pass independent acceptance.
 
+The optional WMF package source is independently reverified at use
+time, **after** base image application and directly **before**
+`DISM /Add-Package`. The existing `Assert-Artifact` confirms its
+path has no NTFS reparse ancestor, checks the current SHA-256 against
+the approved manifest digest and checks the optional exact byte size.
+This closes the unverified interval during the preceding potentially
+long DISM image apply. Windows PowerShell 5.1/7 fixtures verify that
+same-sized modified bytes, a wrong size and a missing package all stop
+before the package DISM command is invoked; the absent optional package
+still skips installation. A privileged concurrent source swap during
+the subsequent external command remains an elevated-host acceptance risk.
+
 Two later Windows-root write boundaries now repeat the same independent
 `Assert-LabFormattedVolume $windows 'NTFS' 'Windows'` ownership check:
 immediately before the optional DISM `/Add-Package` WMF operation and

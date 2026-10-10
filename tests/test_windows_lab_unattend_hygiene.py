@@ -1113,6 +1113,107 @@ if(-not $rejected){throw 'Provider failure accepted.'}
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_wmf_source_is_revalidated_immediately_before_dism_package(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        host = HOST.read_text(encoding="utf-8")
+        build = host.split("function New-LabVhd(", 1)[1].split(
+            "\nfunction Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        begin = build.index("        if ($Image.wmf_package) {", build.index(
+            "Invoke-HostDism @('/English','/Apply-Image'"
+        ))
+        end = build.index("        # DISM may take time;", begin)
+        wmf = build[begin:end]
+        expected = "Assert-Artifact $Image.wmf_package 'WMF package'"
+        self.assertIn(expected, wmf)
+        self.assertLess(wmf.index(expected), wmf.index(
+            "Invoke-HostDism @('/English',('/Image:'"
+        ))
+        guard_start = host.index("function Get-Sha256(")
+        guard_end = host.index("\nfunction Assert-StagedLabArtifact(", guard_start)
+        guards = host[guard_start:guard_end]
+
+        def quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-wmf-use-time-") as temp:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                root = Path(temp) / exe.replace(".", "-")
+                root.mkdir()
+                script = guards + r"""
+$ErrorActionPreference='Stop'
+$source=Join-Path __ROOT__ 'wmf.msu'
+[IO.File]::WriteAllBytes($source,[byte[]](1,2,3,4,5,6))
+$script:dismCalls=0
+$script:volumeChecks=0
+$Image=[pscustomobject]@{
+    wmf_package=[pscustomobject]@{
+        path=$source
+        sha256=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
+        size=6
+    }
+}
+$windows=[pscustomobject]@{DriveLetter='G';DiskNumber=42;PartitionNumber=3}
+$windowsRoot='G:\'
+function Assert-LabFormattedVolume {
+    param([object]$Partition,[string]$FileSystem,[string]$FileSystemLabel)
+    $script:volumeChecks++
+}
+function Invoke-HostDism {
+    param([string[]]$Arguments)
+    $script:dismCalls++
+}
+function Invoke-MockedWmf {
+""" + wmf + r"""
+}
+Invoke-MockedWmf
+if($script:dismCalls -ne 1 -or $script:volumeChecks -ne 1){
+    throw 'Unchanged WMF package should be validated and applied once.'
+}
+$script:dismCalls=0
+[IO.File]::WriteAllBytes($source,[byte[]](1,2,3,4,5,7))
+$denied=$false
+try { Invoke-MockedWmf } catch { $denied=$true }
+if(-not $denied -or $script:dismCalls -ne 0){
+    throw 'Same-size mutated WMF package reached DISM.'
+}
+[IO.File]::WriteAllBytes($source,[byte[]](1,2,3,4,5,6))
+$script:dismCalls=0
+$Image.wmf_package.size=7
+$denied=$false
+try { Invoke-MockedWmf } catch { $denied=$true }
+if(-not $denied -or $script:dismCalls -ne 0){
+    throw 'Wrong-size WMF package reached DISM.'
+}
+$Image.wmf_package.size=6
+Remove-Item -LiteralPath $source -Force
+$denied=$false
+try { Invoke-MockedWmf } catch { $denied=$true }
+if(-not $denied -or $script:dismCalls -ne 0){
+    throw 'Missing WMF package reached DISM.'
+}
+$Image.wmf_package=$null
+Invoke-MockedWmf
+if($script:dismCalls -ne 0){
+    throw 'Optional WMF package absent but DISM was called.'
+}
+"""
+                script = script.replace("__ROOT__", quote(root))
+                result = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=55, check=False,
+                )
+                self.assertEqual(
+                    result.returncode, 0, exe + ": " + result.stdout + result.stderr
+                )
+
     def test_guest_volume_owner_is_rechecked_before_wmf_and_bootstrap_writes(self):
         import shutil
         import subprocess
@@ -1174,6 +1275,12 @@ function Get-Partition {
     if($DriveLetter -cne 'G'){throw 'Unexpected drive query'}
     return [pscustomobject]@{
         DiskNumber=$script:realOwner;PartitionNumber=3;DriveLetter='G'
+    }
+}
+function Assert-Artifact {
+    param([object]$Artifact,[string]$Label)
+    if($null -eq $Artifact -or $Label -cne 'WMF package') {
+        throw 'Unexpected WMF verification input.'
     }
 }
 function Invoke-HostDism {
