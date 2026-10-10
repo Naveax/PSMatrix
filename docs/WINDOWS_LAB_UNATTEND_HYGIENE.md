@@ -827,6 +827,18 @@ identity lock: a privileged actor replacing guest files after this
 check, or concurrently modifying the VHDX, still requires separate
 host hardening and genuine elevated offline acceptance.
 
+The first-boot guest's independent `Assert-GuestStagedPackages` checker
+now requires each staged SHA-256 declaration to end at the **absolute
+end of its string** (`\z`). The prior `$` regex anchor could accept
+a terminal LF/CRLF on an otherwise valid 64-character lowercase digest,
+allowing malformed metadata to reach filesystem access and hashing
+before failing. Disposable WinPS5.1/PS7 tests verify a valid four-file
+staging set, then remove the worker file and prove malformed SHA
+declarations fail as metadata errors *before* attempting that missing
+file. Existing package size, reparse-path, exclusive read and SHA checks
+remain unchanged. This is validation of staged metadata, not a claim
+of guest authenticity or protection after first boot.
+
 The five bootstrap files (GuestBootstrap.ps1, worker-package.zip,
 python-installer.exe, credential-bundle.zip and signing-bundle.zip)
 now use `Copy-LabFreshStagedArtifact` instead of `Copy-Item -Force`.

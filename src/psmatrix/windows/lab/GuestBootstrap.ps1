@@ -167,7 +167,7 @@ function Assert-GuestStagedPackages($Artifacts, [string]$BootstrapRoot) {
             @($spec.PSObject.Properties.Name) -cnotcontains 'sha256' -or
             @($spec.PSObject.Properties.Name) -cnotcontains 'size' -or
             $spec.sha256 -isnot [string] -or
-            $spec.sha256 -cnotmatch '^[0-9a-f]{64}$') {
+            $spec.sha256 -cnotmatch '^[0-9a-f]{64}\z') {
             throw 'Guest staged package metadata is invalid.'
         }
         $size = $spec.size

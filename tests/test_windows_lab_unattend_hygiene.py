@@ -6604,6 +6604,95 @@ exit 0
         self.assertLess(guest.index(call), guest.index("Start-Process -FilePath $pythonInstaller"))
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_guest_staged_digest_rejects_newline_suffix_before_file_access(self):
+        import hashlib
+        import json
+        import shutil
+        import subprocess
+        import tempfile
+
+        guest = GUEST.read_text(encoding="utf-8")
+        start = guest.index("function Assert-GuestStagedPackages(")
+        end = guest.index("\nfunction Expand-Zip(", start)
+        guard = guest[start:end]
+        self.assertIn("^[0-9a-f]{64}\\z", guard)
+        names = {
+            "worker_package": "worker-package.zip",
+            "python_installer": "python-installer.exe",
+            "credential_bundle": "credential-bundle.zip",
+            "signing_bundle": "signing-bundle.zip",
+        }
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-guest-hash-end-") as temp:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                folder = Path(temp) / exe.replace(".", "-")
+                folder.mkdir()
+                data = {}
+                for key, name in names.items():
+                    payload = ("synthetic-" + name).encode("utf-8")
+                    (folder / name).write_bytes(payload)
+                    data[key] = {
+                        "sha256": hashlib.sha256(payload).hexdigest(),
+                        "size": len(payload),
+                    }
+                metadata_path = folder / "metadata.json"
+                metadata_path.write_text(json.dumps(data), encoding="utf-8")
+
+                def literal(value):
+                    return "'" + str(value).replace("'", "''") + "'"
+
+                script = guard + r"""
+$ErrorActionPreference='Stop'
+$root=__ROOT__
+$meta=Get-Content -LiteralPath __META__ -Raw | ConvertFrom-Json
+Assert-GuestStagedPackages $meta $root
+$originalHash=$meta.worker_package.sha256
+# An invalid digest must be rejected before the corresponding package is
+# opened or hashed, not merely after computing an inevitable mismatch.
+$worker=Join-Path $root 'worker-package.zip'
+$hidden=Join-Path $root 'worker-hidden.tmp'
+Move-Item -LiteralPath $worker -Destination $hidden -ErrorAction Stop
+try {
+    foreach($bad in @(
+        ($originalHash + [char]10),
+        ($originalHash + [char]13 + [char]10),
+        ($originalHash + ' '),
+        ($originalHash.Substring(1)),
+        ($originalHash + 'a')
+    )) {
+        $meta.worker_package.sha256=$bad
+        $denied=$false
+        try { Assert-GuestStagedPackages $meta $root }
+        catch {
+            $denied=$true
+            if($_.Exception.Message -cne 'Guest staged package metadata is invalid.'){
+                throw ('Malformed digest reached filesystem: '+$_.Exception.Message)
+            }
+        }
+        if(-not $denied){throw 'Malformed guest digest accepted.'}
+    }
+}
+finally {
+    Move-Item -LiteralPath $hidden -Destination $worker -ErrorAction Stop
+}
+$meta.worker_package.sha256=$originalHash
+Assert-GuestStagedPackages $meta $root
+"""
+                script = script.replace("__ROOT__", literal(folder)).replace(
+                    "__META__", literal(metadata_path)
+                )
+                result = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=55, check=False,
+                )
+                self.assertEqual(
+                    result.returncode, 0, exe + ": " + result.stdout + result.stderr
+                )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     def test_guest_staged_packages_dynamic_hash_size_metadata_and_junction(self):
         import hashlib
         import json
