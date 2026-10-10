@@ -6871,6 +6871,61 @@ if(-not [Linq.Enumerable]::SequenceEqual([byte[]]$raw,[byte[]][IO.File]::ReadAll
                 )
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_unattend_rejects_non_xml_characters_before_creating_answer_file(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        source = HOST.read_text(encoding="utf-8")
+        self.assertIn("[Xml.XmlConvert]::VerifyXmlChars($ComputerName)", source)
+        self.assertIn("[Xml.XmlConvert]::VerifyXmlChars($Password)", source)
+        begin = source.index("function Write-LabFreshSetupText(")
+        end = source.index("\nfunction Assert-SafeOfflineGuestWriteAncestors(", begin)
+        functions = (
+            "function Escape-Xml([string]$Value) { return [Security.SecurityElement]::Escape($Value) }\n"
+            + source[begin:end]
+        )
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-unattend-xml-chars-") as tmp:
+            for shell in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(shell):
+                    continue
+                root = Path(tmp) / shell.replace(".", "-")
+                root.mkdir()
+                escaped = "'" + str(root).replace("'", "''") + "'"
+                script = functions + r"""
+$ErrorActionPreference='Stop'
+$root=__ROOT__
+$good=Join-Path $root 'valid.xml'
+New-Unattend $good 'GUEST-01' 'synthetic<&"password'
+[xml]$doc=Get-Content -LiteralPath $good -Raw -Encoding UTF8
+$value=$doc.SelectSingleNode("//*[local-name()='AdministratorPassword']/*[local-name()='Value']").InnerText
+if($value -cne 'synthetic<&"password'){throw 'Valid XML special characters were not preserved.'}
+foreach($case in @(
+    [pscustomobject]@{Name='bad-password';Computer='GUEST-01';Password=('a'+[char]1+'b')},
+    [pscustomobject]@{Name='bad-computer';Computer=('G'+[char]2+'UEST');Password='synthetic'},
+    [pscustomobject]@{Name='bad-surrogate';Computer='GUEST-01';Password=([string][char]0xD800)}
+)){
+    $answer=Join-Path $root ($case.Name+'.xml')
+    $failed=$false
+    try { New-Unattend $answer $case.Computer $case.Password } catch {$failed=$true}
+    if(-not $failed -or (Test-Path -LiteralPath $answer)){
+        throw ('Invalid XML input was published: '+$case.Name)
+    }
+}
+if(@(Get-ChildItem -LiteralPath $root -Filter '.psmatrix-setup-*' -Force).Count -ne 0){
+    throw 'XML validation left setup temporaries.'
+}
+"""
+                script = script.replace("__ROOT__", escaped)
+                result = subprocess.run(
+                    [shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=45, check=False,
+                )
+                self.assertEqual(result.returncode, 0, shell + ": " + result.stdout + result.stderr)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     def test_setup_writer_publishes_complete_text_without_deleting_target_path(self):
         import shutil
         import subprocess

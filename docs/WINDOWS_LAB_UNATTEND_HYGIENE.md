@@ -931,6 +931,17 @@ temporary file under handled errors. Privileged concurrent changes
 to parent directories, abrupt process termination and OS-level
 filesystem races still require elevated host acceptance.
 
+The unattended XML generator additionally validates the raw computer
+name and administrator password with `XmlConvert.VerifyXmlChars`
+**before** escaping markup or opening a temporary answer file.
+`SecurityElement.Escape` handles `&`, `<` and quotation marks but
+does not make XML 1.0 forbidden control characters or lone Unicode
+surrogates legal. The host now refuses these malformed inputs instead
+of staging a syntactically invalid, password-bearing `Unattend.xml`.
+WinPS5.1/PS7 fixtures accept escaped synthetic credentials and
+reject illegal control characters and surrogate inputs without
+publishing an answer file or leaving temporary setup artifacts.
+
 The offline checkpoint verifier now places a **1 MiB upper bound**
 on untrusted guest `ProgramData\PSMatrix\WorkerConfig\worker.json`
 before computing its SHA-256. The existing exclusive file-handle,

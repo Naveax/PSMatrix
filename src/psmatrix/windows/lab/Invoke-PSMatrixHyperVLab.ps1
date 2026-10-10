@@ -297,6 +297,10 @@ function Write-LabFreshSetupText([string]$Path, [string]$Text, [Text.Encoding]$E
     }
 }
 function New-Unattend([string]$Path, [string]$ComputerName, [string]$Password) {
+    # Escaping markup does not make XML 1.0 control characters or lone
+    # surrogate code units legal. Reject those before creating a file.
+    [void][Xml.XmlConvert]::VerifyXmlChars($ComputerName)
+    [void][Xml.XmlConvert]::VerifyXmlChars($Password)
     $computer = Escape-Xml $ComputerName
     $secret = Escape-Xml $Password
     $xml = @"
