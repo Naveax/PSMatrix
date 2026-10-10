@@ -84,6 +84,12 @@ function Assert-Artifact($Artifact, [string]$Label) {
             throw ($Label + ' size mismatch.')
         }
     }
+    # Check the approved digest is actually a SHA-256 hexadecimal value
+    # before an expensive file read. Preserve case-insensitive hex inputs.
+    if ($Artifact.sha256 -isnot [string] -or
+        $Artifact.sha256 -cnotmatch '^[0-9a-fA-F]{64}\z') {
+        throw ($Label + ' SHA-256 metadata is invalid.')
+    }
     $actual = Get-Sha256 $path
     if ($actual -ne ([string]$Artifact.sha256).ToLowerInvariant()) { throw ($Label + ' SHA-256 mismatch.') }
     if ($null -ne $expectedSize) {

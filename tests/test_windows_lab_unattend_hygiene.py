@@ -4934,6 +4934,93 @@ exit 0
             )
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_rejects_malformed_sha_metadata_before_hashing(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        host = HOST.read_text(encoding="utf-8")
+        start = host.index("function Get-Sha256(")
+        end = host.index("\nfunction Copy-LabFreshStagedArtifact(", start)
+        helpers = host[start:end]
+        self.assertIn("' SHA-256 metadata is invalid.'", helpers)
+        self.assertIn("^[0-9a-fA-F]{64}\\z", helpers)
+        self.assertLess(
+            helpers.index("SHA-256 metadata is invalid."),
+            helpers.index("$actual = Get-Sha256 $path"),
+        )
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-early-digest-") as temp:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                source = Path(temp) / (exe.replace(".", "-") + "-artifact.bin")
+                literal = "'" + str(source).replace("'", "''") + "'"
+                script = helpers + r"""
+$ErrorActionPreference='Stop'
+$source=__SOURCE__
+[IO.File]::WriteAllBytes($source,[byte[]](0,1,2,3,128,255))
+$goodHash=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
+$script:hashCalls=0
+function Get-Sha256([string]$Path) {
+    $script:hashCalls++
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+$artifact=[pscustomobject]@{path=$source;size=[int32]6;sha256=$goodHash}
+Assert-Artifact $artifact 'Synthetic'
+if($script:hashCalls -ne 1){throw 'Valid metadata did not hash exactly once.'}
+$artifact.sha256=$goodHash.ToUpperInvariant()
+Assert-Artifact $artifact 'Synthetic'
+if($script:hashCalls -ne 2){throw 'Uppercase hex metadata was rejected.'}
+$counter=2
+foreach($bad in @(
+    $null, '', 'bad-digest', ('0' * 63), ('0' * 65),
+    ('g' * 64), (' ' + $goodHash), ($goodHash + [char]10),
+    [int64]1, [bool]$true
+)) {
+    $artifact.sha256=$bad
+    $denied=$false
+    try { Assert-Artifact $artifact 'Synthetic' }
+    catch {
+        $denied=$true
+        if($_.Exception.Message -cne 'Synthetic SHA-256 metadata is invalid.'){throw}
+    }
+    if(-not $denied -or $script:hashCalls -ne $counter){
+        throw 'Invalid SHA-256 metadata reached the file hash.'
+    }
+}
+$artifact.sha256='0' * 64
+$denied=$false
+try { Assert-Artifact $artifact 'Synthetic' }
+catch {
+    $denied=$true
+    if($_.Exception.Message -cne 'Synthetic SHA-256 mismatch.'){throw}
+}
+if(-not $denied -or $script:hashCalls -ne 3){
+    throw 'Well-formed incorrect digest should hash and reject.'
+}
+$staged=($source+'.staged')
+[IO.File]::WriteAllBytes($staged,[byte[]](0,1,2,3,128,255))
+$artifact.sha256='nothex'
+$denied=$false
+try { Assert-StagedLabArtifact $artifact $staged 'Staged' }
+catch {
+    $denied=$true
+    if($_.Exception.Message -cne 'Staged SHA-256 metadata is invalid.'){throw}
+}
+if(-not $denied -or $script:hashCalls -ne 3){
+    throw 'Malformed staged digest reached the hash.'
+}
+"""
+                result = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command",
+                     script.replace("__SOURCE__", literal)],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=50, check=False,
+                )
+                self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     def test_host_sha256_hash_uses_exclusive_file_handle(self):
         import shutil
         import subprocess

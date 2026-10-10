@@ -806,6 +806,18 @@ other `Get-Sha256` receipts. It does not pin parent directory identity
 or prevent file replacement before/after the exclusive handle lifetime;
 real elevated host acceptance remains required.
 
+Before hashing a source or staged artifact, `Assert-Artifact` also
+requires its declared SHA-256 to be a string of exactly 64 hexadecimal
+characters. Both uppercase and lowercase hex remain accepted, but
+missing, non-string, short/long, non-hex, whitespace-prefixed and
+newline-suffixed values fail closed **without reading the file**.
+The pattern uses the absolute end anchor `\\z` rather than `$`,
+which can match immediately before a trailing newline in .NET regex.
+WinPS5.1 and PowerShell 7 dynamic fixtures verify no hash invocation
+for malformed metadata and retain a real SHA comparison for validly
+formatted but incorrect declarations. The exact artifact size and path
+checks remain separate and unchanged.
+
 WinPS5.1 and PowerShell 7 tests use disposable dummy packages to
 verify an unchanged staged copy, a deliberately modified source copied
 after a passing source hash, a wrong reported size and an actual NTFS
