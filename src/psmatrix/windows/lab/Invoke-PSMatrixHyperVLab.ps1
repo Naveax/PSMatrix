@@ -745,10 +745,18 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         $efiRoot = $partitionRoots.EfiRoot
         Format-Volume -Partition $windows -FileSystem NTFS -NewFileSystemLabel 'Windows' -Confirm:$false -ErrorAction Stop | Out-Null
         Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
+        # Validate both target volumes again at write time; initial format
+        # checks cannot guarantee their drive letters remain unchanged.
+        Assert-LabFormattedVolume $efi 'FAT32' 'SYSTEM'
+        Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
         Invoke-HostDism @('/English','/Apply-Image',('/ImageFile:' + $imageFile),('/Index:' + [int]$Image.edition_index),('/ApplyDir:' + $windowsRoot))
         if ($Image.wmf_package) {
             Invoke-HostDism @('/English',('/Image:' + $windowsRoot),'/Add-Package',('/PackagePath:' + [string]$Image.wmf_package.path),'/NoRestart')
         }
+        # DISM may take time; do not let a reassigned EFI/Windows letter
+        # become a BCDBoot target without a fresh ownership check.
+        Assert-LabFormattedVolume $efi 'FAT32' 'SYSTEM'
+        Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
         Invoke-HostBcdBoot $windowsRoot $efiRoot
         Assert-SafeOfflineGuestWriteAncestors $windowsRoot
         $bootstrap = Join-Path $windowsRoot 'ProgramData\PSMatrix\Bootstrap'

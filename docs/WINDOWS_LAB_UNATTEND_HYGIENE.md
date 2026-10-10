@@ -470,6 +470,15 @@ partition number. A changed, missing, ambiguous, or unqueryable drive
 mapping aborts before DISM/BCDBoot can use that letter. Isolated
 Windows PowerShell 5.1/7 fixtures cover valid ownership and simulated
 host-disk substitutions without formatting any actual volume.
+The same volume and drive-owner verification is now repeated for
+**both EFI and Windows immediately before the DISM image apply and again
+before BCDBoot**. That covers letter reassignment between formatting,
+DISM execution and the subsequent boot-file write. Windows PowerShell
+5.1/7 mocked regressions verify that a substitute host volume prevents
+DISM or BCDBoot from running, while valid mappings permit one invocation
+of each. There is still an unavoidable gap between each final query and
+the corresponding external command, so a real elevated Hyper-V host
+must pass independent acceptance.
 Post-format checks cannot rule out concurrent storage reconfiguration.
 
 The VHDX build cleanup now also verifies that each `Get-VHD -Path`

@@ -1110,6 +1110,126 @@ if(-not $rejected){throw 'Provider failure accepted.'}
             self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_dism_and_bcdboot_recheck_guest_volumes_at_use_time(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        start = host.index("function Assert-LabFormattedVolume(")
+        end = host.index("\nfunction New-LabVhd(", start)
+        verify_helper = host[start:end]
+        build = host[end:host.index("\nfunction Assert-NoGuestSetupAnswerFiles(", end)]
+        before_dism = (
+            "        Assert-LabFormattedVolume $efi 'FAT32' 'SYSTEM'\n"
+            "        Assert-LabFormattedVolume $windows 'NTFS' 'Windows'\n"
+            "        Invoke-HostDism @('/English','/Apply-Image'"
+        )
+        before_bcdboot = (
+            "        Assert-LabFormattedVolume $efi 'FAT32' 'SYSTEM'\n"
+            "        Assert-LabFormattedVolume $windows 'NTFS' 'Windows'\n"
+            "        Invoke-HostBcdBoot $windowsRoot $efiRoot"
+        )
+        self.assertIn(before_dism, build)
+        self.assertIn(before_bcdboot, build)
+        self.assertLess(build.index(before_dism), build.index(before_bcdboot))
+        commands = build[
+            build.index(before_dism):
+            build.index("\n        Assert-SafeOfflineGuestWriteAncestors", build.index(before_dism))
+        ]
+        script = verify_helper + r"""
+$ErrorActionPreference='Stop'
+$script:efiOwner=42
+$script:windowsOwner=42
+$script:substituteAfterDism=$false
+$script:dismCalls=0
+$script:bootCalls=0
+$script:volumeChecks=0
+function Get-Volume {
+    [CmdletBinding()]
+    param([object]$Partition)
+    $script:volumeChecks++
+    if($Partition.DriveLetter -ceq 'F'){
+        return [pscustomobject]@{DriveLetter='F';FileSystem='FAT32';FileSystemLabel='SYSTEM'}
+    }
+    if($Partition.DriveLetter -ceq 'G'){
+        return [pscustomobject]@{DriveLetter='G';FileSystem='NTFS';FileSystemLabel='Windows'}
+    }
+    throw 'Unexpected partition in mocked volume lookup'
+}
+function Get-Partition {
+    [CmdletBinding()]
+    param([string]$DriveLetter)
+    if($DriveLetter -ceq 'F'){
+        return [pscustomobject]@{DiskNumber=$script:efiOwner;PartitionNumber=1;DriveLetter='F'}
+    }
+    if($DriveLetter -ceq 'G'){
+        return [pscustomobject]@{DiskNumber=$script:windowsOwner;PartitionNumber=3;DriveLetter='G'}
+    }
+    throw 'Unexpected drive letter in mock'
+}
+function Invoke-HostDism {
+    param([object[]]$Arguments)
+    $script:dismCalls++
+    if($script:substituteAfterDism){$script:efiOwner=0}
+}
+function Invoke-HostBcdBoot {
+    param([string]$WindowsRoot,[string]$EfiRoot)
+    $script:bootCalls++
+}
+$efi=[pscustomobject]@{DiskNumber=42;PartitionNumber=1;DriveLetter='F'}
+$windows=[pscustomobject]@{DiskNumber=42;PartitionNumber=3;DriveLetter='G'}
+$windowsRoot='G:\'
+$efiRoot='F:'
+$imageFile='X:\Fixture\install.wim'
+$Image=[pscustomobject]@{edition_index=1;wmf_package=$null}
+function Invoke-GuardedWrite {
+""" + commands + r"""
+}
+Invoke-GuardedWrite
+if($script:dismCalls -ne 1 -or $script:bootCalls -ne 1 -or $script:volumeChecks -ne 4){
+    throw 'Valid guest was not verified immediately before both write commands.'
+}
+$script:dismCalls=0
+$script:bootCalls=0
+$script:volumeChecks=0
+$script:efiOwner=0
+$rejected=$false
+try { Invoke-GuardedWrite } catch {$rejected=$true}
+if(-not $rejected -or $script:dismCalls -ne 0 -or $script:bootCalls -ne 0){
+    throw 'Host-volume substituted before DISM was not blocked.'
+}
+$script:efiOwner=42
+$script:windowsOwner=0
+$script:dismCalls=0
+$script:bootCalls=0
+$rejected=$false
+try { Invoke-GuardedWrite } catch {$rejected=$true}
+if(-not $rejected -or $script:dismCalls -ne 0 -or $script:bootCalls -ne 0){
+    throw 'Host-volume substituted for Windows before DISM was not blocked.'
+}
+$script:windowsOwner=42
+$script:substituteAfterDism=$true
+$script:dismCalls=0
+$script:bootCalls=0
+$rejected=$false
+try { Invoke-GuardedWrite } catch {$rejected=$true}
+if(-not $rejected -or $script:dismCalls -ne 1 -or $script:bootCalls -ne 0){
+    throw 'EFI volume substitution after DISM was not blocked before BCDBoot.'
+}
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(
+                result.returncode, 0, exe + ": " + result.stdout + result.stderr
+            )
+
     def test_post_format_guest_drive_owner_is_rechecked_before_dism(self):
         import shutil
         import subprocess
