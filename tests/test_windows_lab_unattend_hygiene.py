@@ -6480,6 +6480,104 @@ exit 0
         self.assertLess(staging.index(guard), staging.index("$panther = Join-Path $windowsRoot"))
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_setup_targets_are_rechecked_independently_immediately_before_writing(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        host = HOST.read_text(encoding="utf-8")
+        begin = host.index("function Assert-LabFreshGuestSetupTarget(")
+        end = host.index("\nfunction Invoke-HostBcdBoot(", begin)
+        helper = host[begin:end]
+        build = host.split("function New-LabVhd(", 1)[1].split(
+            "\nfunction Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        setup_call = "Assert-LabFreshGuestSetupTarget $windowsRoot 'Windows\\Setup\\Scripts' 'SetupComplete.cmd'"
+        answer_call = "Assert-LabFreshGuestSetupTarget $windowsRoot 'Windows\\Panther' 'Unattend.xml'"
+        self.assertIn(setup_call, build)
+        self.assertIn(answer_call, build)
+        self.assertLess(
+            build.index("New-Item -ItemType Directory -Path $setupDir -Force"),
+            build.index(setup_call),
+        )
+        self.assertLess(build.index(setup_call), build.index(
+            "Set-Content -LiteralPath (Join-Path $setupDir 'SetupComplete.cmd')"
+        ))
+        self.assertLess(
+            build.index("New-Item -ItemType Directory -Path $panther -Force"),
+            build.index(answer_call),
+        )
+        self.assertLess(build.index(answer_call), build.index(
+            "New-Unattend (Join-Path $panther 'Unattend.xml')"
+        ))
+
+        def quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-setup-target-use-time-") as root:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                case = Path(root) / exe.replace(".", "-")
+                case.mkdir()
+                script = helper + r"""
+$ErrorActionPreference='Stop'
+$root=__ROOT__
+$setup=Join-Path $root 'Windows\Setup\Scripts'
+$panther=Join-Path $root 'Windows\Panther'
+$outside=Join-Path $root 'outside'
+foreach($dir in @($setup,$panther,$outside)){
+    New-Item -ItemType Directory -Path $dir -Force -ErrorAction Stop | Out-Null
+}
+function Expect-SetupDenied([string]$Dir,[string]$Name,[string]$Expected) {
+    $denied=$false
+    try { Assert-LabFreshGuestSetupTarget $root $Dir $Name }
+    catch {
+        $denied=$true
+        if($_.Exception.Message -cne $Expected) { throw }
+    }
+    if(-not $denied){throw 'Unsafe setup target unexpectedly allowed.'}
+}
+Assert-LabFreshGuestSetupTarget $root 'Windows\Setup\Scripts' 'SetupComplete.cmd'
+[IO.File]::WriteAllText((Join-Path $setup 'SetupComplete.cmd'), 'dummy')
+# An already written setup command must not block separately checking
+# the future answer file.
+Assert-LabFreshGuestSetupTarget $root 'Windows\Panther' 'Unattend.xml'
+[IO.File]::WriteAllText((Join-Path $panther 'Unattend.xml'), 'dummy')
+Expect-SetupDenied 'Windows\Setup\Scripts' 'SetupComplete.cmd' 'Offline guest setup target already exists; refusing overwrite.'
+Expect-SetupDenied 'Windows\Panther' 'Unattend.xml' 'Offline guest setup target already exists; refusing overwrite.'
+Remove-Item -LiteralPath (Join-Path $setup 'SetupComplete.cmd') -Force
+Remove-Item -LiteralPath (Join-Path $panther 'Unattend.xml') -Force
+# A path redirected after the first preflight must be rejected before
+# writing elevated setup content.
+foreach($case in @(
+    [pscustomobject]@{Path=$setup;Relative='Windows\Setup\Scripts';File='SetupComplete.cmd'},
+    [pscustomobject]@{Path=$panther;Relative='Windows\Panther';File='Unattend.xml'}
+)){
+    $saved=($case.Path+'.safe')
+    Move-Item -LiteralPath $case.Path -Destination $saved -ErrorAction Stop
+    try {
+        New-Item -ItemType Junction -Path $case.Path -Target $outside -ErrorAction Stop | Out-Null
+        try {
+            Expect-SetupDenied $case.Relative $case.File 'Offline guest setup target parent is unsafe.'
+        } finally {
+            & cmd.exe /d /c ('rmdir "' + $case.Path + '"') | Out-Null
+            if($LASTEXITCODE -ne 0){throw 'Failed to remove fixture junction.'}
+        }
+    } finally {
+        Move-Item -LiteralPath $saved -Destination $case.Path -ErrorAction Stop
+    }
+}
+"""
+                script = script.replace("__ROOT__", quote(case))
+                result = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=55, check=False,
+                )
+                self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     def test_host_offline_guest_sensitive_write_paths_dynamic_junctions_and_occupied_targets(self):
         import shutil
         import subprocess

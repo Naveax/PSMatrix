@@ -292,6 +292,45 @@ function Assert-SafeOfflineGuestWriteAncestors([string]$WindowsRoot) {
     }
 }
 
+function Assert-LabFreshGuestSetupTarget(
+    [string]$WindowsRoot, [string]$RelativeParent, [string]$FileName
+) {
+    # SetupComplete.cmd is already present by the time Unattend.xml is
+    # staged, so validate each target separately at its own write boundary.
+    if (-not (
+        ($RelativeParent -ceq 'Windows\Setup\Scripts' -and $FileName -ceq 'SetupComplete.cmd') -or
+        ($RelativeParent -ceq 'Windows\Panther' -and $FileName -ceq 'Unattend.xml')
+    )) {
+        throw 'Unrecognized offline guest setup target.'
+    }
+    $root = [IO.Path]::GetFullPath($WindowsRoot)
+    $rootItem = Get-Item -LiteralPath $root -Force -ErrorAction Stop
+    if ($null -eq $rootItem -or -not $rootItem.PSIsContainer -or
+        (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+        throw 'Offline guest setup target parent is unsafe.'
+    }
+    $current = $root
+    foreach ($segment in $RelativeParent.Split([char]'\')) {
+        $current = Join-Path $current $segment
+        $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+        if ($null -eq $item -or -not $item.PSIsContainer -or
+            (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            throw 'Offline guest setup target parent is unsafe.'
+        }
+    }
+    $target = Join-Path $current $FileName
+    $existing = $null
+    try {
+        $existing = Get-Item -LiteralPath $target -Force -ErrorAction Stop
+    }
+    catch [System.Management.Automation.ItemNotFoundException] {
+        # An absent file is expected; never overwrite an existing target.
+    }
+    if ($null -ne $existing -or (Test-Path -LiteralPath $target)) {
+        throw 'Offline guest setup target already exists; refusing overwrite.'
+    }
+}
+
 function Invoke-HostBcdBoot([string]$WindowsRoot, [string]$EfiRoot) {
     # Use only the local, OS-controlled deployment utility. The mounted
     # golden image is untrusted input and must never supply an executable
@@ -851,12 +890,16 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         Set-RestrictedDirectoryAcl $bootstrap
         $setupDir = Join-Path $windowsRoot 'Windows\Setup\Scripts'
         New-Item -ItemType Directory -Path $setupDir -Force | Out-Null
+        Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
+        Assert-LabFreshGuestSetupTarget $windowsRoot 'Windows\Setup\Scripts' 'SetupComplete.cmd'
         '@echo off
 powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\ProgramData\PSMatrix\Bootstrap\GuestBootstrap.ps1
 exit /b %ERRORLEVEL%
 ' | Set-Content -LiteralPath (Join-Path $setupDir 'SetupComplete.cmd') -Encoding ASCII
         $panther = Join-Path $windowsRoot 'Windows\Panther'
         New-Item -ItemType Directory -Path $panther -Force | Out-Null
+        Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
+        Assert-LabFreshGuestSetupTarget $windowsRoot 'Windows\Panther' 'Unattend.xml'
         $secretName = [string]$Image.admin_password_env
         $password = [Environment]::GetEnvironmentVariable($secretName,'Process')
         if ([string]::IsNullOrWhiteSpace($password)) { throw ('Required secret environment variable is missing: ' + $secretName) }

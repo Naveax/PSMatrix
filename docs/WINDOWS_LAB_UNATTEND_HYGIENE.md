@@ -859,6 +859,18 @@ pre-write path validation; it does not guarantee atomic exclusion of
 privileged concurrent changes, or replace real Hyper-V and NTFS ACL
 acceptance.
 
+Immediately before writing each sensitive setup target, the host now
+also invokes `Assert-LabFreshGuestSetupTarget` after its destination
+directory has been created. It independently verifies the mounted guest
+root and every required directory ancestor, rejects junctions/reparse
+points, and refuses an existing leaf file. The two checks are separate:
+the already written `SetupComplete.cmd` does not prevent validating
+the later password-bearing `Unattend.xml`. Windows volume ownership
+is rechecked at each boundary. Disposable Windows PowerShell 5.1 and
+PowerShell 7 test trees cover both expected targets, occupied leaves,
+and junctions inserted after the initial global preflight. These checks
+limit but cannot eliminate concurrent filesystem path races.
+
 The offline checkpoint verifier now places a **1 MiB upper bound**
 on untrusted guest `ProgramData\PSMatrix\WorkerConfig\worker.json`
 before computing its SHA-256. The existing exclusive file-handle,
