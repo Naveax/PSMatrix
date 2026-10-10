@@ -267,18 +267,29 @@ function Write-LabFreshSetupText([string]$Path, [string]$Text, [Text.Encoding]$E
         throw 'Offline setup file path or text encoding is invalid.'
     }
     $stream = [IO.File]::Open($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    $completed = $false
     try {
-        $writer = [IO.StreamWriter]::new($stream, $Encoding)
+        $writer = $null
         try {
+            $writer = [IO.StreamWriter]::new($stream, $Encoding)
             $writer.WriteLine($Text)
             $writer.Flush()
         }
         finally {
-            $writer.Dispose()
+            if ($null -ne $writer) { $writer.Dispose() }
         }
+        $completed = $true
     }
     finally {
-        $stream.Dispose()
+        try {
+            $stream.Dispose()
+        }
+        finally {
+            # CreateNew gave us ownership of this leaf. On a failed write,
+            # remove our partial setup/answer file after closing the handle.
+            # Never delete a leaf when CreateNew itself rejected its existence.
+            if (-not $completed) { [IO.File]::Delete($Path) }
+        }
     }
 }
 function New-Unattend([string]$Path, [string]$ComputerName, [string]$Password) {

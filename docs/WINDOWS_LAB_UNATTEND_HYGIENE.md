@@ -924,6 +924,18 @@ of existing or late-created files. This closes the leaf-overwrite
 race; a concurrent change to a parent directory remains a separate
 OS-level risk requiring elevated host acceptance.
 
+The create-only setup writer now also **cleans up its own incomplete
+new file** when writing or text encoding fails after `FileMode.CreateNew`
+succeeds. It always closes the writer and file handle first; cleanup
+never runs if `CreateNew` itself rejected a preexisting target. Disposable
+WinPS5.1/PS7 regressions force a strict UTF-8 encoder error, require
+the failed file to be absent, check that existing leaves remain
+byte-for-byte intact and confirm normal UTF-8 setup writes still work.
+This does not promise cleanup after abrupt process termination, nor
+prevent a privileged actor replacing a path between handle closure
+and cleanup; controlled host ACLs and elevated acceptance remain
+necessary.
+
 The offline checkpoint verifier now places a **1 MiB upper bound**
 on untrusted guest `ProgramData\PSMatrix\WorkerConfig\worker.json`
 before computing its SHA-256. The existing exclusive file-handle,

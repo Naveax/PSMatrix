@@ -6871,6 +6871,64 @@ if(-not [Linq.Enumerable]::SequenceEqual([byte[]]$raw,[byte[]][IO.File]::ReadAll
                 )
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_fresh_setup_writer_removes_only_own_incomplete_target_on_error(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        source = HOST.read_text(encoding="utf-8")
+        start = source.index("function Write-LabFreshSetupText(")
+        stop = source.index("\nfunction New-Unattend(", start)
+        helper = source[start:stop]
+        self.assertIn("[IO.FileMode]::CreateNew", helper)
+        self.assertIn("[IO.File]::Delete($Path)", helper)
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-setup-failed-write-") as tmp:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                root = Path(tmp) / exe.replace(".", "-")
+                root.mkdir()
+                root_expr = "'" + str(root).replace("'", "''") + "'"
+                script = helper + r"""
+$ErrorActionPreference='Stop'
+$root=__ROOT__
+$invalid=([string][char]0xD800)
+$strictUtf8=[Text.UTF8Encoding]::new($false,$true)
+$failed=Join-Path $root 'invalid-encoding.xml'
+$denied=$false
+try { Write-LabFreshSetupText $failed $invalid $strictUtf8 }
+catch {$denied=$true}
+if(-not $denied){throw 'Invalid UTF-8 input was accepted.'}
+if(Test-Path -LiteralPath $failed){
+    throw 'Failed UTF-8 write left a partial setup target.'
+}
+$occupied=Join-Path $root 'already-created.cmd'
+[IO.File]::WriteAllText($occupied,'untouched')
+$denied=$false
+try { Write-LabFreshSetupText $occupied '@echo off' ([Text.Encoding]::ASCII) }
+catch {$denied=$true}
+if(-not $denied -or [IO.File]::ReadAllText($occupied) -cne 'untouched'){
+    throw 'Preexisting target changed or was removed on failure.'
+}
+$valid=Join-Path $root 'valid.xml'
+Write-LabFreshSetupText $valid '<root>synthetic</root>' ([Text.UTF8Encoding]::new($true))
+if(-not (Test-Path -LiteralPath $valid) -or
+   (Get-Content -LiteralPath $valid -Raw -Encoding UTF8) -notmatch '<root>synthetic</root>'){
+    throw 'Valid setup write was disrupted by failure handling.'
+}
+"""
+                script = script.replace("__ROOT__", root_expr)
+                result = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=40, check=False,
+                )
+                self.assertEqual(
+                    result.returncode, 0, exe + ": " + result.stdout + result.stderr
+                )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     def test_setup_targets_use_atomic_create_new_without_overwriting_raced_files(self):
         import shutil
         import subprocess
