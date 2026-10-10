@@ -739,7 +739,7 @@ concurrent filesystem changes.
 
 The VHDX builder now **verifies the bytes of all four copied guest
 packages after staging**, not only their source-media hashes before
-the `Copy-Item` calls. `Assert-StagedLabArtifact` uses the existing
+the file-copy operations. `Assert-StagedLabArtifact` uses the existing
 `Assert-Artifact` hash, optional exact-size and NTFS reparse-point
 checks against the actual offline guest destinations for the worker
 ZIP, Python installer, credential ZIP and signing ZIP. Each copied
@@ -759,6 +759,19 @@ material are used. The post-copy hash is **not** a cryptographic
 identity lock: a privileged actor replacing guest files after this
 check, or concurrently modifying the VHDX, still requires separate
 host hardening and genuine elevated offline acceptance.
+
+The five bootstrap files (GuestBootstrap.ps1, worker-package.zip,
+python-installer.exe, credential-bundle.zip and signing-bundle.zip)
+now use `Copy-LabFreshStagedArtifact` instead of `Copy-Item -Force`.
+The helper opens each target with `.NET FileMode.CreateNew` and
+exclusive sharing, copies bytes as a stream and closes both handles.
+An existing or late-created leaf cannot be truncated or replaced by
+staging. WinPS5.1/PS7 disposable binary fixtures verify exact contents,
+refusal to overwrite existing/late-created files, and that a missing
+source does not create a destination. Existing independent destination
+SHA-256 checks still apply. Concurrent changes to parent directories
+and writes that fail after a new destination is opened remain subject
+to explicit failure handling and elevated host acceptance.
 
 The guest now performs an **independent first-boot verification** of
 the four offline staged packages before extracting any ZIP or running

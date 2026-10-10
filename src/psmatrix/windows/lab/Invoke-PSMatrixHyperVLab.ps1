@@ -58,6 +58,29 @@ function Assert-StagedLabArtifact($SourceArtifact, [string]$Destination, [string
     }
     Assert-Artifact $staged $Label
 }
+function Copy-LabFreshStagedArtifact([string]$Source, [string]$Destination) {
+    # A brand-new bootstrap directory is not a guarantee against a
+    # concurrent file being installed between staging and Copy-Item -Force.
+    # CreateNew must refuse the existing leaf without truncating it.
+    if ([string]::IsNullOrWhiteSpace($Source) -or
+        [string]::IsNullOrWhiteSpace($Destination)) {
+        throw 'Guest staged artifact source or destination is invalid.'
+    }
+    $reader = [IO.File]::Open($Source, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        $writer = [IO.File]::Open($Destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try {
+            $reader.CopyTo($writer)
+            $writer.Flush()
+        }
+        finally {
+            $writer.Dispose()
+        }
+    }
+    finally {
+        $reader.Dispose()
+    }
+}
 function New-LabGuestBootstrapReference([string]$Path) {
     # Freeze the exact source script for every guest before provisioning.
     # The script itself executes with high privilege on first boot.
@@ -868,15 +891,15 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         # otherwise they could temporarily inherit broad guest permissions.
         Set-RestrictedDirectoryAcl $bootstrap
         Assert-Artifact $BootstrapArtifact 'Guest bootstrap script'
-        Copy-Item -LiteralPath $GuestBootstrap -Destination (Join-Path $bootstrap 'GuestBootstrap.ps1') -Force
+        Copy-LabFreshStagedArtifact $GuestBootstrap (Join-Path $bootstrap 'GuestBootstrap.ps1')
         Assert-StagedLabArtifact $BootstrapArtifact (Join-Path $bootstrap 'GuestBootstrap.ps1') 'Staged guest bootstrap script'
-        Copy-Item -LiteralPath ([string]$Image.worker_package.path) -Destination (Join-Path $bootstrap 'worker-package.zip') -Force
+        Copy-LabFreshStagedArtifact ([string]$Image.worker_package.path) (Join-Path $bootstrap 'worker-package.zip')
         Assert-StagedLabArtifact $Image.worker_package (Join-Path $bootstrap 'worker-package.zip') 'Staged worker package'
-        Copy-Item -LiteralPath ([string]$Image.python_installer.path) -Destination (Join-Path $bootstrap 'python-installer.exe') -Force
+        Copy-LabFreshStagedArtifact ([string]$Image.python_installer.path) (Join-Path $bootstrap 'python-installer.exe')
         Assert-StagedLabArtifact $Image.python_installer (Join-Path $bootstrap 'python-installer.exe') 'Staged Python installer'
-        Copy-Item -LiteralPath ([string]$Image.credential_bundle.path) -Destination (Join-Path $bootstrap 'credential-bundle.zip') -Force
+        Copy-LabFreshStagedArtifact ([string]$Image.credential_bundle.path) (Join-Path $bootstrap 'credential-bundle.zip')
         Assert-StagedLabArtifact $Image.credential_bundle (Join-Path $bootstrap 'credential-bundle.zip') 'Staged credential bundle'
-        Copy-Item -LiteralPath ([string]$Image.signing_bundle.path) -Destination (Join-Path $bootstrap 'signing-bundle.zip') -Force
+        Copy-LabFreshStagedArtifact ([string]$Image.signing_bundle.path) (Join-Path $bootstrap 'signing-bundle.zip')
         Assert-StagedLabArtifact $Image.signing_bundle (Join-Path $bootstrap 'signing-bundle.zip') 'Staged signing bundle'
         [ordered]@{
             schema = 1; worker_id = [string]$Image.worker_id; expected_version = [string]$Image.expected_version

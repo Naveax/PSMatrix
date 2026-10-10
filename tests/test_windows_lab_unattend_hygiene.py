@@ -4142,15 +4142,15 @@ exit 0
         for required in (
             "Guest bootstrap staging directory already exists; refusing overwrite.",
             "Set-RestrictedDirectoryAcl $bootstrap",
-            "Copy-Item -LiteralPath ([string]$Image.credential_bundle.path)",
-            "Copy-Item -LiteralPath ([string]$Image.signing_bundle.path)",
+            "Copy-LabFreshStagedArtifact ([string]$Image.credential_bundle.path)",
+            "Copy-LabFreshStagedArtifact ([string]$Image.signing_bundle.path)",
         ):
             self.assertIn(required, staging)
         self.assertEqual(staging.count("Set-RestrictedDirectoryAcl $bootstrap"), 2)
         first_acl = staging.index("Set-RestrictedDirectoryAcl $bootstrap")
         second_acl = staging.index("Set-RestrictedDirectoryAcl $bootstrap", first_acl + 1)
-        credential = staging.index("Copy-Item -LiteralPath ([string]$Image.credential_bundle.path)")
-        signing = staging.index("Copy-Item -LiteralPath ([string]$Image.signing_bundle.path)")
+        credential = staging.index("Copy-LabFreshStagedArtifact ([string]$Image.credential_bundle.path)")
+        signing = staging.index("Copy-LabFreshStagedArtifact ([string]$Image.signing_bundle.path)")
         creation = staging.index("New-Item -ItemType Directory -Path $bootstrap")
         self.assertLess(creation, first_acl)
         self.assertLess(first_acl, credential)
@@ -4201,8 +4201,8 @@ function Assert-Artifact {
         throw 'Guest bootstrap source was checked after staging began.'
     }
 }
-function Copy-Item {
-    param([string]$LiteralPath,[string]$Destination,[switch]$Force)
+function Copy-LabFreshStagedArtifact {
+    param([string]$Source,[string]$Destination)
     $script:copyCalls++
 }
 function Assert-StagedLabArtifact {
@@ -5976,7 +5976,7 @@ exit 0
             ("signing_bundle", "signing-bundle.zip"),
         ):
             copy_marker = (
-                "Copy-Item -LiteralPath ([string]$Image." + field + ".path)"
+                "Copy-LabFreshStagedArtifact ([string]$Image." + field + ".path)"
             )
             verify_marker = (
                 "Assert-StagedLabArtifact $Image." + field + " "
@@ -6358,15 +6358,92 @@ exit 0
             build,
         )
         self.assertLess(
-            build.index("Copy-Item -LiteralPath $GuestBootstrap"),
+            build.index("Copy-LabFreshStagedArtifact $GuestBootstrap"),
             build.index("Assert-StagedLabArtifact $BootstrapArtifact"),
         )
         self.assertLess(
             build.index("Assert-StagedLabArtifact $BootstrapArtifact"),
-            build.index("Copy-Item -LiteralPath ([string]$Image.worker_package.path)"),
+            build.index("Copy-LabFreshStagedArtifact ([string]$Image.worker_package.path)"),
         )
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_staged_guest_artifacts_create_exclusively_without_force_overwrite(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        host = HOST.read_text(encoding="utf-8")
+        start = host.index("function Copy-LabFreshStagedArtifact(")
+        end = host.index("\nfunction New-LabGuestBootstrapReference(", start)
+        helper = host[start:end]
+        self.assertIn("[IO.FileMode]::CreateNew", helper)
+        self.assertIn(".CopyTo(", helper)
+        build = host.split("function New-LabVhd(", 1)[1].split(
+            "\nfunction Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        calls = (
+            "Copy-LabFreshStagedArtifact $GuestBootstrap (Join-Path $bootstrap 'GuestBootstrap.ps1')",
+            "Copy-LabFreshStagedArtifact ([string]$Image.worker_package.path) (Join-Path $bootstrap 'worker-package.zip')",
+            "Copy-LabFreshStagedArtifact ([string]$Image.python_installer.path) (Join-Path $bootstrap 'python-installer.exe')",
+            "Copy-LabFreshStagedArtifact ([string]$Image.credential_bundle.path) (Join-Path $bootstrap 'credential-bundle.zip')",
+            "Copy-LabFreshStagedArtifact ([string]$Image.signing_bundle.path) (Join-Path $bootstrap 'signing-bundle.zip')",
+        )
+        for call in calls:
+            self.assertIn(call, build)
+        self.assertNotIn("Copy-Item -LiteralPath $GuestBootstrap -Destination", build)
+        self.assertNotIn("-Destination (Join-Path $bootstrap", build)
+
+        def quote(v):
+            return "'" + str(v).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-fresh-staged-copy-") as tmp:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                root = Path(tmp) / exe.replace(".", "-")
+                root.mkdir()
+                script = helper + r"""
+$ErrorActionPreference='Stop'
+$root=__ROOT__
+$source=Join-Path $root 'source.bin'
+$destination=Join-Path $root 'staged.bin'
+$sentinel=Join-Path $root 'late-staged.bin'
+$payload=[byte[]](0,1,2,3,127,128,250,255)
+[IO.File]::WriteAllBytes($source,$payload)
+Copy-LabFreshStagedArtifact $source $destination
+if(-not [Linq.Enumerable]::SequenceEqual(
+  [byte[]][IO.File]::ReadAllBytes($destination),[byte[]]$payload)) {
+    throw 'Valid binary staged source was not copied exactly.'
+}
+$existing=[byte[]][IO.File]::ReadAllBytes($destination)
+$refused=$false
+try { Copy-LabFreshStagedArtifact $source $destination } catch {$refused=$true}
+if(-not $refused -or
+   -not [Linq.Enumerable]::SequenceEqual(
+     [byte[]][IO.File]::ReadAllBytes($destination),[byte[]]$existing)) {
+    throw 'Pre-existing staged payload was overwritten.'
+}
+[IO.File]::WriteAllText($sentinel,'untouched')
+$refused=$false
+try { Copy-LabFreshStagedArtifact $source $sentinel } catch {$refused=$true}
+if(-not $refused -or [IO.File]::ReadAllText($sentinel) -cne 'untouched'){
+    throw 'Late-created staged file was overwritten.'
+}
+$missing=Join-Path $root 'missing-file.bin'
+$refused=$false
+try { Copy-LabFreshStagedArtifact $missing (Join-Path $root 'missing-target.bin') } catch {$refused=$true}
+if(-not $refused -or (Test-Path -LiteralPath (Join-Path $root 'missing-target.bin'))){
+    throw 'Missing source must not create a staged destination.'
+}
+"""
+                script = script.replace("__ROOT__", quote(root))
+                result = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=50, check=False,
+                )
+                self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
     def test_host_guest_bootstrap_script_reference_rejects_source_drift_and_staged_mutation(self):
         import shutil
         import subprocess
