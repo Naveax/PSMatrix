@@ -773,6 +773,13 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         # checks cannot guarantee their drive letters remain unchanged.
         Assert-LabFormattedVolume $efi 'FAT32' 'SYSTEM'
         Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
+        # VHDX partitioning can take time. Refuse applying a Windows image
+        # from an ISO that was detached or moved to another drive letter.
+        Assert-LabMountedIsoIdentity $isoPath $iso
+        $recheckedIsoRoot = Get-LabIsoVolumeRoot $iso
+        if ($recheckedIsoRoot -cne $isoRoot) {
+            throw 'Windows source ISO drive letter changed before DISM image application.'
+        }
         Invoke-HostDism @('/English','/Apply-Image',('/ImageFile:' + $imageFile),('/Index:' + [int]$Image.edition_index),('/ApplyDir:' + $windowsRoot))
         if ($Image.wmf_package) {
             Invoke-HostDism @('/English',('/Image:' + $windowsRoot),'/Add-Package',('/PackagePath:' + [string]$Image.wmf_package.path),'/NoRestart')

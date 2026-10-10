@@ -300,6 +300,17 @@ image paths, changed letters, detached responses and provider failures.
 This protects against inconsistent Storage responses but does not
 cryptographically attest the ISO bytes or prevent mount races.
 
+After EFI/Windows partition creation and immediately before the DISM
+image-apply operation, the host **rechecks the source ISO** through
+`Assert-LabMountedIsoIdentity` and `Get-LabIsoVolumeRoot`. The
+verified image must still be attached and resolve to the identical
+drive root selected before VHDX construction. If the ISO was detached,
+its volume letter changed, or the Storage response is mismatched,
+malformed or unavailable, image application aborts rather than
+using an untrusted drive letter. Windows PowerShell 5.1/7 mock tests
+exercise these use-time failures without mounting media. These
+point-in-time checks do not eliminate remapping races during DISM.
+
 Both the full-plan ISO preflight and the per-guest use-time check now
 validate the **identity of the detached source ISO**, not merely its
 `Attached=false` flag. The `Get-DiskImage -ImagePath` response must

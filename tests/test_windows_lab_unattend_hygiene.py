@@ -1111,6 +1111,132 @@ if(-not $rejected){throw 'Provider failure accepted.'}
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_dism_rechecks_iso_image_and_drive_at_use_time(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        build = host.split("function New-LabVhd(", 1)[1].split(
+            "\nfunction Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        target = "Invoke-HostDism @('/English','/Apply-Image'"
+        dism_offset = build.index(target)
+        last_target_volume_check = build.rfind(
+            "Assert-LabFormattedVolume $efi 'FAT32' 'SYSTEM'", 0, dism_offset
+        )
+        write_block = build[last_target_volume_check:build.index(
+            "\n        if ($Image.wmf_package)", dism_offset
+        )]
+        self.assertIn("Assert-LabMountedIsoIdentity $isoPath $iso", write_block)
+        self.assertIn("$recheckedIsoRoot = Get-LabIsoVolumeRoot $iso", write_block)
+        self.assertIn(
+            "if ($recheckedIsoRoot -cne $isoRoot)", write_block
+        )
+        self.assertLess(
+            write_block.index("$recheckedIsoRoot = Get-LabIsoVolumeRoot $iso"),
+            write_block.index(target),
+        )
+        # Reuse the real identity and root helpers in a mocked, side-effect-free
+        # PowerShell execution to prove failures prevent invoking host DISM.
+        id_start = host.index("function Assert-LabCleanupIsoIdentity(")
+        id_end = host.index("\nfunction Close-LabBuildMedia(", id_start)
+        mount_start = host.index("function Assert-LabMountedIsoIdentity(")
+        mount_end = host.index("\nfunction Get-LabPartitionRoots(", mount_start)
+        code = host[id_start:id_end] + host[mount_start:mount_end]
+        script = code + r"""
+$ErrorActionPreference='Stop'
+$script:dismCalls=0
+$script:readImageCalls=0
+$script:rootVolumeCalls=0
+$script:currentLetter='F'
+$script:queriedLetter='F'
+$script:currentPath='D:\Fixture\install.iso'
+$script:isAttached=$true
+$script:queryFails=$false
+$script:volumeCopies=1
+$isoPath='D:\Fixture\install.iso'
+$isoRoot='F:\'
+$iso=[pscustomobject]@{ImagePath=$isoPath;Attached=$true;Origin='mounted'}
+$imageFile='F:\sources\install.wim'
+$efi=[pscustomobject]@{DriveLetter='E'}
+$windows=[pscustomobject]@{DriveLetter='G'}
+$windowsRoot='G:\'
+$Image=[pscustomobject]@{edition_index=1}
+function Assert-LabFormattedVolume {
+    [CmdletBinding()]
+    param([object]$Partition,[string]$FileSystem,[string]$FileSystemLabel)
+}
+function Get-DiskImage {
+    [CmdletBinding()]
+    param([string]$ImagePath)
+    $script:readImageCalls++
+    if($script:queryFails){throw 'Provider cannot read ISO'}
+    return [pscustomobject]@{
+        ImagePath=$script:currentPath
+        Attached=$script:isAttached
+        Origin='verified'
+    }
+}
+function Get-Volume {
+    [CmdletBinding()]
+    param([Parameter(ValueFromPipeline=$true)]$InputObject)
+    process {
+        $script:rootVolumeCalls++
+        if($script:queryFails){throw 'Volume provider unavailable'}
+        $letter=if($InputObject.Origin -eq 'verified'){
+            $script:queriedLetter
+        } else {
+            $script:currentLetter
+        }
+        for($i=0;$i -lt $script:volumeCopies;$i++){
+            [pscustomobject]@{DriveLetter=$letter}
+        }
+    }
+}
+function Invoke-HostDism {
+    param([string[]]$Arguments)
+    $script:dismCalls++
+}
+function Invoke-GuardedDism {
+""" + write_block + r"""
+}
+Invoke-GuardedDism
+if($script:dismCalls -ne 1 -or $script:readImageCalls -ne 2 -or
+    $script:rootVolumeCalls -ne 2){
+    throw 'Valid ISO must be rechecked before one DISM call.'
+}
+foreach($case in @(
+    [pscustomobject]@{Name='remapped ISO drive';Var='currentLetter';Value='H'},
+    [pscustomobject]@{Name='different confirmed letter';Var='queriedLetter';Value='H'},
+    [pscustomobject]@{Name='wrong ISO image';Var='currentPath';Value='D:\Fixture\host.iso'},
+    [pscustomobject]@{Name='ISO detached during build';Var='isAttached';Value=$false},
+    [pscustomobject]@{Name='malformed image attached';Var='isAttached';Value='True'},
+    [pscustomobject]@{Name='no confirmed volumes';Var='volumeCopies';Value=0},
+    [pscustomobject]@{Name='ambiguous confirmed volumes';Var='volumeCopies';Value=2},
+    [pscustomobject]@{Name='Storage failure';Var='queryFails';Value=$true}
+)) {
+    $old=Get-Variable -Name $case.Var -Scope Script -ValueOnly
+    Set-Variable -Name $case.Var -Scope Script -Value $case.Value
+    $script:dismCalls=0
+    $rejected=$false
+    try { Invoke-GuardedDism } catch {$rejected=$true}
+    Set-Variable -Name $case.Var -Scope Script -Value $old
+    if(-not $rejected -or $script:dismCalls -ne 0){
+        throw ('Unsafe ISO changed before DISM was accepted: '+$case.Name)
+    }
+}
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
     def test_dism_and_bcdboot_recheck_guest_volumes_at_use_time(self):
         import shutil
         import subprocess
@@ -1123,7 +1249,6 @@ if(-not $rejected){throw 'Provider failure accepted.'}
         before_dism = (
             "        Assert-LabFormattedVolume $efi 'FAT32' 'SYSTEM'\n"
             "        Assert-LabFormattedVolume $windows 'NTFS' 'Windows'\n"
-            "        Invoke-HostDism @('/English','/Apply-Image'"
         )
         before_bcdboot = (
             "        Assert-LabFormattedVolume $efi 'FAT32' 'SYSTEM'\n"
@@ -1133,6 +1258,10 @@ if(-not $rejected){throw 'Provider failure accepted.'}
         self.assertIn(before_dism, build)
         self.assertIn(before_bcdboot, build)
         self.assertLess(build.index(before_dism), build.index(before_bcdboot))
+        self.assertLess(
+            build.index(before_dism),
+            build.index("Invoke-HostDism @('/English','/Apply-Image'"),
+        )
         commands = build[
             build.index(before_dism):
             build.index("\n        Assert-SafeOfflineGuestWriteAncestors", build.index(before_dism))
@@ -1145,6 +1274,16 @@ $script:substituteAfterDism=$false
 $script:dismCalls=0
 $script:bootCalls=0
 $script:volumeChecks=0
+$isoRoot='X:\'
+$isoPath='D:\Fixture\source.iso'
+$iso=[pscustomobject]@{ImagePath=$isoPath;Attached=$true}
+function Assert-LabMountedIsoIdentity {
+    param([string]$IsoPath,[object]$MountedIso)
+}
+function Get-LabIsoVolumeRoot {
+    param([object]$MountedIso)
+    return 'X:\'
+}
 function Get-Volume {
     [CmdletBinding()]
     param([object]$Partition)
