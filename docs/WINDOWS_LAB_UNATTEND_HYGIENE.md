@@ -501,6 +501,16 @@ DISM or BCDBoot from running, while valid mappings permit one invocation
 of each. There is still an unavoidable gap between each final query and
 the corresponding external command, so a real elevated Hyper-V host
 must pass independent acceptance.
+
+Two later Windows-root write boundaries now repeat the same independent
+`Assert-LabFormattedVolume $windows 'NTFS' 'Windows'` ownership check:
+immediately before the optional DISM `/Add-Package` WMF operation and
+again after BCDBoot, before inspecting the bootstrap staging ancestors
+or creating any bootstrap files. A changed or reassigned Windows drive
+letter causes fail-closed refusal, rather than applying the package or
+staging credential/signing artifacts into an unrelated host volume.
+Isolated Windows PowerShell 5.1/7 mocks cover accepted ownership and
+host-disk substitutions without writing files or executing DISM.
 Post-format checks cannot rule out concurrent storage reconfiguration.
 
 The VHDX build cleanup now also verifies that each `Get-VHD -Path`

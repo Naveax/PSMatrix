@@ -782,6 +782,9 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         }
         Invoke-HostDism @('/English','/Apply-Image',('/ImageFile:' + $imageFile),('/Index:' + [int]$Image.edition_index),('/ApplyDir:' + $windowsRoot))
         if ($Image.wmf_package) {
+            # Image application can take time; confirm the offline Windows
+            # target still belongs to this guest before the package write.
+            Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
             Invoke-HostDism @('/English',('/Image:' + $windowsRoot),'/Add-Package',('/PackagePath:' + [string]$Image.wmf_package.path),'/NoRestart')
         }
         # DISM may take time; do not let a reassigned EFI/Windows letter
@@ -789,6 +792,9 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         Assert-LabFormattedVolume $efi 'FAT32' 'SYSTEM'
         Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
         Invoke-HostBcdBoot $windowsRoot $efiRoot
+        # BCDBoot may also take time. Refuse to stage bootstrap files if the
+        # Windows drive letter no longer resolves to this guest partition.
+        Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
         Assert-SafeOfflineGuestWriteAncestors $windowsRoot
         $bootstrap = Join-Path $windowsRoot 'ProgramData\PSMatrix\Bootstrap'
         # A golden image must not provide a preexisting staging tree, which

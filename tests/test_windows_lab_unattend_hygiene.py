@@ -1112,6 +1112,119 @@ if(-not $rejected){throw 'Provider failure accepted.'}
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_guest_volume_owner_is_rechecked_before_wmf_and_bootstrap_writes(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        build = host.split("function New-LabVhd(", 1)[1].split(
+            "\nfunction Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        apply_offset = build.index("Invoke-HostDism @('/English','/Apply-Image'")
+        wmf_start = build.index("        if ($Image.wmf_package) {", apply_offset)
+        wmf_end = build.index("        # DISM may take time;", wmf_start)
+        wmf = build[wmf_start:wmf_end]
+        bootstrap_start = build.index("        Invoke-HostBcdBoot $windowsRoot $efiRoot")
+        bootstrap_end = build.index(
+            "        $bootstrap = Join-Path $windowsRoot", bootstrap_start
+        )
+        bootstrap = build[
+            bootstrap_start + len("        Invoke-HostBcdBoot $windowsRoot $efiRoot"):
+            bootstrap_end
+        ]
+        guard = "Assert-LabFormattedVolume $windows 'NTFS' 'Windows'"
+        self.assertIn(guard, wmf)
+        self.assertLess(
+            wmf.index(guard),
+            wmf.index("Invoke-HostDism @('/English',('/Image:'"),
+        )
+        self.assertIn(guard, bootstrap)
+        self.assertLess(
+            bootstrap.index(guard),
+            bootstrap.index("Assert-SafeOfflineGuestWriteAncestors $windowsRoot"),
+        )
+        self.assertLess(
+            build.index("Assert-SafeOfflineGuestWriteAncestors $windowsRoot", bootstrap_start),
+            build.index("New-Item -ItemType Directory -Path $bootstrap"),
+        )
+        helper_start = host.index("function Assert-LabFormattedVolume(")
+        helper_end = host.index("\nfunction New-LabVhd(", helper_start)
+        helper = host[helper_start:helper_end]
+        script = helper + r"""
+$ErrorActionPreference = 'Stop'
+$windows = [pscustomobject]@{DiskNumber=42;PartitionNumber=3;DriveLetter='G'}
+$windowsRoot='G:\'
+$Image=[pscustomobject]@{wmf_package=[pscustomobject]@{path='D:\Fixture\wmf.msu'}}
+$script:realOwner=42
+$script:volumeChecks=0
+$script:packageCalls=0
+$script:stagingGuardCalls=0
+function Get-Volume {
+    [CmdletBinding()]
+    param([object]$Partition)
+    $script:volumeChecks++
+    return [pscustomobject]@{
+        DriveLetter='G';FileSystem='NTFS';FileSystemLabel='Windows'
+    }
+}
+function Get-Partition {
+    [CmdletBinding()]
+    param([string]$DriveLetter)
+    if($DriveLetter -cne 'G'){throw 'Unexpected drive query'}
+    return [pscustomobject]@{
+        DiskNumber=$script:realOwner;PartitionNumber=3;DriveLetter='G'
+    }
+}
+function Invoke-HostDism {
+    param([string[]]$Arguments)
+    $script:packageCalls++
+}
+function Assert-SafeOfflineGuestWriteAncestors {
+    param([string]$WindowsRoot)
+    $script:stagingGuardCalls++
+}
+function Invoke-WmfWrite {
+""" + wmf + r"""
+}
+function Invoke-StagingWritePreflight {
+""" + bootstrap + r"""
+}
+Invoke-WmfWrite
+Invoke-StagingWritePreflight
+if($script:packageCalls -ne 1 -or $script:stagingGuardCalls -ne 1 -or
+   $script:volumeChecks -ne 2) {
+    throw 'Expected exactly one package write and one staging guard.'
+}
+$script:realOwner=0
+$script:packageCalls=0
+$script:stagingGuardCalls=0
+$denied=$false
+try { Invoke-WmfWrite } catch {$denied=$true}
+if(-not $denied -or $script:packageCalls -ne 0){
+    throw 'WMF package write accepted substituted host-disk owner.'
+}
+$denied=$false
+try { Invoke-StagingWritePreflight } catch {$denied=$true}
+if(-not $denied -or $script:stagingGuardCalls -ne 0){
+    throw 'Bootstrap staging preflight accepted substituted host-disk owner.'
+}
+$script:realOwner=42
+$Image.wmf_package=$null
+$script:packageCalls=0
+Invoke-WmfWrite
+if($script:packageCalls -ne 0){throw 'Optional WMF package absent but DISM invoked.'}
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
     def test_dism_rechecks_iso_image_and_drive_at_use_time(self):
         import shutil
         import subprocess
@@ -1326,7 +1439,7 @@ function Invoke-GuardedWrite {
 """ + commands + r"""
 }
 Invoke-GuardedWrite
-if($script:dismCalls -ne 1 -or $script:bootCalls -ne 1 -or $script:volumeChecks -ne 4){
+if($script:dismCalls -ne 1 -or $script:bootCalls -ne 1 -or $script:volumeChecks -ne 5){
     throw 'Valid guest was not verified immediately before both write commands.'
 }
 $script:dismCalls=0
