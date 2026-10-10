@@ -782,6 +782,18 @@ WinPS5.1/PowerShell 7 fixtures cover those malformed declarations on
 both original and copied/staged artifacts. The SHA-256 check remains
 independent and unchanged.
 
+Where an exact size is declared, the host now checks that byte count
+**before** hashing source or staged artifacts. An already mismatched or
+invalid file can therefore be rejected without reading and hashing
+its potentially very large contents. The size is checked again **after**
+a successful digest comparison so a concurrent size change during
+hashing cannot be mistaken for the original declared artifact.
+Missing optional size metadata still permits a normal SHA-256 check.
+WinPS5.1/PowerShell 7 simulated hash fixtures verify zero hash calls
+for invalid/mismatched size, exactly one for valid inputs and rejection
+when file length changes during a matching digest. This is not an
+atomic file identity guarantee against privileged host races.
+
 WinPS5.1 and PowerShell 7 tests use disposable dummy packages to
 verify an unchanged staged copy, a deliberately modified source copied
 after a passing source hash, a wrong reported size and an actual NTFS

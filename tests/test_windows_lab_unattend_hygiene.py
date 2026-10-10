@@ -5083,6 +5083,94 @@ if(-not $denied){throw 'Invalid staged size metadata was accepted.'}
                 )
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_rejects_size_mismatch_before_hash_and_rechecks_after_hash(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        host = HOST.read_text(encoding="utf-8")
+        start = host.index("function Get-Sha256(")
+        end = host.index("\nfunction Copy-LabFreshStagedArtifact(", start)
+        helpers = host[start:end]
+        artifact = helpers.split("function Assert-Artifact(", 1)[1].split(
+            "\nfunction Assert-StagedLabArtifact(", 1
+        )[0]
+        self.assertIn("$fileLengthBeforeHash", artifact)
+        self.assertIn("$fileLengthAfterHash", artifact)
+        self.assertLess(
+            artifact.index("$fileLengthBeforeHash"),
+            artifact.index("$actual = Get-Sha256 $path"),
+        )
+        self.assertLess(
+            artifact.index("$actual = Get-Sha256 $path"),
+            artifact.index("$fileLengthAfterHash"),
+        )
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-prehash-size-") as temp:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                target = Path(temp) / (exe.replace(".", "-") + ".bin")
+                literal = "'" + str(target).replace("'", "''") + "'"
+                script = helpers + r"""
+$ErrorActionPreference='Stop'
+$path=__TARGET__
+$script:hashCalls=0
+$script:mutateDuringHash=$false
+function Get-Sha256([string]$Path) {
+    $script:hashCalls++
+    if($script:mutateDuringHash) {
+        [IO.File]::AppendAllText($Path,'X')
+    }
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+[IO.File]::WriteAllBytes($path,[byte[]](1,2,3,4))
+$hash=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+$meta=[pscustomobject]@{path=$path;sha256=$hash;size=[int32]2}
+$rejected=$false
+try { Assert-Artifact $meta 'Synthetic' } catch {$rejected=$true}
+if(-not $rejected -or $script:hashCalls -ne 0) {
+    throw 'Wrong size was not rejected before hashing.'
+}
+$meta.size=[double]4.2
+$rejected=$false
+try { Assert-Artifact $meta 'Synthetic' } catch {$rejected=$true}
+if(-not $rejected -or $script:hashCalls -ne 0) {
+    throw 'Invalid size metadata reached the hash.'
+}
+$meta.size=[int32]4
+Assert-Artifact $meta 'Synthetic'
+if($script:hashCalls -ne 1){throw 'Valid data hash should run exactly once.'}
+$meta.size=$null
+Assert-Artifact $meta 'Synthetic'
+if($script:hashCalls -ne 2){throw 'Optional absent size hash should run once.'}
+$meta.size=[int32]4
+$script:mutateDuringHash=$true
+$planned=[byte[]](1,2,3,4,88)
+$meta.sha256=([BitConverter]::ToString(
+    [Security.Cryptography.SHA256]::Create().ComputeHash($planned)
+) -replace '-','').ToLowerInvariant()
+$rejected=$false
+try { Assert-Artifact $meta 'Synthetic' } catch {
+    $rejected=$true
+    if($_.Exception.Message -cne 'Synthetic size mismatch.'){throw}
+}
+if(-not $rejected -or $script:hashCalls -ne 3){
+    throw 'Matching hash after in-flight size drift was accepted.'
+}
+"""
+                result = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command",
+                     script.replace("__TARGET__", literal)],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=55, check=False,
+                )
+                self.assertEqual(
+                    result.returncode, 0, exe + ": " + result.stdout + result.stderr
+                )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     def test_host_artifact_hash_cannot_authorize_junction_media_path(self):
         import shutil
         import subprocess
@@ -6283,6 +6371,17 @@ try {
     Assert-StagedLabArtifact $expected $staged 'Staged worker package'
     throw 'Mutated source copy passed staging verification.'
 } catch {
+    if ($_.Exception.Message -cne 'Staged worker package size mismatch.') { throw }
+}
+# A size-preserving malicious edit still must be caught by the SHA check.
+[IO.File]::WriteAllText($staged, 'dummy test worker archive, no private data')
+$changed = [IO.File]::ReadAllBytes($staged)
+$changed[0] = $changed[0] -bxor 1
+[IO.File]::WriteAllBytes($staged, $changed)
+try {
+    Assert-StagedLabArtifact $expected $staged 'Staged worker package'
+    throw 'Same-size changed staged worker package was accepted.'
+} catch {
     if ($_.Exception.Message -cne 'Staged worker package SHA-256 mismatch.') { throw }
 }
 [IO.File]::WriteAllText($staged, 'dummy test worker archive, no private data')
@@ -6830,6 +6929,17 @@ try {
     Assert-StagedLabArtifact $ref $staged 'Staged guest bootstrap script'
     throw 'Changed staged bootstrap script was accepted.'
 } catch {
+    if ($_.Exception.Message -cne 'Staged guest bootstrap script size mismatch.') { throw }
+}
+# Source-size-preserving mutation still requires independent SHA rejection.
+[IO.File]::WriteAllBytes($staged, [IO.File]::ReadAllBytes($source))
+$changed = [IO.File]::ReadAllBytes($staged)
+$changed[0] = $changed[0] -bxor 1
+[IO.File]::WriteAllBytes($staged, $changed)
+try {
+    Assert-StagedLabArtifact $ref $staged 'Staged guest bootstrap script'
+    throw 'Same-size mutated staged script was accepted.'
+} catch {
     if ($_.Exception.Message -cne 'Staged guest bootstrap script SHA-256 mismatch.') { throw }
 }
 [IO.File]::AppendAllText($source, 'changed-after-guest-1')
@@ -6837,7 +6947,7 @@ try {
     Assert-Artifact $ref 'Guest bootstrap script'
     throw 'Changed source bootstrap script was accepted for a later VM.'
 } catch {
-    if ($_.Exception.Message -cne 'Guest bootstrap script SHA-256 mismatch.') { throw }
+    if ($_.Exception.Message -cne 'Guest bootstrap script size mismatch.') { throw }
 }
 $empty = Join-Path (Split-Path -Parent $source) 'empty.ps1'
 [IO.File]::WriteAllBytes($empty,[byte[]]@())

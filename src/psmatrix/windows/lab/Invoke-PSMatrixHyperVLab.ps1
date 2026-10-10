@@ -43,11 +43,10 @@ function Assert-Artifact($Artifact, [string]$Label) {
     $path = [string]$Artifact.path
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw ($Label + ' not found: ' + $path) }
     Assert-SafeLabArtifactPath $path
-    $actual = Get-Sha256 $path
-    if ($actual -ne ([string]$Artifact.sha256).ToLowerInvariant()) { throw ($Label + ' SHA-256 mismatch.') }
-    # Exact byte counts must be integral CLR numbers, not fractions,
-    # booleans or numeric-looking strings. Casting a double to Int64 can
-    # silently round it to the actual length and bypass the size binding.
+    # Reject malformed or mismatched size metadata before reading and
+    # hashing potentially large untrusted media. A second size check
+    # catches changes during the digest operation without weakening it.
+    $expectedSize = $null
     if ($null -ne $Artifact.size) {
         $declaredSize = $Artifact.size
         $typeCode = [Type]::GetTypeCode($declaredSize.GetType())
@@ -62,7 +61,16 @@ function Assert-Artifact($Artifact, [string]$Label) {
         try { $expectedSize = [Convert]::ToInt64($declaredSize) }
         catch { throw ($Label + ' size metadata is invalid.') }
         if ($expectedSize -lt 0) { throw ($Label + ' size metadata is invalid.') }
-        if ((Get-Item -LiteralPath $path).Length -ne $expectedSize) {
+        $fileLengthBeforeHash = (Get-Item -LiteralPath $path).Length
+        if ($fileLengthBeforeHash -ne $expectedSize) {
+            throw ($Label + ' size mismatch.')
+        }
+    }
+    $actual = Get-Sha256 $path
+    if ($actual -ne ([string]$Artifact.sha256).ToLowerInvariant()) { throw ($Label + ' SHA-256 mismatch.') }
+    if ($null -ne $expectedSize) {
+        $fileLengthAfterHash = (Get-Item -LiteralPath $path).Length
+        if ($fileLengthAfterHash -ne $expectedSize) {
             throw ($Label + ' size mismatch.')
         }
     }
