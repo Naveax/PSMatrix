@@ -6871,6 +6871,66 @@ if(-not [Linq.Enumerable]::SequenceEqual([byte[]]$raw,[byte[]][IO.File]::ReadAll
                 )
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_setup_writer_publishes_complete_text_without_deleting_target_path(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        source = HOST.read_text(encoding="utf-8")
+        start = source.index("function Write-LabFreshSetupText(")
+        stop = source.index("\nfunction New-Unattend(", start)
+        helper = source[start:stop]
+        self.assertIn("[IO.FileMode]::CreateNew", helper)
+        self.assertIn("[IO.File]::Move($temporary, $fullDestination)", helper)
+        self.assertIn("[IO.File]::Delete($temporary)", helper)
+        self.assertNotIn("[IO.File]::Delete($Path)", helper)
+        self.assertLess(helper.index("$writer.WriteLine($Text)"), helper.index("[IO.File]::Move("))
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            with tempfile.TemporaryDirectory(prefix="psmatrix-setup-publish-") as tmp:
+                root = "'" + str(tmp).replace("'", "''") + "'"
+                script = helper + r"""
+$ErrorActionPreference='Stop'
+$root=__ROOT__
+$valid=Join-Path $root 'setup.xml'
+Write-LabFreshSetupText $valid '<setup>synthetic</setup>' ([Text.UTF8Encoding]::new($true))
+$bytes=[IO.File]::ReadAllBytes($valid)
+if($bytes.Length -lt 3 -or $bytes[0] -ne 239 -or $bytes[1] -ne 187 -or $bytes[2] -ne 191){
+    throw 'UTF-8 BOM lost at publication.'
+}
+if((Get-Content -LiteralPath $valid -Raw -Encoding UTF8) -notmatch '<setup>synthetic</setup>'){
+    throw 'Published text incomplete.'
+}
+$failed=Join-Path $root 'failed.xml'
+$strict=[Text.UTF8Encoding]::new($false,$true)
+$invalid=[string][char]0xD800
+$rejected=$false
+try { Write-LabFreshSetupText $failed $invalid $strict } catch {$rejected=$true}
+if(-not $rejected -or (Test-Path -LiteralPath $failed)){
+    throw 'Write failure left a published destination.'
+}
+$occupied=Join-Path $root 'occupied.xml'
+[IO.File]::WriteAllText($occupied,'unchanged')
+$rejected=$false
+try { Write-LabFreshSetupText $occupied 'replacement' ([Text.Encoding]::ASCII) }
+catch {$rejected=$true}
+if(-not $rejected -or [IO.File]::ReadAllText($occupied) -cne 'unchanged'){
+    throw 'Existing destination was replaced or deleted.'
+}
+if(@(Get-ChildItem -LiteralPath $root -Force -Filter '.psmatrix-setup-*').Count -ne 0){
+    throw 'Incomplete temporary setup file was left behind.'
+}
+"""
+                script = script.replace("__ROOT__", root)
+                result = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=40, check=False,
+                )
+                self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     def test_fresh_setup_writer_removes_only_own_incomplete_target_on_error(self):
         import shutil
         import subprocess
@@ -6881,7 +6941,8 @@ if(-not [Linq.Enumerable]::SequenceEqual([byte[]]$raw,[byte[]][IO.File]::ReadAll
         stop = source.index("\nfunction New-Unattend(", start)
         helper = source[start:stop]
         self.assertIn("[IO.FileMode]::CreateNew", helper)
-        self.assertIn("[IO.File]::Delete($Path)", helper)
+        self.assertIn("[IO.File]::Delete($temporary)", helper)
+        self.assertNotIn("[IO.File]::Delete($Path)", helper)
 
         with tempfile.TemporaryDirectory(prefix="psmatrix-setup-failed-write-") as tmp:
             for exe in ("powershell.exe", "pwsh.exe"):

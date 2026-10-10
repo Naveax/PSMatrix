@@ -911,30 +911,25 @@ PowerShell 7 test trees cover both expected targets, occupied leaves,
 and junctions inserted after the initial global preflight. These checks
 limit but cannot eliminate concurrent filesystem path races.
 
-Both sensitive setup files are now created using the same fail-closed,
-create-only file writer: `Write-LabFreshSetupText` opens
-`SetupComplete.cmd` and `Unattend.xml` with `.NET FileMode.CreateNew`
-and an exclusive file handle. A leaf created after the final path
-check causes the write to fail without overwriting or truncating that
-file, including a pre-existing symbolic link. ASCII setup-script
-encoding and UTF-8 (with BOM) unattended-XML encoding remain explicit.
-Disposable Windows PowerShell 5.1/7 tests verify valid script and XML
-creation, escaped synthetic credentials and byte-for-byte preservation
-of existing or late-created files. This closes the leaf-overwrite
-race; a concurrent change to a parent directory remains a separate
-OS-level risk requiring elevated host acceptance.
+All setup text, including `SetupComplete.cmd`,
+password-bearing `Unattend.xml` and `bootstrap-config.json`, is now
+published only after the complete text has been encoded and flushed.
+`Write-LabFreshSetupText` creates an unpredictable `.psmatrix-setup-*`
+temporary leaf with `.NET FileMode.CreateNew` in the target directory,
+closes its exclusive writer, then uses non-overwriting `File.Move` to
+publish the final name. No existing or late-created destination can
+be truncated or replaced, including an NTFS symbolic link. Unlike
+deleting the final target path on an encoding failure, error cleanup
+now deletes only the helper's own temporary file, reducing the
+post-close target replacement race. ASCII setup-script encoding and
+UTF-8 BOM for unattended XML and bootstrap config are preserved.
 
-The create-only setup writer now also **cleans up its own incomplete
-new file** when writing or text encoding fails after `FileMode.CreateNew`
-succeeds. It always closes the writer and file handle first; cleanup
-never runs if `CreateNew` itself rejected a preexisting target. Disposable
-WinPS5.1/PS7 regressions force a strict UTF-8 encoder error, require
-the failed file to be absent, check that existing leaves remain
-byte-for-byte intact and confirm normal UTF-8 setup writes still work.
-This does not promise cleanup after abrupt process termination, nor
-prevent a privileged actor replacing a path between handle closure
-and cleanup; controlled host ACLs and elevated acceptance remain
-necessary.
+WinPS5.1/PowerShell 7 regressions cover valid XML and JSON, escaped
+synthetic credentials, byte-for-byte preservation of existing leaves,
+strict UTF-8 failure, no published partial target and no leftover own
+temporary file under handled errors. Privileged concurrent changes
+to parent directories, abrupt process termination and OS-level
+filesystem races still require elevated host acceptance.
 
 The offline checkpoint verifier now places a **1 MiB upper bound**
 on untrusted guest `ProgramData\PSMatrix\WorkerConfig\worker.json`

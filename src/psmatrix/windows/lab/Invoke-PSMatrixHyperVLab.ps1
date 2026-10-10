@@ -261,35 +261,39 @@ function Get-WindowsPartitionRoot([int]$DiskNumber) {
     return $windowsRoots[0]
 }
 function Write-LabFreshSetupText([string]$Path, [string]$Text, [Text.Encoding]$Encoding) {
-    # CreateNew is atomic at the destination leaf: a file placed there
-    # after preflight must never be truncated, including an NTFS symlink.
+    # Write the entire answer/setup file under a random same-directory name.
+    # Publishing via Move rejects a concurrently created destination and
+    # avoids deleting or exposing a partially written final file.
     if ([string]::IsNullOrWhiteSpace($Path) -or $null -eq $Encoding) {
         throw 'Offline setup file path or text encoding is invalid.'
     }
-    $stream = [IO.File]::Open($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-    $completed = $false
+    $fullDestination = [IO.Path]::GetFullPath($Path)
+    $parent = [IO.Path]::GetDirectoryName($fullDestination)
+    $temporary = [IO.Path]::Combine(
+        $parent, ('.psmatrix-setup-' + [Guid]::NewGuid().ToString('N') + '.tmp'))
+    $ownTemporary = $false
     try {
-        $writer = $null
+        $stream = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $ownTemporary = $true
         try {
-            $writer = [IO.StreamWriter]::new($stream, $Encoding)
-            $writer.WriteLine($Text)
-            $writer.Flush()
+            $writer = $null
+            try {
+                $writer = [IO.StreamWriter]::new($stream, $Encoding)
+                $writer.WriteLine($Text)
+                $writer.Flush()
+            }
+            finally {
+                if ($null -ne $writer) { $writer.Dispose() }
+            }
         }
         finally {
-            if ($null -ne $writer) { $writer.Dispose() }
-        }
-        $completed = $true
-    }
-    finally {
-        try {
             $stream.Dispose()
         }
-        finally {
-            # CreateNew gave us ownership of this leaf. On a failed write,
-            # remove our partial setup/answer file after closing the handle.
-            # Never delete a leaf when CreateNew itself rejected its existence.
-            if (-not $completed) { [IO.File]::Delete($Path) }
-        }
+        [IO.File]::Move($temporary, $fullDestination)
+        $ownTemporary = $false
+    }
+    finally {
+        if ($ownTemporary) { [IO.File]::Delete($temporary) }
     }
 }
 function New-Unattend([string]$Path, [string]$ComputerName, [string]$Password) {
