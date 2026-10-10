@@ -212,6 +212,27 @@ function Get-WindowsPartitionRoot([int]$DiskNumber) {
     }
     return $windowsRoots[0]
 }
+function Write-LabFreshSetupText([string]$Path, [string]$Text, [Text.Encoding]$Encoding) {
+    # CreateNew is atomic at the destination leaf: a file placed there
+    # after preflight must never be truncated, including an NTFS symlink.
+    if ([string]::IsNullOrWhiteSpace($Path) -or $null -eq $Encoding) {
+        throw 'Offline setup file path or text encoding is invalid.'
+    }
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try {
+        $writer = [IO.StreamWriter]::new($stream, $Encoding)
+        try {
+            $writer.WriteLine($Text)
+            $writer.Flush()
+        }
+        finally {
+            $writer.Dispose()
+        }
+    }
+    finally {
+        $stream.Dispose()
+    }
+}
 function New-Unattend([string]$Path, [string]$ComputerName, [string]$Password) {
     $computer = Escape-Xml $ComputerName
     $secret = Escape-Xml $Password
@@ -232,7 +253,7 @@ function New-Unattend([string]$Path, [string]$ComputerName, [string]$Password) {
 </unattend>
 "@
     try {
-        $xml | Set-Content -LiteralPath $Path -Encoding UTF8
+        Write-LabFreshSetupText $Path $xml ([Text.UTF8Encoding]::new($true))
     }
     finally {
         $secret = $null
@@ -892,10 +913,11 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         New-Item -ItemType Directory -Path $setupDir -Force | Out-Null
         Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
         Assert-LabFreshGuestSetupTarget $windowsRoot 'Windows\Setup\Scripts' 'SetupComplete.cmd'
-        '@echo off
+        $setupScript = '@echo off
 powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\ProgramData\PSMatrix\Bootstrap\GuestBootstrap.ps1
 exit /b %ERRORLEVEL%
-' | Set-Content -LiteralPath (Join-Path $setupDir 'SetupComplete.cmd') -Encoding ASCII
+'
+        Write-LabFreshSetupText (Join-Path $setupDir 'SetupComplete.cmd') $setupScript ([Text.Encoding]::ASCII)
         $panther = Join-Path $windowsRoot 'Windows\Panther'
         New-Item -ItemType Directory -Path $panther -Force | Out-Null
         Assert-LabFormattedVolume $windows 'NTFS' 'Windows'

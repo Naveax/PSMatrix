@@ -871,6 +871,19 @@ PowerShell 7 test trees cover both expected targets, occupied leaves,
 and junctions inserted after the initial global preflight. These checks
 limit but cannot eliminate concurrent filesystem path races.
 
+Both sensitive setup files are now created using the same fail-closed,
+create-only file writer: `Write-LabFreshSetupText` opens
+`SetupComplete.cmd` and `Unattend.xml` with `.NET FileMode.CreateNew`
+and an exclusive file handle. A leaf created after the final path
+check causes the write to fail without overwriting or truncating that
+file, including a pre-existing symbolic link. ASCII setup-script
+encoding and UTF-8 (with BOM) unattended-XML encoding remain explicit.
+Disposable Windows PowerShell 5.1/7 tests verify valid script and XML
+creation, escaped synthetic credentials and byte-for-byte preservation
+of existing or late-created files. This closes the leaf-overwrite
+race; a concurrent change to a parent directory remains a separate
+OS-level risk requiring elevated host acceptance.
+
 The offline checkpoint verifier now places a **1 MiB upper bound**
 on untrusted guest `ProgramData\PSMatrix\WorkerConfig\worker.json`
 before computing its SHA-256. The existing exclusive file-handle,

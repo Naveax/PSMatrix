@@ -6480,6 +6480,96 @@ exit 0
         self.assertLess(staging.index(guard), staging.index("$panther = Join-Path $windowsRoot"))
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_setup_targets_use_atomic_create_new_without_overwriting_raced_files(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        host = HOST.read_text(encoding="utf-8")
+        start = host.index("function Write-LabFreshSetupText(")
+        end = host.index("\nfunction Assert-SafeOfflineGuestWriteAncestors(", start)
+        helper_and_unattend = host[start:end]
+        self.assertIn("[IO.FileMode]::CreateNew", helper_and_unattend)
+        self.assertNotIn("Set-Content -LiteralPath $Path -Encoding UTF8", helper_and_unattend)
+        stage = host.split("function New-LabVhd(", 1)[1].split(
+            "\nfunction Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        self.assertIn(
+            "Write-LabFreshSetupText (Join-Path $setupDir 'SetupComplete.cmd')",
+            stage,
+        )
+        self.assertNotIn(
+            "Set-Content -LiteralPath (Join-Path $setupDir 'SetupComplete.cmd')",
+            stage,
+        )
+
+        def quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-atomic-setup-write-") as temp:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                root = Path(temp) / exe.replace(".", "-")
+                root.mkdir()
+                script = r"""
+function Escape-Xml([string]$Value) { return [Security.SecurityElement]::Escape($Value) }
+""" + helper_and_unattend + r"""
+$ErrorActionPreference='Stop'
+$root=__ROOT__
+$setup=Join-Path $root 'SetupComplete.cmd'
+$answer=Join-Path $root 'Unattend.xml'
+$cmdText='@echo off'+[Environment]::NewLine+'exit /b 0'
+Write-LabFreshSetupText $setup $cmdText ([Text.Encoding]::ASCII)
+if((Get-Content -LiteralPath $setup -Raw -Encoding ASCII) -notmatch '@echo off'){
+    throw 'Valid new setup script could not be read.'
+}
+New-Unattend $answer 'GUEST-01' 'synthetic&<password>'
+[xml]$doc=Get-Content -LiteralPath $answer -Raw -Encoding UTF8
+$node=$doc.SelectSingleNode("//*[local-name()='AdministratorPassword']/*[local-name()='Value']")
+if($null -eq $node -or $node.InnerText -cne 'synthetic&<password>'){
+    throw 'Newly created answer file is not valid escaped XML.'
+}
+$setupSentinel=[IO.File]::ReadAllBytes($setup)
+$answerSentinel=[IO.File]::ReadAllBytes($answer)
+foreach($case in @(
+    [pscustomobject]@{Path=$setup;Name='setup'},
+    [pscustomobject]@{Path=$answer;Name='answer'}
+)) {
+    $rejected=$false
+    try {
+        if($case.Name -ceq 'setup'){
+            Write-LabFreshSetupText $case.Path 'attack-content' ([Text.Encoding]::ASCII)
+        } else {
+            New-Unattend $case.Path 'CHANGED' 'attacker-password'
+        }
+    } catch {$rejected=$true}
+    if(-not $rejected){throw ('Pre-existing '+$case.Name+' was overwritten.')}
+}
+if(-not [Linq.Enumerable]::SequenceEqual([byte[]]$setupSentinel,[byte[]][IO.File]::ReadAllBytes($setup))){
+    throw 'Setup script changed after refused overwrite.'
+}
+if(-not [Linq.Enumerable]::SequenceEqual([byte[]]$answerSentinel,[byte[]][IO.File]::ReadAllBytes($answer))){
+    throw 'Administrator answer changed after refused overwrite.'
+}
+$late=Join-Path $root 'late-created.cmd'
+[IO.File]::WriteAllText($late,'untouched')
+$rejected=$false
+try { Write-LabFreshSetupText $late 'new-data' ([Text.Encoding]::ASCII) }
+catch {$rejected=$true}
+if(-not $rejected -or ([IO.File]::ReadAllText($late) -cne 'untouched')){
+    throw 'Late-created target was overwritten.'
+}
+"""
+                script = script.replace("__ROOT__", quote(root))
+                result = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=50, check=False,
+                )
+                self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
     def test_setup_targets_are_rechecked_independently_immediately_before_writing(self):
         import shutil
         import subprocess
@@ -6501,7 +6591,7 @@ exit 0
             build.index(setup_call),
         )
         self.assertLess(build.index(setup_call), build.index(
-            "Set-Content -LiteralPath (Join-Path $setupDir 'SetupComplete.cmd')"
+            "Write-LabFreshSetupText (Join-Path $setupDir 'SetupComplete.cmd')"
         ))
         self.assertLess(
             build.index("New-Item -ItemType Directory -Path $panther -Force"),
