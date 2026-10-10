@@ -503,6 +503,31 @@ function Assert-NewLabVhdDiskIdentity([string]$VhdPath, $MountedVhd) {
     }
     return [int]$diskNumber
 }
+function Assert-NewLabInitializedDiskIdentity([string]$VhdPath, [int]$DiskNumber) {
+    # Initialize-Disk is not proof that the same attached VHDX now owns
+    # this disk number. Re-check identity and GPT state before New-Partition.
+    if ($DiskNumber -lt 0) {
+        throw 'Initialized lab disk number is invalid.'
+    }
+    $vhd = @(Get-VHD -DiskNumber ([uint32]$DiskNumber) -ErrorAction Stop)
+    if ($vhd.Count -ne 1 -or $null -eq $vhd[0] -or
+        $vhd[0].Attached -isnot [bool] -or $vhd[0].Attached -ne $true -or
+        [string]::IsNullOrWhiteSpace([string]$vhd[0].Path) -or
+        -not [string]::Equals(
+            [IO.Path]::GetFullPath([string]$vhd[0].Path),
+            [IO.Path]::GetFullPath($VhdPath),
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Initialized lab disk no longer resolves to the expected attached VHDX.'
+    }
+    $disk = @(Get-Disk -Number $DiskNumber -ErrorAction Stop)
+    if ($disk.Count -ne 1 -or $null -eq $disk[0] -or
+        $null -eq $disk[0].Number -or [long]$disk[0].Number -ne $DiskNumber -or
+        $disk[0].IsBoot -isnot [bool] -or $disk[0].IsSystem -isnot [bool] -or
+        $disk[0].IsBoot -ne $false -or $disk[0].IsSystem -ne $false -or
+        ([string]$disk[0].PartitionStyle) -ine 'GPT') {
+        throw 'Initialized lab disk is not the expected non-system GPT disk.'
+    }
+}
 function Assert-CheckpointVhdDiskIdentity([string]$VhdPath, $MountedVhd) {
     # Guest checkpoint inspection is read-only, but a wrong disk number could
     # make elevated host code inspect an unrelated Windows installation.
@@ -704,6 +729,7 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         $vhdMounted = Mount-VHD -Path $output -PassThru -ErrorAction Stop
         $diskNumber = Assert-NewLabVhdDiskIdentity $output $vhdMounted
         Initialize-Disk -Number $diskNumber -PartitionStyle GPT -ErrorAction Stop | Out-Null
+        Assert-NewLabInitializedDiskIdentity $output $diskNumber
         $efi = New-Partition -DiskNumber $diskNumber -Size 260MB -AssignDriveLetter -GptType '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' -ErrorAction Stop
         Assert-LabCreatedPartition $diskNumber $efi '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' 'EFI'
         Format-Volume -Partition $efi -FileSystem FAT32 -NewFileSystemLabel 'SYSTEM' -Confirm:$false -ErrorAction Stop | Out-Null

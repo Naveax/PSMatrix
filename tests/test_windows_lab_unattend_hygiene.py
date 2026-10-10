@@ -1622,6 +1622,123 @@ if(-not $denied){throw 'Drive-letter provider failure accepted'}
             )
             self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
 
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_initialized_guest_gpt_disk_identity_checked_before_first_partition(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        begin = host.index("function Assert-NewLabInitializedDiskIdentity(")
+        end = host.index("\nfunction Assert-CheckpointVhdDiskIdentity(", begin)
+        helper = host[begin:end]
+        build = host.split("function New-LabVhd(", 1)[1].split(
+            "\nfunction Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        self.assertLess(
+            build.index("Initialize-Disk -Number $diskNumber -PartitionStyle GPT"),
+            build.index("Assert-NewLabInitializedDiskIdentity $output $diskNumber"),
+        )
+        self.assertLess(
+            build.index("Assert-NewLabInitializedDiskIdentity $output $diskNumber"),
+            build.index("$efi = New-Partition -DiskNumber $diskNumber"),
+        )
+        self.assertIn("Get-VHD -DiskNumber ([uint32]$DiskNumber) -ErrorAction Stop", helper)
+        self.assertIn("Get-Disk -Number $DiskNumber -ErrorAction Stop", helper)
+        script = helper + r"""
+$ErrorActionPreference='Stop'
+$expected='D:\Fixture\new-windows.vhdx'
+$script:realVhdPath=$expected
+$script:vhdAttached=$true
+$script:diskNumber=42
+$script:diskIsBoot=$false
+$script:diskIsSystem=$false
+$script:diskPartitionStyle='GPT'
+$script:vhdResponseOverride=$null
+$script:diskResponseOverride=$null
+$script:providerFails=$false
+$script:vhdCalls=0
+$script:diskCalls=0
+function Get-VHD {
+    [CmdletBinding()]
+    param([uint32]$DiskNumber)
+    $script:vhdCalls++
+    if($DiskNumber -ne 42){throw 'Unexpected VHD disk query'}
+    if($script:providerFails){throw 'Simulated Hyper-V provider failure'}
+    if($null -ne $script:vhdResponseOverride){return $script:vhdResponseOverride}
+    return [pscustomobject]@{Path=$script:realVhdPath;Attached=$script:vhdAttached}
+}
+function Get-Disk {
+    [CmdletBinding()]
+    param([int]$Number)
+    $script:diskCalls++
+    if($Number -ne 42){throw 'Unexpected Storage disk query'}
+    if($script:providerFails){throw 'Simulated Storage provider failure'}
+    if($null -ne $script:diskResponseOverride){return $script:diskResponseOverride}
+    return [pscustomobject]@{
+        Number=$script:diskNumber
+        IsBoot=$script:diskIsBoot
+        IsSystem=$script:diskIsSystem
+        PartitionStyle=$script:diskPartitionStyle
+    }
+}
+Assert-NewLabInitializedDiskIdentity $expected 42
+if($script:vhdCalls -ne 1 -or $script:diskCalls -ne 1){
+    throw 'Initialized disk was not independently checked.'
+}
+foreach($case in @(
+    [pscustomobject]@{Name='unrelated VHD';Field='realVhdPath';Value='D:\Fixture\other.vhdx'},
+    [pscustomobject]@{Name='detached VHD';Field='vhdAttached';Value=$false},
+    [pscustomobject]@{Name='malformed VHD state';Field='vhdAttached';Value='True'},
+    [pscustomobject]@{Name='host disk returned';Field='diskNumber';Value=0},
+    [pscustomobject]@{Name='RAW instead of GPT';Field='diskPartitionStyle';Value='RAW'},
+    [pscustomobject]@{Name='MBR instead of GPT';Field='diskPartitionStyle';Value='MBR'},
+    [pscustomobject]@{Name='boot disk';Field='diskIsBoot';Value=$true},
+    [pscustomobject]@{Name='system disk';Field='diskIsSystem';Value=$true},
+    [pscustomobject]@{Name='malformed boot flag';Field='diskIsBoot';Value='False'}
+)) {
+    $old = Get-Variable -Name $case.Field -Scope Script -ValueOnly
+    Set-Variable -Name $case.Field -Scope Script -Value $case.Value
+    $denied=$false
+    try { Assert-NewLabInitializedDiskIdentity $expected 42 }
+    catch {$denied=$true}
+    Set-Variable -Name $case.Field -Scope Script -Value $old
+    if(-not $denied){throw ('Invalid post-init disk accepted: '+$case.Name)}
+}
+$script:vhdResponseOverride=@(
+    [pscustomobject]@{Path=$expected;Attached=$true},
+    [pscustomobject]@{Path=$expected;Attached=$true}
+)
+$denied=$false
+try { Assert-NewLabInitializedDiskIdentity $expected 42 } catch {$denied=$true}
+if(-not $denied){throw 'Ambiguous VHD result accepted'}
+$script:vhdResponseOverride=@()
+$denied=$false
+try { Assert-NewLabInitializedDiskIdentity $expected 42 } catch {$denied=$true}
+if(-not $denied){throw 'Missing VHD result accepted'}
+$script:vhdResponseOverride=$null
+$script:diskResponseOverride=@(
+    [pscustomobject]@{Number=42;IsBoot=$false;IsSystem=$false;PartitionStyle='GPT'},
+    [pscustomobject]@{Number=42;IsBoot=$false;IsSystem=$false;PartitionStyle='GPT'}
+)
+$denied=$false
+try { Assert-NewLabInitializedDiskIdentity $expected 42 } catch {$denied=$true}
+if(-not $denied){throw 'Ambiguous disk result accepted'}
+$script:diskResponseOverride=$null
+$script:providerFails=$true
+$denied=$false
+try { Assert-NewLabInitializedDiskIdentity $expected 42 } catch {$denied=$true}
+if(-not $denied){throw 'Provider failure was accepted'}
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
     def test_new_guest_partitions_are_checked_against_disk_before_format(self):
         import shutil
         import subprocess

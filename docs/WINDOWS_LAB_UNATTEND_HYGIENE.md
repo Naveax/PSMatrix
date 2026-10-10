@@ -378,6 +378,18 @@ touching or initializing any disk. These checks reduce wrong-disk risk,
 but concurrent host/storage races and actual elevated Hyper-V behavior
 still require independent acceptance.
 
+Immediately after `Initialize-Disk` returns and before allocating the
+first EFI partition, `Assert-NewLabInitializedDiskIdentity` independently
+re-queries `Get-VHD -DiskNumber` and `Get-Disk -Number`. The same
+expected VHDX must remain attached, and the disk must now have GPT
+partition style and native non-system/non-boot flags. Substituted,
+ambiguous, missing or malformed Storage and Hyper-V results fail
+closed rather than proceeding to `New-Partition`. Windows PowerShell
+5.1/PowerShell 7 mock tests exercise the healthy and hostile responses;
+none initializes physical storage. This is a point-in-time guard, not
+protection against subsequent disk renumbering or an elevated Hyper-V
+acceptance substitute.
+
 Immediately after `New-VHD` and before `Mount-VHD`, the host now checks
 the newly created image through `Get-VHD -Path`. The canonical source
 path must equal the intended output, the VHD must still be detached,
