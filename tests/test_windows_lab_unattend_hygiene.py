@@ -4195,6 +4195,7 @@ $Image = [pscustomobject]@{
 $script:aclCalls = 0
 $script:copyCalls = 0
 $script:verifyCalls = 0
+$script:configCalls = 0
 function Assert-Artifact {
     param($Artifact,[string]$Label)
     if ($script:copyCalls -ne 0 -or $script:aclCalls -ne 1) {
@@ -4213,14 +4214,23 @@ function Assert-StagedLabArtifact {
         throw 'Staged file was not verified directly after copy.'
     }
 }
+function Write-LabFreshSetupText {
+    param([string]$Path,[string]$Text,[Text.Encoding]$Encoding)
+    $script:configCalls++
+    if ($script:aclCalls -ne 1 -or $script:copyCalls -ne 5 -or
+        $script:verifyCalls -ne 5 -or $script:configCalls -ne 1) {
+        throw 'Guest config must be written once after verified packages, before final ACL.'
+    }
+}
 function Set-RestrictedDirectoryAcl([string]$Path) {
     $script:aclCalls++
     if ($script:aclCalls -eq 1 -and $script:copyCalls -ne 0) {
         throw 'Copies happened before first ACL.'
     }
     if ($script:aclCalls -eq 2 -and
-        ($script:copyCalls -ne 5 -or $script:verifyCalls -ne 5)) {
-        throw 'Staged files not copied and verified by final ACL.'
+        ($script:copyCalls -ne 5 -or $script:verifyCalls -ne 5 -or
+         $script:configCalls -ne 1)) {
+        throw 'Staged files and config not written and verified by final ACL.'
     }
 }
 Invoke-Expression $section
@@ -6557,6 +6567,100 @@ exit 0
         self.assertLess(staging.index(guard), staging.index("$panther = Join-Path $windowsRoot"))
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_bootstrap_config_json_is_written_create_only(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        host = HOST.read_text(encoding="utf-8")
+        function_start = host.index("function Write-LabFreshSetupText(")
+        function_end = host.index("\nfunction New-Unattend(", function_start)
+        writer = host[function_start:function_end]
+        self.assertIn("[IO.FileMode]::CreateNew", writer)
+        build = host.split("function New-LabVhd(", 1)[1].split(
+            "\nfunction Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        marker = "        $bootstrapConfigJson = [ordered]@{"
+        config_start = build.index(marker)
+        config_end = build.index(
+            "\n        # Reassert exact ACLs", config_start
+        )
+        stage = build[config_start:config_end]
+        target = (
+            "Write-LabFreshSetupText (Join-Path $bootstrap "
+            "'bootstrap-config.json') $bootstrapConfigJson "
+            "([Text.UTF8Encoding]::new($true))"
+        )
+        self.assertIn("} | ConvertTo-Json -Depth 6", stage)
+        self.assertIn(target, stage)
+        self.assertNotIn("Set-Content", stage)
+        self.assertLess(
+            build.index("Assert-StagedLabArtifact $Image.signing_bundle"),
+            config_start,
+        )
+        self.assertLess(
+            build.index(target),
+            build.index("Set-RestrictedDirectoryAcl $bootstrap", config_end),
+        )
+
+        def quote(path):
+            return "'" + str(path).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-config-createonly-") as temp:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                root = Path(temp) / exe.replace(".", "-")
+                root.mkdir()
+                script = writer + r"""
+$ErrorActionPreference='Stop'
+$bootstrap=__BOOTSTRAP__
+$BootstrapNonce=('b' * 64)
+$Image=[pscustomobject]@{
+    worker_id='synthetic-worker'
+    expected_version='5.1'
+    computer_name='TEST-PS51'
+    worker_port=9443
+    worker_package=[pscustomobject]@{sha256=('a' * 64);size=123}
+    python_installer=[pscustomobject]@{sha256=('c' * 64);size=234}
+    credential_bundle=[pscustomobject]@{sha256=('d' * 64);size=345}
+    signing_bundle=[pscustomobject]@{sha256=('e' * 64);size=456}
+    expected_os=[pscustomobject]@{product_name='Windows Server';version='10';build='20348'}
+}
+function Stage-Config {
+""" + stage + r"""
+}
+Stage-Config
+$path=Join-Path $bootstrap 'bootstrap-config.json'
+$raw=[IO.File]::ReadAllBytes($path)
+$config=Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+if($config.schema -ne 1 -or $config.worker_id -cne 'synthetic-worker' -or
+  $config.staged_artifacts.credential_bundle.size -ne 345 -or
+  $config.staged_artifacts.signing_bundle.sha256 -cne ('e' * 64) -or
+  $config.expected_os.build -cne '20348'){
+    throw 'Valid bootstrap JSON schema or contents changed.'
+}
+if($raw.Length -lt 4 -or $raw[0] -ne 239 -or $raw[1] -ne 187 -or $raw[2] -ne 191){
+    throw 'Bootstrap JSON lost expected UTF-8 BOM.'
+}
+$rejected=$false
+try { Stage-Config } catch {$rejected=$true}
+if(-not $rejected){throw 'Existing bootstrap config was overwritten.'}
+if(-not [Linq.Enumerable]::SequenceEqual([byte[]]$raw,[byte[]][IO.File]::ReadAllBytes($path))){
+    throw 'Existing bootstrap JSON changed after refused overwrite.'
+}
+"""
+                script = script.replace("__BOOTSTRAP__", quote(root))
+                result = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=50, check=False,
+                )
+                self.assertEqual(
+                    result.returncode, 0, exe + ": " + result.stdout + result.stderr
+                )
+
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     def test_setup_targets_use_atomic_create_new_without_overwriting_raced_files(self):
         import shutil

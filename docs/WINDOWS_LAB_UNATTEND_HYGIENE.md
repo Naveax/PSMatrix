@@ -773,6 +773,16 @@ SHA-256 checks still apply. Concurrent changes to parent directories
 and writes that fail after a new destination is opened remain subject
 to explicit failure handling and elevated host acceptance.
 
+The companion `bootstrap-config.json` is now also created with the
+existing `Write-LabFreshSetupText` helper and `FileMode.CreateNew`,
+instead of `Set-Content` that could truncate a late-created target.
+The same `ConvertTo-Json -Depth 6` output is staged using explicit
+UTF-8 BOM encoding; an existing config causes a terminating failure.
+Disposable Windows PowerShell 5.1/7 tests check schema, nested artifact
+digests and sizes, expected OS and nonce, UTF-8 BOM, and byte-for-byte
+preservation when another writer already created that leaf. This is
+atomic leaf creation, not protection against changes to parent paths.
+
 The guest now performs an **independent first-boot verification** of
 the four offline staged packages before extracting any ZIP or running
 the Python installer. The host embeds the source manifest's original

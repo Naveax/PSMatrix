@@ -901,7 +901,7 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         Assert-StagedLabArtifact $Image.credential_bundle (Join-Path $bootstrap 'credential-bundle.zip') 'Staged credential bundle'
         Copy-LabFreshStagedArtifact ([string]$Image.signing_bundle.path) (Join-Path $bootstrap 'signing-bundle.zip')
         Assert-StagedLabArtifact $Image.signing_bundle (Join-Path $bootstrap 'signing-bundle.zip') 'Staged signing bundle'
-        [ordered]@{
+        $bootstrapConfigJson = [ordered]@{
             schema = 1; worker_id = [string]$Image.worker_id; expected_version = [string]$Image.expected_version
             computer_name = [string]$Image.computer_name; worker_port = [int]$Image.worker_port
             bootstrap_nonce = $BootstrapNonce
@@ -928,7 +928,10 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
                 version = [string]$Image.expected_os.version
                 build = [string]$Image.expected_os.build
             }
-        } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $bootstrap 'bootstrap-config.json') -Encoding UTF8
+        } | ConvertTo-Json -Depth 6
+        # Refuse a raced or preexisting configuration leaf, like other
+        # sensitive bootstrap files, instead of silently truncating it.
+        Write-LabFreshSetupText (Join-Path $bootstrap 'bootstrap-config.json') $bootstrapConfigJson ([Text.UTF8Encoding]::new($true))
         # Reassert exact ACLs on the newly created files immediately after
         # staging, before writing Windows setup material elsewhere.
         Set-RestrictedDirectoryAcl $bootstrap
