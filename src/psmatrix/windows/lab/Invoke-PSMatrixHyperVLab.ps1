@@ -644,6 +644,23 @@ function Assert-LabFormattedVolume($Partition, [string]$FileSystem, [string]$Fil
         ([string]$volumes[0].FileSystemLabel) -cne $FileSystemLabel) {
         throw 'New lab guest partition format did not match its expected filesystem or volume label.'
     }
+    # Re-check the letter after Format-Volume and before DISM/BCDBoot.
+    # An earlier drive assignment is not a perpetual ownership guarantee.
+    $letter = [string]$Partition.DriveLetter
+    if ($null -eq $Partition.DiskNumber -or $null -eq $Partition.PartitionNumber -or
+        [long]$Partition.DiskNumber -lt 0 -or
+        [long]$Partition.PartitionNumber -lt 1) {
+        throw 'Formatted guest partition has no valid disk identity.'
+    }
+    $owners = @(Get-Partition -DriveLetter $letter -ErrorAction Stop)
+    if ($owners.Count -ne 1 -or $null -eq $owners[0] -or
+        $null -eq $owners[0].DiskNumber -or
+        $null -eq $owners[0].PartitionNumber -or
+        [long]$owners[0].DiskNumber -ne [long]$Partition.DiskNumber -or
+        [long]$owners[0].PartitionNumber -ne [long]$Partition.PartitionNumber -or
+        ([string]$owners[0].DriveLetter) -ine $letter) {
+        throw 'Formatted guest drive letter no longer belongs to the expected VHDX partition.'
+    }
 }
 function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $BootstrapArtifact) {
     Assert-Artifact $BootstrapArtifact 'Guest bootstrap script'

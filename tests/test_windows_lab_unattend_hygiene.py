@@ -1109,6 +1109,102 @@ if(-not $rejected){throw 'Provider failure accepted.'}
             )
             self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
 
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_post_format_guest_drive_owner_is_rechecked_before_dism(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        start = host.index("function Assert-LabFormattedVolume(")
+        end = host.index("\nfunction New-LabVhd(", start)
+        helper = host[start:end]
+        self.assertIn("Get-Partition -DriveLetter $letter -ErrorAction Stop", helper)
+        build = host[end:host.index("\nfunction Assert-NoGuestSetupAnswerFiles(", end)]
+        for role, fmt in (("efi", "FAT32"), ("windows", "NTFS")):
+            self.assertLess(
+                build.index("Format-Volume -Partition $" + role + " -FileSystem " + fmt),
+                build.index("Assert-LabFormattedVolume $" + role),
+            )
+        self.assertLess(
+            build.index("Assert-LabFormattedVolume $windows"),
+            build.index("Invoke-HostDism @('/English','/Apply-Image'"),
+        )
+        script = helper + r"""
+$ErrorActionPreference='Stop'
+$script:disk=42
+$script:partition=3
+$script:letter='G'
+$script:ownerLookupCount=0
+$script:providerFails=$false
+$script:ownerOverride=$null
+$script:volume=[pscustomobject]@{
+    DriveLetter='G';FileSystem='NTFS';FileSystemLabel='Windows'
+}
+function Get-Volume {
+    [CmdletBinding()]
+    param([object]$Partition)
+    return $script:volume
+}
+function Get-Partition {
+    [CmdletBinding()]
+    param([string]$DriveLetter)
+    $script:ownerLookupCount++
+    if($DriveLetter -cne 'G'){throw 'Unexpected letter query'}
+    if($script:providerFails){throw 'Simulated ownership lookup failure'}
+    if($null -ne $script:ownerOverride){return $script:ownerOverride}
+    return [pscustomobject]@{
+        DiskNumber=$script:disk;PartitionNumber=$script:partition;DriveLetter=$script:letter
+    }
+}
+$part=[pscustomobject]@{DiskNumber=42;PartitionNumber=3;DriveLetter='G'}
+Assert-LabFormattedVolume $part 'NTFS' 'Windows'
+if($script:ownerLookupCount -ne 1){
+    throw 'Formatted volume owner was not independently re-queried.'
+}
+foreach($case in @(
+    [pscustomobject]@{Name='host disk';Disk=0;Number=3;Letter='G'},
+    [pscustomobject]@{Name='different partition';Disk=42;Number=4;Letter='G'},
+    [pscustomobject]@{Name='remapped letter';Disk=42;Number=3;Letter='H'},
+    [pscustomobject]@{Name='missing disk number';Disk=$null;Number=3;Letter='G'},
+    [pscustomobject]@{Name='missing partition number';Disk=42;Number=$null;Letter='G'}
+)) {
+    $script:ownerOverride=[pscustomobject]@{
+        DiskNumber=$case.Disk;PartitionNumber=$case.Number;DriveLetter=$case.Letter
+    }
+    $denied=$false
+    try { Assert-LabFormattedVolume $part 'NTFS' 'Windows' }
+    catch { $denied=$true }
+    if(-not $denied){throw ('Wrong post-format owner accepted: '+$case.Name)}
+}
+$script:ownerOverride=@(
+    [pscustomobject]@{DiskNumber=42;PartitionNumber=3;DriveLetter='G'},
+    [pscustomobject]@{DiskNumber=42;PartitionNumber=3;DriveLetter='G'}
+)
+$denied=$false
+try { Assert-LabFormattedVolume $part 'NTFS' 'Windows' } catch { $denied=$true }
+if(-not $denied){throw 'Ambiguous drive ownership accepted'}
+$script:ownerOverride=@()
+$denied=$false
+try { Assert-LabFormattedVolume $part 'NTFS' 'Windows' } catch { $denied=$true }
+if(-not $denied){throw 'Missing drive ownership accepted'}
+$script:ownerOverride=$null
+$script:providerFails=$true
+$denied=$false
+try { Assert-LabFormattedVolume $part 'NTFS' 'Windows' } catch { $denied=$true }
+if(-not $denied){throw 'Drive ownership provider error accepted'}
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(
+                result.returncode, 0, exe + ": " + result.stdout + result.stderr
+            )
+
     def test_guest_volume_format_result_is_verified_before_deployment(self):
         import shutil
         import subprocess
@@ -1145,6 +1241,19 @@ function Get-Volume {
     $script:queriedPartition=$Partition
     if($script:queryFails){throw 'mock Storage provider lookup failed'}
     return $script:volumes
+}
+function Get-Partition {
+    [CmdletBinding()]
+    param([string]$DriveLetter)
+    if($null -eq $script:queriedPartition -or
+        $DriveLetter -cne ([string]$script:queriedPartition.DriveLetter)){
+        throw 'Unexpected post-format partition ownership query.'
+    }
+    return [pscustomobject]@{
+        DiskNumber=$script:queriedPartition.DiskNumber
+        PartitionNumber=$script:queriedPartition.PartitionNumber
+        DriveLetter=$DriveLetter
+    }
 }
 $efi=[pscustomobject]@{DriveLetter='F';DiskNumber=42;PartitionNumber=1}
 $windows=[pscustomobject]@{DriveLetter='G';DiskNumber=42;PartitionNumber=3}

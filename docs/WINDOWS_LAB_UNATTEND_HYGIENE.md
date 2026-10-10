@@ -451,6 +451,13 @@ A missing/misidentified volume, wrong file system or label, duplicate
 results or Storage lookup failure stops provisioning before the next
 partition stage or DISM/BCDBoot. Windows PowerShell 5.1 and PowerShell 7
 tests use isolated Storage mocks; they do not format real media.
+After validating the formatted filesystem and label, the host also
+independently re-queries `Get-Partition -DriveLetter` to confirm the
+letter still resolves to exactly the same newly created VHDX disk and
+partition number. A changed, missing, ambiguous, or unqueryable drive
+mapping aborts before DISM/BCDBoot can use that letter. Isolated
+Windows PowerShell 5.1/7 fixtures cover valid ownership and simulated
+host-disk substitutions without formatting any actual volume.
 Post-format checks cannot rule out concurrent storage reconfiguration.
 
 The VHDX build cleanup now also verifies that each `Get-VHD -Path`
