@@ -576,6 +576,44 @@ function Assert-LabCreatedPartition([int]$DiskNumber, $Partition, [string]$Expec
         throw ('New lab ' + $Label + ' partition drive letter does not resolve to the expected guest disk.')
     }
 }
+function Assert-LabMsrPartition([int]$DiskNumber, $Partition) {
+    # An MSR has no drive letter, so validate its identity, GPT type and
+    # exact size using its disk/partition number before allocating Windows.
+    $msrGuid = [guid]::Parse('{e3c9e316-0b5c-4db8-817d-f92df00215ae}')
+    if ($null -eq $Partition -or $Partition -is [Array] -or
+        $null -eq $Partition.DiskNumber -or $null -eq $Partition.PartitionNumber -or
+        $null -eq $Partition.Size -or
+        ($Partition.DiskNumber -isnot [int] -and
+         $Partition.DiskNumber -isnot [uint32] -and
+         $Partition.DiskNumber -isnot [long]) -or
+        ($Partition.PartitionNumber -isnot [int] -and
+         $Partition.PartitionNumber -isnot [uint32] -and
+         $Partition.PartitionNumber -isnot [long])) {
+        throw 'New lab MSR partition identity is missing or invalid.'
+    }
+    $number = [long]$Partition.PartitionNumber
+    $letter = [string]$Partition.DriveLetter
+    if ([long]$Partition.DiskNumber -ne $DiskNumber -or
+        $number -lt 1 -or $number -gt [int]::MaxValue -or
+        [long]$Partition.Size -ne [long]16MB -or
+        ($letter -cne '' -and $letter -cne ([string][char]0)) -or
+        [guid]::Parse([string]$Partition.GptType) -ne $msrGuid) {
+        throw 'New lab MSR partition is not a 16 MiB unassigned Microsoft reserved partition.'
+    }
+    $actual = @(Get-Partition -DiskNumber $DiskNumber -PartitionNumber ([uint32]$number) -ErrorAction Stop)
+    if ($actual.Count -ne 1 -or $null -eq $actual[0] -or
+        $null -eq $actual[0].DiskNumber -or
+        $null -eq $actual[0].PartitionNumber -or
+        $null -eq $actual[0].Size -or
+        [long]$actual[0].DiskNumber -ne $DiskNumber -or
+        [long]$actual[0].PartitionNumber -ne $number -or
+        [long]$actual[0].Size -ne [long]16MB -or
+        (([string]$actual[0].DriveLetter) -cne '' -and
+         ([string]$actual[0].DriveLetter) -cne ([string][char]0)) -or
+        [guid]::Parse([string]$actual[0].GptType) -ne $msrGuid) {
+        throw 'New lab MSR partition could not be independently verified.'
+    }
+}
 function Assert-NewLabVhdCreated([string]$VhdPath, [long]$ExpectedSizeBytes) {
     # New-VHD must really create the requested detached dynamic guest disk.
     # Verify its identity before mounting or initializing any block device.
@@ -653,7 +691,8 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         Assert-LabCreatedPartition $diskNumber $efi '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' 'EFI'
         Format-Volume -Partition $efi -FileSystem FAT32 -NewFileSystemLabel 'SYSTEM' -Confirm:$false -ErrorAction Stop | Out-Null
         Assert-LabFormattedVolume $efi 'FAT32' 'SYSTEM'
-        New-Partition -DiskNumber $diskNumber -Size 16MB -GptType '{e3c9e316-0b5c-4db8-817d-f92df00215ae}' -ErrorAction Stop | Out-Null
+        $msr = New-Partition -DiskNumber $diskNumber -Size 16MB -GptType '{e3c9e316-0b5c-4db8-817d-f92df00215ae}' -ErrorAction Stop
+        Assert-LabMsrPartition $diskNumber $msr
         $windows = New-Partition -DiskNumber $diskNumber -UseMaximumSize -AssignDriveLetter -ErrorAction Stop
         Assert-LabCreatedPartition $diskNumber $windows '{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}' 'Windows'
         # Detect a duplicated/invalid Windows or EFI drive letter before

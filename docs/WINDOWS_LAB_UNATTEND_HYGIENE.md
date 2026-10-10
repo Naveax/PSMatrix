@@ -353,6 +353,18 @@ valid and invalid mappings without formatting any actual media.
 These checks narrow drive-letter confusion, not external concurrency
 races; elevated Hyper-V acceptance is still required.
 
+The 16 MiB Microsoft Reserved (MSR) partition is now verified before
+creating the guest Windows partition. The `New-Partition` return object
+must identify the expected VHDX disk and partition, report the Microsoft
+Reserved GPT type, have the exact 16 MiB size, and have no drive-letter
+assignment. An independent `Get-Partition -DiskNumber -PartitionNumber`
+query must confirm those same properties and return exactly one record.
+Malformed, absent, ambiguous or mismatched Storage responses stop
+provisioning before any subsequent Windows partition allocation.
+Isolated Windows PowerShell 5.1/PowerShell 7 regression fixtures cover
+these cases without creating or formatting real partitions; elevated
+Hyper-V acceptance and concurrency checks remain outstanding.
+
 Before the newly created VHDX is initialized, the host now treats the
 `Mount-VHD` disk-number response as untrusted. It obtains the actual attached
 VHD with `Get-VHD -DiskNumber`, checks that its canonical path matches the

@@ -1317,6 +1317,114 @@ if(-not $denied){throw 'Hyper-V query failure was accepted.'}
             self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_msr_partition_is_verified_before_creating_windows_volume(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        start = host.index("function Assert-LabMsrPartition(")
+        end = host.index("\nfunction Assert-NewLabVhdCreated(", start)
+        helper = host[start:end]
+        build = host.split("function New-LabVhd(", 1)[1].split(
+            "\nfunction Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        self.assertIn(
+            "$msr = New-Partition -DiskNumber $diskNumber -Size 16MB "
+            "-GptType '{e3c9e316-0b5c-4db8-817d-f92df00215ae}' -ErrorAction Stop",
+            build,
+        )
+        self.assertLess(
+            build.index("Assert-LabMsrPartition $diskNumber $msr"),
+            build.index("$windows = New-Partition -DiskNumber $diskNumber"),
+        )
+        script = helper + r"""
+$ErrorActionPreference = 'Stop'
+$guid='{e3c9e316-0b5c-4db8-817d-f92df00215ae}'
+$script:returnValue=[pscustomobject]@{
+    DiskNumber=42
+    PartitionNumber=2
+    GptType=$guid
+    Size=[long]16MB
+    DriveLetter=$null
+}
+$script:providerFails=$false
+$script:queries=0
+function Get-Partition {
+    [CmdletBinding()]
+    param([int]$DiskNumber,[uint32]$PartitionNumber)
+    $script:queries++
+    if($script:providerFails){throw 'Storage provider unavailable'}
+    if($DiskNumber -ne 42 -or $PartitionNumber -ne 2){
+        throw 'Unexpected disk/partition query'
+    }
+    return $script:returnValue
+}
+$msr=[pscustomobject]@{
+    DiskNumber=42
+    PartitionNumber=2
+    GptType=$guid
+    Size=[long]16MB
+    DriveLetter=$null
+}
+Assert-LabMsrPartition 42 $msr
+if($script:queries -ne 1){throw 'MSR was not independently re-queried'}
+foreach($c in @(
+    [pscustomobject]@{Name='wrong returned disk';Field='DiskNumber';Value=0},
+    [pscustomobject]@{Name='wrong returned partition';Field='PartitionNumber';Value=3},
+    [pscustomobject]@{Name='wrong returned GPT type';Field='GptType';Value='{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}'},
+    [pscustomobject]@{Name='wrong returned size';Field='Size';Value=[long]8MB},
+    [pscustomobject]@{Name='assigned returned drive';Field='DriveLetter';Value='Q'},
+    [pscustomobject]@{Name='missing returned size';Field='Size';Value=$null}
+)) {
+    $before=$script:returnValue.PSObject.Properties[$c.Field].Value
+    $script:returnValue.PSObject.Properties[$c.Field].Value=$c.Value
+    $denied=$false
+    try { Assert-LabMsrPartition 42 $msr }
+    catch { $denied=$true }
+    $script:returnValue.PSObject.Properties[$c.Field].Value=$before
+    if(-not $denied){throw ('Invalid MSR query accepted: '+$c.Name)}
+}
+foreach($candidate in @(
+    [pscustomobject]@{DiskNumber=0;PartitionNumber=2;GptType=$guid;Size=[long]16MB;DriveLetter=$null},
+    [pscustomobject]@{DiskNumber=42;PartitionNumber=2;GptType=$guid;Size=[long]16MB;DriveLetter='Q'},
+    [pscustomobject]@{DiskNumber=42;PartitionNumber=2;GptType=$guid;Size=[long]8MB;DriveLetter=$null},
+    [pscustomobject]@{DiskNumber=42;PartitionNumber=2;GptType=$guid;Size=[long]16MB;DriveLetter='Q'}
+)) {
+    $denied=$false
+    try { Assert-LabMsrPartition 42 $candidate }
+    catch { $denied=$true }
+    if(-not $denied){throw 'Invalid freshly returned MSR accepted'}
+}
+foreach($response in @($null, @(
+    [pscustomobject]@{DiskNumber=42;PartitionNumber=2;GptType=$guid;Size=[long]16MB;DriveLetter=$null},
+    [pscustomobject]@{DiskNumber=42;PartitionNumber=2;GptType=$guid;Size=[long]16MB;DriveLetter=$null}
+))) {
+    $script:returnValue=$response
+    $denied=$false
+    try { Assert-LabMsrPartition 42 $msr }
+    catch { $denied=$true }
+    if(-not $denied){throw 'Missing or ambiguous independent MSR response accepted'}
+}
+$script:returnValue=[pscustomobject]@{
+    DiskNumber=42;PartitionNumber=2;GptType=$guid;Size=[long]16MB;DriveLetter=$null
+}
+$script:providerFails=$true
+$denied=$false
+try { Assert-LabMsrPartition 42 $msr }
+catch { $denied=$true }
+if(-not $denied){throw 'MSR provider failure was accepted'}
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
     def test_new_guest_partition_drive_letter_ownership_checked_before_format(self):
         import shutil
         import subprocess
