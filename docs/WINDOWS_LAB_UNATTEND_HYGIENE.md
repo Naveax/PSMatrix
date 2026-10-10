@@ -763,6 +763,14 @@ use-time hashing and the actual file copy. The earlier source preflight
 and use-time verification, pre-write bootstrap ACLs and post-staging
 ACL verification remain in place.
 
+The artifact integrity helper now compares exact byte-size metadata whenever
+it is **supplied**, including the explicit numeric value `0`. Previously
+`if ($Artifact.size)` silently skipped this constraint due to PowerShell
+false-value coercion. Missing optional size metadata remains allowed, while
+a 0-byte declaration for nonempty data fails even when its SHA-256 matches.
+Disposable WinPS5.1/PS7 tests verify explicit zero and positive mismatches,
+optional missing sizes, truly empty artifacts, and staged artifact behavior.
+
 WinPS5.1 and PowerShell 7 tests use disposable dummy packages to
 verify an unchanged staged copy, a deliberately modified source copied
 after a passing source hash, a wrong reported size and an actual NTFS

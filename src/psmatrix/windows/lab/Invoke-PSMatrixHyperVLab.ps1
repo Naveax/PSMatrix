@@ -45,7 +45,9 @@ function Assert-Artifact($Artifact, [string]$Label) {
     Assert-SafeLabArtifactPath $path
     $actual = Get-Sha256 $path
     if ($actual -ne ([string]$Artifact.sha256).ToLowerInvariant()) { throw ($Label + ' SHA-256 mismatch.') }
-    if ($Artifact.size -and (Get-Item -LiteralPath $path).Length -ne [int64]$Artifact.size) { throw ($Label + ' size mismatch.') }
+    # A supplied size is a separate binding check even when it is zero;
+    # PowerShell truthiness would otherwise silently skip size=0.
+    if ($null -ne $Artifact.size -and (Get-Item -LiteralPath $path).Length -ne [int64]$Artifact.size) { throw ($Label + ' size mismatch.') }
 }
 function Assert-StagedLabArtifact($SourceArtifact, [string]$Destination, [string]$Label) {
     # Recheck the actual bytes staged inside the offline Windows image,
