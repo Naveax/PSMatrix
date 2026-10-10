@@ -4933,6 +4933,71 @@ exit 0
                 result.returncode, 0, shell + ": " + result.stdout + result.stderr,
             )
 
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_sha256_hash_uses_exclusive_file_handle(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        host = HOST.read_text(encoding="utf-8")
+        start = host.index("function Get-Sha256(")
+        end = host.index("\nfunction New-LabBootstrapNonce {", start)
+        helper = host[start:end]
+        self.assertIn("[IO.FileShare]::None", helper)
+        self.assertIn("[Security.Cryptography.SHA256]::Create()", helper)
+        self.assertIn(".ComputeHash($stream)", helper)
+        self.assertIn("$stream.Dispose()", helper)
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-sha256-exclusive-") as temp:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                folder = Path(temp) / exe.replace(".", "-")
+                folder.mkdir()
+                literal = "'" + str(folder).replace("'", "''") + "'"
+                script = helper + r"""
+$ErrorActionPreference='Stop'
+$folder=__FOLDER__
+$path=Join-Path $folder 'media.bin'
+[IO.File]::WriteAllBytes($path,[byte[]](0,1,2,3,4,253,254,255))
+$reference=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+if((Get-Sha256 $path) -cne $reference){
+    throw 'Exclusive hash changed correct file digest.'
+}
+$empty=Join-Path $folder 'empty.bin'
+[IO.File]::WriteAllBytes($empty,[byte[]]@())
+if((Get-Sha256 $empty) -cne
+   'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'){
+    throw 'Exclusive hashing mishandled empty content.'
+}
+$writer=[IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::Write,[IO.FileShare]::ReadWrite)
+try {
+    $denied=$false
+    try { Get-Sha256 $path | Out-Null } catch {$denied=$true}
+    if(-not $denied){throw 'Hash permitted concurrent writing handle.'}
+}
+finally { $writer.Dispose() }
+$reader=[IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)
+try {
+    $denied=$false
+    try { Get-Sha256 $path | Out-Null } catch {$denied=$true}
+    if(-not $denied){throw 'Hash permitted concurrent reading handle.'}
+}
+finally { $reader.Dispose() }
+if((Get-Sha256 $path) -cne $reference){
+    throw 'Exclusive file handle was not released on failure.'
+}
+"""
+                result = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command",
+                     script.replace("__FOLDER__", literal)],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=50, check=False,
+                )
+                self.assertEqual(
+                    result.returncode, 0, exe + ": " + result.stdout + result.stderr
+                )
+
     def test_host_rejects_untrusted_artifact_paths_before_hash_or_copy(self):
         host = HOST.read_text(encoding="utf-8")
         start = host.index("function Assert-SafeLabArtifactPath(")

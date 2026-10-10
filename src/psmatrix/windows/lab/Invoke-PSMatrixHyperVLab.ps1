@@ -10,7 +10,25 @@ function Assert-Administrator {
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Administrator privileges are required.' }
 }
-function Get-Sha256([string]$Path) { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+function Get-Sha256([string]$Path) {
+    # Hash through a single exclusive read handle. Get-FileHash may read
+    # concurrently shared content while another process holds it writable.
+    # Refuse sharing instead of accepting a potentially moving input.
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+    try {
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        try {
+            $digest = $sha256.ComputeHash($stream)
+            return ([BitConverter]::ToString($digest) -replace '-', '').ToLowerInvariant()
+        }
+        finally {
+            $sha256.Dispose()
+        }
+    }
+    finally {
+        $stream.Dispose()
+    }
+}
 function New-LabBootstrapNonce {
     # A separate random value is needed for each guest boot. It is an
     # anti-replay correlation token, not a secret or a guest attestation.

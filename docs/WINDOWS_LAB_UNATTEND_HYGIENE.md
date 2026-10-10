@@ -794,6 +794,18 @@ for invalid/mismatched size, exactly one for valid inputs and rejection
 when file length changes during a matching digest. This is not an
 atomic file identity guarantee against privileged host races.
 
+`Get-Sha256` now streams content through one exclusive `.NET FileStream`
+(`FileShare.None`) and a `SHA256` instance, disposing both handles even
+when reading fails. This rejects a file that another process has already
+opened for reading/writing, instead of permitting a concurrent writer
+through the ordinary `Get-FileHash` sharing policy. WinPS5.1/PS7 test
+fixtures prove correct binary and empty-file digests, refusal while a
+writer or reader holds the source open, and successful reuse after
+the competing handle closes. This check also applies to the host's
+other `Get-Sha256` receipts. It does not pin parent directory identity
+or prevent file replacement before/after the exclusive handle lifetime;
+real elevated host acceptance remains required.
+
 WinPS5.1 and PowerShell 7 tests use disposable dummy packages to
 verify an unchanged staged copy, a deliberately modified source copied
 after a passing source hash, a wrong reported size and an actual NTFS
