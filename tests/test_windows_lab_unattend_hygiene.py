@@ -6484,6 +6484,108 @@ exit 0
         )
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_staged_copy_does_not_publish_partial_bytes_and_cleans_own_temp(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        host = HOST.read_text(encoding="utf-8")
+        begin = host.index("function Copy-LabFreshStagedArtifact(")
+        end = host.index("\nfunction New-LabGuestBootstrapReference(", begin)
+        code = host[begin:end]
+        self.assertIn("function Copy-LabStagedStreamToFreshTarget(", code)
+        self.assertIn("[IO.FileMode]::CreateNew", code)
+        self.assertIn("[IO.File]::Move(", code)
+        self.assertIn("[IO.File]::Delete(", code)
+        self.assertLess(code.index("$SourceStream.CopyTo("), code.index("[IO.File]::Move("))
+
+        def quote(path):
+            return "'" + str(path).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-staged-partial-failure-") as temp:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                folder = Path(temp) / exe.replace(".", "-")
+                folder.mkdir()
+                script = r"""
+Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+public sealed class LabStagedTestStream : Stream {
+    private readonly string mode;
+    private readonly string target;
+    private int calls;
+    public LabStagedTestStream(string mode, string target) {
+        this.mode = mode;
+        this.target = target;
+        this.calls = 0;
+    }
+    public override int Read(byte[] buffer, int offset, int count) {
+        if(calls == 0 && mode == "race") File.WriteAllText(target, "untouched");
+        if(calls++ > 0) {
+            if(mode == "fail") throw new IOException("Synthetic mid-copy read error");
+            return 0;
+        }
+        buffer[offset] = 0x5a;
+        return 1;
+    }
+    public override bool CanRead { get { return true; } }
+    public override bool CanSeek { get { return false; } }
+    public override bool CanWrite { get { return false; } }
+    public override long Length { get { throw new NotSupportedException(); } }
+    public override long Position {
+        get { throw new NotSupportedException(); }
+        set { throw new NotSupportedException(); }
+    }
+    public override void Flush() { throw new NotSupportedException(); }
+    public override long Seek(long offset, SeekOrigin origin) { throw new NotSupportedException(); }
+    public override void SetLength(long value) { throw new NotSupportedException(); }
+    public override void Write(byte[] buffer, int offset, int count) { throw new NotSupportedException(); }
+}
+'@
+""" + code + r"""
+$ErrorActionPreference='Stop'
+$folder=__ROOT__
+foreach($mode in @('fail','race')) {
+    $target=Join-Path $folder ($mode+'.bin')
+    $stream=[LabStagedTestStream]::new($mode,$target)
+    $denied=$false
+    try { Copy-LabStagedStreamToFreshTarget $stream $target }
+    catch { $denied=$true }
+    finally { $stream.Dispose() }
+    if(-not $denied){ throw ('Unsafe staged '+$mode+' copy was accepted.') }
+    if($mode -eq 'fail' -and (Test-Path -LiteralPath $target)){
+        throw 'Partial file was published under the destination name.'
+    }
+    if($mode -eq 'race' -and ([IO.File]::ReadAllText($target) -cne 'untouched')){
+        throw 'Target created during stream copy was overwritten.'
+    }
+    if(@(Get-ChildItem -LiteralPath $folder -Filter '.psmatrix-stage-*' -Force).Count -ne 0){
+        throw 'Own partial staging temp was not cleaned.'
+    }
+}
+$source=Join-Path $folder 'source.bin'
+$target=Join-Path $folder 'healthy.bin'
+$bytes=[byte[]](0,1,127,128,250,255)
+[IO.File]::WriteAllBytes($source,$bytes)
+Copy-LabFreshStagedArtifact $source $target
+if(-not [Linq.Enumerable]::SequenceEqual([byte[]]$bytes,[byte[]][IO.File]::ReadAllBytes($target))){
+    throw 'Healthy binary staging changed contents.'
+}
+if(@(Get-ChildItem -LiteralPath $folder -Filter '.psmatrix-stage-*' -Force).Count -ne 0){
+    throw 'Temp file remains after successful staging.'
+}
+"""
+                script = script.replace("__ROOT__", quote(folder))
+                result = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=55, check=False,
+                )
+                self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     def test_staged_guest_artifacts_create_exclusively_without_force_overwrite(self):
         import shutil
         import subprocess

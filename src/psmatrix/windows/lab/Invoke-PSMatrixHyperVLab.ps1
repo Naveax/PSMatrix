@@ -59,26 +59,51 @@ function Assert-StagedLabArtifact($SourceArtifact, [string]$Destination, [string
     Assert-Artifact $staged $Label
 }
 function Copy-LabFreshStagedArtifact([string]$Source, [string]$Destination) {
-    # A brand-new bootstrap directory is not a guarantee against a
-    # concurrent file being installed between staging and Copy-Item -Force.
-    # CreateNew must refuse the existing leaf without truncating it.
+    # A new bootstrap folder is not proof that no actor can race a copy.
     if ([string]::IsNullOrWhiteSpace($Source) -or
         [string]::IsNullOrWhiteSpace($Destination)) {
         throw 'Guest staged artifact source or destination is invalid.'
     }
     $reader = [IO.File]::Open($Source, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
     try {
-        $writer = [IO.File]::Open($Destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        Copy-LabStagedStreamToFreshTarget $reader $Destination
+    }
+    finally {
+        $reader.Dispose()
+    }
+}
+function Copy-LabStagedStreamToFreshTarget([IO.Stream]$SourceStream, [string]$Destination) {
+    # Never publish partial payload bytes under an executable/secret-bearing
+    # final name. Stage in the restricted same directory, then Move without
+    # replacement only after the complete stream has been flushed.
+    if ($null -eq $SourceStream -or -not $SourceStream.CanRead -or
+        [string]::IsNullOrWhiteSpace($Destination)) {
+        throw 'Guest staged artifact stream or destination is invalid.'
+    }
+    $fullDestination = [IO.Path]::GetFullPath($Destination)
+    $parent = [IO.Path]::GetDirectoryName($fullDestination)
+    $temporary = [IO.Path]::Combine(
+        $parent, ('.psmatrix-stage-' + [Guid]::NewGuid().ToString('N') + '.tmp'))
+    $ownTemporary = $false
+    try {
+        $writer = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $ownTemporary = $true
         try {
-            $reader.CopyTo($writer)
+            $SourceStream.CopyTo($writer)
             $writer.Flush()
         }
         finally {
             $writer.Dispose()
         }
+        # File.Move refuses an already existing destination; no -Force or
+        # replace operation is allowed even if another actor raced the copy.
+        [IO.File]::Move($temporary, $fullDestination)
+        $ownTemporary = $false
     }
     finally {
-        $reader.Dispose()
+        if ($ownTemporary) {
+            [IO.File]::Delete($temporary)
+        }
     }
 }
 function New-LabGuestBootstrapReference([string]$Path) {

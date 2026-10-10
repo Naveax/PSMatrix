@@ -775,15 +775,20 @@ host hardening and genuine elevated offline acceptance.
 The five bootstrap files (GuestBootstrap.ps1, worker-package.zip,
 python-installer.exe, credential-bundle.zip and signing-bundle.zip)
 now use `Copy-LabFreshStagedArtifact` instead of `Copy-Item -Force`.
-The helper opens each target with `.NET FileMode.CreateNew` and
-exclusive sharing, copies bytes as a stream and closes both handles.
-An existing or late-created leaf cannot be truncated or replaced by
-staging. WinPS5.1/PS7 disposable binary fixtures verify exact contents,
-refusal to overwrite existing/late-created files, and that a missing
-source does not create a destination. Existing independent destination
-SHA-256 checks still apply. Concurrent changes to parent directories
-and writes that fail after a new destination is opened remain subject
-to explicit failure handling and elevated host acceptance.
+The helper now copies each source into an unpredictable, create-only
+temporary leaf **inside the same ACL-protected bootstrap directory**,
+closes it, and publishes it with `.NET File.Move` only after the
+complete stream is flushed. `File.Move` refuses existing or late-created
+destination names; the helper deletes its own temporary leaf if copying
+or publishing throws. In normal handled errors, no incomplete
+credential, signing or executable file is exposed under the final
+name. WinPS5.1/PS7 disposable binary fixtures exercise valid bytes,
+an injected mid-copy read exception, an existing destination and a
+destination created during copying; they require temporary-file cleanup
+on those failures. Earlier per-destination SHA-256 and ACL-order gates
+remain in place. Abrupt host termination may leave a temporary file,
+and privileged concurrent changes to parent directories or VHDX
+contents remain outside this guarantee and require elevated acceptance.
 
 The companion `bootstrap-config.json` is now also created with the
 existing `Write-LabFreshSetupText` helper and `FileMode.CreateNew`,
