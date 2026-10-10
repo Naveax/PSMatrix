@@ -2172,6 +2172,109 @@ if(-not $denied){throw 'Failed independent Storage query was accepted'}
             )
             self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
 
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_iso_volume_root_rechecks_image_binding_before_dism_source(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        start = host.index("function Get-LabIsoVolumeRoot(")
+        end = host.index("\nfunction Get-LabPartitionRoots(", start)
+        helper = host[start:end]
+        identity_start = host.index("function Assert-LabCleanupIsoIdentity(")
+        identity_end = host.index("\nfunction Close-LabBuildMedia(", identity_start)
+        identity = host[identity_start:identity_end]
+        self.assertIn("Get-DiskImage -ImagePath $isoPath -ErrorAction Stop", helper)
+        self.assertIn("$confirmed[0] | Get-Volume -ErrorAction Stop", helper)
+        self.assertLess(
+            helper.index("$MountedIso | Get-Volume -ErrorAction Stop"),
+            helper.index("$confirmed[0] | Get-Volume -ErrorAction Stop"),
+        )
+        build = host.split("function New-LabVhd(", 1)[1].split(
+            "\nfunction Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        self.assertLess(
+            build.index("$isoRoot = Get-LabIsoVolumeRoot $iso"),
+            build.index("New-VHD -Path $output -Dynamic"),
+        )
+        script = identity + helper + r"""
+$ErrorActionPreference='Stop'
+$expected='D:\Fixture\source.iso'
+$script:initialLetter='F'
+$script:confirmedLetter='F'
+$script:confirmedPath=$expected
+$script:confirmedAttached=$true
+$script:confirmedCopies=1
+$script:confirmedVolumeCopies=1
+$script:providerFails=$false
+$script:imageLookups=0
+$script:volumeLookups=0
+function Get-DiskImage {
+    [CmdletBinding()]
+    param([string]$ImagePath)
+    $script:imageLookups++
+    if($ImagePath -cne $expected){throw 'ISO lookup used wrong image'}
+    if($script:providerFails){throw 'Storage provider failed'}
+    for($i=0;$i -lt $script:confirmedCopies;$i++){
+        [pscustomobject]@{
+            ImagePath=$script:confirmedPath;Attached=$script:confirmedAttached;Origin='confirmed'
+        }
+    }
+}
+function Get-Volume {
+    [CmdletBinding()]
+    param([Parameter(ValueFromPipeline=$true)]$InputObject)
+    process {
+        $script:volumeLookups++
+        if($script:providerFails){throw 'Storage volume provider failed'}
+        $isConfirmed=([string]$InputObject.Origin -ceq 'confirmed')
+        $letter=if($isConfirmed){$script:confirmedLetter}else{$script:initialLetter}
+        $count=if($isConfirmed){$script:confirmedVolumeCopies}else{1}
+        for($i=0;$i -lt $count;$i++){
+            [pscustomobject]@{DriveLetter=$letter}
+        }
+    }
+}
+$mounted=[pscustomobject]@{ImagePath=$expected;Attached=$true;Origin='mounted'}
+if((Get-LabIsoVolumeRoot $mounted) -cne 'F:\'){
+    throw 'Valid independently confirmed ISO root rejected'
+}
+if($script:imageLookups -ne 1 -or $script:volumeLookups -ne 2){
+    throw 'Source ISO was not independently re-queried before source selection'
+}
+foreach($case in @(
+    [pscustomobject]@{Name='different drive letter';Field='confirmedLetter';Value='G'},
+    [pscustomobject]@{Name='missing confirmed letter';Field='confirmedLetter';Value=$null},
+    [pscustomobject]@{Name='different image identity';Field='confirmedPath';Value='D:\Fixture\other.iso'},
+    [pscustomobject]@{Name='detached confirmed image';Field='confirmedAttached';Value=$false},
+    [pscustomobject]@{Name='nonboolean image state';Field='confirmedAttached';Value='True'},
+    [pscustomobject]@{Name='ambiguous confirmed images';Field='confirmedCopies';Value=2},
+    [pscustomobject]@{Name='missing confirmed image';Field='confirmedCopies';Value=0},
+    [pscustomobject]@{Name='ambiguous confirmed volumes';Field='confirmedVolumeCopies';Value=2},
+    [pscustomobject]@{Name='missing confirmed volume';Field='confirmedVolumeCopies';Value=0}
+)) {
+    $old=Get-Variable -Name $case.Field -Scope Script -ValueOnly
+    Set-Variable -Name $case.Field -Scope Script -Value $case.Value
+    $denied=$false
+    try { Get-LabIsoVolumeRoot $mounted | Out-Null } catch {$denied=$true}
+    Set-Variable -Name $case.Field -Scope Script -Value $old
+    if(-not $denied){throw ('Unbound ISO volume accepted: '+$case.Name)}
+}
+$script:providerFails=$true
+$denied=$false
+try { Get-LabIsoVolumeRoot $mounted | Out-Null } catch {$denied=$true}
+if(-not $denied){throw 'Storage provider error accepted'}
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
     def test_iso_mount_requires_exactly_one_valid_drive_before_vhd_creation(self):
         import shutil
         import subprocess
@@ -2183,11 +2286,18 @@ if(-not $denied){throw 'Failed independent Storage query was accepted'}
         )
         head = host.index("function Get-LabIsoVolumeRoot(")
         tail = host.index("function New-LabVhd(", head)
-        code = host[head:tail]
+        iso_identity_start = host.index("function Assert-LabCleanupIsoIdentity(")
+        iso_identity_end = host.index("\nfunction Close-LabBuildMedia(", iso_identity_start)
+        code = host[iso_identity_start:iso_identity_end] + host[head:tail]
         script = code + r"""
 $ErrorActionPreference = 'Stop'
 $script:volumeLetters = @()
 $script:queryFails = $false
+function Get-DiskImage {
+    [CmdletBinding()]
+    param([string]$ImagePath)
+    return [pscustomobject]@{ImagePath=$ImagePath;Attached=$true}
+}
 function Get-Volume {
     [CmdletBinding()]
     param([Parameter(ValueFromPipeline=$true)]$InputObject)
@@ -2210,7 +2320,7 @@ foreach ($case in @(
 )) {
     $script:volumeLetters = $case.Letters
     $actual = ''
-    try { $actual = Get-LabIsoVolumeRoot ([pscustomobject]@{Object='mount'}) }
+    try { $actual = Get-LabIsoVolumeRoot ([pscustomobject]@{ImagePath='D:\Fixture\source.iso';Attached=$true}) }
     catch { $actual = $_.Exception.Message }
     if ($case.Expected -ceq 'invalid') {
         if ($actual -notmatch 'Windows ISO.*(volume|drive letter)') {
@@ -2223,7 +2333,7 @@ foreach ($case in @(
 }
 $script:queryFails = $true
 $rejected = $false
-try { Get-LabIsoVolumeRoot ([pscustomobject]@{Object='mount'}) | Out-Null }
+try { Get-LabIsoVolumeRoot ([pscustomobject]@{ImagePath='D:\Fixture\source.iso';Attached=$true}) | Out-Null }
 catch { $rejected = $true }
 if (-not $rejected) { throw 'Failed Storage volume query accepted.' }
 """

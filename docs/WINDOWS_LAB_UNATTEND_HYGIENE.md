@@ -289,6 +289,17 @@ PowerShell 5.1/7 fixture tests exercise the valid and invalid shapes
 without mounting images or modifying host volumes. This check narrows
 ISO source selection, not authenticity of the underlying ISO bytes.
 
+Before using the mounted ISO as a DISM source, the host now
+independently re-queries `Get-DiskImage -ImagePath` and enumerates
+volumes from that **confirmed attached image**, not just the initial
+`Mount-DiskImage` result. Exactly one confirmed volume must expose
+the same alphabetical drive letter; a mismatched, missing, ambiguous
+or unqueryable mapping fails closed before `New-VHD`.
+Isolated Windows PowerShell 5.1/7 Storage mocks exercise substituted
+image paths, changed letters, detached responses and provider failures.
+This protects against inconsistent Storage responses but does not
+cryptographically attest the ISO bytes or prevent mount races.
+
 Both the full-plan ISO preflight and the per-guest use-time check now
 validate the **identity of the detached source ISO**, not merely its
 `Attached=false` flag. The `Get-DiskImage -ImagePath` response must

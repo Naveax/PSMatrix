@@ -448,6 +448,30 @@ function Get-LabIsoVolumeRoot($MountedIso) {
     if ($letter -cnotmatch '^[A-Za-z]$') {
         throw 'Windows ISO volume drive letter is missing or invalid.'
     }
+    # The Mount-DiskImage return object is not proof that its reported
+    # drive letter belongs to the requested image. Re-query by exact ISO
+    # path and independently enumerate volumes before selecting DISM source.
+    $isoPath = [string]$MountedIso.ImagePath
+    if ([string]::IsNullOrWhiteSpace($isoPath)) {
+        throw 'Windows ISO volume source identity is missing.'
+    }
+    $confirmed = @(Get-DiskImage -ImagePath $isoPath -ErrorAction Stop)
+    if ($confirmed.Count -ne 1 -or $null -eq $confirmed[0]) {
+        throw 'Windows ISO volume source identity is missing or ambiguous.'
+    }
+    Assert-LabCleanupIsoIdentity $isoPath $confirmed[0]
+    if (-not $confirmed[0].Attached) {
+        throw 'Windows ISO volume source is no longer attached.'
+    }
+    $confirmedVolumes = @($confirmed[0] | Get-Volume -ErrorAction Stop)
+    if ($confirmedVolumes.Count -ne 1 -or $null -eq $confirmedVolumes[0] -or
+        ([string]$confirmedVolumes[0].DriveLetter) -cnotmatch '^[A-Za-z]$' -or
+        -not [string]::Equals(
+            [string]$confirmedVolumes[0].DriveLetter,
+            $letter,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Windows ISO volume drive letter is not bound to the requested image.'
+    }
     return ($letter.ToUpperInvariant() + ':\')
 }
 function Get-LabPartitionRoots($WindowsPartition, $EfiPartition) {
