@@ -263,7 +263,7 @@ function Get-WindowsPartitionRoot([int]$DiskNumber) {
             # A disk-scoped partition listing is not enough to trust its
             # drive letter: re-query ownership before touching any hive path.
             $letter = [string]$partition.DriveLetter
-            if ($letter -cnotmatch '^[A-Za-z]$' -or
+            if ($letter -cnotmatch '^[A-Za-z]\z' -or
                 $null -eq $partition.DiskNumber -or
                 $null -eq $partition.PartitionNumber -or
                 [long]$partition.DiskNumber -ne $DiskNumber -or
@@ -624,7 +624,7 @@ function Get-LabIsoVolumeRoot($MountedIso) {
         throw 'Windows ISO must expose exactly one mounted volume.'
     }
     $letter = [string]$volumes[0].DriveLetter
-    if ($letter -cnotmatch '^[A-Za-z]$') {
+    if ($letter -cnotmatch '^[A-Za-z]\z') {
         throw 'Windows ISO volume drive letter is missing or invalid.'
     }
     # The Mount-DiskImage return object is not proof that its reported
@@ -644,7 +644,7 @@ function Get-LabIsoVolumeRoot($MountedIso) {
     }
     $confirmedVolumes = @($confirmed[0] | Get-Volume -ErrorAction Stop)
     if ($confirmedVolumes.Count -ne 1 -or $null -eq $confirmedVolumes[0] -or
-        ([string]$confirmedVolumes[0].DriveLetter) -cnotmatch '^[A-Za-z]$' -or
+        ([string]$confirmedVolumes[0].DriveLetter) -cnotmatch '^[A-Za-z]\z' -or
         -not [string]::Equals(
             [string]$confirmedVolumes[0].DriveLetter,
             $letter,
@@ -661,8 +661,8 @@ function Get-LabPartitionRoots($WindowsPartition, $EfiPartition) {
     }
     $windowsLetter = [string]$WindowsPartition.DriveLetter
     $efiLetter = [string]$EfiPartition.DriveLetter
-    if ($windowsLetter -cnotmatch '^[A-Za-z]$' -or
-        $efiLetter -cnotmatch '^[A-Za-z]$') {
+    if ($windowsLetter -cnotmatch '^[A-Za-z]\z' -or
+        $efiLetter -cnotmatch '^[A-Za-z]\z') {
         throw 'Lab Windows/EFI partition drive letter is missing or invalid.'
     }
     if ([string]::Equals($windowsLetter, $efiLetter, [StringComparison]::OrdinalIgnoreCase)) {
@@ -778,7 +778,7 @@ function Assert-LabCreatedPartition([int]$DiskNumber, $Partition, [string]$Expec
     $partNumber = [long]$Partition.PartitionNumber
     if ([long]$Partition.DiskNumber -ne $DiskNumber -or
         $partNumber -lt 1 -or $partNumber -gt [int]::MaxValue -or
-        ([string]$Partition.DriveLetter) -cnotmatch '^[A-Za-z]$') {
+        ([string]$Partition.DriveLetter) -cnotmatch '^[A-Za-z]\z') {
         throw ('New lab ' + $Label + ' partition is not a valid assigned guest volume.')
     }
     $actual = Get-Partition -DiskNumber $DiskNumber -PartitionNumber ([uint32]$partNumber) -ErrorAction Stop
@@ -862,7 +862,7 @@ function Assert-NewLabVhdCreated([string]$VhdPath, [long]$ExpectedSizeBytes) {
 function Assert-LabFormattedVolume($Partition, [string]$FileSystem, [string]$FileSystemLabel) {
     # A successful Format-Volume invocation is not proof that the expected
     # filesystem was actually mounted at the new guest partition letter.
-    if ($null -eq $Partition -or ([string]$Partition.DriveLetter) -cnotmatch '^[A-Za-z]$') {
+    if ($null -eq $Partition -or ([string]$Partition.DriveLetter) -cnotmatch '^[A-Za-z]\z') {
         throw 'Lab post-format partition identity is missing or invalid.'
     }
     $volumes = @(Get-Volume -Partition $Partition -ErrorAction Stop)

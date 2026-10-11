@@ -300,6 +300,18 @@ image paths, changed letters, detached responses and provider failures.
 This protects against inconsistent Storage responses but does not
 cryptographically attest the ISO bytes or prevent mount races.
 
+The seven host drive-letter regex guards now require the absolute end
+of the string (`\z`) rather than `$`. .NET's `$` could accept an
+otherwise alphabetic drive letter with trailing LF; such a value must
+not progress to Storage re-query, image application, formatting, or
+BCDBoot. This covers offline Windows partition identification, mounted
+ISO letters, independent ISO volume re-query, Windows/EFI root
+construction, newly created guest partition validation, and the
+post-format volume check. Disposable WinPS5.1/PS7 mocks verify valid
+drive roots and reject LF/CRLF or multi-character letters before
+additional ISO storage queries. These checks do not replace genuine
+elevated storage/Hyper-V acceptance.
+
 After EFI/Windows partition creation and immediately before the DISM
 image-apply operation, the host **rechecks the source ISO** through
 `Assert-LabMountedIsoIdentity` and `Get-LabIsoVolumeRoot`. The

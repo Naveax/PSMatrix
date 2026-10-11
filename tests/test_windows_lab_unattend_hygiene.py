@@ -4300,6 +4300,80 @@ exit 0
             )
             self.assertEqual(run.returncode, 0, shell + ": " + run.stdout + run.stderr)
 
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_rejects_newline_suffixed_drive_letters_before_storage_requery(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        self.assertNotIn(" -cnotmatch '^[A-Za-z]$'", host)
+        self.assertEqual(host.count(" -cnotmatch '^[A-Za-z]\\z'"), 7)
+        start = host.index("function Get-LabIsoVolumeRoot(")
+        stop = host.index("\nfunction Assert-NewLabVhdDiskIdentity(", start)
+        functions = host[start:stop]
+        self.assertIn("function Get-LabPartitionRoots(", functions)
+        script = functions + r"""
+$ErrorActionPreference='Stop'
+$script:isoLetter='Q'
+$script:volumeCalls=0
+$script:diskImageCalls=0
+function Get-Volume {
+    param([Parameter(ValueFromPipeline=$true)]$InputObject)
+    process {
+        $script:volumeCalls++
+        return [pscustomobject]@{DriveLetter=$script:isoLetter}
+    }
+}
+function Get-DiskImage {
+    param([string]$ImagePath,[string]$ErrorAction)
+    $script:diskImageCalls++
+    return [pscustomobject]@{ImagePath=$ImagePath;Attached=$true}
+}
+function Assert-LabCleanupIsoIdentity {param($IsoPath,$Mounted)}
+$iso=[pscustomobject]@{ImagePath='C:\synthetic-image.iso';Attached=$true}
+if((Get-LabIsoVolumeRoot $iso) -cne 'Q:\'){throw 'Valid ISO drive root was rejected.'}
+$script:volumeCalls=0
+$script:diskImageCalls=0
+foreach($bad in @(('Q'+[char]10),('Q'+[char]13+[char]10),'Q:','QQ')){
+    $script:isoLetter=$bad
+    $rejected=$false
+    try {Get-LabIsoVolumeRoot $iso | Out-Null} catch {$rejected=$true}
+    if(-not $rejected -or $script:diskImageCalls -ne 0){
+        throw 'Malformed ISO letter reached storage image re-query.'
+    }
+}
+$windows=[pscustomobject]@{DriveLetter='G'}
+$efi=[pscustomobject]@{DriveLetter='E'}
+$roots=Get-LabPartitionRoots $windows $efi
+if($roots.WindowsRoot -cne 'G:\' -or $roots.EfiRoot -cne 'E:'){
+    throw 'Valid lab drive roots changed.'
+}
+foreach($bad in @(('G'+[char]10),('G'+[char]13+[char]10),'GG')){
+    $windows.DriveLetter=$bad
+    $rejected=$false
+    try {Get-LabPartitionRoots $windows $efi | Out-Null} catch {$rejected=$true}
+    if(-not $rejected){throw 'Malformed Windows drive letter accepted.'}
+}
+$windows.DriveLetter='G'
+foreach($bad in @(('E'+[char]10),('E'+[char]13+[char]10),'EE')){
+    $efi.DriveLetter=$bad
+    $rejected=$false
+    try {Get-LabPartitionRoots $windows $efi | Out-Null} catch {$rejected=$true}
+    if(-not $rejected){throw 'Malformed EFI drive letter accepted.'}
+}
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=35, check=False,
+            )
+            self.assertEqual(
+                result.returncode, 0, exe + ": " + result.stdout + result.stderr
+            )
+
     def test_host_machine_and_vhdx_preflight_before_any_vm_side_effect(self):
         host = HOST.read_text(encoding="utf-8")
         self.assertIn("function Assert-LabPlanMachineAndOutputPaths(", host)
