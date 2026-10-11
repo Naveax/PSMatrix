@@ -220,7 +220,7 @@ function Assert-GuestStagedPackages($Artifacts, [string]$BootstrapRoot) {
     }
 }
 
-function Expand-Zip([string]$Archive, [string]$Destination) {
+function Expand-Zip([string]$Archive, [string]$Destination, [string]$ExpectedSha256 = $null, $ExpectedSize = $null) {
     if (-not (Test-Path -LiteralPath $Archive -PathType Leaf)) { throw ('Archive not found: ' + $Archive) }
     $archiveItem = Get-Item -LiteralPath $Archive -Force -ErrorAction Stop
     if ($archiveItem.PSIsContainer -or
@@ -235,6 +235,7 @@ function Expand-Zip([string]$Archive, [string]$Destination) {
         throw 'Guest bootstrap archive destination already exists; refusing destructive replacement.'
     }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
+    Add-Type -AssemblyName System.IO.Compression
     # Older guest .NET builds cannot be relied on to reject every ZIP path
     # traversal. Validate the entire archive before writing any files.
     $destFull = [IO.Path]::GetFullPath($Destination)
@@ -261,8 +262,36 @@ function Expand-Zip([string]$Archive, [string]$Destination) {
     $neededDirectories = New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList ([StringComparer]::OrdinalIgnoreCase)
     $entryCount = 0
     $expandedBytes = [long]0
-    $zip = [IO.Compression.ZipFile]::OpenRead($Archive)
+    # Hold the *same* exclusive stream from digest verification through ZIP
+    # inspection and extraction. A separate preflight hash followed by OpenRead
+    # permits a swapped, same-size archive to be executed after verification.
+    $archiveStream = [IO.File]::Open(
+        $Archive, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None
+    )
     try {
+        if ($PSBoundParameters.ContainsKey('ExpectedSha256')) {
+            if ($ExpectedSha256 -cnotmatch '^[0-9a-f]{64}\z') {
+                throw 'Guest bootstrap ZIP SHA-256 metadata is invalid.'
+            }
+            if ($null -ne $ExpectedSize -and [long]$ExpectedSize -ne $archiveStream.Length) {
+                throw 'Guest bootstrap ZIP size mismatch.'
+            }
+            $sha = [Security.Cryptography.SHA256]::Create()
+            try {
+                $actual = ([BitConverter]::ToString($sha.ComputeHash($archiveStream)) -replace '-', '').ToLowerInvariant()
+            }
+            finally { $sha.Dispose() }
+            if ($actual -cne $ExpectedSha256) {
+                throw 'Guest bootstrap ZIP SHA-256 mismatch.'
+            }
+            $archiveStream.Position = 0
+        }
+        # Keep the verified stream alive during inspection and extraction.
+        # leaveOpen=true lets the outer finally own exactly this file handle.
+        $zip = New-Object -TypeName System.IO.Compression.ZipArchive -ArgumentList @(
+            $archiveStream, [IO.Compression.ZipArchiveMode]::Read, $true
+        )
+        try {
         # Some malformed archives can expose no entries through the reader.
         # Never continue to an independent extraction pass after inspecting none.
         if ($zip.Entries.Count -eq 0) {
@@ -333,7 +362,9 @@ function Expand-Zip([string]$Archive, [string]$Destination) {
         [IO.Compression.ZipFileExtensions]::ExtractToDirectory($zip, $Destination)
         Set-RestrictedDirectoryAcl $Destination
     }
-    finally { $zip.Dispose() }
+        finally { $zip.Dispose() }
+    }
+    finally { $archiveStream.Dispose() }
 }
 
 function Find-File([string]$Root, [string]$Name) {
@@ -560,9 +591,9 @@ try {
     $workerRoot = 'C:\ProgramData\PSMatrix\WorkerPayload'
     $credentialRoot = 'C:\ProgramData\PSMatrix\Credentials'
     $signingRoot = 'C:\ProgramData\PSMatrix\Signing'
-    Expand-Zip (Join-Path $bootstrapRoot 'worker-package.zip') $workerRoot
-    Expand-Zip (Join-Path $bootstrapRoot 'credential-bundle.zip') $credentialRoot
-    Expand-Zip (Join-Path $bootstrapRoot 'signing-bundle.zip') $signingRoot
+    Expand-Zip (Join-Path $bootstrapRoot 'worker-package.zip') $workerRoot $config.staged_artifacts.worker_package.sha256 $config.staged_artifacts.worker_package.size
+    Expand-Zip (Join-Path $bootstrapRoot 'credential-bundle.zip') $credentialRoot $config.staged_artifacts.credential_bundle.sha256 $config.staged_artifacts.credential_bundle.size
+    Expand-Zip (Join-Path $bootstrapRoot 'signing-bundle.zip') $signingRoot $config.staged_artifacts.signing_bundle.sha256 $config.staged_artifacts.signing_bundle.size
     Set-RestrictedDirectoryAcl $credentialRoot
     Set-RestrictedDirectoryAcl $signingRoot
 

@@ -22,6 +22,22 @@ or leftover own temporary after that failure. Abrupt process termination
 or privileged concurrent parent-path replacement remains outside this
 guarantee and requires the existing elevated acceptance gate.
 
+A staged archive previously passed SHA-256 verification in
+`Assert-GuestStagedPackages` but was reopened later by `Expand-Zip`.
+A same-size replacement between those operations could be extracted without
+checking its new bytes against the approved manifest. The guest now passes each
+worker/credential/signing ZIP's approved SHA-256 and optional size into
+`Expand-Zip`, which opens one exclusive read stream, verifies the digest and
+size on **that stream**, rewinds, and keeps it open through ZIP path preflight
+and extraction. Invalid metadata or changed bytes fail before creating the
+destination. The independent Python installer validation remains unchanged.
+The WinPS5.1/PS7 regression deliberately substitutes a same-size archive
+between the earlier approval and extraction, proves rejection before writes,
+and confirms that unchanged approved bytes still extract. This prevents
+the verified-archive/reopened-archive TOCTOU inside the guest; it does not
+establish trust against a fully compromised elevated guest or replace real
+legacy Windows guest acceptance.
+
 The source-level mitigation adds two fail-closed checks:
 
 1. During `SetupComplete`, the guest bootstrap removes files named

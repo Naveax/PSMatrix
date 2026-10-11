@@ -3572,7 +3572,12 @@ if ($trusted.Name -ine 'netsh.exe' -or $trusted.PSIsContainer) {
         for fragment in (
             "$archiveItem.Attributes -band [IO.FileAttributes]::ReparsePoint",
             "$existingTarget = Get-Item -LiteralPath $Destination",
-            "$zip = [IO.Compression.ZipFile]::OpenRead($Archive)",
+            "$archiveStream = [IO.File]::Open(",
+            "[IO.FileShare]::None",
+            "$sha.ComputeHash($archiveStream)",
+            "$archiveStream.Position = 0",
+            "$zip = New-Object -TypeName System.IO.Compression.ZipArchive",
+            "finally { $archiveStream.Dispose() }",
             "foreach ($entry in $zip.Entries)",
             "$relativeName = ([string]$entry.FullName).Replace('/', '\\')",
             "$relativeName.StartsWith('\\')",
@@ -3588,7 +3593,9 @@ if ($trusted.Name -ine 'netsh.exe' -or $trusted.PSIsContainer) {
         extraction = extract.index("[IO.Compression.ZipFileExtensions]::ExtractToDirectory")
         acl_first = extract.index("Set-RestrictedDirectoryAcl $Destination", create)
         acl_last = extract.rindex("Set-RestrictedDirectoryAcl $Destination")
-        self.assertLess(extract.index("$zip = [IO.Compression.ZipFile]::OpenRead"), create)
+        self.assertLess(extract.index("$sha.ComputeHash($archiveStream)"), create)
+        self.assertLess(extract.index("$zip = New-Object -TypeName System.IO.Compression.ZipArchive"), create)
+        self.assertLess(extract.index("$sha.ComputeHash($archiveStream)"), extract.index("$zip = New-Object"))
         self.assertLess(extraction, extract.index("finally { $zip.Dispose() }"))
         self.assertNotIn("[IO.Compression.ZipFile]::ExtractToDirectory($Archive", extract)
         self.assertEqual(extract.count("[IO.Compression.ZipFileExtensions]::ExtractToDirectory($zip, $Destination)"), 1)
@@ -3889,6 +3896,89 @@ if (-not (Test-Path -LiteralPath (Join-Path {good_destination} 'safe/config.txt'
                 )
                 self.assertEqual(
                     result.returncode, 0, executable + ": " + result.stdout + result.stderr,
+                )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_guest_zip_rejects_changed_bytes_after_staged_digest_validation(self):
+        import hashlib
+        import shutil
+        import subprocess
+        import tempfile
+        import zipfile
+
+        quote = lambda value: "'" + str(value).replace("'", "''") + "'"
+        with tempfile.TemporaryDirectory(prefix="psmatrix-zip-digest-bound-") as root:
+            folder = Path(root)
+            archive_path = folder / "staged.zip"
+            with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_STORED) as archive:
+                archive.writestr("payload/worker.txt", "approved content")
+            approved = archive_path.read_bytes()
+            expected_sha = hashlib.sha256(approved).hexdigest()
+            expected_size = len(approved)
+            with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_STORED) as archive:
+                archive.writestr("payload/worker.txt", "replaced content")
+            self.assertEqual(archive_path.stat().st_size, expected_size)
+            self.assertNotEqual(hashlib.sha256(archive_path.read_bytes()).hexdigest(), expected_sha)
+
+            script = """
+$ErrorActionPreference='Stop'
+$source=Get-Content -LiteralPath {guest} -Raw
+$start=$source.IndexOf('function Expand-Zip(')
+$end=$source.IndexOf('function Find-File(', $start)
+if($start -lt 0 -or $end -le $start){{throw 'Missing ZIP function.'}}
+Invoke-Expression $source.Substring($start, $end - $start)
+function Set-RestrictedDirectoryAcl([string]$Path) {{}}
+$rejected=$false
+try {{
+    Expand-Zip {archive} {destination} {digest} {size}
+}} catch {{
+    if($_.Exception.Message -ne 'Guest bootstrap ZIP SHA-256 mismatch.'){{throw}}
+    $rejected=$true
+}}
+if(-not $rejected -or (Test-Path -LiteralPath {destination})){{
+    throw 'Changed staged ZIP bytes were extracted despite the approved digest.'
+}}
+""".format(
+                guest=quote(GUEST),
+                archive=quote(archive_path),
+                destination=quote(folder / "must-not-exist"),
+                digest=quote(expected_sha),
+                size=expected_size,
+            )
+            for executable in ("powershell.exe", "pwsh.exe"):
+                if shutil.which(executable) is None:
+                    continue
+                run = subprocess.run(
+                    [executable, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, timeout=45, check=False,
+                )
+                self.assertEqual(
+                    run.returncode, 0, executable + ": " + run.stdout + run.stderr
+                )
+
+            # Matching metadata must still extract the approved content.
+            archive_path.write_bytes(approved)
+            success_script = script.split("$rejected=$false", 1)[0] + """
+Expand-Zip {archive} {destination} {digest} {size}
+$contents=Get-Content -LiteralPath (Join-Path {destination} 'payload/worker.txt') -Raw
+if($contents -ne 'approved content'){{throw 'Approved ZIP failed integrity-bound extraction.'}}
+""".format(
+                archive=quote(archive_path),
+                destination=quote(folder / "approved"),
+                digest=quote(expected_sha),
+                size=expected_size,
+            )
+            for executable in ("powershell.exe", "pwsh.exe"):
+                if shutil.which(executable) is None:
+                    continue
+                if (folder / "approved").exists():
+                    shutil.rmtree(folder / "approved")
+                run = subprocess.run(
+                    [executable, "-NoProfile", "-NonInteractive", "-Command", success_script],
+                    capture_output=True, text=True, timeout=45, check=False,
+                )
+                self.assertEqual(
+                    run.returncode, 0, executable + ": " + run.stdout + run.stderr
                 )
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
