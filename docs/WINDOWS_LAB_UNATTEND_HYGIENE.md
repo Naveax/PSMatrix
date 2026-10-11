@@ -54,6 +54,20 @@ allowed application lookup. This restricts the elevated command resolution
 boundary, but does not attest the interpreter binary or protect against
 a privileged attacker capable of changing machine-managed paths.
 
+The staged Python installer has a separate executable use boundary:
+after ZIP extraction and interpreter discovery, an installer that will
+actually run is rechecked immediately before `Start-Process`. The new
+`Assert-GuestStagedPythonInstaller` guard requires a regular, non-reparse
+file and non-reparse ancestors; it opens the installer with exclusive
+read sharing, compares the expected size, computes SHA-256 from those
+same bytes, and refuses any drift from the staged manifest. Isolated
+WinPS5.1/PS7 RED/GREEN fixtures test same-size replacement, approved
+bytes, and wrong-size metadata. This eliminates the unguarded long
+interval between initial bootstrap package inspection and installer use;
+because Windows process creation requires a separate handle after the
+guard closes, this is not a cryptographic execution attestation and a
+privileged concurrent replacement race is still outside the guarantee.
+
 The source-level mitigation adds two fail-closed checks:
 
 1. During `SetupComplete`, the guest bootstrap removes files named

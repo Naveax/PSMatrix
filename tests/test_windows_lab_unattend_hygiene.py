@@ -4064,6 +4064,73 @@ $afterFailure.Dispose()
                 )
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_guest_revalidates_staged_python_installer_at_execution_boundary(self):
+        import hashlib
+        import shutil
+        import subprocess
+        import tempfile
+
+        guest = GUEST.read_text(encoding="utf-8")
+        helper_name = "function Assert-GuestStagedPythonInstaller("
+        self.assertIn(helper_name, guest)
+        helper_start = guest.index(helper_name)
+        helper_end = guest.index("\nfunction Resolve-TrustedGuestPython(", helper_start)
+        helper = guest[helper_start:helper_end]
+        install_start = guest.index("    $pythonInstaller = Join-Path $bootstrapRoot")
+        install_end = guest.index("    $wheelPath = Find-UniqueWorkerWheel", install_start)
+        branch = guest[install_start:install_end]
+        self.assertLess(
+            branch.index("Assert-GuestStagedPythonInstaller "),
+            branch.index("Start-Process -FilePath $pythonInstaller"),
+        )
+        def quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+
+        with tempfile.TemporaryDirectory(prefix="psmatrix-installer-use-boundary-") as temp:
+            path = Path(temp) / "python-installer.exe"
+            approved = b"approved-installer-bytes"
+            mutated = b"replaced-installer-bytes"
+            self.assertEqual(len(approved), len(mutated))
+            digest = hashlib.sha256(approved).hexdigest()
+            path.write_bytes(mutated)
+            script = helper + """
+$ErrorActionPreference = 'Stop'
+$path = __PATH__
+$meta = [pscustomobject]@{ sha256 = __HASH__; size = __SIZE__ }
+$rejected = $false
+try { Assert-GuestStagedPythonInstaller $path $meta }
+catch {
+    if ($_.Exception.Message -cne 'Guest staged Python installer SHA-256 mismatch.') { throw }
+    $rejected = $true
+}
+if (-not $rejected) { throw 'Replaced Python executable passed execution-boundary guard.' }
+[IO.File]::WriteAllBytes($path, [Text.Encoding]::ASCII.GetBytes('approved-installer-bytes'))
+Assert-GuestStagedPythonInstaller $path $meta
+$meta.size = __SIZE__ + 1
+$rejected = $false
+try { Assert-GuestStagedPythonInstaller $path $meta }
+catch {
+    if ($_.Exception.Message -cne 'Guest staged Python installer size mismatch.') { throw }
+    $rejected = $true
+}
+if (-not $rejected) { throw 'Wrong installer size was accepted.' }
+""".replace("__PATH__", quote(path)).replace(
+                "__HASH__", quote(digest)
+            ).replace("__SIZE__", str(len(approved)))
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                path.write_bytes(mutated)
+                result = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=35, check=False,
+                )
+                self.assertEqual(
+                    result.returncode, 0, exe + ": " + result.stdout + result.stderr
+                )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     def test_guest_python_resolution_rejects_path_and_function_shadowing(self):
         import shutil
         import subprocess

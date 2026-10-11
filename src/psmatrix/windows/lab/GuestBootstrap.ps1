@@ -385,6 +385,51 @@ function Find-UniqueWorkerWheel([string]$Root) {
     return $wheels[0].FullName
 }
 
+function Assert-GuestStagedPythonInstaller([string]$Path, $Spec) {
+    # Staged packages were checked before archive extraction. Recheck the
+    # installer immediately before launching it, because earlier approval
+    # cannot bind a path that may have been replaced in the meantime.
+    if ($null -eq $Spec -or $Spec -isnot [pscustomobject] -or
+        $Spec.sha256 -isnot [string] -or
+        $Spec.sha256 -cnotmatch '^[0-9a-f]{64}\z') {
+        throw 'Guest staged Python installer metadata is invalid.'
+    }
+    if ($null -ne $Spec.size -and
+        (($Spec.size -isnot [int] -and $Spec.size -isnot [long]) -or
+         $Spec.size -le 0)) {
+        throw 'Guest staged Python installer metadata is invalid.'
+    }
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $itemPath = $fullPath
+    while (-not [string]::IsNullOrEmpty($itemPath)) {
+        $item = Get-Item -LiteralPath $itemPath -Force -ErrorAction Stop
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            ($itemPath -eq $fullPath -and $item.PSIsContainer) -or
+            ($itemPath -ne $fullPath -and -not $item.PSIsContainer)) {
+            throw 'Guest staged Python installer has unsafe path or file type.'
+        }
+        $itemPath = [IO.Path]::GetDirectoryName($itemPath)
+    }
+    $stream = [IO.File]::Open(
+        $fullPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None
+    )
+    try {
+        if ($stream.Length -le 0 -or
+            ($null -ne $Spec.size -and $stream.Length -ne [long]$Spec.size)) {
+            throw 'Guest staged Python installer size mismatch.'
+        }
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try {
+            $actual = ([BitConverter]::ToString($sha.ComputeHash($stream)) -replace '-', '').ToLowerInvariant()
+        }
+        finally { $sha.Dispose() }
+        if ($actual -cne $Spec.sha256) {
+            throw 'Guest staged Python installer SHA-256 mismatch.'
+        }
+    }
+    finally { $stream.Dispose() }
+}
+
 function Resolve-TrustedGuestPython() {
     # First boot runs as SYSTEM. An unqualified Get-Command can select a
     # PowerShell function/alias or a user-writable PATH executable. Accept
@@ -655,6 +700,7 @@ try {
     $python = Resolve-TrustedGuestPython
     if ($python -eq $null) {
         if (-not (Test-Path -LiteralPath $pythonInstaller -PathType Leaf)) { throw 'Python installer is missing.' }
+        Assert-GuestStagedPythonInstaller $pythonInstaller $config.staged_artifacts.python_installer
         $process = Start-Process -FilePath $pythonInstaller -ArgumentList '/quiet InstallAllUsers=1 PrependPath=1 Include_test=0 Include_launcher=1' -Wait -PassThru
         if ($process.ExitCode -ne 0) { throw ('Python installer failed with exit code ' + $process.ExitCode) }
         $machinePath = [Environment]::GetEnvironmentVariable('Path','Machine')
