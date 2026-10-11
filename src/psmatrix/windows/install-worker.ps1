@@ -17,7 +17,7 @@ function Assert-Administrator {
     }
 }
 function Assert-SafeId([string]$Value) {
-    if ($Value -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') { throw 'WorkerId is invalid.' }
+    if ($Value -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z') { throw 'WorkerId is invalid.' }
 }
 function Get-TrustedWindowsSystemTool([ValidateSet('sc.exe','icacls.exe')][string]$Name) {
     # This installer can run as SYSTEM. Never resolve native service/ACL tools

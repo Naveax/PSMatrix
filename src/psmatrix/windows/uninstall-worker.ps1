@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Administrator privileges are required.' }
-if ($WorkerId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') { throw 'WorkerId is invalid.' }
+if ($WorkerId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z') { throw 'WorkerId is invalid.' }
 $serviceName = 'PSMatrixWorker-' + $WorkerId
 $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 if ($service) {

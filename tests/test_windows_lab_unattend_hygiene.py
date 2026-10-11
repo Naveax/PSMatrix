@@ -4064,6 +4064,67 @@ $afterFailure.Dispose()
                 )
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_windows_worker_identity_regex_requires_absolute_end(self):
+        import shutil
+        import subprocess
+
+        # Execute the actual production validation expressions in isolated
+        # shells, not substituted regex copies. No service or VM is touched.
+        locations = (
+            ("install", "src/psmatrix/windows/install-worker.ps1", "Value", 64),
+            ("uninstall", "src/psmatrix/windows/uninstall-worker.ps1", "WorkerId", 64),
+            ("cert_image", "src/psmatrix/windows/prepare-certification.ps1", "ImageId", 128),
+            ("cert_worker", "src/psmatrix/windows/prepare-certification.ps1", "WorkerId", 128),
+            ("harness_env", "src/psmatrix/windows/worker_harness.ps1", "name", 128),
+        )
+        assignments = []
+        for label, relative, symbol, limit in locations:
+            source = (ROOT / relative).read_text(encoding="utf-8")
+            matches = [
+                line.strip() for line in source.splitlines()
+                if line.strip().startswith("if ($" + symbol + " -notmatch '")
+                and ") { throw " in line
+            ]
+            self.assertEqual(len(matches), 1, relative + ":" + symbol)
+            line = matches[0].strip()
+            assignments.append(
+                "'" + label + "' = { param([string]$candidate) $" +
+                symbol + "=$candidate; " + line + " }"
+            )
+        script = "$ErrorActionPreference='Stop'\n$checks=@{\n" + "\n".join(assignments) + "\n}\n" + """
+foreach ($name in @('install','uninstall','cert_image','cert_worker','harness_env')) {
+    $max=64
+    if ($name -in @('cert_image','cert_worker','harness_env')) { $max=128 }
+    foreach ($valid in @('W','W-01','A' * $max)) {
+        if ($name -ceq 'harness_env' -and $valid -ceq 'W-01') { continue }
+        & $checks[$name] $valid
+    }
+    foreach ($invalid in @(
+        [string]('W'+[char]10),
+        [string]('W'+[char]13),
+        [string]('W'+[char]13+[char]10),
+        'W@',
+        ('A' * ($max + 1)),
+        ''
+    )) {
+        $rejected=$false
+        try { & $checks[$name] $invalid }
+        catch { $rejected=$true }
+        if (-not $rejected) { throw ($name + ' accepted invalid identity length=' + $invalid.Length) }
+    }
+}
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                check=False, timeout=35,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     def test_worker_installer_fails_closed_on_every_native_service_acl_exit(self):
         import re
         import shutil

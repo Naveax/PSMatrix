@@ -54,6 +54,18 @@ allowed application lookup. This restricts the elevated command resolution
 boundary, but does not attest the interpreter binary or protect against
 a privileged attacker capable of changing machine-managed paths.
 
+The Windows helper scripts had another identifier boundary mismatch:
+`install-worker.ps1`, `uninstall-worker.ps1`, `prepare-certification.ps1`
+(ImageId and WorkerId), and `worker_harness.ps1` (environment property names)
+used regexes ending in `$`. In .NET regex semantics, that anchor can match
+*before* a terminal line feed. Their existing ASCII character and length
+rules now use the absolute end anchor `\\z`, consistent with the lab
+bootstrap host/guest validators. WinPS5.1/PS7 isolated RED/GREEN tests
+execute the five real production checks on valid boundary-length values
+and reject a trailing LF, CR, CRLF, invalid characters, and overlong names.
+No installer, certificate collection, worker process or uninstaller is run
+by these fixtures.
+
 The guest's `install-worker.ps1` script previously invoked `sc.exe` and
 `icacls.exe` by bare command name while configuring the worker service and
 its ACLs. In its elevated execution context, command/function shadowing or

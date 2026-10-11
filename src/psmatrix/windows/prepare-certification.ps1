@@ -9,8 +9,8 @@ param(
     [Parameter(Mandatory=$true)][string]$Output
 )
 $ErrorActionPreference = 'Stop'
-if ($ImageId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$') { throw 'ImageId is invalid.' }
-if ($WorkerId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$') { throw 'WorkerId is invalid.' }
+if ($ImageId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\z') { throw 'ImageId is invalid.' }
+if ($WorkerId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\z') { throw 'WorkerId is invalid.' }
 $collector = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'collect-image-identity.ps1'
 $identityJson = & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $collector
 if ($LASTEXITCODE -ne 0) { throw 'Image identity collection failed.' }
