@@ -99,7 +99,7 @@ function Assert-GuestBootstrapConfig($Config) {
         throw 'Bootstrap configuration schema is invalid.'
     }
     if ($Config.worker_id -isnot [string] -or
-        $Config.worker_id -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') {
+        $Config.worker_id -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z') {
         throw 'Bootstrap worker_id is invalid.'
     }
     if ($Config.worker_port -isnot [int] -or

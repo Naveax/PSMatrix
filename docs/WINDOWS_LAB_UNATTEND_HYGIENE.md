@@ -725,6 +725,17 @@ selection are unchanged. Isolated WinPS5.1 and PS7 tests exercise
 accepted name boundaries and malformed third-image names without
 creating or modifying Hyper-V VMs.
 
+The host and guest's six plan/bootstrap name guards now require an
+**absolute regex string end** (`\z`) rather than `$`: host `worker_id`,
+`image_id`, `computer_name`, `checkpoint_name` and
+`admin_password_env`, plus guest `worker_id`. In .NET regular
+expressions, `$` can match before a terminal LF, so an otherwise
+valid identifier with trailing LF/CRLF could pass preflight and reach
+VM, setup or environment-variable handling. Disposable WinPS5.1/PS7
+regressions prove malformed names are rejected at the intended
+preflight stage while normal names and maximum-length bounds work.
+No real secret values, VHDX or VM operations are used.
+
 The host now enforces the manifest's `lab_root` as a **VHDX
 output boundary**, rather than merely carrying the declaration into
 the plan. `Assert-LabPlanOutputRoot` runs for all three guests before

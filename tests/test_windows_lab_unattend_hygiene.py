@@ -4149,7 +4149,7 @@ exit 0
             "Bootstrap configuration schema is invalid.",
             "Bootstrap worker_id is invalid.",
             "Bootstrap worker_port is invalid.",
-            "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+            "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\\z",
             "$Config.worker_port -isnot [int]",
             "$Config.worker_port -gt 65535",
         ):
@@ -4184,6 +4184,8 @@ $cases = @(
     @{ type='missing-schema'; value=[pscustomobject]@{worker_id='valid-worker';worker_port=18080}; expected='Bootstrap configuration schema is invalid.' },
     @{ type='id-injection'; value=[pscustomobject]@{schema=1;worker_id='a","admin":true,"b';worker_port=18080}; expected='Bootstrap worker_id is invalid.' },
     @{ type='id-space'; value=[pscustomobject]@{schema=1;worker_id='a b';worker_port=18080}; expected='Bootstrap worker_id is invalid.' },
+    @{ type='id-trailing-lf'; value=[pscustomobject]@{schema=1;worker_id=('valid-worker'+[char]10);worker_port=18080}; expected='Bootstrap worker_id is invalid.' },
+    @{ type='id-trailing-crlf'; value=[pscustomobject]@{schema=1;worker_id=('valid-worker'+[char]13+[char]10);worker_port=18080}; expected='Bootstrap worker_id is invalid.' },
     @{ type='id-too-long'; value=[pscustomobject]@{schema=1;worker_id=('a' * 65);worker_port=18080}; expected='Bootstrap worker_id is invalid.' },
     @{ type='id-missing'; value=[pscustomobject]@{schema=1;worker_port=18080}; expected='Bootstrap worker_id is invalid.' },
     @{ type='port-zero'; value=[pscustomobject]@{schema=1;worker_id='valid-worker';worker_port=0}; expected='Bootstrap worker_port is invalid.' },
@@ -4226,7 +4228,7 @@ exit 0
             "Windows lab plan worker_id is duplicated.",
             "Windows lab plan image_id is invalid or duplicated.",
             "Windows lab plan worker_port is invalid.",
-            "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+            "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\\z",
             "$image.worker_port -isnot [int]",
             "$image.worker_port -lt 1024",
             "$image.worker_port -gt 65535",
@@ -4261,6 +4263,10 @@ $atLimit = [pscustomobject]@{worker_id=('a' * 64);worker_port=9443;image_id='vm-
 Assert-LabPlanGuestIdentities @($valid[0],$atLimit,$valid[2])
 $cases = @(
   @{name='unsafe'; value=[pscustomobject]@{worker_id='worker/50';worker_port=9443;image_id='vm-50'};reason='Windows lab plan worker_id is invalid or exceeds installer limit.'},
+  @{name='worker-newline'; value=[pscustomobject]@{worker_id=('worker-50'+[char]10);worker_port=9443;image_id='vm-50'};reason='Windows lab plan worker_id is invalid or exceeds installer limit.'},
+  @{name='worker-crlf'; value=[pscustomobject]@{worker_id=('worker-50'+[char]13+[char]10);worker_port=9443;image_id='vm-50'};reason='Windows lab plan worker_id is invalid or exceeds installer limit.'},
+  @{name='image-newline'; value=[pscustomobject]@{worker_id='worker-50';worker_port=9443;image_id=('vm-50'+[char]10)};reason='Windows lab plan image_id is invalid or duplicated.'},
+  @{name='image-crlf'; value=[pscustomobject]@{worker_id='worker-50';worker_port=9443;image_id=('vm-50'+[char]13+[char]10)};reason='Windows lab plan image_id is invalid or duplicated.'},
   @{name='too-long';value=[pscustomobject]@{worker_id=('a'*65);worker_port=9443;image_id='vm-50'};reason='Windows lab plan worker_id is invalid or exceeds installer limit.'},
   @{name='missing';value=[pscustomobject]@{worker_port=9443;image_id='vm-50'};reason='Windows lab plan worker_id is invalid or exceeds installer limit.'},
   @{name='duplicate-case';value=[pscustomobject]@{worker_id='WORKER-40';worker_port=9443;image_id='vm-50'};reason='Windows lab plan worker_id is duplicated.'},
@@ -4335,6 +4341,8 @@ Assert-LabPlanMachineAndOutputPaths $valid
 $cases = @(
     @{name='duplicate-computer';computer='psmx-40';file='different.vhdx';error='Windows lab plan computer_name is invalid or duplicated.'},
     @{name='long-computer';computer='ABCDEFGHIJKLMNOP';file='different.vhdx';error='Windows lab plan computer_name is invalid or duplicated.'},
+    @{name='computer-newline';computer=('OTHER-50'+[char]10);file='different.vhdx';error='Windows lab plan computer_name is invalid or duplicated.'},
+    @{name='computer-crlf';computer=('OTHER-50'+[char]13+[char]10);file='different.vhdx';error='Windows lab plan computer_name is invalid or duplicated.'},
     @{name='same-output';computer='OTHER-50';file='40.VHDX';error='Windows lab plan output_vhdx is duplicated.'},
     @{name='invalid-extension';computer='OTHER-50';file='wrong.iso';error='Windows lab plan output_vhdx is invalid.'}
 )
@@ -4881,7 +4889,7 @@ exit 0
             "function Wait-FirstBoot(", 1
         )[0]
         for fragment in (
-            "^[A-Za-z0-9_]+$",
+            "^[A-Za-z0-9_]+\\z",
             "$secretName.StartsWith('PSMATRIX_', [StringComparison]::Ordinal)",
             "$secretName.Length -gt 128",
             "[StringComparer]::OrdinalIgnoreCase",
@@ -4936,6 +4944,13 @@ try {
     try {
         Assert-LabPlanPasswordEnvironment $images
         throw 'Overlength name was allowed.'
+    } catch {
+        if ($_.Exception.Message -cne 'Windows lab admin password environment variable name is invalid.') { throw }
+    }
+    $images[2].admin_password_env = ('PSMATRIX_PREFLIGHT_TEST_ONLY_GAMMA' + [char]10)
+    try {
+        Assert-LabPlanPasswordEnvironment $images
+        throw 'Newline-suffixed secret variable name was allowed.'
     } catch {
         if ($_.Exception.Message -cne 'Windows lab admin password environment variable name is invalid.') { throw }
     }
@@ -6421,7 +6436,7 @@ exit 0
             "Windows lab plan checkpoint_name is invalid.", section
         )
         self.assertIn(
-            "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", section
+            "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\\z", section
         )
         self.assertIn(
             "$image.checkpoint_name -isnot [string]", section
@@ -6463,7 +6478,8 @@ $cases = @(
     $null, '', ' ', '.invalid', '-invalid', '_invalid',
     'bad name', 'bad/name', 'bad\name', 'bad:name',
     'bad*name', 'bad?name', 'bad#name',
-    ('bad' + [char]10 + 'name'), ('A' * 129), 1234, $true
+    ('bad' + [char]10 + 'name'), ('clean-image' + [char]10),
+    ('clean-image' + [char]13 + [char]10), ('A' * 129), 1234, $true
 )
 foreach ($bad in $cases) {
     $images = New-ValidImagePlan

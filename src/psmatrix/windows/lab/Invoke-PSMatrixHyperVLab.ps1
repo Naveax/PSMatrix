@@ -1420,14 +1420,14 @@ function Assert-LabPlanGuestIdentities([object[]]$Images) {
     $seenImages = New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList ([StringComparer]::OrdinalIgnoreCase)
     foreach ($image in $Images) {
         if ($image.worker_id -isnot [string] -or
-            $image.worker_id -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') {
+            $image.worker_id -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z') {
             throw 'Windows lab plan worker_id is invalid or exceeds installer limit.'
         }
         if (-not $seenWorkers.Add([string]$image.worker_id)) {
             throw 'Windows lab plan worker_id is duplicated.'
         }
         if ($image.image_id -isnot [string] -or
-            $image.image_id -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$' -or
+            $image.image_id -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\z' -or
             -not $seenImages.Add([string]$image.image_id)) {
             throw 'Windows lab plan image_id is invalid or duplicated.'
         }
@@ -1472,7 +1472,7 @@ function Assert-LabPlanMachineAndOutputPaths([object[]]$Images) {
     $seenDisks = New-Object -TypeName 'System.Collections.Generic.HashSet[string]' -ArgumentList ([StringComparer]::OrdinalIgnoreCase)
     foreach ($image in $Images) {
         if ($image.computer_name -isnot [string] -or
-            $image.computer_name -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,14}$' -or
+            $image.computer_name -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,14}\z' -or
             -not $seenComputers.Add([string]$image.computer_name)) {
             throw 'Windows lab plan computer_name is invalid or duplicated.'
         }
@@ -1553,7 +1553,7 @@ function Assert-LabPlanPasswordEnvironment([object[]]$Images) {
         if ($secretName -isnot [string] -or
             -not $secretName.StartsWith('PSMATRIX_', [StringComparison]::Ordinal) -or
             $secretName.Length -gt 128 -or
-            $secretName -cnotmatch '^[A-Za-z0-9_]+$') {
+            $secretName -cnotmatch '^[A-Za-z0-9_]+\z') {
             throw 'Windows lab admin password environment variable name is invalid.'
         }
         if (-not $seenNames.Add($secretName)) {
@@ -1829,7 +1829,7 @@ function Assert-LabPlanCheckpointNames([object[]]$Images) {
     # Identical names are allowed for different, uniquely named VMs.
     foreach ($image in $Images) {
         if ($image.checkpoint_name -isnot [string] -or
-            $image.checkpoint_name -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$') {
+            $image.checkpoint_name -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\z') {
             throw 'Windows lab plan checkpoint_name is invalid.'
         }
     }
