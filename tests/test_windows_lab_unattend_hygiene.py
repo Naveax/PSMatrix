@@ -65,6 +65,65 @@ for ($i=0; $i -lt $before.Length; $i++) {
                     exe + ": " + completed.stdout + completed.stderr,
                 )
 
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_guest_result_publishes_only_complete_file_and_cleans_owned_temp_on_error(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        guest = GUEST.read_text(encoding="utf-8")
+        section = "function Write-Result(" + guest.split("function Write-Result(", 1)[1].split(
+            "\nfunction Read-GuestBootstrapConfig(", 1
+        )[0]
+        self.assertIn("[IO.FileMode]::CreateNew", section)
+        self.assertIn("[IO.File]::Move($temporary, $fullPath)", section)
+        self.assertIn("[IO.File]::Delete($temporary)", section)
+        self.assertNotIn("[IO.File]::Delete($path)", section)
+        self.assertLess(section.index("$stream.Write($payload"), section.index("[IO.File]::Move("))
+
+        # Simulate an exception after bytes have been written, but before
+        # publishing the final result. Only the owned temporary may be removed.
+        injected = section.replace(
+            "$stream.Write($payload, 0, $payload.Length)",
+            "$stream.Write($payload, 0, $payload.Length)\n"
+            "        throw 'Synthetic write failure.'",
+        )
+        self.assertNotEqual(injected, section)
+        with tempfile.TemporaryDirectory(prefix="psmatrix-guest-result-atomic-") as root:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                folder = Path(root) / exe.replace(".", "-")
+                folder.mkdir()
+                final = folder / "bootstrap-result.json"
+                literal = "'" + str(final).replace("'", "''") + "'"
+                script = injected.replace(
+                    r"C:\ProgramData\PSMatrix\bootstrap-result.json", str(final)
+                ) + r"""
+$ErrorActionPreference='Stop'
+$final=__FINAL__
+$failed=$false
+try { Write-Result 'PASS' 'synthetic incomplete success' @{} }
+catch {
+    if($_.Exception.Message -cne 'Synthetic write failure.'){throw}
+    $failed=$true
+}
+if(-not $failed -or (Test-Path -LiteralPath $final)){
+    throw 'Partial guest result was published after write failure.'
+}
+$folder=[IO.Path]::GetDirectoryName($final)
+if(@(Get-ChildItem -LiteralPath $folder -Force -Filter '.psmatrix-result-*').Count -ne 0){
+    throw 'Owned guest result temporary was not cleaned up.'
+}
+"""
+                script = script.replace("__FINAL__", literal)
+                run = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=40, check=False,
+                )
+                self.assertEqual(run.returncode, 0, exe + ": " + run.stdout + run.stderr)
+
     def test_guest_deletes_known_setup_answer_files_before_success(self):
         text = GUEST.read_text(encoding="utf-8")
         for expected in (

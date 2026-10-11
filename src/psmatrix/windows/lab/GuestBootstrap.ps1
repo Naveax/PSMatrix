@@ -36,14 +36,32 @@ function Write-Result([string]$Status, [string]$Message, [hashtable]$Extra) {
     $utf8 = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList @($true)
     $preamble = $utf8.GetPreamble()
     $payload = $utf8.GetBytes([string]$json + [Environment]::NewLine)
-    $stream = [IO.File]::Open(
-        $path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None
+    # Publish only a complete result: failures must not leave a partial
+    # PASS/FAIL at the final name. A same-directory Move never overwrites
+    # an existing one-shot receipt, including a pre-existing symlink.
+    $fullPath = [IO.Path]::GetFullPath($path)
+    $temporary = [IO.Path]::Combine(
+        [IO.Path]::GetDirectoryName($fullPath),
+        ('.psmatrix-result-' + [Guid]::NewGuid().ToString('N') + '.tmp')
     )
+    $ownsTemporary = $false
     try {
-        $stream.Write($preamble, 0, $preamble.Length)
-        $stream.Write($payload, 0, $payload.Length)
+        $stream = [IO.File]::Open(
+            $temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None
+        )
+        $ownsTemporary = $true
+        try {
+            $stream.Write($preamble, 0, $preamble.Length)
+            $stream.Write($payload, 0, $payload.Length)
+            $stream.Flush()
+        }
+        finally { $stream.Dispose() }
+        [IO.File]::Move($temporary, $fullPath)
+        $ownsTemporary = $false
     }
-    finally { $stream.Dispose() }
+    finally {
+        if ($ownsTemporary) { [IO.File]::Delete($temporary) }
+    }
 }
 
 function Read-GuestBootstrapConfig([string]$Path) {

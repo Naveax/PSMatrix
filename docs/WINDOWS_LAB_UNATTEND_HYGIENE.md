@@ -7,6 +7,21 @@ unattended Windows installation answer file at `Windows\Panther\Unattend.xml`.
 That answer file must not survive as a normally accessible file inside a reusable
 laboratory guest checkpoint.
 
+The first-boot guest now publishes the one-shot
+`ProgramData\\PSMatrix\\bootstrap-result.json` receipt **only after**
+fully writing and flushing its UTF-8 BOM-prefixed JSON into an
+unpredictable, create-only temporary leaf in the same directory.
+`File.Move` publishes the complete result without replacing an
+existing result or symlink; handled write/encoding/move failures
+dispose the write handle and remove only the guest's own temporary
+file. This avoids exposing a partially written PASS/FAIL result and
+does not turn the guest's PASS into host attestation. Disposable
+WinPS5.1/PS7 regressions preserve the existing record and BOM,
+simulate a partial write failure, and verify no published final file
+or leftover own temporary after that failure. Abrupt process termination
+or privileged concurrent parent-path replacement remains outside this
+guarantee and requires the existing elevated acceptance gate.
+
 The source-level mitigation adds two fail-closed checks:
 
 1. During `SetupComplete`, the guest bootstrap removes files named
