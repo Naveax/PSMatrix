@@ -54,6 +54,20 @@ allowed application lookup. This restricts the elevated command resolution
 boundary, but does not attest the interpreter binary or protect against
 a privileged attacker capable of changing machine-managed paths.
 
+The elevated Windows worker **uninstaller** also had two unsafe boundaries:
+`sc.exe delete` was resolved via PATH/command precedence, and `-RemoveData`
+passed an uninspected user-supplied install-root descendant directly into
+recursive `Remove-Item`. The uninstaller now resolves `sc.exe` only from
+the non-reparse Windows system directory, and refuses data removal through
+root-directory targets, reparse-point ancestors, or any reparse entry inside
+the entire worker subtree. The preflight runs before service mutations and
+is repeated immediately before deletion. Both service deletion and data
+removal now honor `SupportsShouldProcess` / `-WhatIf`. Isolated WinPS5.1/PS7
+RED/GREEN tests use disposable directories, shadowing and junction fixtures;
+they **never** delete a real service or installed worker. Validation is a
+pre-removal scan, not a transaction: privileged concurrent path replacement
+between that scan and deletion requires separate elevated acceptance.
+
 The Windows helper scripts had another identifier boundary mismatch:
 `install-worker.ps1`, `uninstall-worker.ps1`, `prepare-certification.ps1`
 (ImageId and WorkerId), and `worker_harness.ps1` (environment property names)

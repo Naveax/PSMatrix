@@ -4064,6 +4064,88 @@ $afterFailure.Dispose()
                 )
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_worker_uninstaller_rejects_redirected_deletion_and_shadowed_sc(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        source = (ROOT / "src/psmatrix/windows/uninstall-worker.ps1").read_text(encoding="utf-8")
+        self.assertIn("function Assert-SafeWorkerRemovalPath(", source)
+        self.assertIn("function Get-TrustedUninstallServiceControl(", source)
+        self.assertIn("$scPath = Get-TrustedUninstallServiceControl", source)
+        self.assertIn("& $scPath delete $serviceName", source)
+        self.assertNotIn("& sc.exe delete", source)
+        self.assertIn("$PSCmdlet.ShouldProcess($serviceName", source)
+        self.assertIn("$PSCmdlet.ShouldProcess($safeWorkerRoot", source)
+        self.assertIn("$safeWorkerRoot = Assert-SafeWorkerRemovalPath $InstallRoot $WorkerId", source)
+        self.assertIn("Remove-Item -LiteralPath $safeWorkerRoot -Recurse -Force", source)
+        helper = source[source.index("function Get-TrustedUninstallServiceControl("):
+                        source.index("\n$identity = [Security.Principal.WindowsIdentity]")]
+        def quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+        with tempfile.TemporaryDirectory(prefix="psmatrix-uninstall-guards-") as temp:
+            top = Path(temp)
+            install = top / "PSMatrix Worker"
+            worker = install / "worker-01"
+            worker.mkdir(parents=True)
+            (worker / "nested").mkdir()
+            good = top / "machine-sys"
+            bad = top / "untrusted"
+            good.mkdir()
+            bad.mkdir()
+            system_cmd = Path(__import__("os").environ["SystemRoot"]) / "System32" / "cmd.exe"
+            shutil.copyfile(system_cmd, good / "sc.exe")
+            shutil.copyfile(system_cmd, bad / "sc.exe")
+            stub = helper.replace("[Environment]::SystemDirectory", quote(good))
+            self.assertNotEqual(stub, helper)
+            script = stub + """
+$ErrorActionPreference='Stop'
+function sc.exe { throw 'shadow-function' }
+function Get-Item { throw 'shadowed-get-item' }
+$env:Path=__BAD__ + ';' + $env:Path
+$command=Get-TrustedUninstallServiceControl
+if ($command -cne __SC__) { throw 'Uninstaller selected untrusted service control.' }
+$path=Assert-SafeWorkerRemovalPath __ROOT__ 'worker-01'
+if ($path -cne __WORKER__) { throw 'Expected worker directory not accepted.' }
+function Expect-UninstallRejection([string]$where, [string]$identifier) {
+    $rejected=$false
+    try { Assert-SafeWorkerRemovalPath $where $identifier | Out-Null }
+    catch { $rejected=$true }
+    if (-not $rejected) { throw 'Unsafe uninstall path was accepted.' }
+}
+Expect-UninstallRejection __DRIVE__ 'worker-01'
+Expect-UninstallRejection __BAD__ 'worker-01'
+$nested=Join-Path __WORKER__ 'redirect'
+New-Item -ItemType Junction -Path $nested -Target __BAD__ -ErrorAction Stop | Out-Null
+Expect-UninstallRejection __ROOT__ 'worker-01'
+$next=Join-Path __TOP__ ('linked-' + $PSVersionTable.PSVersion.Major)
+New-Item -ItemType Junction -Path $next -Target __ROOT__ -ErrorAction Stop | Out-Null
+Expect-UninstallRejection $next 'worker-01'
+if (-not [IO.File]::Exists((Join-Path __BAD__ 'sc.exe'))) { throw 'Control fixture was lost.' }
+""".replace("__BAD__", quote(bad)).replace(
+                "__ROOT__", quote(install)
+            ).replace("__WORKER__", quote(worker)).replace(
+                "__SC__", quote(good / "sc.exe")
+            ).replace("__DRIVE__", quote(Path(temp).anchor)).replace(
+                "__TOP__", quote(top))
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                # Both shells should inspect the same fixture, never remove it.
+                # Remove stale child junctions with Windows directory unlink
+                # semantics without recursive deletion through the junction.
+                for relative in ("redirect",):
+                    candidate = worker / relative
+                    if candidate.is_junction():
+                        candidate.rmdir()
+                result = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    check=False, timeout=35,
+                )
+                self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     def test_windows_worker_identity_regex_requires_absolute_end(self):
         import shutil
         import subprocess
