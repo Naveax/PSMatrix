@@ -19,6 +19,28 @@ function Assert-Administrator {
 function Assert-SafeId([string]$Value) {
     if ($Value -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') { throw 'WorkerId is invalid.' }
 }
+function Get-TrustedWindowsSystemTool([ValidateSet('sc.exe','icacls.exe')][string]$Name) {
+    # This installer can run as SYSTEM. Never resolve native service/ACL tools
+    # through PATH, functions, aliases, or a redirected System32 subtree.
+    $systemDirectory = [Environment]::SystemDirectory
+    if ([string]::IsNullOrWhiteSpace($systemDirectory)) {
+        throw 'Windows system directory could not be resolved.'
+    }
+    $trustedPath = [IO.Path]::GetFullPath((Join-Path $systemDirectory $Name))
+    $current = $trustedPath
+    while (-not [string]::IsNullOrEmpty($current)) {
+        $item = Microsoft.PowerShell.Management\Get-Item -LiteralPath $current -Force -ErrorAction Stop
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            ($current -eq $trustedPath -and $item.PSIsContainer) -or
+            ($current -ne $trustedPath -and -not $item.PSIsContainer)) {
+            throw 'Windows system tool path contains an unsafe file type or reparse point.'
+        }
+        $parent = [IO.Path]::GetDirectoryName($current)
+        if ($parent -eq $current) { break }
+        $current = $parent
+    }
+    return $trustedPath
+}
 Assert-Administrator
 Assert-SafeId $WorkerId
 $PythonExecutable = [IO.Path]::GetFullPath($PythonExecutable)
@@ -55,20 +77,22 @@ if ($serviceAssembly -eq $null) { throw 'System.ServiceProcess assembly is unava
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $serviceExe -PathType Leaf)) { throw 'Worker service host compilation failed.' }
 & $PythonExecutable -m psmatrix worker probe --config $configTarget
 if ($LASTEXITCODE -ne 0) { throw 'Worker probe failed before service installation.' }
+$scPath = Get-TrustedWindowsSystemTool 'sc.exe'
+$icaclsPath = Get-TrustedWindowsSystemTool 'icacls.exe'
 $existing = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 if ($existing) {
     if ($existing.Status -ne 'Stopped') { Stop-Service -Name $serviceName -Force -ErrorAction Stop }
-    & sc.exe delete $serviceName | Out-Null
+    & $scPath delete $serviceName | Out-Null
     Start-Sleep -Seconds 2
 }
 $imagePath = '"' + $serviceExe + '" --service-name "' + $serviceName + '" --python "' + $PythonExecutable + '" --config "' + $configTarget + '" --logs "' + $logRoot + '"'
-& sc.exe create $serviceName binPath= $imagePath start= auto obj= $ServiceAccount DisplayName= ('PSMatrix Worker ' + $WorkerId) | Out-Null
+& $scPath create $serviceName binPath= $imagePath start= auto obj= $ServiceAccount DisplayName= ('PSMatrix Worker ' + $WorkerId) | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'sc.exe create failed.' }
-& sc.exe description $serviceName ('PSMatrix Windows PowerShell ' + $PowerShellVersion + ' worker') | Out-Null
-& sc.exe failure $serviceName reset= 86400 actions= restart/5000/restart/15000/restart/60000 | Out-Null
-& sc.exe failureflag $serviceName 1 | Out-Null
-& icacls.exe $workerRoot /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' | Out-Null
-if ($ServiceAccount -ne 'LocalSystem') { & icacls.exe $workerRoot /grant ($ServiceAccount + ':(OI)(CI)M') | Out-Null }
+& $scPath description $serviceName ('PSMatrix Windows PowerShell ' + $PowerShellVersion + ' worker') | Out-Null
+& $scPath failure $serviceName reset= 86400 actions= restart/5000/restart/15000/restart/60000 | Out-Null
+& $scPath failureflag $serviceName 1 | Out-Null
+& $icaclsPath $workerRoot /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' | Out-Null
+if ($ServiceAccount -ne 'LocalSystem') { & $icaclsPath $workerRoot /grant ($ServiceAccount + ':(OI)(CI)M') | Out-Null }
 if ($StartService) {
     Start-Service -Name $serviceName
     (Get-Service -Name $serviceName).WaitForStatus('Running',[TimeSpan]::FromSeconds(30))

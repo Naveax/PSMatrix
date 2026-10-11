@@ -54,6 +54,19 @@ allowed application lookup. This restricts the elevated command resolution
 boundary, but does not attest the interpreter binary or protect against
 a privileged attacker capable of changing machine-managed paths.
 
+The guest's `install-worker.ps1` script previously invoked `sc.exe` and
+`icacls.exe` by bare command name while configuring the worker service and
+its ACLs. In its elevated execution context, command/function shadowing or
+an untrusted PATH entry could divert these native operations. The script now
+resolves both executables from `[Environment]::SystemDirectory` using
+`Get-TrustedWindowsSystemTool`, rejects non-file leaves and reparse-point
+ancestors, and invokes only the resulting absolute paths. WinPS5.1/PS7
+isolated RED/GREEN regression cases cover function shadowing, a PATH-first
+untrusted executable, approved machine-directory tools, and a junction
+redirecting the trusted directory. No real services or production ACLs
+are modified by these tests. This is a command-resolution boundary guard,
+not independent signature attestation of Windows system utilities.
+
 The staged Python installer has a separate executable use boundary:
 after ZIP extraction and interpreter discovery, an installer that will
 actually run is rechecked immediately before `Start-Process`. The new

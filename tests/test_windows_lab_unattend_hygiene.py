@@ -4064,6 +4064,91 @@ $afterFailure.Dispose()
                 )
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_worker_installer_native_tools_ignore_path_and_function_shadowing(self):
+        import os
+        import shutil
+        import subprocess
+        import tempfile
+
+        source = (ROOT / "src" / "psmatrix" / "windows" / "install-worker.ps1").read_text(encoding="utf-8")
+        marker = "function Get-TrustedWindowsSystemTool("
+        self.assertIn(marker, source)
+        for unsafe in ("& sc.exe ", "& icacls.exe "):
+            self.assertNotIn(unsafe, source)
+        self.assertIn("$scPath = Get-TrustedWindowsSystemTool 'sc.exe'", source)
+        self.assertIn("$icaclsPath = Get-TrustedWindowsSystemTool 'icacls.exe'", source)
+        for invoke in ("& $scPath delete", "& $scPath create", "& $scPath description",
+                       "& $scPath failure ", "& $scPath failureflag ",
+                       "& $icaclsPath $workerRoot"):
+            self.assertIn(invoke, source)
+
+        start = source.index(marker)
+        end = source.index("\nAssert-Administrator", start)
+        helper = source[start:end]
+        def quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+        system_cmd = Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe"
+        with tempfile.TemporaryDirectory(prefix="psmatrix-installer-tool-path-") as temp:
+            base = Path(temp)
+            good = base / "trusted"
+            bad = base / "untrusted"
+            good.mkdir()
+            bad.mkdir()
+            for name in ("sc.exe", "icacls.exe"):
+                shutil.copyfile(system_cmd, good / name)
+                shutil.copyfile(system_cmd, bad / name)
+            patched = helper.replace("[Environment]::SystemDirectory", quote(good))
+            self.assertNotEqual(patched, helper)
+            script = patched + """
+$ErrorActionPreference='Stop'
+function sc.exe { throw 'sc-command-shadowed' }
+function icacls.exe { throw 'icacls-command-shadowed' }
+function Get-Item { throw 'item-shadowed' }
+$env:Path=__BAD__ + ';' + $env:Path
+$sc=Get-TrustedWindowsSystemTool 'sc.exe'
+$ic=Get-TrustedWindowsSystemTool 'icacls.exe'
+if ($sc -cne __SC__ -or $ic -cne __IC__) {
+    throw 'System tool path was selected from untrusted PATH or function.'
+}
+foreach($name in @('sc.exe','icacls.exe')) {
+    $tool=Get-TrustedWindowsSystemTool $name
+    if (-not [IO.File]::Exists($tool)) { throw 'Selected trusted tool does not exist.' }
+}
+""".replace("__BAD__", quote(bad)).replace(
+                "__SC__", quote(good / "sc.exe")
+            ).replace("__IC__", quote(good / "icacls.exe"))
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                completed = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    check=False, timeout=35,
+                )
+                self.assertEqual(completed.returncode, 0, exe + ": " + completed.stdout + completed.stderr)
+                junction = base / (exe.replace(".", "-") + "-systemdir-link")
+                shadow_helper = helper.replace(
+                    "[Environment]::SystemDirectory", quote(junction)
+                )
+                junction_script = """
+$ErrorActionPreference='Stop'
+New-Item -ItemType Junction -Path __LINK__ -Target __BAD__ -ErrorAction Stop | Out-Null
+$rejected=$false
+try { Get-TrustedWindowsSystemTool 'sc.exe' | Out-Null }
+catch {
+    if ($_.Exception.Message -cne 'Windows system tool path contains an unsafe file type or reparse point.') { throw }
+    $rejected=$true
+}
+if (-not $rejected) { throw 'Redirected System32 path was trusted.' }
+""".replace("__LINK__", quote(junction)).replace("__BAD__", quote(bad))
+                blocked = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", shadow_helper + junction_script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    check=False, timeout=35,
+                )
+                self.assertEqual(blocked.returncode, 0, exe + ": " + blocked.stdout + blocked.stderr)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     def test_guest_revalidates_staged_python_installer_at_execution_boundary(self):
         import hashlib
         import shutil
