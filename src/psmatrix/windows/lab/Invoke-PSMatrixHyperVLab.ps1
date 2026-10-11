@@ -1377,7 +1377,7 @@ function Read-BootstrapResult([string]$VhdPath, [string]$ExpectedBootstrapNonce)
         Assert-NoGuestSetupAnswerFiles -WindowsRoot $root
         if ($result.status -ceq 'PASS') {
             if ($result.worker_config_sha256 -isnot [string] -or
-                $result.worker_config_sha256 -cnotmatch '^[0-9a-f]{64}$') {
+                $result.worker_config_sha256 -cnotmatch '^[0-9a-f]{64}\z') {
                 throw 'Guest bootstrap reported worker configuration hash is invalid.'
             }
             $workerConfig = Join-Path $root 'ProgramData\PSMatrix\WorkerConfig\worker.json'
@@ -1669,7 +1669,7 @@ function Assert-LabPlanSourceManifest($SourceManifest) {
         [string]::IsNullOrWhiteSpace($SourceManifest.path) -or
         -not [IO.Path]::IsPathRooted([string]$SourceManifest.path) -or
         $SourceManifest.sha256 -isnot [string] -or
-        $SourceManifest.sha256 -cnotmatch '^[0-9a-f]{64}$') {
+        $SourceManifest.sha256 -cnotmatch '^[0-9a-f]{64}\z') {
         throw 'Source manifest metadata is invalid.'
     }
     # Includes the existing ancestor/symlink defense plus real SHA-256.
@@ -1804,7 +1804,7 @@ function ConvertTo-LabCanonicalJson([object]$Value, [switch]$OmitPlanDigest) {
 function Assert-LabPlanDigest($PlanValue) {
     if ($null -eq $PlanValue -or $PlanValue -isnot [pscustomobject] -or
         $PlanValue.plan_sha256 -isnot [string] -or
-        $PlanValue.plan_sha256 -cnotmatch '^[0-9a-f]{64}$') {
+        $PlanValue.plan_sha256 -cnotmatch '^[0-9a-f]{64}\z') {
         throw 'Provision plan SHA-256 metadata is invalid.'
     }
     $canonical = ConvertTo-LabCanonicalJson $PlanValue -OmitPlanDigest

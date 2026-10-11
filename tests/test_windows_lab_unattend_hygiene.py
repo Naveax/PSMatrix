@@ -3199,6 +3199,71 @@ Test-HostNonce $hostResult $valid
             host.index("    Checkpoint-VM -Name $vmName"),
         )
 
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_guest_worker_digest_rejects_newline_before_worker_file_read(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        before = host.index("Assert-NoGuestSetupAnswerFiles -WindowsRoot $root")
+        begin = host.index("        if ($result.status -ceq 'PASS') {", before)
+        finish = host.index("            $workerConfig = Join-Path", begin)
+        check = host[begin:finish] + "        }\n"
+        self.assertIn(
+            "$result.worker_config_sha256 -cnotmatch '^[0-9a-f]{64}\\z'",
+            check,
+        )
+        # Run the original host PASS metadata check without VHD mounting.
+        script = (
+            "function Test-ReportedWorkerDigest($result) {\n"
+            + check
+            + "}\n"
+            + r"""
+$ErrorActionPreference='Stop'
+$valid='a' * 64
+$result=[pscustomobject]@{status='PASS'; worker_config_sha256=$valid}
+Test-ReportedWorkerDigest $result
+foreach($bad in @(
+    ($valid + [char]10),
+    ($valid + [char]13 + [char]10),
+    ($valid + ' '),
+    ($valid.Substring(1)),
+    ($valid + 'a'),
+    $valid.ToUpperInvariant(),
+    $null,
+    [int]5
+)) {
+    $result.worker_config_sha256=$bad
+    $denied=$false
+    try { Test-ReportedWorkerDigest $result }
+    catch {
+        $denied=$true
+        if($_.Exception.Message -cne
+           'Guest bootstrap reported worker configuration hash is invalid.'){
+            throw
+        }
+    }
+    if(-not $denied){throw 'Invalid PASS worker digest was accepted.'}
+}
+$result.worker_config_sha256=$valid
+Test-ReportedWorkerDigest $result
+$result.status='FAIL'
+$result.worker_config_sha256=$null
+Test-ReportedWorkerDigest $result
+"""
+        )
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            output = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=40, check=False,
+            )
+            self.assertEqual(
+                output.returncode, 0, exe + ": " + output.stdout + output.stderr
+            )
+
     def test_host_binds_actual_worker_config_hash_and_guest_identity(self):
         host = HOST.read_text(encoding="utf-8")
         read = host.split("function Read-BootstrapResult(", 1)[1].split(
@@ -3207,7 +3272,7 @@ Test-HostNonce $hostResult $valid
         for fragment in (
             "Assert-RestrictedGuestDirectoryAcl -Path",
             "Assert-NoGuestSetupAnswerFiles -WindowsRoot $root",
-            "$result.worker_config_sha256 -cnotmatch '^[0-9a-f]{64}$'",
+            "$result.worker_config_sha256 -cnotmatch '^[0-9a-f]{64}\\z'",
             "ProgramData\\PSMatrix\\WorkerConfig\\worker.json",
             "Get-SafeGuestWorkerConfigHash $workerConfig",
             "$actualConfigHash -cne $result.worker_config_sha256",
@@ -5734,6 +5799,7 @@ exit 0
             "function Wait-FirstBoot(", 1
         )[0]
         for required in (
+            "$SourceManifest.sha256 -cnotmatch '^[0-9a-f]{64}\\z'",
             "Source manifest metadata is invalid.",
             "Assert-Artifact $SourceManifest 'Source manifest'",
             "[IO.Path]::IsPathRooted([string]$SourceManifest.path)",
@@ -5800,6 +5866,9 @@ Assert-Invalid $null 'Source manifest metadata is invalid.'
 Assert-Invalid @{path=$manifest;sha256=$hash} 'Source manifest metadata is invalid.'
 Assert-Invalid ([pscustomobject]@{path='relative\lab-media.json';sha256=$hash}) 'Source manifest metadata is invalid.'
 Assert-Invalid ([pscustomobject]@{path=$manifest;sha256=$hash.ToUpperInvariant()}) 'Source manifest metadata is invalid.'
+foreach ($suffix in @([string][char]10, ([string][char]13 + [char]10))) {
+    Assert-Invalid ([pscustomobject]@{path=$manifest;sha256=($hash + $suffix)}) 'Source manifest metadata is invalid.'
+}
 $extra = [pscustomobject]@{path=$manifest;sha256=$hash}
 $extra | Add-Member -NotePropertyName 'source_authorized' -NotePropertyValue $true
 Assert-Invalid $extra 'Source manifest metadata is invalid.'
@@ -5987,6 +6056,7 @@ exit 0
             "function Wait-FirstBoot(", 1
         )[0]
         for item in (
+            "$PlanValue.plan_sha256 -cnotmatch '^[0-9a-f]{64}\\z'",
             "[Text.UTF8Encoding]::new($false, $true)",
             "[Security.Cryptography.SHA256]::Create()",
             "plan_sha256",
@@ -6090,6 +6160,15 @@ try {
     throw 'Noncanonical digest was accepted.'
 } catch {
     if ($_.Exception.Message -cne 'Provision plan SHA-256 metadata is invalid.') { throw }
+}
+foreach ($suffix in @([string][char]10, ([string][char]13 + [char]10))) {
+    $plan.plan_sha256 = '__EXPECTED_SHA__' + $suffix
+    try {
+        Assert-LabPlanDigest $plan
+        throw 'Newline-suffixed plan digest was accepted.'
+    } catch {
+        if ($_.Exception.Message -cne 'Provision plan SHA-256 metadata is invalid.') { throw }
+    }
 }
 $plan.plan_sha256 = '__EXPECTED_SHA__'
 Assert-LabPlanDigest $plan

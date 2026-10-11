@@ -818,6 +818,18 @@ for malformed metadata and retain a real SHA comparison for validly
 formatted but incorrect declarations. The exact artifact size and path
 checks remain separate and unchanged.
 
+Three remaining host SHA-256 declarations now also use an **absolute
+end-of-string anchor** (`\z`) rather than `$`: the source manifest
+receipt, the canonical provision-plan digest, and the guest-reported
+worker configuration digest before checkpoint. Otherwise a terminal
+LF/CRLF could pass initial metadata validation despite not being a
+64-character hash. Disposable WinPS5.1/PS7 cases verify malformed
+source-manifest and provision-plan digests fail specifically as
+metadata errors, and execute the host PASS worker-hash guard with
+valid, malformed, wrong-type and newline-suffixed values. These
+checks validate metadata shape; they do not replace independent
+file-content hashing or establish guest authenticity.
+
 WinPS5.1 and PowerShell 7 tests use disposable dummy packages to
 verify an unchanged staged copy, a deliberately modified source copied
 after a passing source hash, a wrong reported size and an actual NTFS
