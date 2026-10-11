@@ -41,6 +41,14 @@ function Get-TrustedWindowsSystemTool([ValidateSet('sc.exe','icacls.exe')][strin
     }
     return $trustedPath
 }
+function Assert-WorkerNativeToolSucceeded([string]$Operation, [int]$ExitCode) {
+    # Native command failures do not become terminating PowerShell errors
+    # merely because ErrorActionPreference is Stop. Refuse incomplete
+    # service/ACL configuration before proceeding to start the service.
+    if ($ExitCode -ne 0) {
+        throw ($Operation + ' failed with exit code ' + $ExitCode + '.')
+    }
+}
 Assert-Administrator
 Assert-SafeId $WorkerId
 $PythonExecutable = [IO.Path]::GetFullPath($PythonExecutable)
@@ -83,16 +91,24 @@ $existing = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 if ($existing) {
     if ($existing.Status -ne 'Stopped') { Stop-Service -Name $serviceName -Force -ErrorAction Stop }
     & $scPath delete $serviceName | Out-Null
+    Assert-WorkerNativeToolSucceeded 'sc delete' $LASTEXITCODE
     Start-Sleep -Seconds 2
 }
 $imagePath = '"' + $serviceExe + '" --service-name "' + $serviceName + '" --python "' + $PythonExecutable + '" --config "' + $configTarget + '" --logs "' + $logRoot + '"'
 & $scPath create $serviceName binPath= $imagePath start= auto obj= $ServiceAccount DisplayName= ('PSMatrix Worker ' + $WorkerId) | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'sc.exe create failed.' }
+Assert-WorkerNativeToolSucceeded 'sc create' $LASTEXITCODE
 & $scPath description $serviceName ('PSMatrix Windows PowerShell ' + $PowerShellVersion + ' worker') | Out-Null
+Assert-WorkerNativeToolSucceeded 'sc description' $LASTEXITCODE
 & $scPath failure $serviceName reset= 86400 actions= restart/5000/restart/15000/restart/60000 | Out-Null
+Assert-WorkerNativeToolSucceeded 'sc failure' $LASTEXITCODE
 & $scPath failureflag $serviceName 1 | Out-Null
+Assert-WorkerNativeToolSucceeded 'sc failureflag' $LASTEXITCODE
 & $icaclsPath $workerRoot /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' | Out-Null
-if ($ServiceAccount -ne 'LocalSystem') { & $icaclsPath $workerRoot /grant ($ServiceAccount + ':(OI)(CI)M') | Out-Null }
+Assert-WorkerNativeToolSucceeded 'icacls worker' $LASTEXITCODE
+if ($ServiceAccount -ne 'LocalSystem') {
+    & $icaclsPath $workerRoot /grant ($ServiceAccount + ':(OI)(CI)M') | Out-Null
+    Assert-WorkerNativeToolSucceeded 'icacls service-account' $LASTEXITCODE
+}
 if ($StartService) {
     Start-Service -Name $serviceName
     (Get-Service -Name $serviceName).WaitForStatus('Running',[TimeSpan]::FromSeconds(30))

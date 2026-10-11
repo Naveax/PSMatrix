@@ -67,6 +67,20 @@ redirecting the trusted directory. No real services or production ACLs
 are modified by these tests. This is a command-resolution boundary guard,
 not independent signature attestation of Windows system utilities.
 
+Native service and ACL utilities do not automatically produce terminating
+PowerShell errors on a nonzero process exit status. The worker installer
+previously checked only `sc.exe create`, allowing a failed service delete,
+description/failure-policy configuration or `icacls.exe` ACL update to be
+ignored and installation to continue. Each of its seven native service/ACL
+calls now immediately checks `$LASTEXITCODE` with
+`Assert-WorkerNativeToolSucceeded`; a nonzero exit fails closed before
+subsequent commands and before starting the worker service. The isolated
+WinPS5.1/PS7 RED/GREEN tests assert the check after every native invocation
+and exercise zero, negative and positive failing status codes without
+manipulating host services or ACLs. This covers reported native command
+failures; it does not itself establish the effective on-disk ACL or certify
+an actual guest service installation.
+
 The staged Python installer has a separate executable use boundary:
 after ZIP extraction and interpreter discovery, an installer that will
 actually run is rechecked immediately before `Start-Process`. The new

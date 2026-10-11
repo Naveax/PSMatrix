@@ -4064,6 +4064,65 @@ $afterFailure.Dispose()
                 )
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_worker_installer_fails_closed_on_every_native_service_acl_exit(self):
+        import re
+        import shutil
+        import subprocess
+
+        source = (
+            ROOT / "src" / "psmatrix" / "windows" / "install-worker.ps1"
+        ).read_text(encoding="utf-8")
+        marker = "function Assert-WorkerNativeToolSucceeded("
+        self.assertIn(marker, source)
+        helper = source[source.index(marker):source.index("\nAssert-Administrator", source.index(marker))]
+        expected = [
+            "sc delete",
+            "sc create",
+            "sc description",
+            "sc failure",
+            "sc failureflag",
+            "icacls worker",
+            "icacls service-account",
+        ]
+        observed = []
+        lines = source.splitlines()
+        for index, line in enumerate(lines):
+            if not ("& $scPath " in line or "& $icaclsPath " in line):
+                continue
+            self.assertLess(index + 1, len(lines))
+            after = lines[index + 1].strip()
+            guard = re.fullmatch(
+                r"Assert-WorkerNativeToolSucceeded '([^']+)' [$]LASTEXITCODE",
+                after,
+            )
+            self.assertIsNotNone(guard, "Native tool exit code not checked: " + line)
+            observed.append(guard.group(1))
+        self.assertEqual(observed, expected)
+
+        script = helper + """
+$ErrorActionPreference='Stop'
+Assert-WorkerNativeToolSucceeded 'sc create' 0
+foreach($exitCode in @(-1,1,5,9009)) {
+    $rejected=$false
+    try { Assert-WorkerNativeToolSucceeded 'icacls worker' $exitCode }
+    catch {
+        if ($_.Exception.Message -cne ('icacls worker failed with exit code ' + $exitCode + '.')) { throw }
+        $rejected=$true
+    }
+    if (-not $rejected) { throw 'Failed native ACL operation was accepted.' }
+}
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                check=False, timeout=35,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     def test_worker_installer_native_tools_ignore_path_and_function_shadowing(self):
         import os
         import shutil
