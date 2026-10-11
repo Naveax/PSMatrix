@@ -4063,6 +4063,74 @@ $afterFailure.Dispose()
                     shell + ": " + test_run.stdout + test_run.stderr,
                 )
 
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_guest_python_resolution_rejects_path_and_function_shadowing(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        guest = GUEST.read_text(encoding="utf-8")
+        self.assertIn("function Resolve-TrustedGuestPython", guest)
+        self.assertIn("$python = Resolve-TrustedGuestPython", guest)
+        self.assertNotIn("$python = Get-Command python.exe", guest)
+        start = guest.index("function Resolve-TrustedGuestPython(")
+        end = guest.index("\nfunction Set-RestrictedDirectoryAcl(", start)
+        helper = guest[start:end]
+
+        quote = lambda value: "'" + str(value).replace("'", "''") + "'"
+        with tempfile.TemporaryDirectory(prefix="psmatrix-python-command-") as root:
+            folder = Path(root)
+            good = folder / "machine-managed"
+            bad = folder / "user-writable"
+            good.mkdir()
+            bad.mkdir()
+            shutil.copyfile(Path(__import__("os").environ["SystemRoot"]) / "System32" / "cmd.exe", good / "python.exe")
+            shutil.copyfile(Path(__import__("os").environ["SystemRoot"]) / "System32" / "cmd.exe", bad / "python.exe")
+
+            helper = helper.replace(
+                "[Environment]::GetFolderPath('ProgramFiles')", quote(good)
+            ).replace(
+                "[Environment]::GetEnvironmentVariable('ProgramFiles(x86)', 'Machine')",
+                "$null",
+            )
+            script = helper + """
+$ErrorActionPreference='Stop'
+function python.exe { throw 'shadowed-python-function' }
+function Get-Command { throw 'shadowed-command-resolver' }
+$originalPath=$env:Path
+$env:Path=__BAD__ + ';' + $originalPath
+if ($null -ne (Resolve-TrustedGuestPython)) {
+    throw 'Untrusted PATH executable was accepted.'
+}
+$env:Path=__GOOD__ + ';' + $originalPath
+$found=Resolve-TrustedGuestPython
+if ($null -eq $found -or $found.CommandType -ne 'Application' -or
+    $found.Source -cne __EXPECTED__) {
+    throw 'Trusted application resolution failed or command function won.'
+}
+$link=__LINK__ + '-' + $PSVersionTable.PSVersion.Major
+New-Item -ItemType Junction -Path $link -Target __BAD__ -ErrorAction Stop | Out-Null
+$env:Path=$link + ';' + $originalPath
+if ($null -ne (Resolve-TrustedGuestPython)) {
+    throw 'Program Files junction redirected Python to untrusted bytes.'
+}
+""".replace("__BAD__", quote(bad)).replace(
+                "__GOOD__", quote(good)
+            ).replace("__EXPECTED__", quote(good / "python.exe")).replace(
+                "__LINK__", quote(good / "linked")
+            )
+            for executable in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(executable):
+                    continue
+                result = subprocess.run(
+                    [executable, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=30, check=False,
+                )
+                self.assertEqual(
+                    result.returncode, 0, executable + ": " + result.stdout + result.stderr
+                )
+
     def test_guest_requires_unique_bootstrap_template_or_install_script(self):
         guest = GUEST.read_text(encoding="utf-8")
         find_file = guest.split("function Find-File(", 1)[1].split(

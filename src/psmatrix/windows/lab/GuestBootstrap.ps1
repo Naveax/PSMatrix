@@ -385,6 +385,60 @@ function Find-UniqueWorkerWheel([string]$Root) {
     return $wheels[0].FullName
 }
 
+function Resolve-TrustedGuestPython() {
+    # First boot runs as SYSTEM. An unqualified Get-Command can select a
+    # PowerShell function/alias or a user-writable PATH executable. Accept
+    # only a real application in a machine-managed Program Files directory.
+    $trustedRoots = @(
+        [Environment]::GetFolderPath('ProgramFiles')
+        [Environment]::GetEnvironmentVariable('ProgramFiles(x86)', 'Machine')
+    )
+    $allowedPrefixes = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($root in $trustedRoots) {
+        if ([string]::IsNullOrWhiteSpace($root)) { continue }
+        $prefix = [IO.Path]::GetFullPath($root).TrimEnd([char[]]@('\', '/')) +
+            [IO.Path]::DirectorySeparatorChar
+        [void]$allowedPrefixes.Add($prefix)
+    }
+    $candidates = @(Microsoft.PowerShell.Core\Get-Command -Name python.exe -All -CommandType Application -ErrorAction SilentlyContinue)
+    foreach ($candidate in $candidates) {
+        if ($candidate.CommandType -ne [System.Management.Automation.CommandTypes]::Application -or
+            [string]::IsNullOrWhiteSpace([string]$candidate.Source)) {
+            continue
+        }
+        try { $fullPath = [IO.Path]::GetFullPath([string]$candidate.Source) }
+        catch { continue }
+        $isMachineManaged = $false
+        foreach ($prefix in $allowedPrefixes) {
+            if ($fullPath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+                $isMachineManaged = $true
+                break
+            }
+        }
+        if (-not $isMachineManaged) { continue }
+        # A path inside Program Files can still traverse a junction or link.
+        # Inspect the executable and all parents without following reparse nodes.
+        $current = $fullPath
+        $safe = $true
+        while (-not [string]::IsNullOrEmpty($current)) {
+            try {
+                $item = Microsoft.PowerShell.Management\Get-Item -LiteralPath $current -Force -ErrorAction Stop
+            }
+            catch { $safe = $false; break }
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                ($current -eq $fullPath -and $item.PSIsContainer)) {
+                $safe = $false
+                break
+            }
+            $next = [IO.Path]::GetDirectoryName($current)
+            if ($next -eq $current) { break }
+            $current = $next
+        }
+        if ($safe) { return $candidate }
+    }
+    return $null
+}
+
 function Set-RestrictedDirectoryAcl([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
         throw ('Restricted directory is missing: ' + $Path)
@@ -598,14 +652,14 @@ try {
     Set-RestrictedDirectoryAcl $signingRoot
 
     $pythonInstaller = Join-Path $bootstrapRoot 'python-installer.exe'
-    $python = Get-Command python.exe -ErrorAction SilentlyContinue
+    $python = Resolve-TrustedGuestPython
     if ($python -eq $null) {
         if (-not (Test-Path -LiteralPath $pythonInstaller -PathType Leaf)) { throw 'Python installer is missing.' }
         $process = Start-Process -FilePath $pythonInstaller -ArgumentList '/quiet InstallAllUsers=1 PrependPath=1 Include_test=0 Include_launcher=1' -Wait -PassThru
         if ($process.ExitCode -ne 0) { throw ('Python installer failed with exit code ' + $process.ExitCode) }
         $machinePath = [Environment]::GetEnvironmentVariable('Path','Machine')
         $env:Path = $machinePath + ';' + [Environment]::GetEnvironmentVariable('Path','User')
-        $python = Get-Command python.exe -ErrorAction SilentlyContinue
+        $python = Resolve-TrustedGuestPython
     }
     if ($python -eq $null) { throw 'python.exe was not found after installation.' }
 

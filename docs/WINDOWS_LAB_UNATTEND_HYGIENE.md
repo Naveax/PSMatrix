@@ -38,6 +38,22 @@ the verified-archive/reopened-archive TOCTOU inside the guest; it does not
 establish trust against a fully compromised elevated guest or replace real
 legacy Windows guest acceptance.
 
+The elevated guest bootstrap previously looked up `python.exe` through
+unqualified `Get-Command`, which can resolve a PowerShell function/alias
+or a user-writable executable earlier in PATH rather than the intended
+machine installation. Both pre-existing and post-installer Python selection
+now call `Resolve-TrustedGuestPython`. This enumerates **Application**
+commands (not functions or aliases), requires the executable to be under
+a machine-managed Program Files root, and rejects reparse points on the
+executable and its ancestor chain. An untrusted PATH hit is ignored; in
+the absence of a qualifying installed interpreter, the already validated
+staged Python installer is used and the resulting interpreter is resolved
+again. WinPS5.1/PS7 isolated tests cover command/function shadowing,
+user-writable PATH entries, Program Files junction redirection and
+allowed application lookup. This restricts the elevated command resolution
+boundary, but does not attest the interpreter binary or protect against
+a privileged attacker capable of changing machine-managed paths.
+
 The source-level mitigation adds two fail-closed checks:
 
 1. During `SetupComplete`, the guest bootstrap removes files named
