@@ -1351,8 +1351,8 @@ function Read-BootstrapResult([string]$VhdPath, [string]$ExpectedBootstrapNonce)
                 $result.service_name -isnot [string] -or
                 $result.service_name -cne ('PSMatrixWorker-' + $result.worker_id) -or
                 $result.bootstrap_nonce -isnot [string] -or
-                $result.bootstrap_nonce -cnotmatch '^[0-9a-f]{64}$' -or
-                $ExpectedBootstrapNonce -cnotmatch '^[0-9a-f]{64}$' -or
+                $result.bootstrap_nonce -cnotmatch '^[0-9a-f]{64}\z' -or
+                $ExpectedBootstrapNonce -cnotmatch '^[0-9a-f]{64}\z' -or
                 $result.bootstrap_nonce -cne $ExpectedBootstrapNonce -or
                 $result.authoritative -isnot [bool] -or
                 $result.authoritative -ne $true

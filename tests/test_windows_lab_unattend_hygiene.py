@@ -3024,6 +3024,77 @@ if (-not $rejected) { throw 'Failed Storage volume query accepted.' }
         )
         self.assertIn("Dismount-VHD -Path $VhdPath", read)
 
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_bootstrap_nonce_requires_absolute_end_in_guest_and_host(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        guest = GUEST.read_text(encoding="utf-8")
+        guest_start = guest.index("    if ($config.bootstrap_nonce -isnot [string] -or")
+        guest_end = guest.index("    $expected = [string]$config.expected_version", guest_start)
+        guest_guard = guest[guest_start:guest_end]
+        host_start = host.index("                $result.bootstrap_nonce -isnot [string] -or")
+        host_end = host.index("                $result.authoritative -isnot [bool]", host_start)
+        host_guard = host[host_start:host_end].strip()
+        self.assertIn("$config.bootstrap_nonce -cnotmatch '^[0-9a-f]{64}\\z'", guest_guard)
+        self.assertIn("$result.bootstrap_nonce -cnotmatch '^[0-9a-f]{64}\\z'", host_guard)
+        self.assertIn("$ExpectedBootstrapNonce -cnotmatch '^[0-9a-f]{64}\\z'", host_guard)
+        self.assertTrue(host_guard.endswith("-or"))
+        host_guard = host_guard[:-3].rstrip()
+
+        script = (
+            "function Test-GuestNonce($config) {\n" + guest_guard + "}\n"
+            + "function Test-HostNonce($result, $ExpectedBootstrapNonce) {\n"
+            + "    if (\n" + host_guard + "\n    ) { throw 'Host bootstrap nonce is invalid.' }\n"
+            + "}\n"
+            + r"""
+$ErrorActionPreference='Stop'
+$valid='a' * 64
+$guestConfig=[pscustomobject]@{bootstrap_nonce=$valid}
+$hostResult=[pscustomobject]@{bootstrap_nonce=$valid}
+Test-GuestNonce $guestConfig
+Test-HostNonce $hostResult $valid
+foreach($invalid in @(
+    ($valid + [char]10),
+    ($valid + [char]13 + [char]10),
+    (' ' + $valid),
+    ($valid + '0'),
+    ($valid.Substring(1)),
+    ($valid.ToUpperInvariant()),
+    [bool]$true,
+    $null
+)){
+    $guestConfig.bootstrap_nonce=$invalid
+    $denied=$false
+    try { Test-GuestNonce $guestConfig } catch {$denied=$true}
+    if(-not $denied){throw 'Guest accepted malformed bootstrap nonce.'}
+    $hostResult.bootstrap_nonce=$invalid
+    $denied=$false
+    try { Test-HostNonce $hostResult $invalid } catch {$denied=$true}
+    if(-not $denied){throw 'Host accepted matching malformed nonce values.'}
+}
+$hostResult.bootstrap_nonce=$valid
+foreach($invalidExpected in @(($valid + [char]10), ($valid + [char]13 + [char]10))){
+    $denied=$false
+    try { Test-HostNonce $hostResult $invalidExpected } catch {$denied=$true}
+    if(-not $denied){throw 'Host accepted malformed expected nonce.'}
+}
+Test-HostNonce $hostResult $valid
+"""
+        )
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=35, check=False,
+            )
+            self.assertEqual(
+                result.returncode, 0, exe + ": " + result.stdout + result.stderr
+            )
+
     def test_guest_success_is_bound_to_a_new_random_boot_nonce(self):
         host = HOST.read_text(encoding="utf-8")
         guest = GUEST.read_text(encoding="utf-8")
@@ -3038,14 +3109,14 @@ if (-not $rejected) { throw 'Failed Storage volume query accepted.' }
             "function Read-BootstrapResult([string]$VhdPath, [string]$ExpectedBootstrapNonce)",
             "'worker_config_sha256','service_name','bootstrap_nonce'",
             "$result.bootstrap_nonce -isnot [string]",
-            "$result.bootstrap_nonce -cnotmatch '^[0-9a-f]{64}$'",
+            "$result.bootstrap_nonce -cnotmatch '^[0-9a-f]{64}\\z'",
             "$result.bootstrap_nonce -cne $ExpectedBootstrapNonce",
             "Read-BootstrapResult $vhd $bootstrapNonce",
         ):
             self.assertIn(required, host)
         for required in (
             "$config.bootstrap_nonce -isnot [string]",
-            "$config.bootstrap_nonce -cnotmatch '^[0-9a-f]{64}$'",
+            "$config.bootstrap_nonce -cnotmatch '^[0-9a-f]{64}\\z'",
             "bootstrap_nonce = [string]$config.bootstrap_nonce",
             "Per-boot bootstrap correlation nonce is missing or malformed.",
         ):

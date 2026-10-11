@@ -867,6 +867,17 @@ digests and sizes, expected OS and nonce, UTF-8 BOM, and byte-for-byte
 preservation when another writer already created that leaf. This is
 atomic leaf creation, not protection against changes to parent paths.
 
+The guest bootstrap's per-boot 256-bit correlation nonce and the host
+checkpoint reader's PASS nonce comparison now use absolute string-end
+matching (`\z`) instead of `$`. A malformed otherwise-valid 64-hex
+nonce suffixed with LF/CRLF must be refused as invalid, even when both
+host-supplied and guest-reported strings share the same suffix. The
+guest rejects it before package extraction or service installation.
+WinPS5.1/PS7 dynamic tests exercise valid, whitespace/newline, uppercase,
+short/long and wrong-type nonce values in the original host and guest
+guard expressions. The nonce remains a replay-correlation token, not
+cryptographic guest attestation.
+
 The guest now performs an **independent first-boot verification** of
 the four offline staged packages before extracting any ZIP or running
 the Python installer. The host embeds the source manifest's original

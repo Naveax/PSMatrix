@@ -525,7 +525,7 @@ try {
     Assert-GuestExpectedOs $config.expected_os
     # Refuse a missing/invalid nonce before side effects or service install.
     if ($config.bootstrap_nonce -isnot [string] -or
-        $config.bootstrap_nonce -cnotmatch '^[0-9a-f]{64}$') {
+        $config.bootstrap_nonce -cnotmatch '^[0-9a-f]{64}\z') {
         throw 'Per-boot bootstrap correlation nonce is missing or malformed.'
     }
     $expected = [string]$config.expected_version
