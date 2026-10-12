@@ -290,35 +290,80 @@ jobs:
               $module = 'tests.' + [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
               Write-Host "::group::$module"
               if ($file.Name -eq 'test_final_v2_release_control_migration.py' -and
-                  $env:GITHUB_EVENT_NAME -eq 'pull_request') {
-                  # Original 55-path Frozen Final-V2 closure remains immutable.
-                  # Protected PR changes are always validated at exact event HEAD.
-                  $baseSha = ([string]$env:PSMATRIX_PR_BASE_SHA).ToLowerInvariant()
-                  if ($baseSha -cnotmatch '^[0-9a-f]{40}\z') {
-                      throw 'Frozen Final-V2 PR base SHA is invalid.'
+                  ($env:GITHUB_EVENT_NAME -eq 'pull_request' -or
+                   (($env:GITHUB_EVENT_NAME -in @('push', 'workflow_dispatch')) -and
+                    $env:GITHUB_REF -eq 'refs/heads/main'))) {
+                  # Frozen Final-V2 is an immutable historical 55-path source
+                  # closure, NOT a blanket ban on later feature changes.
+                  # Select a real ancestor whose complete changed-path set
+                  # exactly matches the original control contract, then
+                  # reject every intervening protected-path edit (even reverted
+                  # edits). Run the original historical test unchanged.
+                  $controlBase = '19938a848e4d558c1c1db177a73c9cd5a3639b13'
+                  $finalSource = '43922a5544745c64165df4aedd9c57391bfe6c51'
+                  foreach ($sha in @($controlBase, $finalSource)) {
+                      if ($sha -cnotmatch '^[0-9a-f]{40}\z') {
+                          throw 'Frozen Final-V2 immutable source SHA is malformed.'
+                      }
+                      & git cat-file -e ($sha + '^{commit}')
+                      if ($LASTEXITCODE -ne 0) { throw 'Frozen Final-V2 immutable source commit is unavailable.' }
                   }
-                  & git cat-file -e ($baseSha + '^{commit}')
-                  if ($LASTEXITCODE -ne 0) { throw 'Frozen PR base commit missing.' }
-                  & git merge-base --is-ancestor $baseSha HEAD
-                  if ($LASTEXITCODE -ne 0) { throw 'Frozen PR base is not an ancestor of HEAD.' }
+                  & git merge-base --is-ancestor $controlBase HEAD
+                  if ($LASTEXITCODE -ne 0) { throw 'Frozen Final-V2 historical control base is not an ancestor.' }
+
+                  if ($env:GITHUB_EVENT_NAME -eq 'pull_request') {
+                      $baseSha = ([string]$env:PSMATRIX_PR_BASE_SHA).ToLowerInvariant()
+                      if ($baseSha -cnotmatch '^[0-9a-f]{40}\z') {
+                          throw 'Frozen Final-V2 PR base SHA is invalid.'
+                      }
+                      & git cat-file -e ($baseSha + '^{commit}')
+                      if ($LASTEXITCODE -ne 0) { throw 'Frozen PR base commit missing.' }
+                      & git merge-base --is-ancestor $baseSha HEAD
+                      if ($LASTEXITCODE -ne 0) { throw 'Frozen PR base is not an ancestor of HEAD.' }
+                  }
+
                   $contractPath = 'ga-packs/03-authoritative-windows/final-release-lock-signing-control-contract.json'
-                  $baseContract = (& git show ("{0}:{1}" -f $baseSha, $contractPath) | Out-String)
-                  if ($LASTEXITCODE -ne 0) { throw 'Frozen PR base contract unavailable.' }
-                  $protectedContract = $baseContract | ConvertFrom-Json
-                  $protected = @($protectedContract.control_source.changed_path_allowlist)
+                  $contractJson = (& git show ("{0}:{1}" -f $controlBase, $contractPath) | Out-String)
+                  if ($LASTEXITCODE -ne 0) { throw 'Frozen Final-V2 immutable control contract is unavailable.' }
+                  $contract = $contractJson | ConvertFrom-Json
+                  $protected = @($contract.control_source.changed_path_allowlist | Sort-Object -Unique)
                   if ($protected.Count -ne 55 -or
-                      $protectedContract.control_source.runtime_source_changes_allowed -ne $false) {
-                      throw 'Frozen Final-V2 contract differs from strict 55-path closure.'
+                      $contract.control_source.runtime_source_changes_allowed -ne $false -or
+                      $contract.final_release_commit -cne $finalSource) {
+                      throw 'Frozen Final-V2 immutable closure contract does not match the strict historical source.'
                   }
-                  $changed = @(git diff --no-renames --name-only $baseSha HEAD --)
-                  if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect PR changed paths.' }
-                  $protectedChanges = @($changed | Where-Object { $protected -ccontains $_ })
-                  if ($protectedChanges.Count -eq 0) {
-                      # Validate the UNMODIFIED historical test in an isolated
-                      # snapshot of the exact PR base. Never waive its checks.
+
+                  $candidates = @(git rev-list --first-parent --max-count=512 HEAD)
+                  if ($LASTEXITCODE -ne 0 -or $candidates.Count -lt 1) {
+                      throw 'Frozen Final-V2 historical ancestor enumeration failed.'
+                  }
+                  $frozenSha = $null
+                  foreach ($candidate in $candidates) {
+                      $candidateFiles = @(git diff --no-renames --name-only $finalSource $candidate --)
+                      if ($LASTEXITCODE -ne 0) { throw 'Frozen Final-V2 historical source diff failed.' }
+                      if ($candidateFiles.Count -ne 55) { continue }
+                      $difference = @(Compare-Object -ReferenceObject $protected -DifferenceObject @($candidateFiles | Sort-Object -Unique))
+                      if ($difference.Count -eq 0) {
+                          $frozenSha = [string]$candidate
+                          break
+                      }
+                  }
+                  if ([string]::IsNullOrWhiteSpace($frozenSha)) {
+                      throw 'No exact 55-path Frozen Final-V2 historical checkpoint exists within 512 first-parent commits.'
+                  }
+                  if ($frozenSha -ne (git rev-parse HEAD)) {
+                      # Git log examines each commit, not only the net diff.
+                      # A protected edit followed by a revert is still refused.
+                      $history = @(git log --pretty=format: --name-only --no-renames ($frozenSha + '..HEAD') -- |
+                          Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                      if ($LASTEXITCODE -ne 0) { throw 'Cannot verify intervening protected-path history.' }
+                      $protectedEdits = @($history | Where-Object { $protected -ccontains $_ } | Sort-Object -Unique)
+                      if ($protectedEdits.Count -ne 0) {
+                          throw 'Protected Frozen Final-V2 paths changed after the verified historical checkpoint.'
+                      }
                       $frozenRoot = Join-Path $env:RUNNER_TEMP ("psmatrix-frozen-base-{0}-{1}" -f $env:GITHUB_RUN_ID, $env:GITHUB_RUN_ATTEMPT)
                       if (Test-Path -LiteralPath $frozenRoot) { throw 'Frozen base worktree already exists.' }
-                      & git worktree add --detach -- $frozenRoot $baseSha
+                      & git worktree add --detach -- $frozenRoot $frozenSha
                       if ($LASTEXITCODE -ne 0) { throw 'Frozen base worktree creation failed.' }
                       $oldPythonPath = $env:PYTHONPATH
                       try {
@@ -337,12 +382,12 @@ jobs:
                           & git worktree remove --force -- $frozenRoot
                           if ($LASTEXITCODE -ne 0) { throw 'Frozen base worktree cleanup failed.' }
                       }
-                      Write-Host "frozen_finalv2=PASS base=$baseSha protected_changed=0"
+                      Write-Host "frozen_finalv2=PASS snapshot=$frozenSha untouched_protected=55"
                       $executedModules += 1
                       Write-Host '::endgroup::'
                       continue
                   }
-                  Write-Host "frozen_finalv2=HEAD protected_changed=$($protectedChanges.Count)"
+                  Write-Host "frozen_finalv2=HEAD strict_closure=55"
               }
               if ($file.Name -eq 'test_oci.py') {
                   & python -m unittest "tests.test_oci.OciRuntimeTests.test_image_reference_validation" -v
