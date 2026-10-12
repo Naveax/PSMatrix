@@ -4375,6 +4375,85 @@ if ((Assert-SafeWorkerInstallDestinations $root 'fixture') -cne $worker) {
                 self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_certification_manifest_output_is_atomic_and_reparse_safe(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        source = (ROOT / "src/psmatrix/windows/prepare-certification.ps1").read_text(encoding="utf-8")
+        self.assertIn("function Assert-SafeCertificationManifestDestination(", source)
+        self.assertIn("function Write-SafeCertificationManifest(", source)
+        self.assertIn("$full = Write-SafeCertificationManifest $Output ($manifest | ConvertTo-Json -Depth 8)", source)
+        self.assertNotIn("[IO.File]::WriteAllText($full", source)
+        start = source.index("function Assert-SafeCertificationManifestDestination(")
+        end = source.index("\n$powershellPath = Get-TrustedCertificationPowerShell", start)
+        helpers = source[start:end]
+        def quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+        with tempfile.TemporaryDirectory(prefix="psmatrix-cert-manifest-write-") as temp:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                top = Path(temp) / exe.replace(".", "-")
+                top.mkdir()
+                script = helpers + """
+$ErrorActionPreference='Stop'
+$top=__TOP__
+$out=Join-Path $top 'outside'
+$trusted=Join-Path $top 'trusted'
+New-Item -ItemType Directory -Path $out,$trusted -ErrorAction Stop | Out-Null
+$target=Join-Path $trusted 'manifest.json'
+[IO.File]::WriteAllText($target, 'original')
+$result=Write-SafeCertificationManifest $target '{"tag":"updated"}'
+if ($result -cne $target -or [IO.File]::ReadAllText($target) -cne '{"tag":"updated"}') {
+    throw 'Safe existing manifest was not replaced.'
+}
+$new=Join-Path $trusted 'new.json'
+Write-SafeCertificationManifest $new '{"tag":"fresh"}' | Out-Null
+if ([IO.File]::ReadAllText($new) -cne '{"tag":"fresh"}') {
+    throw 'New manifest was not published.'
+}
+$bytes=[IO.File]::ReadAllBytes($new)
+if ($bytes.Length -lt 1 -or $bytes[0] -ne [byte][char]'{' ) { throw 'Manifest gained an unexpected BOM.' }
+$original=Join-Path $out 'unmodified.json'
+[IO.File]::WriteAllText($original, 'protected original bytes')
+$hardlink=Join-Path $trusted 'hardlinked.json'
+New-Item -ItemType HardLink -Path $hardlink -Target $original -ErrorAction Stop | Out-Null
+Write-SafeCertificationManifest $hardlink '{"tag":"isolated"}' | Out-Null
+if ([IO.File]::ReadAllText($original) -cne 'protected original bytes') {
+    throw 'Publishing a manifest modified an external hard link.'
+}
+if ([IO.File]::ReadAllText($hardlink) -cne '{"tag":"isolated"}') {
+    throw 'Hardlinked destination was not replaced.'
+}
+function Expect-UnsafeOutput([string]$candidate) {
+    $failed=$false
+    try { Write-SafeCertificationManifest $candidate '{"tag":"forbidden"}' | Out-Null }
+    catch { $failed=$true }
+    if (-not $failed) { throw 'Unsafe manifest path accepted.' }
+}
+$junctionParent=Join-Path $top 'linked'
+New-Item -ItemType Junction -Path $junctionParent -Target $out -ErrorAction Stop | Out-Null
+Expect-UnsafeOutput (Join-Path $junctionParent 'manifest.json')
+$junctionLeaf=Join-Path $trusted 'redirected.json'
+New-Item -ItemType Junction -Path $junctionLeaf -Target $out -ErrorAction Stop | Out-Null
+Expect-UnsafeOutput $junctionLeaf
+Expect-UnsafeOutput (Join-Path (Join-Path $top 'absent') 'manifest.json')
+if ((Get-ChildItem -LiteralPath $out -Force | Measure-Object).Count -ne 1) {
+    throw 'Unsafe output touched outside destination.'
+}
+if ((Get-ChildItem -LiteralPath $trusted -Force -Filter '*.tmp' | Measure-Object).Count -ne 0) {
+    throw 'Temporary manifest files remained.'
+}
+""".replace("__TOP__", quote(top))
+                result = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=45, check=False,
+                )
+                self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     def test_image_certification_pins_native_powershell_and_collector(self):
         import os
         import shutil

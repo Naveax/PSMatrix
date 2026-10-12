@@ -81,6 +81,26 @@ regressions exercise missing-leaf, dangling-junction, unchanged subtree,
 and all four `ShouldProcess`/receipt combinations with mocked
 deletion. They never remove a real worker.
 
+The certification manifest output previously used
+`[IO.File]::WriteAllText` directly against a caller-supplied path.
+A reparse-point destination or parent could redirect the write, a
+pre-existing hard link could modify another file, and interruption
+could leave a truncated manifest. `Write-SafeCertificationManifest`
+now accepts only absolute local paths whose existing directory
+ancestors and destination entries contain no reparse point or
+unexpected file type. It writes complete UTF-8-no-BOM JSON to a
+create-only exclusive temporary file in the destination directory,
+flushes it, rechecks the destination, then publishes via
+`File.Move` (new output) or `File.Replace` (existing regular output).
+`File.Replace` keeps a pre-existing hard-linked original untouched;
+temporary files and replace backups are removed on handled outcomes.
+WinPS5.1/PS7 RED/GREEN tests exercise safe creation and replacement,
+hard links, parent/leaf junctions, missing parents, content integrity,
+and absence of temporary output. Concurrent privileged path swaps or
+abrupt termination can still invalidate this non-transactional
+preflight or leave a staging/backup file; real guest acceptance remains
+separate.
+
 Windows image certification also had a command-resolution boundary:
 `prepare-certification.ps1` previously invoked bare `powershell.exe`
 while collecting identity metadata, allowing functions/aliases or an
