@@ -40,6 +40,13 @@ class CIExactEventShaCheckoutTests(unittest.TestCase):
         self.assertIn("$env:GITHUB_EVENT_NAME -eq 'pull_request'", source)
         self.assertIn("$env:GITHUB_REF -eq 'refs/heads/main'", source)
         self.assertIn("git merge-base --is-ancestor $baseSha HEAD", source)
+        self.assertIn("git log --first-parent -m --pretty=format: --name-only --no-renames", source)
+        self.assertIn("$approvedPolicyPaths -cnotcontains $_", source)
+        self.assertIn("throw 'Frozen Final-V2 non-policy protected paths were edited after immutable control base.'", source)
+        self.assertLess(
+            source.index("if ($unexpectedProtected.Count -ne 0)"),
+            source.index("git rev-list --first-parent --max-count=512 HEAD"),
+        )
         self.assertIn("git rev-list --first-parent --max-count=512 HEAD", source)
         self.assertIn("git diff --no-renames --name-only $finalSource $candidate --", source)
         self.assertIn("Compare-Object -ReferenceObject $protected", source)
