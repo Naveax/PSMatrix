@@ -4375,6 +4375,86 @@ if ((Assert-SafeWorkerInstallDestinations $root 'fixture') -cne $worker) {
                 self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_worker_rotation_rejects_wildcard_identity_and_reparse_credentials(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        source = (ROOT / "src/psmatrix/windows/rotate-worker-credentials.ps1").read_text(encoding="utf-8")
+        helper_name = "function Assert-SafeCredentialRotation("
+        self.assertIn(helper_name, source)
+        self.assertIn("$validated = Assert-SafeCredentialRotation $WorkerId $InstallRoot $backupName", source)
+        self.assertLess(source.index("$validated = Assert-SafeCredentialRotation"),
+                        source.index("$service = Get-Service"))
+        self.assertIn("[Guid]::NewGuid().ToString('N')", source)
+        self.assertIn("Assert-CredentialRotationTree $backup", source)
+        self.assertIn("Assert-CredentialRotationTree $credentials", source)
+        self.assertIn("Remove-Item -LiteralPath $credentials -Recurse -Force -ErrorAction Stop", source)
+        helper = source[source.index("function Assert-CredentialRotationDirectory("):
+                        source.index("\n$backupName = 'credentials-backup-'")]
+        def quote(v):
+            return "'" + str(v).replace("'", "''") + "'"
+        with tempfile.TemporaryDirectory(prefix="psmatrix-credential-rotation-") as temp:
+            top = Path(temp)
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                base = top / exe.replace(".", "-")
+                root = base / "installed"
+                worker = root / "worker-01"
+                creds = worker / "credentials"
+                outside = base / "outside"
+                creds.mkdir(parents=True)
+                outside.mkdir()
+                (creds / "private-key.pem").write_text("fake", encoding="utf-8")
+                script = helper + """
+$ErrorActionPreference='Stop'
+$root=__ROOT__
+$worker=__WORKER__
+$creds=__CREDS__
+$outside=__OUTSIDE__
+$backupName='credentials-backup-0123456789abcdef0123456789abcdef'
+$workspace=Join-Path $worker 'workspace'
+New-Item -ItemType Directory -Path $workspace -ErrorAction Stop | Out-Null
+New-Item -ItemType Junction -Path (Join-Path $workspace 'independent-link') -Target $outside -ErrorAction Stop | Out-Null
+function Expect-Refusal([string]$id,[string]$rootValue,[string]$backupValue) {
+    $refused=$false
+    try { Assert-SafeCredentialRotation $id $rootValue $backupValue | Out-Null }
+    catch { $refused=$true }
+    if (-not $refused) { throw 'Unsafe credential rotation was accepted.' }
+}
+$validated=Assert-SafeCredentialRotation 'worker-01' $root $backupName
+if ($validated.worker -cne $worker -or $validated.credentials -cne $creds) {
+    throw 'Valid rotation target was rejected.'
+}
+foreach ($bad in @('worker-*','*','..','worker/01',[string]('worker-01'+[char]10))) {
+    Expect-Refusal $bad $root $backupName
+}
+Expect-Refusal 'worker-01' ([IO.Path]::GetPathRoot($root)) $backupName
+Expect-Refusal 'worker-01' $root 'credentials-backup-unsupported'
+$back=Join-Path $worker $backupName
+New-Item -ItemType Junction -Path $back -Target $outside -ErrorAction Stop | Out-Null
+Expect-Refusal 'worker-01' $root $backupName
+[IO.Directory]::Delete($back)
+New-Item -ItemType Directory -Path $back -ErrorAction Stop | Out-Null
+Expect-Refusal 'worker-01' $root $backupName
+[IO.Directory]::Delete($back)
+$nested=Join-Path $creds 'redirect'
+New-Item -ItemType Junction -Path $nested -Target $outside -ErrorAction Stop | Out-Null
+Expect-Refusal 'worker-01' $root $backupName
+[IO.Directory]::Delete($nested)
+$parent=Join-Path $creds 'private-key.pem'
+if ([IO.File]::ReadAllText($parent) -cne 'fake') { throw 'Read-only fixture mutated.' }
+""".replace("__ROOT__", quote(root)).replace("__WORKER__", quote(worker)).replace(
+                    "__CREDS__", quote(creds)).replace("__OUTSIDE__", quote(outside))
+                completed = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    check=False, timeout=50,
+                )
+                self.assertEqual(completed.returncode, 0, exe + ": " + completed.stdout + completed.stderr)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     def test_worker_installer_whatif_has_no_write_or_service_side_effects(self):
         import os
         import shutil

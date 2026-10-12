@@ -81,6 +81,25 @@ regressions exercise missing-leaf, dangling-junction, unchanged subtree,
 and all four `ShouldProcess`/receipt combinations with mocked
 deletion. They never remove a real worker.
 
+Credential rotation had an independent elevated boundary: the
+`rotate-worker-credentials.ps1` WorkerId was previously passed directly
+to wildcard-aware `Get-Service`/`Stop-Service` and used in worker
+filesystem paths. The script now validates the same strict 64-character
+ASCII worker ID policy **before** service lookup. Its rotation backup
+receives a fresh GUID name rather than a second-resolution timestamp,
+and installation roots must be local absolute non-drive-root paths.
+Existing worker ancestors, credential trees and backups reject junctions,
+symlinks and other reparse points, including broken links. Existing
+backup names are not reused, and both the newly staged backup and
+resulting credential tree are rechecked before starting the worker.
+Before rollback, both backup and existing credential trees are checked
+again before any recursive deletion or move. Isolated WinPS5.1/PS7
+RED/GREEN fixtures cover valid IDs, service-wildcard characters,
+trailing linefeeds, drive roots, backup collisions and reparse links;
+these fixtures do not stop services or handle real credentials.
+This is path validation, not a race-free handle-based filesystem
+transaction, and it does not attest the supplied Python executable.
+
 The worker installer previously accepted pre-existing junction/reparse
 redirection in its installation directory, worker-specific directories,
 or service binary/config/harness destinations. Because the installer runs
