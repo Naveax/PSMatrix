@@ -30,5 +30,22 @@ class CIExactEventShaCheckoutTests(unittest.TestCase):
         self.assertLess(fetch, checkout)
 
 
+    def test_frozen_finalv2_guard_isolated_base_and_protected_head(self) -> None:
+        source = WORKFLOW.read_text(encoding="utf-8")
+        frozen = (ROOT / "tests" / "test_final_v2_release_control_migration.py").read_text(encoding="utf-8")
+        self.assertIn("self.assertEqual(changed, allowed)", frozen)
+        self.assertIn("self.assertEqual(len(changed), 55)", frozen)
+        self.assertIn("github.event.pull_request.base.sha", source)
+        self.assertIn("git merge-base --is-ancestor $baseSha HEAD", source)
+        self.assertIn("git diff --no-renames --name-only $baseSha HEAD --", source)
+        self.assertIn("$protected -ccontains $_", source)
+        self.assertIn("$protectedChanges.Count -eq 0", source)
+        self.assertIn("& git worktree add --detach -- $frozenRoot $baseSha", source)
+        self.assertIn("& python -m unittest $module -v", source)
+        self.assertIn("& git worktree remove --force -- $frozenRoot", source)
+        self.assertIn("throw 'Frozen Final-V2 historical test failed.'", source)
+        self.assertIn("frozen_finalv2=HEAD protected_changed=", source)
+
+
 if __name__ == "__main__":
     unittest.main()
