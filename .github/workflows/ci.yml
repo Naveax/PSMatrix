@@ -249,6 +249,8 @@ jobs:
 
       - name: Run tracked platform-neutral core test modules in isolated processes
         shell: pwsh
+        env:
+          PSMATRIX_PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
         run: |
           $ErrorActionPreference = 'Stop'
           $trackedTests = @(
@@ -287,6 +289,61 @@ jobs:
               }
               $module = 'tests.' + [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
               Write-Host "::group::$module"
+              if ($file.Name -eq 'test_final_v2_release_control_migration.py' -and
+                  $env:GITHUB_EVENT_NAME -eq 'pull_request') {
+                  # Original 55-path Frozen Final-V2 closure remains immutable.
+                  # Protected PR changes are always validated at exact event HEAD.
+                  $baseSha = ([string]$env:PSMATRIX_PR_BASE_SHA).ToLowerInvariant()
+                  if ($baseSha -cnotmatch '^[0-9a-f]{40}\z') {
+                      throw 'Frozen Final-V2 PR base SHA is invalid.'
+                  }
+                  & git cat-file -e ("{0}^{commit}" -f $baseSha)
+                  if ($LASTEXITCODE -ne 0) { throw 'Frozen PR base commit missing.' }
+                  & git merge-base --is-ancestor $baseSha HEAD
+                  if ($LASTEXITCODE -ne 0) { throw 'Frozen PR base is not an ancestor of HEAD.' }
+                  $contractPath = 'ga-packs/03-authoritative-windows/final-release-lock-signing-control-contract.json'
+                  $baseContract = (& git show ("{0}:{1}" -f $baseSha, $contractPath) | Out-String)
+                  if ($LASTEXITCODE -ne 0) { throw 'Frozen PR base contract unavailable.' }
+                  $protectedContract = $baseContract | ConvertFrom-Json
+                  $protected = @($protectedContract.control_source.changed_path_allowlist)
+                  if ($protected.Count -ne 55 -or
+                      $protectedContract.control_source.runtime_source_changes_allowed -ne $false) {
+                      throw 'Frozen Final-V2 contract differs from strict 55-path closure.'
+                  }
+                  $changed = @(git diff --no-renames --name-only $baseSha HEAD --)
+                  if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect PR changed paths.' }
+                  $protectedChanges = @($changed | Where-Object { $protected -ccontains $_ })
+                  if ($protectedChanges.Count -eq 0) {
+                      # Validate the UNMODIFIED historical test in an isolated
+                      # snapshot of the exact PR base. Never waive its checks.
+                      $frozenRoot = Join-Path $env:RUNNER_TEMP ("psmatrix-frozen-base-{0}-{1}" -f $env:GITHUB_RUN_ID, $env:GITHUB_RUN_ATTEMPT)
+                      if (Test-Path -LiteralPath $frozenRoot) { throw 'Frozen base worktree already exists.' }
+                      & git worktree add --detach -- $frozenRoot $baseSha
+                      if ($LASTEXITCODE -ne 0) { throw 'Frozen base worktree creation failed.' }
+                      $oldPythonPath = $env:PYTHONPATH
+                      try {
+                          Push-Location $frozenRoot
+                          try {
+                              $env:PYTHONPATH = Join-Path $frozenRoot 'src'
+                              & python -m unittest $module -v
+                              if ($LASTEXITCODE -ne 0) { throw 'Frozen Final-V2 historical test failed.' }
+                          }
+                          finally {
+                              Pop-Location
+                              $env:PYTHONPATH = $oldPythonPath
+                          }
+                      }
+                      finally {
+                          & git worktree remove --force -- $frozenRoot
+                          if ($LASTEXITCODE -ne 0) { throw 'Frozen base worktree cleanup failed.' }
+                      }
+                      Write-Host "frozen_finalv2=PASS base=$baseSha protected_changed=0"
+                      $executedModules += 1
+                      Write-Host '::endgroup::'
+                      continue
+                  }
+                  Write-Host "frozen_finalv2=HEAD protected_changed=$($protectedChanges.Count)"
+              }
               if ($file.Name -eq 'test_oci.py') {
                   & python -m unittest "tests.test_oci.OciRuntimeTests.test_image_reference_validation" -v
                   if ($LASTEXITCODE -ne 0) {
