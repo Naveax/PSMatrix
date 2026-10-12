@@ -56,6 +56,12 @@ $ConfigPath = [IO.Path]::GetFullPath($ConfigPath)
 if (-not (Test-Path -LiteralPath $PythonExecutable -PathType Leaf)) { throw 'Python executable was not found.' }
 if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) { throw 'Worker configuration was not found.' }
 $serviceName = 'PSMatrixWorker-' + $WorkerId
+# This script advertises SupportsShouldProcess. Nothing below this boundary
+# may run on -WhatIf or a declined -Confirm: it writes worker files,
+# recompiles the host, replaces services and changes machine ACLs.
+if (-not $PSCmdlet.ShouldProcess($serviceName, 'Install or reconfigure Windows worker and its service')) {
+    return
+}
 $workerRoot = Join-Path $InstallRoot $WorkerId
 $binRoot = Join-Path $workerRoot 'bin'
 $configRoot = Join-Path $workerRoot 'config'

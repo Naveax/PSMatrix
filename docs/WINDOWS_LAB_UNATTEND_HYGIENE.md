@@ -81,6 +81,17 @@ regressions exercise missing-leaf, dangling-junction, unchanged subtree,
 and all four `ShouldProcess`/receipt combinations with mocked
 deletion. They never remove a real worker.
 
+The elevated `install-worker.ps1` declared
+`SupportsShouldProcess` but did not call `$PSCmdlet.ShouldProcess`.
+Consequently, `-WhatIf` could still create worker directories, copy config
+and harness files, compile the service, and invoke native service/ACL tools.
+The installer now stops at an explicit approval boundary after read-only
+parameter/path validation and before its first mutating operation.
+A declined `-Confirm` and `-WhatIf` therefore cannot enter the
+installer's write/service section. WinPS5.1/PS7 RED/GREEN tests execute
+the actual installer script with a throw-on-mutation fixture, verify
+no worker directory is created, and never install a real service.
+
 The Windows helper scripts had another identifier boundary mismatch:
 `install-worker.ps1`, `uninstall-worker.ps1`, `prepare-certification.ps1`
 (ImageId and WorkerId), and `worker_harness.ps1` (environment property names)

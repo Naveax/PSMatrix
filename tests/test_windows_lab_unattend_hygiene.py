@@ -4310,6 +4310,70 @@ foreach ($name in @('install','uninstall','cert_image','cert_worker','harness_en
             self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_worker_installer_whatif_has_no_write_or_service_side_effects(self):
+        import os
+        import shutil
+        import subprocess
+        import tempfile
+
+        original = (ROOT / "src/psmatrix/windows/install-worker.ps1").read_text(encoding="utf-8")
+        self.assertIn("[CmdletBinding(SupportsShouldProcess=$true)]", original)
+        self.assertIn("$PSCmdlet.ShouldProcess(", original)
+        self.assertLess(
+            original.index("$PSCmdlet.ShouldProcess("),
+            original.index("foreach ($path in @($workerRoot"),
+        )
+        # Keep actual parameter binding and install-body order but bypass the
+        # admin assertion in a disposable -WhatIf-only subprocess.
+        stub = original.replace(
+            "Assert-Administrator\nAssert-SafeId $WorkerId",
+            "Assert-SafeId $WorkerId",
+            1,
+        )
+        self.assertNotEqual(stub, original)
+        # Any attempted mutation fails before it could touch the filesystem.
+        stub = stub.replace(
+            "$ErrorActionPreference = 'Stop'",
+            "$ErrorActionPreference = 'Stop'\n"
+            "function New-Item { throw 'Write operation attempted under WhatIf.' }\n"
+            "function Copy-Item { throw 'Copy attempted under WhatIf.' }\n"
+            "function Start-Service { throw 'Service start attempted under WhatIf.' }\n"
+            "function Stop-Service { throw 'Service stop attempted under WhatIf.' }\n",
+            1,
+        )
+        with tempfile.TemporaryDirectory(prefix="psmatrix-install-whatif-") as temp:
+            base = Path(temp)
+            script_path = base / "isolated-install.ps1"
+            script_path.write_text(stub, encoding="utf-8")
+            install_root = base / "install-root"
+            config = base / "fixture.json"
+            config.write_text('{"worker_id":"fixture","runtime":{"version":"5.1"}}', encoding="utf-8")
+            python_exe = Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe"
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                completed = subprocess.run(
+                    [
+                        exe, "-NoProfile", "-NonInteractive",
+                        "-File", str(script_path),
+                        "-WorkerId", "fixture",
+                        "-PowerShellVersion", "5.1",
+                        "-PythonExecutable", str(python_exe),
+                        "-ConfigPath", str(config),
+                        "-InstallRoot", str(install_root),
+                        "-StartService",
+                        "-WhatIf",
+                    ],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=35, check=False,
+                )
+                self.assertEqual(
+                    completed.returncode, 0,
+                    exe + ": " + completed.stdout + completed.stderr,
+                )
+                self.assertFalse(install_root.exists(), exe + " wrote during -WhatIf")
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     def test_worker_installer_fails_closed_on_every_native_service_acl_exit(self):
         import re
         import shutil
