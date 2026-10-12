@@ -81,6 +81,22 @@ regressions exercise missing-leaf, dangling-junction, unchanged subtree,
 and all four `ShouldProcess`/receipt combinations with mocked
 deletion. They never remove a real worker.
 
+The worker installer previously accepted pre-existing junction/reparse
+redirection in its installation directory, worker-specific directories,
+or service binary/config/harness destinations. Because the installer runs
+elevated, `New-Item -Force`, `Copy-Item -Force` and compilation could
+write through those redirected paths before ACL hardening.
+`Assert-SafeWorkerInstallDestinations` now checks local-drive absolute
+installation roots, rejects drive-root destinations, inspects actual
+directory entries to detect even broken links, and validates the expected
+directory/regular-file types for all worker output destinations. Existing
+safe files and not-yet-created directories are supported. Checks run
+before directory creation and again after directory creation and after
+staging. Isolated WinPS5.1/PS7 RED/GREEN fixtures exercise valid,
+uncreated, root, worker-junction, bin-junction and output-leaf-junction
+cases without installing services. Privileged concurrent filesystem
+replacement remains outside this non-transactional preflight guarantee.
+
 The elevated `install-worker.ps1` declared
 `SupportsShouldProcess` but did not call `$PSCmdlet.ShouldProcess`.
 Consequently, `-WhatIf` could still create worker directories, copy config

@@ -4310,6 +4310,71 @@ foreach ($name in @('install','uninstall','cert_image','cert_worker','harness_en
             self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_worker_install_destinations_reject_preexisting_reparse_and_file_targets(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        source = (ROOT / "src/psmatrix/windows/install-worker.ps1").read_text(encoding="utf-8")
+        helper_name = "function Assert-SafeWorkerInstallDestinations("
+        self.assertIn(helper_name, source)
+        self.assertIn("$workerRoot = Assert-SafeWorkerInstallDestinations $InstallRoot $WorkerId", source)
+        self.assertIn("Assert-SafeWorkerInstallDestinations $InstallRoot $WorkerId | Out-Null", source)
+        helper = source[source.index("function Assert-SafeWorkerInstallDestination("):
+                        source.index("\nAssert-Administrator", source.index(helper_name))]
+        def quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+        with tempfile.TemporaryDirectory(prefix="psmatrix-install-root-reparse-") as temp:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                base = Path(temp) / exe.replace(".", "-")
+                base.mkdir()
+                script = helper + """
+$ErrorActionPreference='Stop'
+$top=__TOP__
+$root=Join-Path $top 'install'
+$outside=Join-Path $top 'outside'
+New-Item -ItemType Directory -Path $root,$outside -ErrorAction Stop | Out-Null
+$worker=Join-Path $root 'fixture'
+function Expect-UnsafeInstall([string]$path) {
+    $refused=$false
+    try { Assert-SafeWorkerInstallDestinations $path 'fixture' | Out-Null }
+    catch { $refused=$true }
+    if (-not $refused) { throw 'Unsafe worker installation destination accepted.' }
+}
+$accepted=Assert-SafeWorkerInstallDestinations $root 'fixture'
+if ($accepted -cne $worker) { throw 'Safe absent destination not accepted.' }
+$missingRoot=Join-Path $top 'not-created'
+$accepted=Assert-SafeWorkerInstallDestinations $missingRoot 'fixture'
+if ($accepted -cne (Join-Path $missingRoot 'fixture')) { throw 'Future safe destination rejected.' }
+Expect-UnsafeInstall ([IO.Path]::GetPathRoot($root))
+New-Item -ItemType Junction -Path $worker -Target $outside -ErrorAction Stop | Out-Null
+Expect-UnsafeInstall $root
+[IO.Directory]::Delete($worker)
+New-Item -ItemType Directory -Path $worker -ErrorAction Stop | Out-Null
+$bin=Join-Path $worker 'bin'
+New-Item -ItemType Junction -Path $bin -Target $outside -ErrorAction Stop | Out-Null
+Expect-UnsafeInstall $root
+[IO.Directory]::Delete($bin)
+New-Item -ItemType Directory -Path $bin -ErrorAction Stop | Out-Null
+$harness=Join-Path $bin 'worker_harness.ps1'
+New-Item -ItemType Junction -Path $harness -Target $outside -ErrorAction Stop | Out-Null
+Expect-UnsafeInstall $root
+[IO.Directory]::Delete($harness)
+[IO.File]::WriteAllText($harness, 'preexisting valid file')
+if ((Assert-SafeWorkerInstallDestinations $root 'fixture') -cne $worker) {
+    throw 'Existing regular file destination incorrectly refused.'
+}
+""".replace("__TOP__", quote(base))
+                result = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=45, check=False,
+                )
+                self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     def test_worker_installer_whatif_has_no_write_or_service_side_effects(self):
         import os
         import shutil

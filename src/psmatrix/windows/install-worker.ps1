@@ -49,6 +49,67 @@ function Assert-WorkerNativeToolSucceeded([string]$Operation, [int]$ExitCode) {
         throw ($Operation + ' failed with exit code ' + $ExitCode + '.')
     }
 }
+function Assert-SafeWorkerInstallDestination([string]$Path, [bool]$ExpectDirectory) {
+    # Inspect directory entries themselves, not Test-Path's resolved target:
+    # a broken junction must never be treated as an absent destination.
+    $full = [IO.Path]::GetFullPath($Path)
+    $root = [IO.Path]::GetPathRoot($full)
+    $rootEntry = Microsoft.PowerShell.Management\Get-Item -LiteralPath $root -Force -ErrorAction Stop
+    if (-not $rootEntry.PSIsContainer -or
+        (($rootEntry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+        throw 'Worker installation volume root is unsafe.'
+    }
+    $cursor = $root
+    $parts = $full.Substring($root.Length).Split(
+        [char[]]@('\', '/'), [StringSplitOptions]::RemoveEmptyEntries)
+    for ($index = 0; $index -lt $parts.Length; $index++) {
+        $match = $null
+        foreach ($entry in @(Microsoft.PowerShell.Management\Get-ChildItem -LiteralPath $cursor -Force -ErrorAction Stop)) {
+            if ([string]::Equals([string]$entry.Name, $parts[$index],
+                    [StringComparison]::OrdinalIgnoreCase)) {
+                $match = $entry
+                break
+            }
+        }
+        if ($null -eq $match) { return }
+        $directory = ($index -lt ($parts.Length - 1)) -or $ExpectDirectory
+        if ((($match.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) -or
+            ([bool]$match.PSIsContainer -ne [bool]$directory)) {
+            throw 'Worker installation destination contains a reparse point or unexpected file type.'
+        }
+        $cursor = [string]$match.FullName
+    }
+}
+function Assert-SafeWorkerInstallDestinations([string]$Root, [string]$Id) {
+    if ($Id -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z' -or
+        $Root -cnotmatch '^[A-Za-z]:[\\/]' -or
+        -not [IO.Path]::IsPathRooted($Root)) {
+        throw 'Worker installation root or identifier is unsafe.'
+    }
+    $base = [IO.Path]::GetFullPath($Root)
+    if ([string]::Equals(
+            $base.TrimEnd([char[]]@('\', '/')),
+            ([IO.Path]::GetPathRoot($base)).TrimEnd([char[]]@('\', '/')),
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Worker installation root cannot be a drive root.'
+    }
+    $worker = [IO.Path]::GetFullPath([IO.Path]::Combine($base, $Id))
+    foreach ($directory in @(
+        $base, $worker,
+        (Join-Path $worker 'bin'), (Join-Path $worker 'config'),
+        (Join-Path $worker 'logs'), (Join-Path $worker 'workspace')
+    )) {
+        Assert-SafeWorkerInstallDestination $directory $true
+    }
+    foreach ($leaf in @(
+        (Join-Path $worker 'bin\PSMatrixWorkerService.exe'),
+        (Join-Path $worker 'bin\worker_harness.ps1'),
+        (Join-Path $worker 'config\worker.json')
+    )) {
+        Assert-SafeWorkerInstallDestination $leaf $false
+    }
+    return $worker
+}
 Assert-Administrator
 Assert-SafeId $WorkerId
 $PythonExecutable = [IO.Path]::GetFullPath($PythonExecutable)
@@ -62,12 +123,13 @@ $serviceName = 'PSMatrixWorker-' + $WorkerId
 if (-not $PSCmdlet.ShouldProcess($serviceName, 'Install or reconfigure Windows worker and its service')) {
     return
 }
-$workerRoot = Join-Path $InstallRoot $WorkerId
+$workerRoot = Assert-SafeWorkerInstallDestinations $InstallRoot $WorkerId
 $binRoot = Join-Path $workerRoot 'bin'
 $configRoot = Join-Path $workerRoot 'config'
 $logRoot = Join-Path $workerRoot 'logs'
 $workspaceRoot = Join-Path $workerRoot 'workspace'
 foreach ($path in @($workerRoot,$binRoot,$configRoot,$logRoot,$workspaceRoot)) { New-Item -ItemType Directory -Force -Path $path | Out-Null }
+Assert-SafeWorkerInstallDestinations $InstallRoot $WorkerId | Out-Null
 $sourceRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $serviceSource = Join-Path $sourceRoot 'PSMatrixWorkerService.cs'
 $harnessSource = Join-Path $sourceRoot 'worker_harness.ps1'
@@ -78,6 +140,7 @@ $harnessTarget = Join-Path $binRoot 'worker_harness.ps1'
 $configTarget = Join-Path $configRoot 'worker.json'
 Copy-Item -LiteralPath $harnessSource -Destination $harnessTarget -Force
 Copy-Item -LiteralPath $ConfigPath -Destination $configTarget -Force
+Assert-SafeWorkerInstallDestinations $InstallRoot $WorkerId | Out-Null
 $config = Get-Content -LiteralPath $configTarget -Raw | ConvertFrom-Json
 if ([string]$config.worker_id -ne $WorkerId) { throw 'Configuration worker_id does not match WorkerId.' }
 if ([string]$config.runtime.version -ne $PowerShellVersion) { throw 'Configuration runtime version does not match PowerShellVersion.' }
