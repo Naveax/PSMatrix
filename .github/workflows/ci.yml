@@ -297,7 +297,7 @@ jobs:
                   if ($baseSha -cnotmatch '^[0-9a-f]{40}\z') {
                       throw 'Frozen Final-V2 PR base SHA is invalid.'
                   }
-                  & git cat-file -e ("{0}^{commit}" -f $baseSha)
+                  & git cat-file -e ($baseSha + '^{commit}')
                   if ($LASTEXITCODE -ne 0) { throw 'Frozen PR base commit missing.' }
                   & git merge-base --is-ancestor $baseSha HEAD
                   if ($LASTEXITCODE -ne 0) { throw 'Frozen PR base is not an ancestor of HEAD.' }
