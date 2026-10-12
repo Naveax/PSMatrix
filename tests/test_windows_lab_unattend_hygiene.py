@@ -4375,6 +4375,89 @@ if ((Assert-SafeWorkerInstallDestinations $root 'fixture') -cne $worker) {
                 self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_image_certification_pins_native_powershell_and_collector(self):
+        import os
+        import shutil
+        import subprocess
+        import tempfile
+
+        source = (ROOT / "src/psmatrix/windows/prepare-certification.ps1").read_text(encoding="utf-8")
+        self.assertIn("function Get-TrustedCertificationPowerShell(", source)
+        self.assertIn("function Resolve-TrustedCertificationCollector(", source)
+        self.assertIn("$powershellPath = Get-TrustedCertificationPowerShell", source)
+        self.assertIn("$collector = Resolve-TrustedCertificationCollector", source)
+        self.assertIn("& $powershellPath -NoLogo", source)
+        self.assertNotIn("& powershell.exe", source)
+        functions = source[
+            source.index("function Assert-TrustedCertificationFile("):
+            source.index("$powershellPath = Get-TrustedCertificationPowerShell")
+        ]
+        def quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+        with tempfile.TemporaryDirectory(prefix="psmatrix-cert-trusted-shell-") as temp:
+            root = Path(temp)
+            system = root / "safe-system"
+            untrusted = root / "untrusted"
+            kit = root / "kit"
+            for p in (system, untrusted, kit):
+                p.mkdir()
+            executable = Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe"
+            approved_exe = system / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+            approved_exe.parent.mkdir(parents=True)
+            shutil.copyfile(executable, approved_exe)
+            shutil.copyfile(executable, untrusted / "powershell.exe")
+            (kit / "collect-image-identity.ps1").write_text("# trusted fixture", encoding="utf-8")
+            stub = functions.replace("[Environment]::SystemDirectory", quote(system))
+            self.assertNotEqual(functions, stub)
+            script = stub + """
+$ErrorActionPreference='Stop'
+function powershell.exe { throw 'shadowed powershell.exe called' }
+function Get-Item { throw 'shadowed Get-Item called' }
+$env:Path=__BAD__ + ';' + $env:Path
+$exe=Get-TrustedCertificationPowerShell
+if ($exe -cne __GOOD_EXE__) { throw 'Untrusted PowerShell resolution.' }
+$collector=Resolve-TrustedCertificationCollector __KIT__
+if ($collector -cne __GOOD_SCRIPT__) { throw 'Collector path wrong.' }
+function Expect-Rejection([scriptblock]$validation) {
+    $refused=$false
+    try { & $validation | Out-Null }
+    catch { $refused=$true }
+    if (-not $refused) { throw 'Unsafe certification input was accepted.' }
+}
+$renamed=Join-Path __KIT__ 'collect-image-identity.ps1'
+$other=Join-Path __BAD__ 'unsafe.ps1'
+[IO.File]::WriteAllText($other, '# outside fixture')
+[IO.File]::WriteAllText((Join-Path __BAD__ 'collect-image-identity.ps1'), '# spoof collector')
+[IO.File]::Delete($renamed)
+New-Item -ItemType Junction -Path (Join-Path __KIT__ 'redirect') -Target __BAD__ -ErrorAction Stop | Out-Null
+Expect-Rejection { Resolve-TrustedCertificationCollector (Join-Path __KIT__ 'redirect') }
+[IO.Directory]::Delete((Join-Path __KIT__ 'redirect'))
+New-Item -ItemType Junction -Path $renamed -Target __BAD__ -ErrorAction Stop | Out-Null
+Expect-Rejection { Resolve-TrustedCertificationCollector __KIT__ }
+[IO.Directory]::Delete($renamed)
+[IO.Directory]::CreateDirectory($renamed) | Out-Null
+Expect-Rejection { Resolve-TrustedCertificationCollector __KIT__ }
+[IO.Directory]::Delete($renamed)
+$unsafeExe=Join-Path __BAD__ 'powershell.exe'
+Expect-Rejection { Assert-TrustedCertificationFile $unsafeExe -ExpectedFileName 'powershell.exe' -SystemTool }
+if (-not [IO.File]::Exists($unsafeExe)) { throw 'Fixture was unexpectedly mutated.' }
+""".replace("__BAD__", quote(untrusted)).replace(
+                "__GOOD_EXE__", quote(approved_exe)
+            ).replace("__KIT__", quote(kit)).replace(
+                "__GOOD_SCRIPT__", quote(kit / "collect-image-identity.ps1"))
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                # The preceding shell removed the fixture intentionally.
+                (kit / "collect-image-identity.ps1").write_text("# trusted fixture", encoding="utf-8")
+                result = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=40, check=False,
+                )
+                self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     def test_worker_rotation_rejects_wildcard_identity_and_reparse_credentials(self):
         import shutil
         import subprocess

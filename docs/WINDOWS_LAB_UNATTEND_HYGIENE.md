@@ -81,6 +81,22 @@ regressions exercise missing-leaf, dangling-junction, unchanged subtree,
 and all four `ShouldProcess`/receipt combinations with mocked
 deletion. They never remove a real worker.
 
+Windows image certification also had a command-resolution boundary:
+`prepare-certification.ps1` previously invoked bare `powershell.exe`
+while collecting identity metadata, allowing functions/aliases or an
+untrusted PATH entry to intercept that elevated child process. It now
+pins the executable to
+`[Environment]::SystemDirectory\\WindowsPowerShell\\v1.0\\powershell.exe`
+and checks its leaf and ancestor chain for non-files/reparse points.
+The adjacent `collect-image-identity.ps1` collector is checked the same
+way before execution, preventing junction or symlink redirection of its
+contents. WinPS5.1/PS7 isolated RED/GREEN regression tests exercise
+a function and PATH shadow, legitimate machine location, untrusted
+direct invocation, collector directory redirection and reparse leaves.
+No actual guest certification is performed. These checks constrain the
+path; they do not cryptographically attest the installed executable or
+protect against privileged concurrent replacement.
+
 Credential rotation had an independent elevated boundary: the
 `rotate-worker-credentials.ps1` WorkerId was previously passed directly
 to wildcard-aware `Get-Service`/`Stop-Service` and used in worker
