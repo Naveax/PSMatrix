@@ -45,7 +45,10 @@ function Assert-SafeWorkerRemovalPath([string]$Root, [string]$Id) {
     if (-not $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'Uninstall worker removal target escapes installation root.'
     }
-    $ancestor = $full
+    # The root must be present and safe, but the worker leaf may already
+    # be absent after a partial uninstall. An absent leaf is a no-op, not
+    # permission to skip validation of a dangling link with the same name.
+    $ancestor = $base
     while (-not [string]::IsNullOrEmpty($ancestor)) {
         $item = Microsoft.PowerShell.Management\Get-Item -LiteralPath $ancestor -Force -ErrorAction Stop
         if (-not $item.PSIsContainer -or
@@ -55,6 +58,18 @@ function Assert-SafeWorkerRemovalPath([string]$Root, [string]$Id) {
         $parent = [IO.Path]::GetDirectoryName($ancestor)
         if ($parent -eq $ancestor) { break }
         $ancestor = $parent
+    }
+    $matching = @(
+        foreach ($entry in @(Microsoft.PowerShell.Management\Get-ChildItem -LiteralPath $base -Force -ErrorAction Stop)) {
+            if ([string]::Equals([string]$entry.Name, $Id, [StringComparison]::OrdinalIgnoreCase)) {
+                $entry
+            }
+        }
+    )
+    if ($matching.Count -eq 0) { return $null }
+    if ($matching.Count -ne 1 -or -not $matching[0].PSIsContainer -or
+        (($matching[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+        throw 'Uninstall worker removal target is an unsafe file type.'
     }
     $queue = New-Object System.Collections.Stack
     $queue.Push($full)
@@ -86,8 +101,13 @@ if ($service -and $PSCmdlet.ShouldProcess($serviceName, 'Stop and delete Windows
     & $scPath delete $serviceName | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Service deletion failed.' }
 }
-if ($RemoveData -and $PSCmdlet.ShouldProcess($safeWorkerRoot, 'Recursively remove Windows worker data')) {
+$removedData = $false
+if ($RemoveData -and $null -ne $safeWorkerRoot -and
+    $PSCmdlet.ShouldProcess($safeWorkerRoot, 'Recursively remove Windows worker data')) {
     $safeWorkerRoot = Assert-SafeWorkerRemovalPath $InstallRoot $WorkerId
-    Remove-Item -LiteralPath $safeWorkerRoot -Recurse -Force -ErrorAction Stop
+    if ($null -ne $safeWorkerRoot) {
+        Remove-Item -LiteralPath $safeWorkerRoot -Recurse -Force -ErrorAction Stop
+        $removedData = $true
+    }
 }
-[ordered]@{schema=1;worker_id=$WorkerId;service_name=$serviceName;removed_data=[bool]$RemoveData} | ConvertTo-Json -Compress
+[ordered]@{schema=1;worker_id=$WorkerId;service_name=$serviceName;removed_data=$removedData} | ConvertTo-Json -Compress

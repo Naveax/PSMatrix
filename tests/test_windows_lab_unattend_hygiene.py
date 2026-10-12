@@ -4064,6 +4064,108 @@ $afterFailure.Dispose()
                 )
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_uninstaller_receipt_reports_actual_data_removal_not_requested_flag(self):
+        import shutil
+        import subprocess
+
+        source = (ROOT / "src/psmatrix/windows/uninstall-worker.ps1").read_text(encoding="utf-8")
+        tail = source[source.index("$serviceName = 'PSMatrixWorker-' + $WorkerId"):]
+        self.assertIn("removed_data=$removedData", tail)
+        self.assertIn("$removedData = $false", tail)
+        script = """
+$ErrorActionPreference='Stop'
+$WorkerId='fixture-worker'
+$InstallRoot='C:\\fake-install'
+$RemoveData=$true
+function Get-TrustedUninstallServiceControl { 'C:\\Windows\\System32\\sc.exe' }
+function Get-Service { param([string]$Name,[string]$ErrorAction) return $null }
+function Assert-SafeWorkerRemovalPath {
+    param([string]$Root,[string]$Id)
+    if ($script:fixturePresent) { return 'C:\\fake-install\\fixture-worker' }
+    return $null
+}
+function Remove-Item {
+    param([string]$LiteralPath,[switch]$Recurse,[switch]$Force,[string]$ErrorAction)
+    $script:removeCount++
+}
+function Invoke-Fixture {
+    [CmdletBinding(SupportsShouldProcess=$true)]
+    param([bool]$present,[bool]$expected)
+    $script:fixturePresent=$present
+    $script:removeCount=0
+    $record = (& {
+__BODY__
+    } | ConvertFrom-Json)
+    if ([bool]$record.removed_data -ne $expected -or $script:removeCount -ne [int]$expected) {
+        throw ('Incorrect removed_data receipt for present=' + $present + ' expected=' + $expected)
+    }
+}
+Invoke-Fixture -present $false -expected $false
+Invoke-Fixture -present $false -expected $false -WhatIf
+Invoke-Fixture -present $true -expected $false -WhatIf
+Invoke-Fixture -present $true -expected $true
+""".replace("__BODY__", tail)
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                check=False, timeout=35,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_uninstaller_missing_worker_data_is_noop_not_service_removal_blocker(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        source = (ROOT / "src/psmatrix/windows/uninstall-worker.ps1").read_text(encoding="utf-8")
+        start = source.index("function Assert-SafeWorkerRemovalPath(")
+        end = source.index("\n$identity = [Security.Principal.WindowsIdentity]", start)
+        helper = source[start:end]
+        self.assertIn("$null -ne $safeWorkerRoot", source)
+        def quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+        with tempfile.TemporaryDirectory(prefix="psmatrix-uninstall-absent-worker-") as temp:
+            root = Path(temp) / "install"
+            root.mkdir()
+            other = root / "unrelated"
+            other.mkdir()
+            (other / "keep.txt").write_text("unrelated data", encoding="utf-8")
+            script = helper + """
+$ErrorActionPreference='Stop'
+$base=__ROOT__
+$missing=Assert-SafeWorkerRemovalPath $base 'absent-worker'
+if ($null -ne $missing) { throw 'Missing worker returned a deletion target.' }
+$unsafe=Join-Path $base 'dangling-worker'
+$linkTarget=Join-Path $base 'no-target'
+New-Item -ItemType Directory -Path $linkTarget -ErrorAction Stop | Out-Null
+New-Item -ItemType Junction -Path $unsafe -Target $linkTarget -ErrorAction Stop | Out-Null
+[IO.Directory]::Delete($linkTarget)
+$rejected=$false
+try { Assert-SafeWorkerRemovalPath $base 'dangling-worker' | Out-Null }
+catch { $rejected=$true }
+if (-not $rejected) { throw 'Dangling symlink misclassified as absent.' }
+$actual=Assert-SafeWorkerRemovalPath $base 'unrelated'
+if ($actual -cne __KEEP__) { throw 'Existing safe leaf was not preserved.' }
+""".replace("__ROOT__", quote(root)).replace("__KEEP__", quote(other))
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                link = root / "dangling-worker"
+                if link.is_junction():
+                    link.rmdir()
+                result = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    check=False, timeout=35,
+                )
+                self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+            self.assertEqual((other / "keep.txt").read_text(encoding="utf-8"), "unrelated data")
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     def test_worker_uninstaller_rejects_redirected_deletion_and_shadowed_sc(self):
         import shutil
         import subprocess
@@ -4114,7 +4216,8 @@ function Expect-UninstallRejection([string]$where, [string]$identifier) {
     if (-not $rejected) { throw 'Unsafe uninstall path was accepted.' }
 }
 Expect-UninstallRejection __DRIVE__ 'worker-01'
-Expect-UninstallRejection __BAD__ 'worker-01'
+$absent=Assert-SafeWorkerRemovalPath __BAD__ 'worker-01'
+if ($null -ne $absent) { throw 'Unrelated missing worker should be a no-op.' }
 $nested=Join-Path __WORKER__ 'redirect'
 New-Item -ItemType Junction -Path $nested -Target __BAD__ -ErrorAction Stop | Out-Null
 Expect-UninstallRejection __ROOT__ 'worker-01'

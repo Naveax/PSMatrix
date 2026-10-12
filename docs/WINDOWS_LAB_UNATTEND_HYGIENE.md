@@ -68,6 +68,19 @@ they **never** delete a real service or installed worker. Validation is a
 pre-removal scan, not a transaction: privileged concurrent path replacement
 between that scan and deletion requires separate elevated acceptance.
 
+The uninstaller's guarded `-RemoveData` preflight is also idempotent
+when the worker leaf has already been removed: it verifies the existing
+installation-root ancestor chain and enumerates actual directory entries
+before treating the **absent** worker as a no-op. A dangling junction or
+reparse-point leaf still fails closed rather than being mistaken for
+absence. If the root itself is missing or unsafe, the guard still
+rejects it. The result JSON's `removed_data` flag now means an actual
+completed deletion, not merely that the option was supplied; it stays
+false for an absent worker and for `-WhatIf`. Isolated WinPS5.1/PS7
+regressions exercise missing-leaf, dangling-junction, unchanged subtree,
+and all four `ShouldProcess`/receipt combinations with mocked
+deletion. They never remove a real worker.
+
 The Windows helper scripts had another identifier boundary mismatch:
 `install-worker.ps1`, `uninstall-worker.ps1`, `prepare-certification.ps1`
 (ImageId and WorkerId), and `worker_harness.ps1` (environment property names)
