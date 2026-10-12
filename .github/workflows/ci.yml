@@ -333,6 +333,27 @@ jobs:
                       throw 'Frozen Final-V2 immutable closure contract does not match the strict historical source.'
                   }
 
+                  # PR #530 updates precisely two CI policy files. Every
+                  # OTHER Frozen Final-V2 protected path stays immutable
+                  # throughout all later first-parent commits, including
+                  # merge resolutions, reverted edits, and HEAD snapshots
+                  # with the same 55-name closure as their source.
+                  $approvedPolicyPaths = @(
+                      '.github/workflows/ci.yml',
+                      'tests/test_ci_exact_event_sha_checkout.py'
+                  )
+                  $controlHistory = @(git log --first-parent -m --pretty=format: --name-only --no-renames ($controlBase + '..HEAD') -- |
+                      Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                  if ($LASTEXITCODE -ne 0) {
+                      throw 'Frozen Final-V2 protected first-parent history is unavailable.'
+                  }
+                  $unexpectedProtected = @($controlHistory | Where-Object {
+                      ($protected -ccontains $_) -and ($approvedPolicyPaths -cnotcontains $_)
+                  } | Sort-Object -Unique)
+                  if ($unexpectedProtected.Count -ne 0) {
+                      throw 'Frozen Final-V2 non-policy protected paths were edited after immutable control base.'
+                  }
+
                   $candidates = @(git rev-list --first-parent --max-count=512 HEAD)
                   if ($LASTEXITCODE -ne 0 -or $candidates.Count -lt 1) {
                       throw 'Frozen Final-V2 historical ancestor enumeration failed.'
