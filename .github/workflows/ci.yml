@@ -335,17 +335,20 @@ jobs:
 
                   # PR #530 updates precisely two CI policy files. Every
                   # OTHER Frozen Final-V2 protected path stays immutable
-                  # throughout all later first-parent commits, including
+                  # throughout every reachable commit, including second-parent
                   # merge resolutions, reverted edits, and HEAD snapshots
                   # with the same 55-name closure as their source.
                   $approvedPolicyPaths = @(
                       '.github/workflows/ci.yml',
                       'tests/test_ci_exact_event_sha_checkout.py'
                   )
-                  $controlHistory = @(git log --first-parent -m --pretty=format: --name-only --no-renames ($controlBase + '..HEAD') -- |
+                  # A merged side-parent may edit a protected file and
+                  # resolve it back to original bytes (merge -s ours).
+                  # First-parent-only walks silently miss such commits.
+                  $controlHistory = @(git log --full-history -m --pretty=format: --name-only --no-renames ($controlBase + '..HEAD') -- |
                       Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
                   if ($LASTEXITCODE -ne 0) {
-                      throw 'Frozen Final-V2 protected first-parent history is unavailable.'
+                      throw 'Frozen Final-V2 full reachable merge history is unavailable.'
                   }
                   $unexpectedProtected = @($controlHistory | Where-Object {
                       ($protected -ccontains $_) -and ($approvedPolicyPaths -cnotcontains $_)
@@ -373,9 +376,14 @@ jobs:
                       throw 'No exact 55-path Frozen Final-V2 historical checkpoint exists within 512 first-parent commits.'
                   }
                   if ($frozenSha -ne (git rev-parse HEAD)) {
+                      # The primary complete-DAG check already rejects
+                      # non-policy edits. Here avoid -m on merge commits:
+                      # comparing a merge to its stale second parent may
+                      # falsely re-report approved CI policy baseline edits.
+                      # --full-history still examines actual side commits.
                       # Git log examines each commit, not only the net diff.
                       # A protected edit followed by a revert is still refused.
-                      $history = @(git log --pretty=format: --name-only --no-renames ($frozenSha + '..HEAD') -- |
+                      $history = @(git log --full-history --pretty=format: --name-only --no-renames ($frozenSha + '..HEAD') -- |
                           Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
                       if ($LASTEXITCODE -ne 0) { throw 'Cannot verify intervening protected-path history.' }
                       $protectedEdits = @($history | Where-Object { $protected -ccontains $_ } | Sort-Object -Unique)
