@@ -10271,5 +10271,113 @@ foreach($mode in @('valid')+$bad) {
             self.assertIn("VM_EFFECTIVE_CONFIG_MATRIX=PASS", result.stdout)
 
 
+    def test_offline_vhd_boundaries_check_shutdown_identity_before_reads_and_checkpoint(self):
+        src = HOST.read_text(encoding="utf-8")
+        self.assertIn("function Assert-LabGuestOfflineVhdBoundary(", src)
+        loop = src.split("foreach ($image in $planValue.images) {", 1)[1]
+        check = "Assert-LabGuestOfflineVhdBoundary $vmName $createdVm[0].Id $vhd"
+        self.assertEqual(loop.count(check), 3)
+        before_reader = loop.index("Wait-FirstBoot $vmName 3600")
+        first = loop.index(check, before_reader)
+        reader = loop.index("$bootstrap = Read-BootstrapResult $vhd $bootstrapNonce")
+        second = loop.index(check, reader)
+        hash_position = loop.index("$verifiedVhdxSha256 = Get-Sha256 $vhd")
+        third = loop.index(check, hash_position)
+        checkpoint = loop.index("Checkpoint-VM -Name $vmName -SnapshotName")
+        self.assertLess(before_reader, first)
+        self.assertLess(first, reader)
+        self.assertLess(reader, second)
+        self.assertLess(second, hash_position)
+        self.assertLess(hash_position, third)
+        self.assertLess(third, checkpoint)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_offline_vhd_boundary_rejects_wrong_vm_or_host_mount(self):
+        import shutil
+        import subprocess
+        src = HOST.read_text(encoding="utf-8")
+        helper = "function Assert-LabGuestOfflineVhdBoundary(" + src.split(
+            "function Assert-LabGuestOfflineVhdBoundary(", 1
+        )[1].split("function Assert-LabCheckpointCreated(", 1)[0]
+        cleanup = "function Assert-LabCleanupVhdIdentity(" + src.split(
+            "function Assert-LabCleanupVhdIdentity(", 1
+        )[1].split("function Assert-LabCleanupIsoIdentity(", 1)[0]
+        script = cleanup + helper + r"""
+$ErrorActionPreference='Stop'
+$script:mode='valid'
+$script:guid=[guid]'4d8621f5-eae3-49f9-a1eb-eb2b1e337b57'
+$script:path='D:\fixture\safe.vhdx'
+function Get-VM {
+    [CmdletBinding()]
+    param([string]$Name)
+    if($script:mode -eq 'vmQueryError'){throw 'fault'}
+    if($script:mode -eq 'noVm'){return}
+    $id=$script:guid; $actualName=$Name; $state='Off'
+    if($script:mode -eq 'replacedVm'){$id=[guid]::NewGuid()}
+    if($script:mode -eq 'wrongVm'){$actualName='other'}
+    if($script:mode -eq 'restartedVm'){$state='Running'}
+    if($script:mode -eq 'pausingVm'){$state='Stopping'}
+    if($script:mode -eq 'arrayState'){$state=@('Off','Running')}
+    if($script:mode -eq 'multipleVm'){
+       [pscustomobject]@{Name=$actualName;Id=$id;State=$state}
+    }
+    [pscustomobject]@{Name=$actualName;Id=$id;State=$state}
+}
+function Get-VMHardDiskDrive {
+    [CmdletBinding()]
+    param([string]$VMName)
+    if($script:mode -eq 'diskQueryError'){throw 'fault'}
+    if($script:mode -eq 'noDisk'){return}
+    $actual=$script:path
+    if($script:mode -eq 'swappedDisk'){$actual='D:\fixture\swapped.vhdx'}
+    if($script:mode -eq 'multipleDisks'){
+       [pscustomobject]@{Path=$actual}
+    }
+    [pscustomobject]@{Path=$actual}
+}
+function Get-VHD {
+    [CmdletBinding()]
+    param([string]$Path)
+    if($script:mode -eq 'vhdQueryError'){throw 'fault'}
+    if($script:mode -eq 'noVhd'){return}
+    $actual=$Path;$attached=$false
+    if($script:mode -eq 'swappedVhd'){$actual='D:\fixture\other.vhdx'}
+    if($script:mode -eq 'hostMounted'){$attached=$true}
+    if($script:mode -eq 'vhdBadAttached'){$attached='False'}
+    if($script:mode -eq 'multipleVhd'){
+       [pscustomobject]@{Path=$actual;Attached=$attached}
+    }
+    [pscustomobject]@{Path=$actual;Attached=$attached}
+}
+$bad=@('vmQueryError','noVm','replacedVm','wrongVm',
+ 'restartedVm','pausingVm','arrayState','multipleVm','diskQueryError',
+ 'noDisk','swappedDisk','multipleDisks','vhdQueryError','noVhd',
+ 'swappedVhd','hostMounted','vhdBadAttached','multipleVhd')
+foreach ($mode in @('valid') + $bad) {
+    $script:mode=$mode
+    $errorText=''
+    try { Assert-LabGuestOfflineVhdBoundary 'fixture-vm' $script:guid $script:path }
+    catch { $errorText=$_.Exception.Message }
+    if($mode -eq 'valid' -and $errorText -ne ''){
+        throw ('Valid offline VM rejected: '+$errorText)
+    }
+    if($mode -ne 'valid' -and $errorText -eq ''){
+        throw ('Untrusted offline state accepted: '+$mode)
+    }
+}
+'OFFLINE_VHD_BOUNDARY_MATRIX=PASS'
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+            self.assertIn("OFFLINE_VHD_BOUNDARY_MATRIX=PASS", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

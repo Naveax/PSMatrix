@@ -2077,6 +2077,54 @@ function Assert-LabVmConfigurationBeforeFirstBoot(
     }
 }
 
+function Assert-LabGuestOfflineVhdBoundary(
+    [string]$VmName, [guid]$VmId, [string]$VhdPath
+) {
+    # A previous Off observation does not authorize future offline I/O.
+    # A guest may be restarted/replaced between Wait-FirstBoot, offline
+    # result inspection, VHDX hashing and checkpoint creation.
+    try {
+        $vm = @(Get-VM -Name $VmName -ErrorAction Stop)
+        $disks = @(Get-VMHardDiskDrive -VMName $VmName -ErrorAction Stop)
+        $vhd = @(Get-VHD -Path $VhdPath -ErrorAction Stop)
+    }
+    catch {
+        throw ('Guest offline VHDX boundary state query failed: ' + $VmName)
+    }
+    if ($vm.Count -ne 1 -or $null -eq $vm[0] -or
+        $vm[0].Name -isnot [string] -or
+        -not [string]::Equals([string]$vm[0].Name, $VmName,
+            [StringComparison]::OrdinalIgnoreCase) -or
+        $vm[0].Id -isnot [guid] -or $vm[0].Id -ne $VmId -or
+        $vm[0].State -is [array] -or
+        [string]$vm[0].State -cne 'Off') {
+        throw ('Guest not confirmed Off with expected identity at offline VHDX boundary: ' + $VmName)
+    }
+    if ($disks.Count -ne 1 -or $null -eq $disks[0] -or
+        $disks[0].Path -isnot [string] -or
+        [string]::IsNullOrWhiteSpace([string]$disks[0].Path)) {
+        throw ('Guest offline VHDX attachment is missing or ambiguous: ' + $VmName)
+    }
+    try {
+        $actual = [IO.Path]::GetFullPath([string]$disks[0].Path)
+        $expected = [IO.Path]::GetFullPath($VhdPath)
+    }
+    catch {
+        throw ('Guest offline VHDX attachment path is invalid: ' + $VmName)
+    }
+    if (-not [string]::Equals($actual, $expected,
+        [StringComparison]::OrdinalIgnoreCase)) {
+        throw ('Guest offline VHDX attachment path changed: ' + $VmName)
+    }
+    if ($vhd.Count -ne 1 -or $null -eq $vhd[0]) {
+        throw ('Guest offline VHDX storage state is ambiguous: ' + $VmName)
+    }
+    Assert-LabCleanupVhdIdentity $VhdPath $vhd[0]
+    if ($vhd[0].Attached) {
+        throw ('Guest VHDX host-mounted at offline boundary: ' + $VmName)
+    }
+}
+
 function Assert-LabCheckpointCreated([string]$VmName, [string]$CheckpointName) {
     # Checkpoint-VM returning without a terminating error is not evidence
     # that the requested checkpoint is present. Get-VMSnapshot is a separate
@@ -2186,6 +2234,7 @@ foreach ($image in $planValue.images) {
     Assert-LabVmConfigurationBeforeFirstBoot $vmName $createdVm[0].Id ([int]$image.processors) ([long]$image.memory_mb * 1MB)
     Start-VM -Name $vmName | Out-Null
     Wait-FirstBoot $vmName 3600
+    Assert-LabGuestOfflineVhdBoundary $vmName $createdVm[0].Id $vhd
     $bootstrap = Read-BootstrapResult $vhd $bootstrapNonce
     if ([string]$bootstrap.status -ne 'PASS') { throw ('Guest bootstrap failed for ' + $vmName + ': ' + [string]$bootstrap.message) }
     if ([string]$bootstrap.worker_id -cne [string]$image.worker_id -or
@@ -2200,7 +2249,9 @@ foreach ($image in $planValue.images) {
     if ($actualVersion -ne $expectedVersion -and -not $actualVersion.StartsWith($expectedVersion + '.')) { throw ('Guest exact version mismatch for ' + $vmName) }
     # Hash the fully detached, validated base VHDX at the quiescent
     # checkpoint boundary. Hashing after Start-VM races live guest writes.
+    Assert-LabGuestOfflineVhdBoundary $vmName $createdVm[0].Id $vhd
     $verifiedVhdxSha256 = Get-Sha256 $vhd
+    Assert-LabGuestOfflineVhdBoundary $vmName $createdVm[0].Id $vhd
     Checkpoint-VM -Name $vmName -SnapshotName ([string]$image.checkpoint_name) | Out-Null
     Assert-LabCheckpointCreated $vmName ([string]$image.checkpoint_name)
     Start-VM -Name $vmName | Out-Null
