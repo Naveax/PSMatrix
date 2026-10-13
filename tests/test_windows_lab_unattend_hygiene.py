@@ -10075,5 +10075,92 @@ foreach ($mode in @('ok','startingThenRunning','missing','error','duplicate','wr
             self.assertIn("CHECKPOINT_RESTART_READBACK=PASS", result.stdout)
 
 
+    def test_new_vm_creation_readback_precedes_first_mutation(self):
+        text = HOST.read_text(encoding="utf-8")
+        self.assertIn("function Assert-LabNewVmRegistered(", text)
+        source = text.split("foreach ($image in $planValue.images) {", 1)[1]
+        creation = source.index("$createdVm = @(New-VM -Name $vmName")
+        readback = source.index("Assert-LabNewVmRegistered $createdVm $vmName $vhd")
+        configure = source.index("Set-VMProcessor -VMName $vmName")
+        self.assertLess(creation, readback)
+        self.assertLess(readback, configure)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_new_vm_registration_readback_failure_matrix(self):
+        import shutil
+        import subprocess
+        host = HOST.read_text(encoding="utf-8")
+        func = "function Assert-LabNewVmRegistered(" + host.split(
+            "function Assert-LabNewVmRegistered(", 1
+        )[1].split("function Assert-LabCheckpointCreated(", 1)[0]
+        fixture = func + r"""
+$ErrorActionPreference='Stop'
+$script:mode = ''
+$script:id = [guid]'56fca691-5c1b-4e34-9b08-922252fa0fba'
+$script:created = [pscustomobject]@{Name='fixture-vm';Id=$script:id}
+$script:expectedDisk='D:\sandbox\fixture.vhdx'
+function Get-VM {
+    [CmdletBinding()]
+    param([string]$Name)
+    if($script:mode -eq 'queryError') { throw 'provider failure' }
+    if($script:mode -eq 'vmMissing') { return }
+    if($script:mode -eq 'twoVms') {
+       [pscustomobject]@{Name=$Name;Id=$script:id;Generation=2;State='Off'}
+       [pscustomobject]@{Name=$Name;Id=$script:id;Generation=2;State='Off'}
+       return
+    }
+    $id = $script:id
+    $actualName = $Name
+    $generation = 2
+    $state = 'Off'
+    if($script:mode -eq 'staleIdentity') { $id=[guid]::NewGuid() }
+    if($script:mode -eq 'wrongVmName') { $actualName='other' }
+    if($script:mode -eq 'generationMismatch') { $generation=1 }
+    if($script:mode -eq 'alreadyRunning') { $state='Running' }
+    return [pscustomobject]@{Name=$actualName;Id=$id;Generation=$generation;State=$state}
+}
+function Get-VMHardDiskDrive {
+    [CmdletBinding()]
+    param([string]$VMName)
+    if($script:mode -eq 'diskQueryError') { throw 'provider failure' }
+    if($script:mode -eq 'diskMissing') { return }
+    if($script:mode -eq 'twoDisks') {
+        [pscustomobject]@{Path=$script:expectedDisk}
+        [pscustomobject]@{Path=$script:expectedDisk}
+        return
+    }
+    $disk=$script:expectedDisk
+    if($script:mode -eq 'wrongDisk') { $disk='D:\sandbox\wrong.vhdx' }
+    return [pscustomobject]@{Path=$disk}
+}
+foreach($mode in @('ok','creationMissing','creationWrongName','creationWrongId',
+ 'queryError','vmMissing','twoVms','staleIdentity','wrongVmName','generationMismatch',
+ 'alreadyRunning','diskQueryError','diskMissing','twoDisks','wrongDisk')) {
+    $script:mode=$mode
+    $created=@($script:created)
+    if($mode -eq 'creationMissing') { $created=@() }
+    if($mode -eq 'creationWrongName') { $created=@([pscustomobject]@{Name='other';Id=$script:id}) }
+    if($mode -eq 'creationWrongId') { $created=@([pscustomobject]@{Name='fixture-vm';Id=[guid]::Empty}) }
+    $fail=$false
+    try { Assert-LabNewVmRegistered $created 'fixture-vm' $script:expectedDisk 2 }
+    catch { $fail=$true }
+    if(($mode -eq 'ok' -and $fail) -or ($mode -ne 'ok' -and -not $fail)) {
+        throw ('VM registration verification mismatch: '+$mode)
+    }
+}
+'NEW_VM_READBACK_MATRIX=PASS'
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", fixture],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=50, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+            self.assertIn("NEW_VM_READBACK_MATRIX=PASS", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

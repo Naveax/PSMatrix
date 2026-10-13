@@ -1973,6 +1973,58 @@ function Wait-FirstBoot([string]$VmName, [int]$TimeoutSeconds) {
 }
 
 
+function Assert-LabNewVmRegistered([object[]]$Created, [string]$VmName,
+                                    [string]$VhdPath, [int]$Generation) {
+    # A successful New-VM call is not proof that the named, registered VM
+    # is the new guest. Detect a name reuse/replacement between preflight
+    # and provisioning before Set-VM*, Start-VM or checkpoint mutations.
+    if ($null -eq $Created -or $Created.Count -ne 1 -or $null -eq $Created[0] -or
+        $Created[0].Name -isnot [string] -or
+        -not [string]::Equals([string]$Created[0].Name, $VmName,
+            [StringComparison]::OrdinalIgnoreCase) -or
+        $Created[0].Id -isnot [guid] -or $Created[0].Id -eq [guid]::Empty) {
+        throw ('New lab VM creation result is missing or ambiguous: ' + $VmName)
+    }
+    try {
+        $vm = @(Get-VM -Name $VmName -ErrorAction Stop)
+        $disks = @(Get-VMHardDiskDrive -VMName $VmName -ErrorAction Stop)
+    }
+    catch {
+        throw ('New lab VM registration read-back failed: ' + $VmName)
+    }
+    if ($vm.Count -ne 1 -or $null -eq $vm[0] -or
+        $vm[0].Name -isnot [string] -or
+        -not [string]::Equals([string]$vm[0].Name, $VmName,
+            [StringComparison]::OrdinalIgnoreCase) -or
+        $vm[0].Id -isnot [guid] -or $vm[0].Id -ne $Created[0].Id -or
+        ($null -eq $vm[0].Generation -or
+         [Type]::GetTypeCode($vm[0].Generation.GetType()) -notin @(
+             [TypeCode]::Byte, [TypeCode]::Int16, [TypeCode]::UInt16,
+             [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64,
+             [TypeCode]::UInt64)) -or
+        [int]$vm[0].Generation -ne $Generation -or
+        $vm[0].State -is [array] -or
+        [string]$vm[0].State -cne 'Off') {
+        throw ('New lab VM registration identity or initial state mismatch: ' + $VmName)
+    }
+    if ($disks.Count -ne 1 -or $null -eq $disks[0] -or
+        $disks[0].Path -isnot [string] -or
+        [string]::IsNullOrWhiteSpace([string]$disks[0].Path)) {
+        throw ('New lab VM disk attachment is missing or ambiguous: ' + $VmName)
+    }
+    try {
+        $expected = [IO.Path]::GetFullPath($VhdPath)
+        $actual = [IO.Path]::GetFullPath([string]$disks[0].Path)
+    }
+    catch {
+        throw ('New lab VM disk attachment path is invalid: ' + $VmName)
+    }
+    if (-not [string]::Equals($actual, $expected,
+        [StringComparison]::OrdinalIgnoreCase)) {
+        throw ('New lab VM disk attachment differs from the built VHDX: ' + $VmName)
+    }
+}
+
 function Assert-LabCheckpointCreated([string]$VmName, [string]$CheckpointName) {
     # Checkpoint-VM returning without a terminating error is not evidence
     # that the requested checkpoint is present. Get-VMSnapshot is a separate
@@ -2073,7 +2125,8 @@ foreach ($image in $planValue.images) {
     Assert-LabHyperVTargetsReady @($image)
     $bootstrapNonce = New-LabBootstrapNonce
     $vhd = New-LabVhd $image $guestBootstrapReference.path $bootstrapNonce $guestBootstrapReference
-    New-VM -Name $vmName -Generation ([int]$image.generation) -MemoryStartupBytes ([int64]$image.memory_mb * 1MB) -VHDPath $vhd -SwitchName ([string]$image.switch_name) | Out-Null
+    $createdVm = @(New-VM -Name $vmName -Generation ([int]$image.generation) -MemoryStartupBytes ([int64]$image.memory_mb * 1MB) -VHDPath $vhd -SwitchName ([string]$image.switch_name) -ErrorAction Stop)
+    Assert-LabNewVmRegistered $createdVm $vmName $vhd ([int]$image.generation)
     Set-VMProcessor -VMName $vmName -Count ([int]$image.processors)
     Set-VMMemory -VMName $vmName -DynamicMemoryEnabled $false
     Set-VM -Name $vmName -AutomaticCheckpointsEnabled $false -CheckpointType Standard
