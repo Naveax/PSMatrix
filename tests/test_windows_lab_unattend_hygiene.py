@@ -10,6 +10,16 @@ HOST = LAB / "Invoke-PSMatrixHyperVLab.ps1"
 GUEST = LAB / "GuestBootstrap.ps1"
 
 
+def _is_windows_junction(path: Path) -> bool:
+    """Detect junctions with Windows lstat metadata, including on Python 3.11."""
+    import stat
+
+    try:
+        return getattr(path.lstat(), "st_reparse_tag", None) == stat.IO_REPARSE_TAG_MOUNT_POINT
+    except FileNotFoundError:
+        return False
+
+
 class WindowsLabUnattendHygieneTests(unittest.TestCase):
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
     def test_guest_result_record_is_created_once_without_overwrite(self):
@@ -4155,7 +4165,7 @@ if ($actual -cne __KEEP__) { throw 'Existing safe leaf was not preserved.' }
                 if not shutil.which(exe):
                     continue
                 link = root / "dangling-worker"
-                if link.is_junction():
+                if _is_windows_junction(link):
                     link.rmdir()
                 result = subprocess.run(
                     [exe, "-NoProfile", "-NonInteractive", "-Command", script],
@@ -4239,7 +4249,7 @@ if (-not [IO.File]::Exists((Join-Path __BAD__ 'sc.exe'))) { throw 'Control fixtu
                 # semantics without recursive deletion through the junction.
                 for relative in ("redirect",):
                     candidate = worker / relative
-                    if candidate.is_junction():
+                    if _is_windows_junction(candidate):
                         candidate.rmdir()
                 result = subprocess.run(
                     [exe, "-NoProfile", "-NonInteractive", "-Command", script],
