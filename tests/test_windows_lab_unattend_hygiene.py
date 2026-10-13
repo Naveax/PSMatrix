@@ -319,8 +319,8 @@ function Get-VM {
     param([string]$Name)
     $script:reads++
     if ($script:mode -eq 'queryError') { Write-Error 'fixture state lookup failure' }
-    if ($script:mode -eq 'noState') { return [pscustomobject]@{State = $null} }
-    return [pscustomobject]@{State = $script:power}
+    if ($script:mode -eq 'noState') { return [pscustomobject]@{Name = $Name; State = $null} }
+    return [pscustomobject]@{Name = $Name; State = $script:power}
 }
 function Stop-VM {
     [CmdletBinding()]
@@ -9879,6 +9879,88 @@ Assert-Rejected @([pscustomobject]@{output_vhdx='\\server\share\vm.vhdx'})
                 run.returncode, 0, executable + ": " + run.stdout + run.stderr
             )
             self.assertIn("DISK_PREFLIGHT=PASS", run.stdout)
+
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_first_boot_vm_provider_requires_exact_single_named_state(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        code = "function Wait-FirstBoot(" + host.split(
+            "function Wait-FirstBoot(", 1
+        )[1].split("\nAssert-Administrator", 1)[0]
+        script = code + r"""
+$ErrorActionPreference='Stop'
+$script:mode=''
+$script:queries=0
+$script:stops=0
+function Get-VM {
+    [CmdletBinding()]
+    param([string]$Name)
+    $script:queries++
+    if ($script:mode -eq 'twoStates' -and $script:queries -eq 1) {
+        [pscustomobject]@{Name=$Name; State='Running'}
+        [pscustomobject]@{Name=$Name; State='Off'}
+        return
+    }
+    if ($script:mode -eq 'wrongName' -and $script:queries -eq 1) {
+        return [pscustomobject]@{Name='OTHER-VM'; State='Off'}
+    }
+    if ($script:mode -eq 'arrayState' -and $script:queries -eq 1) {
+        return [pscustomobject]@{Name=$Name; State=@('Running','Off')}
+    }
+    if ($script:mode -eq 'noVm' -and $script:queries -eq 1) { return }
+    if ($script:mode -eq 'duplicateAfterStop') {
+        [pscustomobject]@{Name=$Name; State='Running'}
+        [pscustomobject]@{Name=$Name; State='Off'}
+        return
+    }
+    if ($script:mode -eq 'validRunningThenOff') {
+        if ($script:queries -eq 1) { return [pscustomobject]@{Name=$Name; State='Running'} }
+    }
+    return [pscustomobject]@{Name=$Name; State='Off'}
+}
+function Stop-VM {
+    [CmdletBinding()]
+    param([string]$Name,[switch]$TurnOff,[switch]$Force)
+    $script:stops++
+}
+function Start-Sleep { param([int]$Seconds) }
+foreach ($mode in @('twoStates','wrongName','arrayState','noVm','duplicateAfterStop','validRunningThenOff')) {
+    $script:mode=$mode; $script:queries=0; $script:stops=0
+    $message=''
+    try {
+        Wait-FirstBoot -VmName 'fixture-vm' -TimeoutSeconds 1
+    } catch { $message=$_.Exception.Message }
+    if ($mode -eq 'validRunningThenOff') {
+        if ($message -ne '' -or $script:queries -ne 2 -or $script:stops -ne 0) {
+            throw 'Legitimate Running->Off transition rejected.'
+        }
+    }
+    elseif ($mode -eq 'duplicateAfterStop') {
+        if ($message -notmatch 'not Off' -or $script:stops -ne 1) {
+            throw 'Multiple post-stop states were accepted.'
+        }
+    }
+    else {
+        if ($message -notmatch 'ambiguous or misidentified' -or $script:stops -ne 1) {
+            throw ('Ambiguous response falsely accepted: '+$mode+' '+$message)
+        }
+    }
+}
+'VM_QUERY_SINGLETON=PASS'
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+            self.assertIn("VM_QUERY_SINGLETON=PASS", result.stdout)
 
 
 if __name__ == "__main__":

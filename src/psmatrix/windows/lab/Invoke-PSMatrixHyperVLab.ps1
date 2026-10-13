@@ -1922,14 +1922,33 @@ function Assert-LabPlanOutputRoot([string]$LabRoot, [object[]]$Images) {
 function Wait-FirstBoot([string]$VmName, [int]$TimeoutSeconds) {
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     $observedRunning = $false
+    $queryFailure = $null
     while ([DateTime]::UtcNow -lt $deadline) {
-        $vm = Get-VM -Name $VmName
-        if ($vm.State -eq 'Running') { $observedRunning = $true }
-        if ($observedRunning -and $vm.State -eq 'Off') { return }
+        try {
+            # A PowerShell array's .State returns all members. A provider
+            # returning both Running and Off formerly passed BOTH checks
+            # below and falsely reported a clean first-boot shutdown.
+            $matches = @(Get-VM -Name $VmName -ErrorAction Stop)
+        }
+        catch {
+            $queryFailure = 'Guest bootstrap VM state query failed: ' + $VmName
+            break
+        }
+        if ($matches.Count -ne 1 -or $null -eq $matches[0] -or
+            $matches[0].Name -isnot [string] -or
+            -not [string]::Equals([string]$matches[0].Name, $VmName, [StringComparison]::OrdinalIgnoreCase) -or
+            $null -eq $matches[0].State -or $matches[0].State -is [array] -or
+            [string]::IsNullOrWhiteSpace([string]$matches[0].State)) {
+            $queryFailure = 'Guest bootstrap VM state is ambiguous or misidentified: ' + $VmName
+            break
+        }
+        $state = [string]$matches[0].State
+        if ($state -ceq 'Running') { $observedRunning = $true }
+        if ($observedRunning -and $state -ceq 'Off') { return }
         Start-Sleep -Seconds 5
     }
-    # Timeout is not proof that the guest was powered down. A best-effort
-    # Stop-VM can silently fail and leave unattended material in a live VM.
+    # On timeout OR a malformed provider response, attempt the same targeted
+    # shutdown. Never proceed to offline VHD reads without confirming Off.
     try {
         Stop-VM -Name $VmName -TurnOff -Force -ErrorAction Stop
     }
@@ -1937,14 +1956,19 @@ function Wait-FirstBoot([string]$VmName, [int]$TimeoutSeconds) {
         throw ('Guest bootstrap timeout stop failed: ' + $VmName)
     }
     try {
-        $afterStop = Get-VM -Name $VmName -ErrorAction Stop
+        $afterStop = @(Get-VM -Name $VmName -ErrorAction Stop)
     }
     catch {
         throw ('Guest bootstrap timeout shutdown state unavailable: ' + $VmName)
     }
-    if ($null -eq $afterStop -or [string]$afterStop.State -ne 'Off') {
+    if ($afterStop.Count -ne 1 -or $null -eq $afterStop[0] -or
+        $afterStop[0].Name -isnot [string] -or
+        -not [string]::Equals([string]$afterStop[0].Name, $VmName, [StringComparison]::OrdinalIgnoreCase) -or
+        $null -eq $afterStop[0].State -or $afterStop[0].State -is [array] -or
+        [string]$afterStop[0].State -cne 'Off') {
         throw ('Guest bootstrap VM still running or not Off after timeout stop: ' + $VmName)
     }
+    if ($null -ne $queryFailure) { throw $queryFailure }
     throw ('Guest bootstrap timed out: ' + $VmName)
 }
 
