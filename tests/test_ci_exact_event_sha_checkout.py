@@ -87,6 +87,7 @@ class CIExactEventShaCheckoutTests(unittest.TestCase):
             git("init", "-q")
             git("config", "user.name", "PSMatrix Frozen Guard Fixture")
             git("config", "user.email", "guard-fixture@localhost")
+            git("config", "core.autocrlf", "false")
             path = root / protected
             path.parent.mkdir(parents=True)
             original = b"# immutable historical test source\n"
@@ -139,6 +140,7 @@ class CIExactEventShaCheckoutTests(unittest.TestCase):
             git("init", "-q")
             git("config", "user.name", "PSMatrix Frozen Guard Fixture")
             git("config", "user.email", "guard-fixture@localhost")
+            git("config", "core.autocrlf", "false")
             policy_file = root / policy
             policy_file.parent.mkdir(parents=True)
             policy_file.write_text("baseline\n", encoding="utf-8")
