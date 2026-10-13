@@ -2151,7 +2151,7 @@ function Assert-LabCheckpointCreated([string]$VmName, [string]$CheckpointName) {
     }
 }
 
-function Assert-LabGuestRunningAfterRestart([string]$VmName, [int]$TimeoutSeconds = 120) {
+function Assert-LabGuestRunningAfterRestart([string]$VmName, [guid]$ExpectedVmId, [int]$TimeoutSeconds = 120) {
     # Start-VM may return without proving that the VM reached Running.
     # Allow only the Hyper-V Starting transition while waiting; never
     # claim PASS for an Off, Paused, Saved or ambiguous guest.
@@ -2167,8 +2167,11 @@ function Assert-LabGuestRunningAfterRestart([string]$VmName, [int]$TimeoutSecond
             $matches[0].Name -isnot [string] -or
             -not [string]::Equals([string]$matches[0].Name, $VmName,
                 [StringComparison]::OrdinalIgnoreCase) -or
+            $matches[0].Id -isnot [guid] -or
+            $ExpectedVmId -eq [guid]::Empty -or
+            $matches[0].Id -ne $ExpectedVmId -or
             $null -eq $matches[0].State -or $matches[0].State -is [array]) {
-            throw ('Guest restart state is ambiguous or misidentified: ' + $VmName)
+            throw ('Guest restart state or VM identity is ambiguous or misidentified: ' + $VmName)
         }
         $state = [string]$matches[0].State
         if ($state -ceq 'Running') { return }
@@ -2255,7 +2258,7 @@ foreach ($image in $planValue.images) {
     Checkpoint-VM -Name $vmName -SnapshotName ([string]$image.checkpoint_name) | Out-Null
     Assert-LabCheckpointCreated $vmName ([string]$image.checkpoint_name)
     Start-VM -Name $vmName | Out-Null
-    Assert-LabGuestRunningAfterRestart $vmName
+    Assert-LabGuestRunningAfterRestart $vmName $createdVm[0].Id
     $results += [ordered]@{
         runtime_id = [string]$image.runtime_id
         image_id = $vmName

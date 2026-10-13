@@ -9970,7 +9970,7 @@ foreach ($mode in @('twoStates','wrongName','arrayState','noVm','duplicateAfterS
         a = src.index("    Checkpoint-VM -Name $vmName")
         b = src.index("    Assert-LabCheckpointCreated $vmName", a)
         c = src.index("    Start-VM -Name $vmName | Out-Null", b)
-        d = src.index("    Assert-LabGuestRunningAfterRestart $vmName", c)
+        d = src.index("    Assert-LabGuestRunningAfterRestart $vmName $createdVm[0].Id", c)
         e = src.index("        status = 'PASS'", d)
         self.assertLess(a, b)
         self.assertLess(b, c)
@@ -9991,6 +9991,7 @@ $ErrorActionPreference='Stop'
 $script:checkpointMode='ok'
 $script:restartMode='ok'
 $script:restartReads=0
+$script:expectedVmId=[guid]'f54c93e7-51d8-4afc-a993-0038b83c5a89'
 function Get-VMSnapshot {
     [CmdletBinding()]
     param([string]$VMName,[string]$Name,[string]$SnapshotType)
@@ -10019,23 +10020,35 @@ function Get-VM {
     if ($script:restartMode -eq 'error') { throw 'provider failure' }
     if ($script:restartMode -eq 'missing') { return }
     if ($script:restartMode -eq 'duplicate') {
-        [pscustomobject]@{Name=$Name;State='Running'}
-        [pscustomobject]@{Name=$Name;State='Running'}
+        [pscustomobject]@{Name=$Name;Id=$script:expectedVmId;State='Running'}
+        [pscustomobject]@{Name=$Name;Id=$script:expectedVmId;State='Running'}
         return
     }
     if ($script:restartMode -eq 'wrongName') {
-        return [pscustomobject]@{Name='other-vm';State='Running'}
+        return [pscustomobject]@{Name='other-vm';Id=$script:expectedVmId;State='Running'}
     }
     if ($script:restartMode -eq 'arrayState') {
-        return [pscustomobject]@{Name=$Name;State=@('Starting','Running')}
+        return [pscustomobject]@{Name=$Name;Id=$script:expectedVmId;State=@('Starting','Running')}
+    }
+    if ($script:restartMode -eq 'wrongId') {
+        return [pscustomobject]@{Name=$Name;Id=[guid]'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';State='Running'}
+    }
+    if ($script:restartMode -eq 'noId') {
+        return [pscustomobject]@{Name=$Name;State='Running'}
+    }
+    if ($script:restartMode -eq 'stringId') {
+        return [pscustomobject]@{Name=$Name;Id=([string]$script:expectedVmId);State='Running'}
+    }
+    if ($script:restartMode -eq 'changedIdAfterStarting' -and $script:restartReads -gt 1) {
+        return [pscustomobject]@{Name=$Name;Id=[guid]'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';State='Running'}
     }
     if ($script:restartMode -eq 'off') {
-        return [pscustomobject]@{Name=$Name;State='Off'}
+        return [pscustomobject]@{Name=$Name;Id=$script:expectedVmId;State='Off'}
     }
-    if ($script:restartMode -eq 'startingThenRunning' -and $script:restartReads -eq 1) {
-        return [pscustomobject]@{Name=$Name;State='Starting'}
+    if ($script:restartMode -in @('startingThenRunning','changedIdAfterStarting') -and $script:restartReads -eq 1) {
+        return [pscustomobject]@{Name=$Name;Id=$script:expectedVmId;State='Starting'}
     }
-    return [pscustomobject]@{Name=$Name;State='Running'}
+    return [pscustomobject]@{Name=$Name;Id=$script:expectedVmId;State='Running'}
 }
 function Start-Sleep {param([int]$Seconds)}
 foreach ($mode in @('ok','missing','error','wrongName','wrongVm','duplicate')) {
@@ -10047,11 +10060,11 @@ foreach ($mode in @('ok','missing','error','wrongName','wrongVm','duplicate')) {
         throw ('Checkpoint verification mismatch: '+$mode)
     }
 }
-foreach ($mode in @('ok','startingThenRunning','missing','error','duplicate','wrongName','arrayState','off')) {
+foreach ($mode in @('ok','startingThenRunning','missing','error','duplicate','wrongName','arrayState','off','wrongId','noId','stringId','changedIdAfterStarting')) {
     $script:restartMode=$mode
     $script:restartReads=0
     $failed=$false
-    try { Assert-LabGuestRunningAfterRestart -VmName 'fixture-vm' -TimeoutSeconds 10 }
+    try { Assert-LabGuestRunningAfterRestart -VmName 'fixture-vm' -ExpectedVmId $script:expectedVmId -TimeoutSeconds 10 }
     catch { $failed=$true }
     $good=$mode -in @('ok','startingThenRunning')
     if (($good -and $failed) -or (-not $good -and -not $failed)) {
@@ -10377,6 +10390,18 @@ foreach ($mode in @('valid') + $bad) {
             )
             self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
             self.assertIn("OFFLINE_VHD_BOUNDARY_MATRIX=PASS", result.stdout)
+
+
+    def test_post_restart_guard_requires_exact_created_vm_guid(self):
+        text = HOST.read_text(encoding="utf-8")
+        guard = text.split("function Assert-LabGuestRunningAfterRestart(", 1)[1].split(
+            "\nAssert-Administrator", 1
+        )[0]
+        self.assertIn("[guid]$ExpectedVmId", guard)
+        self.assertIn("$matches[0].Id -isnot [guid]", guard)
+        self.assertIn("$matches[0].Id -ne $ExpectedVmId", guard)
+        self.assertIn("$ExpectedVmId -eq [guid]::Empty", guard)
+        self.assertIn("Assert-LabGuestRunningAfterRestart $vmName $createdVm[0].Id", text)
 
 
 if __name__ == "__main__":
