@@ -1383,3 +1383,8 @@ This control makes **no** claim of independently reviewed operator material,
 available Windows administrator secrets, real guest validation, production
 authority, or GA eligibility. Both `authoritative` and `ga_eligible` remain
 `false` until their separate established gates complete.
+### Storage headroom preflight for dynamic guest disks
+
+The host now verifies local output-volume capacity **before the first Hyper-V/VHDX operation**, then repeats the check immediately before each guest disk is built, accounting for the guests remaining on that volume. The minimum policy requires **16 GiB for each remaining guest plus 16 GiB of shared free headroom per output volume**. The free-space provider must return the requested fixed local drive and an integer byte count; missing/ambiguous/non-local answers fail closed. UNC output targets fail closed until a trustworthy remote-volume capacity check is implemented. These checks are read-only and cannot provision or authorize a machine.
+
+This policy is **only a minimum fail-fast safety floor**. Each guest still gets a sparse **64 GiB dynamic VHDX**, and the combined 192 GiB virtual maximum, initial image expansion, checkpoints, and future growth may require much more physical space than the threshold. A passing check does not reserve capacity, guarantee a successful three-guest run, or substitute for operator storage approval. Actual low-space conditions can arise between preflight and writes. Tests use mocked disk providers in Windows PowerShell and PowerShell 7; real elevated Hyper-V guest acceptance remains unverified.

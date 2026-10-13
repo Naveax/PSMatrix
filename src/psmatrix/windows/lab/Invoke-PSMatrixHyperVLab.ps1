@@ -1514,6 +1514,46 @@ function Assert-LabPlanMachineAndOutputPaths([object[]]$Images) {
     }
 }
 
+function Assert-LabPlanStorageHeadroom([object[]]$Images) {
+    # Dynamic 64 GiB VHDX disks are sparse: do NOT demand 192 GiB up front.
+    # Reject near-full local volumes. This 16 GiB/guest + 16 GiB shared
+    # reserve is a minimum policy floor, NOT full-install or checkpoint proof.
+    $perGuest = [long]16GB
+    $reserve = [long]16GB
+    $volumeCounts = @{}
+    foreach ($image in $Images) {
+        $path = [IO.Path]::GetFullPath([string]$image.output_vhdx)
+        $root = [IO.Path]::GetPathRoot($path)
+        if ($root -cnotmatch '^[A-Za-z]:\\$') {
+            throw 'Windows lab storage preflight requires a locally measurable drive-letter volume.'
+        }
+        $letter = $root.Substring(0, 1).ToUpperInvariant()
+        if (-not $volumeCounts.ContainsKey($letter)) { $volumeCounts[$letter] = 0 }
+        $volumeCounts[$letter] = [int]$volumeCounts[$letter] + 1
+    }
+    foreach ($letter in @($volumeCounts.Keys)) {
+        $drive = $letter + ':'
+        # Verify destination disk with a strict typed provider response.
+        $disk = Get-CimInstance -ClassName Win32_LogicalDisk -Filter ("DeviceID='{0}'" -f $drive) -ErrorAction Stop
+        if ($null -eq $disk -or $disk -is [array] -or
+            $disk.DeviceID -isnot [string] -or
+            -not [string]::Equals([string]$disk.DeviceID, $drive, [StringComparison]::OrdinalIgnoreCase) -or
+            ($disk.DriveType -isnot [uint32] -and $disk.DriveType -isnot [int]) -or
+            [int]$disk.DriveType -ne 3 -or
+            ($disk.FreeSpace -isnot [uint64] -and $disk.FreeSpace -isnot [long])) {
+            throw 'Windows lab storage capacity provider response is invalid.'
+        }
+        if ([uint64]$disk.FreeSpace -gt [long]::MaxValue) {
+            throw 'Windows lab storage capacity response exceeds supported range.'
+        }
+        $free = [long]$disk.FreeSpace
+        $needed = $reserve + ($perGuest * [long]$volumeCounts[$letter])
+        if ($free -lt $needed) {
+            throw ('Windows lab storage headroom is insufficient on output volume: ' + $drive)
+        }
+    }
+}
+
 function Assert-LabHyperVTargetsReady([object[]]$Images) {
     # Enumerate the complete Hyper-V inventory once before any VM/VHDX write.
     # Unlike per-name SilentlyContinue queries, a provider/permission failure
@@ -1934,6 +1974,7 @@ foreach ($requiredRuntime in $requiredRuntimes) {
 Assert-LabPlanGuestIdentities $planValue.images
 Assert-LabPlanOutputRoot $planValue.lab_root $planValue.images
 Assert-LabPlanMachineAndOutputPaths $planValue.images
+Assert-LabPlanStorageHeadroom $planValue.images
 Assert-LabHyperVTargetsReady $planValue.images
 Assert-LabPlanArtifactsReady $planValue.images
 Assert-LabPlanPasswordEnvironment $planValue.images
@@ -1942,9 +1983,12 @@ Assert-LabPlanSourceIsoDetached $planValue.images
 Assert-LabPlanCheckpointNames $planValue.images
 $guestBootstrapReference = New-LabGuestBootstrapReference (Join-Path $PSScriptRoot 'GuestBootstrap.ps1')
 $results = @()
+$storageCompleted = 0
 foreach ($image in $planValue.images) {
     $vmName = [string]$image.image_id
     # Re-check at use time in case the inventory changed after preflight.
+    Assert-LabPlanStorageHeadroom @($planValue.images | Select-Object -Skip $storageCompleted)
+    $storageCompleted++
     Assert-LabHyperVTargetsReady @($image)
     $bootstrapNonce = New-LabBootstrapNonce
     $vhd = New-LabVhd $image $guestBootstrapReference.path $bootstrapNonce $guestBootstrapReference

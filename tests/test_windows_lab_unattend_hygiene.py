@@ -9785,5 +9785,91 @@ foreach ($relative in @('Windows', 'Windows\System32')) {
                 self.assertIn("^(?:Auto)?Unattend\\.xml$",content)
 
 
+    def test_host_storage_capacity_preflights_before_first_vhd_and_rechecks_per_guest(self):
+        source = HOST.read_text(encoding="utf-8")
+        self.assertIn("function Assert-LabPlanStorageHeadroom(", source)
+        self.assertIn("Get-CimInstance -ClassName Win32_LogicalDisk", source)
+        self.assertIn("$perGuest = [long]16GB", source)
+        self.assertIn("$reserve = [long]16GB", source)
+        self.assertLess(
+            source.index("Assert-LabPlanStorageHeadroom $planValue.images"),
+            source.index("Assert-LabHyperVTargetsReady $planValue.images"),
+        )
+        self.assertLess(
+            source.index("    Assert-LabPlanStorageHeadroom @($planValue.images | Select-Object -Skip $storageCompleted)"),
+            source.index("    $vhd = New-LabVhd $image"),
+        )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_storage_capacity_dynamic_rejects_low_space_and_fake_disk_providers(self):
+        import shutil
+        import subprocess
+
+        text = HOST.read_text(encoding="utf-8")
+        section = "function Assert-LabPlanStorageHeadroom(" + text.split(
+            "function Assert-LabPlanStorageHeadroom(", 1
+        )[1].split("\nfunction Assert-LabHyperVTargetsReady(", 1)[0]
+        program = section + r"""
+$ErrorActionPreference='Stop'
+$script:FreeBytes=[uint64](64GB)
+$script:DriveType=[uint32]3
+$script:DiskName='D:'
+$script:Missing=$false
+function Get-CimInstance {
+    param($ClassName, $Filter)
+    if($ClassName -cne 'Win32_LogicalDisk' -or $Filter -cne "DeviceID='D:'"){
+        throw 'Unexpected mock provider call'
+    }
+    if($script:Missing){return $null}
+    return [pscustomobject]@{
+        DeviceID=$script:DiskName
+        DriveType=$script:DriveType
+        FreeSpace=[uint64]$script:FreeBytes
+    }
+}
+$images=@(
+ [pscustomobject]@{output_vhdx='D:\PSMatrixLab\Images\ps40.vhdx'},
+ [pscustomobject]@{output_vhdx='D:\PSMatrixLab\Images\ps50.vhdx'},
+ [pscustomobject]@{output_vhdx='D:\PSMatrixLab\Images\ps51.vhdx'}
+)
+function Assert-Rejected([object[]]$Value){
+    $denied=$false
+    try{Assert-LabPlanStorageHeadroom $Value}catch{$denied=$true}
+    if(-not $denied){throw 'Storage preflight incorrectly accepted invalid input'}
+}
+Assert-LabPlanStorageHeadroom $images
+$script:FreeBytes=[uint64](64GB-1)
+Assert-Rejected $images
+$script:FreeBytes=[uint64](64GB)
+$script:DriveType=[uint32]4
+Assert-Rejected $images
+$script:DriveType=[uint32]3
+$script:DiskName='C:'
+Assert-Rejected $images
+$script:DiskName='D:'
+$script:Missing=$true
+Assert-Rejected $images
+$script:Missing=$false
+$script:FreeBytes=[uint64](32GB)
+Assert-LabPlanStorageHeadroom @($images[0])
+$script:FreeBytes=[uint64](32GB-1)
+Assert-Rejected @($images[0])
+Assert-Rejected @([pscustomobject]@{output_vhdx='\\server\share\vm.vhdx'})
+'DISK_PREFLIGHT=PASS'
+"""
+        for executable in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(executable):
+                continue
+            run = subprocess.run(
+                [executable, "-NoProfile", "-NonInteractive", "-Command", program],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=45, check=False,
+            )
+            self.assertEqual(
+                run.returncode, 0, executable + ": " + run.stdout + run.stderr
+            )
+            self.assertIn("DISK_PREFLIGHT=PASS", run.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
