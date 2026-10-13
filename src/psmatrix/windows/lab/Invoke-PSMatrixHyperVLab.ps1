@@ -2025,6 +2025,58 @@ function Assert-LabNewVmRegistered([object[]]$Created, [string]$VmName,
     }
 }
 
+function Assert-LabVmConfigurationBeforeFirstBoot(
+    [string]$VmName, [guid]$VmId, [int]$Processors, [long]$MemoryStartupBytes
+) {
+    # Set-VM* returning no error is not proof of the applied configuration.
+    # Read the registered VM, processor, and memory from independent provider
+    # calls before Start-VM. Never proceed with a stale/replaced VM identity.
+    try {
+        $vms = @(Get-VM -Name $VmName -ErrorAction Stop)
+        $cpu = @(Get-VMProcessor -VMName $VmName -ErrorAction Stop)
+        $memory = @(Get-VMMemory -VMName $VmName -ErrorAction Stop)
+    }
+    catch {
+        throw ('Guest VM configuration read-back unavailable: ' + $VmName)
+    }
+    if ($vms.Count -ne 1 -or $null -eq $vms[0] -or
+        $vms[0].Name -isnot [string] -or
+        -not [string]::Equals([string]$vms[0].Name, $VmName,
+            [StringComparison]::OrdinalIgnoreCase) -or
+        $vms[0].Id -isnot [guid] -or $vms[0].Id -ne $VmId -or
+        $vms[0].State -is [array] -or [string]$vms[0].State -cne 'Off' -or
+        $vms[0].ProcessorCount -isnot [long] -or
+        $vms[0].ProcessorCount -ne [long]$Processors -or
+        $vms[0].MemoryStartup -isnot [long] -or
+        $vms[0].MemoryStartup -ne $MemoryStartupBytes -or
+        $vms[0].DynamicMemoryEnabled -isnot [bool] -or
+        $vms[0].DynamicMemoryEnabled -ne $false -or
+        $vms[0].AutomaticCheckpointsEnabled -isnot [bool] -or
+        $vms[0].AutomaticCheckpointsEnabled -ne $false -or
+        $null -eq $vms[0].CheckpointType -or
+        $vms[0].CheckpointType -is [array] -or
+        [string]$vms[0].CheckpointType -cne 'Standard') {
+        throw ('Guest VM effective configuration differs from the lab plan: ' + $VmName)
+    }
+    if ($cpu.Count -ne 1 -or $null -eq $cpu[0] -or
+        $cpu[0].VMName -isnot [string] -or
+        -not [string]::Equals([string]$cpu[0].VMName, $VmName,
+            [StringComparison]::OrdinalIgnoreCase) -or
+        $cpu[0].Count -isnot [long] -or $cpu[0].Count -ne [long]$Processors) {
+        throw ('Guest VM effective processor configuration differs from the lab plan: ' + $VmName)
+    }
+    if ($memory.Count -ne 1 -or $null -eq $memory[0] -or
+        $memory[0].VMName -isnot [string] -or
+        -not [string]::Equals([string]$memory[0].VMName, $VmName,
+            [StringComparison]::OrdinalIgnoreCase) -or
+        $memory[0].Startup -isnot [long] -or
+        $memory[0].Startup -ne $MemoryStartupBytes -or
+        $memory[0].DynamicMemoryEnabled -isnot [bool] -or
+        $memory[0].DynamicMemoryEnabled -ne $false) {
+        throw ('Guest VM effective memory configuration differs from the lab plan: ' + $VmName)
+    }
+}
+
 function Assert-LabCheckpointCreated([string]$VmName, [string]$CheckpointName) {
     # Checkpoint-VM returning without a terminating error is not evidence
     # that the requested checkpoint is present. Get-VMSnapshot is a separate
@@ -2131,6 +2183,7 @@ foreach ($image in $planValue.images) {
     Set-VMMemory -VMName $vmName -DynamicMemoryEnabled $false
     Set-VM -Name $vmName -AutomaticCheckpointsEnabled $false -CheckpointType Standard
     Enable-VMIntegrationService -VMName $vmName -Name 'Guest Service Interface' -ErrorAction SilentlyContinue
+    Assert-LabVmConfigurationBeforeFirstBoot $vmName $createdVm[0].Id ([int]$image.processors) ([long]$image.memory_mb * 1MB)
     Start-VM -Name $vmName | Out-Null
     Wait-FirstBoot $vmName 3600
     $bootstrap = Read-BootstrapResult $vhd $bootstrapNonce

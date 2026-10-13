@@ -10162,5 +10162,114 @@ foreach($mode in @('ok','creationMissing','creationWrongName','creationWrongId',
             self.assertIn("NEW_VM_READBACK_MATRIX=PASS", result.stdout)
 
 
+    def test_vm_effective_config_is_checked_before_initial_boot(self):
+        src = HOST.read_text(encoding="utf-8")
+        self.assertIn("function Assert-LabVmConfigurationBeforeFirstBoot(", src)
+        guest_loop = src.split("foreach ($image in $planValue.images) {", 1)[1]
+        a = guest_loop.index("Set-VMProcessor -VMName $vmName")
+        b = guest_loop.index("Set-VMMemory -VMName $vmName")
+        c = guest_loop.index("Set-VM -Name $vmName")
+        d = guest_loop.index("Assert-LabVmConfigurationBeforeFirstBoot $vmName")
+        e = guest_loop.index("Start-VM -Name $vmName")
+        self.assertLess(a, b)
+        self.assertLess(b, c)
+        self.assertLess(c, d)
+        self.assertLess(d, e)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_vm_effective_config_readback_failure_matrix(self):
+        import shutil
+        import subprocess
+        src = HOST.read_text(encoding="utf-8")
+        helper = "function Assert-LabVmConfigurationBeforeFirstBoot(" + src.split(
+            "function Assert-LabVmConfigurationBeforeFirstBoot(", 1
+        )[1].split("function Assert-LabCheckpointCreated(", 1)[0]
+        fixture = helper + r"""
+$ErrorActionPreference='Stop'
+$script:mode=''
+$script:id=[guid]'50c0b3e7-c1ef-4240-97a5-24eab1d36c51'
+$script:expectedMemory=[long](2048*1MB)
+function Get-VM {
+    [CmdletBinding()]
+    param([string]$Name)
+    if ($script:mode -eq 'vmQueryError') { throw 'mock query error' }
+    if ($script:mode -eq 'vmMissing') { return }
+    $id=$script:id; $name=$Name; $state='Off';$cpu=[long]2
+    $mem=$script:expectedMemory
+    $dynamic=$false;$automatic=$false;$checkpoint='Standard'
+    if ($script:mode -eq 'identityChanged'){$id=[guid]::NewGuid()}
+    if ($script:mode -eq 'nameChanged'){$name='other'}
+    if ($script:mode -eq 'running'){$state='Running'}
+    if ($script:mode -eq 'vmCpuMismatch'){$cpu=[long]1}
+    if ($script:mode -eq 'vmMemoryMismatch'){$mem=[long]1GB}
+    if ($script:mode -eq 'vmDynamicMemory'){$dynamic=$true}
+    if ($script:mode -eq 'automaticCheckpoints'){$automatic=$true}
+    if ($script:mode -eq 'productionCheckpoint'){$checkpoint='Production'}
+    if ($script:mode -eq 'vmCpuString'){$cpu='2'}
+    if ($script:mode -eq 'vmMemoryString'){$mem='2147483648'}
+    if ($script:mode -eq 'duplicateVm') {
+        [pscustomobject]@{Name=$name;Id=$id;State=$state;ProcessorCount=$cpu;MemoryStartup=$mem;DynamicMemoryEnabled=$dynamic;AutomaticCheckpointsEnabled=$automatic;CheckpointType=$checkpoint}
+    }
+    return [pscustomobject]@{Name=$name;Id=$id;State=$state;ProcessorCount=$cpu;MemoryStartup=$mem;DynamicMemoryEnabled=$dynamic;AutomaticCheckpointsEnabled=$automatic;CheckpointType=$checkpoint}
+}
+function Get-VMProcessor {
+    [CmdletBinding()]
+    param([string]$VMName)
+    if ($script:mode -eq 'processorQueryError') { throw 'mock query error' }
+    if ($script:mode -eq 'processorMissing') { return }
+    $name=$VMName;$count=[long]2
+    if ($script:mode -eq 'processorWrongName') {$name='other'}
+    if ($script:mode -eq 'processorMismatch') {$count=[long]1}
+    if ($script:mode -eq 'processorDuplicate') {
+        [pscustomobject]@{VMName=$name;Count=$count}
+    }
+    return [pscustomobject]@{VMName=$name;Count=$count}
+}
+function Get-VMMemory {
+    [CmdletBinding()]
+    param([string]$VMName)
+    if ($script:mode -eq 'memoryQueryError') { throw 'mock query error' }
+    if ($script:mode -eq 'memoryMissing') { return }
+    $name=$VMName;$startup=$script:expectedMemory;$dynamic=$false
+    if ($script:mode -eq 'memoryWrongName') {$name='other'}
+    if ($script:mode -eq 'memoryMismatch') {$startup=[long]1GB}
+    if ($script:mode -eq 'memoryDynamic') {$dynamic=$true}
+    if ($script:mode -eq 'memoryDuplicate') {
+        [pscustomobject]@{VMName=$name;Startup=$startup;DynamicMemoryEnabled=$dynamic}
+    }
+    return [pscustomobject]@{VMName=$name;Startup=$startup;DynamicMemoryEnabled=$dynamic}
+}
+$bad=@('vmQueryError','vmMissing','identityChanged','nameChanged','running',
+'vmCpuMismatch','vmMemoryMismatch','vmDynamicMemory','automaticCheckpoints',
+'productionCheckpoint','vmCpuString','vmMemoryString','duplicateVm',
+'processorQueryError','processorMissing','processorWrongName','processorMismatch',
+'processorDuplicate','memoryQueryError','memoryMissing','memoryWrongName',
+'memoryMismatch','memoryDynamic','memoryDuplicate')
+foreach($mode in @('valid')+$bad) {
+    $script:mode=$mode
+    $err=''
+    try { Assert-LabVmConfigurationBeforeFirstBoot 'fixture-vm' $script:id 2 $script:expectedMemory }
+    catch { $err=$_.Exception.Message }
+    if ($mode -eq 'valid' -and $err -ne '') {
+        throw ('Valid VM configuration rejected: '+$err)
+    }
+    if ($mode -ne 'valid' -and $err -eq '') {
+        throw ('Invalid VM configuration accepted: '+$mode)
+    }
+}
+'VM_EFFECTIVE_CONFIG_MATRIX=PASS'
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", fixture],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=45, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+            self.assertIn("VM_EFFECTIVE_CONFIG_MATRIX=PASS", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
