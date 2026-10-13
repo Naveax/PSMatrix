@@ -1972,6 +1972,63 @@ function Wait-FirstBoot([string]$VmName, [int]$TimeoutSeconds) {
     throw ('Guest bootstrap timed out: ' + $VmName)
 }
 
+
+function Assert-LabCheckpointCreated([string]$VmName, [string]$CheckpointName) {
+    # Checkpoint-VM returning without a terminating error is not evidence
+    # that the requested checkpoint is present. Get-VMSnapshot is a separate
+    # provider read; require exactly one correctly named Standard snapshot.
+    try {
+        $found = @(Get-VMSnapshot -VMName $VmName -Name $CheckpointName -SnapshotType Standard -ErrorAction Stop)
+    }
+    catch {
+        throw ('Guest checkpoint verification query failed: ' + $VmName)
+    }
+    if ($found.Count -ne 1 -or $null -eq $found[0] -or
+        $found[0].Name -isnot [string] -or
+        [string]$found[0].Name -cne $CheckpointName) {
+        throw ('Guest checkpoint was not independently confirmed: ' + $VmName)
+    }
+    # VMName is exposed by current Hyper-V versions. If a provider exposes
+    # it, reject even a correctly named snapshot from the wrong guest.
+    $snapshotVmName = $found[0].PSObject.Properties['VMName']
+    if ($null -ne $snapshotVmName -and
+        ($snapshotVmName.Value -isnot [string] -or
+         -not [string]::Equals([string]$snapshotVmName.Value, $VmName,
+             [StringComparison]::OrdinalIgnoreCase))) {
+        throw ('Guest checkpoint belongs to an unexpected VM: ' + $VmName)
+    }
+}
+
+function Assert-LabGuestRunningAfterRestart([string]$VmName, [int]$TimeoutSeconds = 120) {
+    # Start-VM may return without proving that the VM reached Running.
+    # Allow only the Hyper-V Starting transition while waiting; never
+    # claim PASS for an Off, Paused, Saved or ambiguous guest.
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        try {
+            $matches = @(Get-VM -Name $VmName -ErrorAction Stop)
+        }
+        catch {
+            throw ('Guest restart state query failed: ' + $VmName)
+        }
+        if ($matches.Count -ne 1 -or $null -eq $matches[0] -or
+            $matches[0].Name -isnot [string] -or
+            -not [string]::Equals([string]$matches[0].Name, $VmName,
+                [StringComparison]::OrdinalIgnoreCase) -or
+            $null -eq $matches[0].State -or $matches[0].State -is [array]) {
+            throw ('Guest restart state is ambiguous or misidentified: ' + $VmName)
+        }
+        $state = [string]$matches[0].State
+        if ($state -ceq 'Running') { return }
+        if ($state -cne 'Starting') {
+            throw ('Guest did not reach Running after checkpoint: ' + $VmName)
+        }
+        if ([DateTime]::UtcNow -ge $deadline) { break }
+        Start-Sleep -Seconds 2
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw ('Guest restart Running state timed out: ' + $VmName)
+}
+
 Assert-Administrator
 Import-Module Hyper-V -ErrorAction Stop
 if (-not (Test-Path -LiteralPath $Plan -PathType Leaf)) { throw 'Lab plan is missing.' }
@@ -2039,7 +2096,9 @@ foreach ($image in $planValue.images) {
     # checkpoint boundary. Hashing after Start-VM races live guest writes.
     $verifiedVhdxSha256 = Get-Sha256 $vhd
     Checkpoint-VM -Name $vmName -SnapshotName ([string]$image.checkpoint_name) | Out-Null
+    Assert-LabCheckpointCreated $vmName ([string]$image.checkpoint_name)
     Start-VM -Name $vmName | Out-Null
+    Assert-LabGuestRunningAfterRestart $vmName
     $results += [ordered]@{
         runtime_id = [string]$image.runtime_id
         image_id = $vmName

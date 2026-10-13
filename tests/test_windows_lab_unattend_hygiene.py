@@ -9963,5 +9963,117 @@ foreach ($mode in @('twoStates','wrongName','arrayState','noVm','duplicateAfterS
             self.assertIn("VM_QUERY_SINGLETON=PASS", result.stdout)
 
 
+    def test_checkpoint_and_post_restart_readback_are_before_pass(self):
+        src = HOST.read_text(encoding="utf-8")
+        self.assertIn("function Assert-LabCheckpointCreated(", src)
+        self.assertIn("function Assert-LabGuestRunningAfterRestart(", src)
+        a = src.index("    Checkpoint-VM -Name $vmName")
+        b = src.index("    Assert-LabCheckpointCreated $vmName", a)
+        c = src.index("    Start-VM -Name $vmName | Out-Null", b)
+        d = src.index("    Assert-LabGuestRunningAfterRestart $vmName", c)
+        e = src.index("        status = 'PASS'", d)
+        self.assertLess(a, b)
+        self.assertLess(b, c)
+        self.assertLess(c, d)
+        self.assertLess(d, e)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_checkpoint_and_post_restart_provider_fail_closed_dynamic(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        body = "function Assert-LabCheckpointCreated(" + host.split(
+            "function Assert-LabCheckpointCreated(", 1
+        )[1].split("\nAssert-Administrator", 1)[0]
+        fixture = body + r"""
+$ErrorActionPreference='Stop'
+$script:checkpointMode='ok'
+$script:restartMode='ok'
+$script:restartReads=0
+function Get-VMSnapshot {
+    [CmdletBinding()]
+    param([string]$VMName,[string]$Name,[string]$SnapshotType)
+    if ($VMName -cne 'fixture-vm' -or $Name -cne 'after-boot' -or $SnapshotType -cne 'Standard') {
+        throw 'unexpected snapshot request'
+    }
+    if ($script:checkpointMode -eq 'error') { throw 'provider failure' }
+    if ($script:checkpointMode -eq 'missing') { return }
+    if ($script:checkpointMode -eq 'wrongName') {
+        return [pscustomobject]@{Name='other';VMName=$VMName}
+    }
+    if ($script:checkpointMode -eq 'wrongVm') {
+        return [pscustomobject]@{Name=$Name;VMName='other-vm'}
+    }
+    if ($script:checkpointMode -eq 'duplicate') {
+        [pscustomobject]@{Name=$Name;VMName=$VMName}
+        [pscustomobject]@{Name=$Name;VMName=$VMName}
+        return
+    }
+    return [pscustomobject]@{Name=$Name;VMName=$VMName}
+}
+function Get-VM {
+    [CmdletBinding()]
+    param([string]$Name)
+    $script:restartReads++
+    if ($script:restartMode -eq 'error') { throw 'provider failure' }
+    if ($script:restartMode -eq 'missing') { return }
+    if ($script:restartMode -eq 'duplicate') {
+        [pscustomobject]@{Name=$Name;State='Running'}
+        [pscustomobject]@{Name=$Name;State='Running'}
+        return
+    }
+    if ($script:restartMode -eq 'wrongName') {
+        return [pscustomobject]@{Name='other-vm';State='Running'}
+    }
+    if ($script:restartMode -eq 'arrayState') {
+        return [pscustomobject]@{Name=$Name;State=@('Starting','Running')}
+    }
+    if ($script:restartMode -eq 'off') {
+        return [pscustomobject]@{Name=$Name;State='Off'}
+    }
+    if ($script:restartMode -eq 'startingThenRunning' -and $script:restartReads -eq 1) {
+        return [pscustomobject]@{Name=$Name;State='Starting'}
+    }
+    return [pscustomobject]@{Name=$Name;State='Running'}
+}
+function Start-Sleep {param([int]$Seconds)}
+foreach ($mode in @('ok','missing','error','wrongName','wrongVm','duplicate')) {
+    $script:checkpointMode=$mode
+    $failed=$false
+    try { Assert-LabCheckpointCreated 'fixture-vm' 'after-boot' }
+    catch { $failed=$true }
+    if (($mode -eq 'ok' -and $failed) -or ($mode -ne 'ok' -and -not $failed)) {
+        throw ('Checkpoint verification mismatch: '+$mode)
+    }
+}
+foreach ($mode in @('ok','startingThenRunning','missing','error','duplicate','wrongName','arrayState','off')) {
+    $script:restartMode=$mode
+    $script:restartReads=0
+    $failed=$false
+    try { Assert-LabGuestRunningAfterRestart -VmName 'fixture-vm' -TimeoutSeconds 10 }
+    catch { $failed=$true }
+    $good=$mode -in @('ok','startingThenRunning')
+    if (($good -and $failed) -or (-not $good -and -not $failed)) {
+        throw ('Restart verification mismatch: '+$mode)
+    }
+    if ($mode -eq 'startingThenRunning' -and $script:restartReads -ne 2) {
+        throw 'Valid Starting -> Running transition not verified'
+    }
+}
+'CHECKPOINT_RESTART_READBACK=PASS'
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", fixture],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=45, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+            self.assertIn("CHECKPOINT_RESTART_READBACK=PASS", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
