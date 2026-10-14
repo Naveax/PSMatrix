@@ -935,10 +935,17 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         Assert-NewLabInitializedDiskIdentity $output $diskNumber
         $efi = New-Partition -DiskNumber $diskNumber -Size 260MB -AssignDriveLetter -GptType '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' -ErrorAction Stop
         Assert-LabCreatedPartition $diskNumber $efi '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' 'EFI'
+        # Revalidate the mounted VHDX disk number and drive-letter owner just
+        # before each destructive format, not only after partition creation.
+        Assert-NewLabInitializedDiskIdentity $output $diskNumber
+        Assert-LabCreatedPartition $diskNumber $efi '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' 'EFI'
         Format-Volume -Partition $efi -FileSystem FAT32 -NewFileSystemLabel 'SYSTEM' -Confirm:$false -ErrorAction Stop | Out-Null
         Assert-LabFormattedVolume $efi 'FAT32' 'SYSTEM'
+        # Disk numbers can be reused between independent Storage operations.
+        Assert-NewLabInitializedDiskIdentity $output $diskNumber
         $msr = New-Partition -DiskNumber $diskNumber -Size 16MB -GptType '{e3c9e316-0b5c-4db8-817d-f92df00215ae}' -ErrorAction Stop
         Assert-LabMsrPartition $diskNumber $msr
+        Assert-NewLabInitializedDiskIdentity $output $diskNumber
         $windows = New-Partition -DiskNumber $diskNumber -UseMaximumSize -AssignDriveLetter -ErrorAction Stop
         Assert-LabCreatedPartition $diskNumber $windows '{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}' 'Windows'
         # Detect a duplicated/invalid Windows or EFI drive letter before
@@ -946,6 +953,8 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         $partitionRoots = Get-LabPartitionRoots $windows $efi
         $windowsRoot = $partitionRoots.WindowsRoot
         $efiRoot = $partitionRoots.EfiRoot
+        Assert-NewLabInitializedDiskIdentity $output $diskNumber
+        Assert-LabCreatedPartition $diskNumber $windows '{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}' 'Windows'
         Format-Volume -Partition $windows -FileSystem NTFS -NewFileSystemLabel 'Windows' -Confirm:$false -ErrorAction Stop | Out-Null
         Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
         # Validate both target volumes again at write time; initial format

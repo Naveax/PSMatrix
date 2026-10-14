@@ -1870,8 +1870,17 @@ if(-not $rejected){throw 'Storage provider error was accepted'}
         script = roots + r"""
 $ErrorActionPreference='Stop'
 $diskNumber=42
+$output='D:\Fixture\partition-guest.vhdx'
+$script:diskChecks=0
 $script:formatCalls=0
 $script:windowsLetter='F'
+function Assert-NewLabInitializedDiskIdentity {
+    param([string]$VhdPath,[int]$DiskNumber)
+    if($VhdPath -cne $output -or $DiskNumber -ne 42) {
+        throw 'Wrong disk was passed to the pre-format identity guard.'
+    }
+    $script:diskChecks++
+}
 function New-Partition {
     [CmdletBinding()]
     param([int]$DiskNumber,[switch]$UseMaximumSize,[switch]$AssignDriveLetter)
@@ -1892,12 +1901,12 @@ function Invoke-Case([string]$EfiLetter) {
 $failed = $false
 try { Invoke-Case 'f' | Out-Null } catch { $failed = $true }
 if (-not $failed) { throw 'Overlapping guest Windows/EFI letters accepted.' }
-if ($script:formatCalls -ne 0) {
+if ($script:formatCalls -ne 0 -or $script:diskChecks -ne 0) {
     throw 'Guest Windows partition was formatted before letter collision rejection.'
 }
 $script:formatCalls=0
 $roots = Invoke-Case 'E'
-if ($script:formatCalls -ne 1 -or $roots.WindowsRoot -cne 'F:\' -or $roots.EfiRoot -cne 'E:') {
+if ($script:formatCalls -ne 1 -or $script:diskChecks -ne 1 -or $roots.WindowsRoot -cne 'F:\' -or $roots.EfiRoot -cne 'E:') {
     throw 'Valid distinct partition roots were not formatted exactly once.'
 }
 """
@@ -10801,6 +10810,117 @@ if($script:serviceCalls -ne 0){throw 'Empty VM GUID reached provider'}
             )
             self.assertEqual(proc.returncode, 0, exe + ": " + proc.stdout + proc.stderr)
             self.assertIn("GUEST_SERVICE_INTERFACE_READBACK_MOCK=PASS", proc.stdout)
+
+
+    def test_each_destructive_guest_partition_mutation_has_fresh_vhd_identity_check(self):
+        host = HOST.read_text(encoding="utf-8")
+        build = host.split("function New-LabVhd(", 1)[1].split(
+            "\nfunction Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        guard = "Assert-NewLabInitializedDiskIdentity $output $diskNumber"
+        mutations = (
+            "$efi = New-Partition -DiskNumber $diskNumber -Size 260MB",
+            "Format-Volume -Partition $efi -FileSystem FAT32",
+            "$msr = New-Partition -DiskNumber $diskNumber -Size 16MB",
+            "$windows = New-Partition -DiskNumber $diskNumber -UseMaximumSize",
+            "Format-Volume -Partition $windows -FileSystem NTFS",
+        )
+        self.assertEqual(build.count(guard), len(mutations))
+        previous_mutation_index = -1
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                mutation_index = build.index(mutation)
+                preceding_guard = build.rfind(guard, 0, mutation_index)
+                self.assertGreater(preceding_guard, previous_mutation_index)
+                self.assertLess(preceding_guard, mutation_index)
+                previous_mutation_index = mutation_index
+        for role in ("efi", "windows"):
+            fmt_index = build.index("Format-Volume -Partition $" + role)
+            guard_index = build.rfind(guard, 0, fmt_index)
+            owner_check = build.rfind(
+                "Assert-LabCreatedPartition $diskNumber $" + role, 0, fmt_index
+            )
+            self.assertGreater(owner_check, guard_index)
+            self.assertLess(owner_check, fmt_index)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_partition_mutation_disk_number_reuse_mock_fails_before_write(self):
+        import shutil
+        import subprocess
+
+        source = HOST.read_text(encoding="utf-8")
+        start = source.index("function Assert-NewLabInitializedDiskIdentity(")
+        stop = source.index("\nfunction Assert-CheckpointVhdDiskIdentity(", start)
+        helper = source[start:stop]
+        fixture = helper + r"""
+$ErrorActionPreference='Stop'
+$output='D:\Fixture\partition-guest.vhdx'
+$diskNumber=42
+$script:queries=0
+$script:writes=0
+$script:replacementAt=999
+$script:expected='D:\Fixture\partition-guest.vhdx'
+function Get-VHD {
+    [CmdletBinding()]
+    param([uint32]$DiskNumber)
+    $script:queries++
+    $path=$script:expected
+    if($script:queries -ge $script:replacementAt){
+        $path='D:\Fixture\unrelated.vhdx'
+    }
+    [pscustomobject]@{Path=$path;Attached=$true}
+}
+function Get-Disk {
+    [CmdletBinding()]
+    param([int]$Number)
+    [pscustomobject]@{
+        Number=$Number;IsBoot=$false;IsSystem=$false;PartitionStyle='GPT'
+    }
+}
+function Invoke-FakePartitionMutation {
+    $script:writes++
+}
+foreach($replacementAt in @(1,2,3,4,5,999)){
+    $script:queries=0;$script:writes=0
+    $script:replacementAt=$replacementAt
+    $failed=$false
+    foreach($index in 1..5){
+        try {
+            Assert-NewLabInitializedDiskIdentity $output $diskNumber
+            Invoke-FakePartitionMutation
+        }
+        catch{
+            $failed=$true
+            if($_.Exception.Message -notmatch 'Initialized lab disk no longer resolves'){
+                throw ('Unexpected rejection: '+$_.Exception.Message)
+            }
+            break
+        }
+    }
+    if($replacementAt -eq 999){
+        if($failed -or $script:writes -ne 5 -or $script:queries -ne 5){
+            throw 'Valid disk was rejected'
+        }
+    }
+    elseif(-not $failed -or $script:writes -ne ($replacementAt-1) -or
+        $script:queries -ne $replacementAt){
+        throw ('Mutation reached substituted disk at check '+$replacementAt)
+    }
+}
+'PARTITION_DISK_REUSE_MOCK=PASS'
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            proc = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", fixture],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(
+                proc.returncode, 0, exe + ": " + proc.stdout + proc.stderr
+            )
+            self.assertIn("PARTITION_DISK_REUSE_MOCK=PASS", proc.stdout)
 
 
 if __name__ == "__main__":
