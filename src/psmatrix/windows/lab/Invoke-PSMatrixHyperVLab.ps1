@@ -456,6 +456,23 @@ function Assert-SafeOfflineGuestWriteAncestors([string]$WindowsRoot) {
     }
 }
 
+function Assert-LabOfflineSetupMissingChildIsAbsent(
+    [string]$Parent, [string]$ChildName
+) {
+    # Get-Item on a dangling junction can report ItemNotFound even though
+    # the directory entry still exists. Never treat that as a fresh path.
+    # Only existing parents need enumeration; a missing ancestor cannot
+    # contain a directory entry underneath it.
+    if (Test-Path -LiteralPath $Parent -PathType Container) {
+        foreach ($entry in @(Get-ChildItem -LiteralPath $Parent -Force -ErrorAction Stop)) {
+            if ([string]::Equals([string]$entry.Name, $ChildName,
+                [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'Offline guest setup path has an unresolved existing entry.'
+            }
+        }
+    }
+}
+
 function Assert-LabSafeSetupDirectoryBeforeCreate(
     [string]$WindowsRoot, [string]$RelativeDirectory
 ) {
@@ -479,7 +496,9 @@ function Assert-LabSafeSetupDirectoryBeforeCreate(
             $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
         }
         catch [System.Management.Automation.ItemNotFoundException] {
-            # New-Item may create a missing ancestor on a valid golden image.
+            # An absent parent is valid, but an unresolved junction leaf
+            # is not: Get-Item can hide broken reparse entries.
+            Assert-LabOfflineSetupMissingChildIsAbsent (Split-Path -Parent $current) $segment
             continue
         }
         if ($null -ne $item -and

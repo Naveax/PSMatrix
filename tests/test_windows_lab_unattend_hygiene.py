@@ -11892,5 +11892,110 @@ Assert-LabFreshOutputVhdTarget $target
                 self.assertIn("VHD_FRESH_TARGET_BOUNDARY=PASS", proc.stdout)
 
 
+    def test_setup_directory_precreate_rejects_unresolved_existing_entries(self):
+        host = HOST.read_text(encoding="utf-8")
+        start = host.index("function Assert-LabOfflineSetupMissingChildIsAbsent(")
+        end = host.index("\nfunction Assert-LabFreshGuestSetupTarget(", start)
+        block = host[start:end]
+        self.assertIn("Get-ChildItem -LiteralPath $Parent -Force -ErrorAction Stop", block)
+        self.assertIn("[StringComparison]::OrdinalIgnoreCase", block)
+        self.assertIn("Offline guest setup path has an unresolved existing entry.", block)
+        missing_catch = block.index(
+            "catch [System.Management.Automation.ItemNotFoundException]"
+        )
+        check = block.index(
+            "Assert-LabOfflineSetupMissingChildIsAbsent (Split-Path -Parent $current) $segment",
+            missing_catch
+        )
+        self.assertLess(missing_catch, check)
+        self.assertLess(check, block.index("continue", check))
+        self.assertEqual(block.count("Assert-LabOfflineSetupMissingChildIsAbsent"), 2)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_setup_directory_precreate_native_dangling_junction_rejected(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        source = HOST.read_text(encoding="utf-8")
+        start = source.index("function Assert-LabOfflineSetupMissingChildIsAbsent(")
+        end = source.index("\nfunction Assert-LabFreshGuestSetupTarget(", start)
+        block = source[start:end]
+        with tempfile.TemporaryDirectory(prefix="psmatrix-offline-dangling-path-") as temp:
+            for executable in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(executable):
+                    continue
+                case = Path(temp) / executable.replace(".", "-")
+                case.mkdir()
+                def quoted(value):
+                    return "'" + str(value).replace("'", "''") + "'"
+                script = block + r"""
+$ErrorActionPreference='Stop'
+$root=__ROOT__
+$windows=Join-Path $root 'Windows'
+New-Item -ItemType Directory -Path $windows -ErrorAction Stop | Out-Null
+Assert-LabSafeSetupDirectoryBeforeCreate $root 'Windows\Panther'
+Assert-LabSafeSetupDirectoryBeforeCreate $root 'Windows\Setup\Scripts'
+$panther=Join-Path $windows 'Panther'
+$outside=Join-Path $root 'outside-panther'
+New-Item -ItemType Directory -Path $outside -ErrorAction Stop | Out-Null
+New-Item -ItemType Junction -Path $panther -Target $outside -ErrorAction Stop | Out-Null
+[IO.Directory]::Delete($outside)
+$rejected=$false
+try { Assert-LabSafeSetupDirectoryBeforeCreate $root 'Windows\Panther' }
+catch { $rejected=$true }
+if(-not $rejected){throw 'Dangling Panther junction was accepted'}
+[IO.Directory]::Delete($panther)
+$setup=Join-Path $windows 'Setup'
+New-Item -ItemType Directory -Path $setup -ErrorAction Stop | Out-Null
+$scripts=Join-Path $setup 'Scripts'
+$outside=Join-Path $root 'outside-scripts'
+New-Item -ItemType Directory -Path $outside -ErrorAction Stop | Out-Null
+New-Item -ItemType Junction -Path $scripts -Target $outside -ErrorAction Stop | Out-Null
+[IO.Directory]::Delete($outside)
+$rejected=$false
+try { Assert-LabSafeSetupDirectoryBeforeCreate $root 'Windows\Setup\Scripts' }
+catch { $rejected=$true }
+if(-not $rejected){throw 'Dangling Scripts junction was accepted'}
+[IO.Directory]::Delete($scripts)
+Assert-LabSafeSetupDirectoryBeforeCreate $root 'Windows\Setup\Scripts'
+# Force a Get-Item ItemNotFound for an existing directory entry to exercise
+# the fallback even when the local Windows build reports a reparse object.
+function Invoke-ForcedUnresolvedEntry {
+    $script:missingProbe=Join-Path $windows 'Panther'
+    function Get-Item {
+        [CmdletBinding()]
+        param([string]$LiteralPath,[switch]$Force)
+        if($LiteralPath -ceq $script:missingProbe){
+            throw [System.Management.Automation.ItemNotFoundException]::new('Unresolved junction')
+        }
+        Microsoft.PowerShell.Management\Get-Item -LiteralPath $LiteralPath -Force -ErrorAction Stop
+    }
+    function Get-ChildItem {
+        [CmdletBinding()]
+        param([string]$LiteralPath,[switch]$Force)
+        if($LiteralPath -ceq $windows){
+            [pscustomobject]@{Name='PANTHER'}
+            return
+        }
+        Microsoft.PowerShell.Management\Get-ChildItem -LiteralPath $LiteralPath -Force -ErrorAction Stop
+    }
+    Assert-LabSafeSetupDirectoryBeforeCreate $root 'Windows\Panther'
+}
+$rejected=$false
+try { Invoke-ForcedUnresolvedEntry } catch {$rejected=$true}
+if(-not $rejected){throw 'Unresolved fake parent entry bypassed fallback'}
+'OFFLINE_DANGLING_PARENT_REJECT=PASS'
+""".replace("__ROOT__", quoted(case))
+                result = subprocess.run(
+                    [executable, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=55, check=False,
+                )
+                self.assertEqual(result.returncode, 0,
+                                 executable+": "+result.stdout+result.stderr)
+                self.assertIn("OFFLINE_DANGLING_PARENT_REJECT=PASS", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
