@@ -10144,7 +10144,7 @@ foreach ($mode in @('ok','startingThenRunning','missing','error','duplicate','wr
         source = text.split("foreach ($image in $planValue.images) {", 1)[1]
         creation = source.index("$createdVm = @(New-VM -Name $vmName")
         readback = source.index("Assert-LabNewVmRegistered $createdVm $vmName $vhd")
-        configure = source.index("Set-VMProcessor -VMName $vmName")
+        configure = source.index("Set-VMProcessor -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)")
         self.assertLess(creation, readback)
         self.assertLess(readback, configure)
 
@@ -10229,9 +10229,9 @@ foreach($mode in @('ok','creationMissing','creationWrongName','creationWrongId',
         src = HOST.read_text(encoding="utf-8")
         self.assertIn("function Assert-LabVmConfigurationBeforeFirstBoot(", src)
         guest_loop = src.split("foreach ($image in $planValue.images) {", 1)[1]
-        a = guest_loop.index("Set-VMProcessor -VMName $vmName")
-        b = guest_loop.index("Set-VMMemory -VMName $vmName")
-        c = guest_loop.index("Set-VM -Name $vmName")
+        a = guest_loop.index("Set-VMProcessor -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)")
+        b = guest_loop.index("Set-VMMemory -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)")
+        c = guest_loop.index("Set-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)")
         d = guest_loop.index("Assert-LabVmConfigurationBeforeFirstBoot $vmName")
         e = guest_loop.index("Start-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id) -ErrorAction Stop")
         self.assertLess(a, b)
@@ -10662,6 +10662,38 @@ if($script:starts -ne 0){throw 'Empty expected GUID started VM'}
             )
             self.assertEqual(run.returncode, 0, exe + ": " + run.stdout + run.stderr)
             self.assertIn("VM_MUTATION_IDENTITY_MOCK=PASS", run.stdout)
+
+
+    def test_host_configuration_mutations_recheck_exact_vm_identity(self):
+        source = HOST.read_text(encoding="utf-8")
+        helper = source.split("function Get-LabVerifiedVmForMutation(", 1)[1].split(
+            "\nfunction Wait-FirstBoot(", 1
+        )[0]
+        self.assertIn("$vms[0].Id -ne $ExpectedVmId", helper)
+        self.assertIn("[string]$vms[0].State -cne 'Off'", helper)
+        guest_loop = source.split("foreach ($image in $planValue.images) {", 1)[1]
+        calls = (
+            "Set-VMProcessor -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)",
+            "Set-VMMemory -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)",
+            "Set-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)",
+            "Enable-VMIntegrationService -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)",
+        )
+        for command in calls:
+            with self.subTest(command=command):
+                self.assertEqual(guest_loop.count(command), 1)
+        for old in (
+            "Set-VMProcessor -VMName $vmName",
+            "Set-VMMemory -VMName $vmName",
+            "Set-VM -Name $vmName",
+            "Enable-VMIntegrationService -VMName $vmName",
+        ):
+            self.assertNotIn(old, guest_loop)
+        for first, second in zip(calls, calls[1:]):
+            self.assertLess(guest_loop.index(first), guest_loop.index(second))
+        self.assertLess(
+            guest_loop.index(calls[-1]),
+            guest_loop.index("Assert-LabVmConfigurationBeforeFirstBoot"),
+        )
 
 
 if __name__ == "__main__":

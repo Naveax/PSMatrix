@@ -2297,10 +2297,10 @@ foreach ($image in $planValue.images) {
     $vhd = New-LabVhd $image $guestBootstrapReference.path $bootstrapNonce $guestBootstrapReference
     $createdVm = @(New-VM -Name $vmName -Generation ([int]$image.generation) -MemoryStartupBytes ([int64]$image.memory_mb * 1MB) -VHDPath $vhd -SwitchName ([string]$image.switch_name) -ErrorAction Stop)
     Assert-LabNewVmRegistered $createdVm $vmName $vhd ([int]$image.generation)
-    Set-VMProcessor -VMName $vmName -Count ([int]$image.processors)
-    Set-VMMemory -VMName $vmName -DynamicMemoryEnabled $false
-    Set-VM -Name $vmName -AutomaticCheckpointsEnabled $false -CheckpointType Standard
-    Enable-VMIntegrationService -VMName $vmName -Name 'Guest Service Interface' -ErrorAction SilentlyContinue
+    Set-VMProcessor -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id) -Count ([int]$image.processors) -ErrorAction Stop
+    Set-VMMemory -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id) -DynamicMemoryEnabled $false -ErrorAction Stop
+    Set-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id) -AutomaticCheckpointsEnabled $false -CheckpointType Standard -ErrorAction Stop
+    Enable-VMIntegrationService -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id) -Name 'Guest Service Interface' -ErrorAction SilentlyContinue
     Assert-LabVmConfigurationBeforeFirstBoot $vmName $createdVm[0].Id ([int]$image.processors) ([long]$image.memory_mb * 1MB)
     Start-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id) -ErrorAction Stop | Out-Null
     Wait-FirstBoot $vmName 3600 $createdVm[0].Id
