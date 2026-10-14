@@ -5648,6 +5648,15 @@ function Assert-SafeOfflineGuestWriteAncestors {
     if($WindowsRoot -cne $windowsRoot){throw 'Wrong staging directory guard'}
     $script:boundaryChecks++
 }
+function Assert-LabOfflineSetupMissingChildIsAbsent {
+    param([string]$Parent,[string]$ChildName)
+    foreach($entry in @(Get-ChildItem -LiteralPath $Parent -Force -ErrorAction Stop)){
+        if([string]::Equals([string]$entry.Name,$ChildName,
+            [StringComparison]::OrdinalIgnoreCase)){
+            throw 'Unexpected existing bootstrap directory entry'
+        }
+    }
+}
 function Assert-Artifact {
     param($Artifact,[string]$Label)
     if ($script:copyCalls -ne 0 -or $script:aclCalls -ne 1) {
@@ -9008,7 +9017,11 @@ if(-not $rejected -or ([IO.File]::ReadAllText($late) -cne 'untouched')){
         host = HOST.read_text(encoding="utf-8")
         begin = host.index("function Assert-LabFreshGuestSetupTarget(")
         end = host.index("\nfunction Invoke-HostBcdBoot(", begin)
-        helper = host[begin:end]
+        helper = (
+            host[host.index("function Assert-LabOfflineSetupMissingChildIsAbsent("):
+                 host.index("\nfunction Assert-LabSafeSetupDirectoryBeforeCreate(")]
+            + host[begin:end]
+        )
         build = host.split("function New-LabVhd(", 1)[1].split(
             "\nfunction Assert-NoGuestSetupAnswerFiles(", 1
         )[0]
@@ -12130,6 +12143,115 @@ if(-not $denied -or $script:vhdDismounts -ne 1 -or
             )
             self.assertEqual(proc.returncode, 0, exe+": "+proc.stdout+proc.stderr)
             self.assertIn("VHD_CREATION_OWNERSHIP_CLEANUP=PASS", proc.stdout)
+
+
+    def test_broad_guest_write_guards_reject_unresolved_ancestor_and_leaf_entries(self):
+        source = HOST.read_text(encoding="utf-8")
+        a = source.index("function Assert-SafeOfflineGuestWriteAncestors(")
+        b = source.index("\nfunction Assert-LabOfflineSetupMissingChildIsAbsent(", a)
+        broad = source[a:b]
+        self.assertEqual(broad.count("Assert-LabOfflineSetupMissingChildIsAbsent"), 2)
+        self.assertIn(
+            "Assert-LabOfflineSetupMissingChildIsAbsent (Split-Path -Parent $current) $segment",
+            broad,
+        )
+        self.assertIn(
+            "Assert-LabOfflineSetupMissingChildIsAbsent (Split-Path -Parent $target) (Split-Path -Leaf $target)",
+            broad,
+        )
+        a = source.index("function Assert-LabFreshGuestSetupTarget(")
+        b = source.index("\nfunction Invoke-HostBcdBoot(", a)
+        fresh = source[a:b]
+        self.assertIn(
+            "Assert-LabOfflineSetupMissingChildIsAbsent $current $FileName",
+            fresh,
+        )
+        build = source.split("function New-LabVhd(", 1)[1].split(
+            "\nfunction Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        extra = ("Assert-LabOfflineSetupMissingChildIsAbsent "
+                 "(Split-Path -Parent $bootstrap) (Split-Path -Leaf $bootstrap)")
+        self.assertIn(extra, build)
+        self.assertLess(
+            build.index(extra),
+            build.index("New-Item -ItemType Directory -Path $bootstrap -ErrorAction Stop"),
+        )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_broad_guest_write_guards_native_dangling_bootstrap_and_unresolved_answer_leaf(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        source = HOST.read_text(encoding="utf-8")
+        a = source.index("function Assert-SafeOfflineGuestWriteAncestors(")
+        b = source.index("\nfunction Invoke-HostBcdBoot(", a)
+        helpers = source[a:b]
+        with tempfile.TemporaryDirectory(prefix="psmatrix-broad-dangling-") as folder:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                base = Path(folder) / exe.replace(".", "-")
+                base.mkdir()
+                quote = lambda x: "'" + str(x).replace("'", "''") + "'"
+                script = helpers + r"""
+$ErrorActionPreference='Stop'
+$root=__ROOT__
+$bootstrapParent=Join-Path $root 'ProgramData\PSMatrix'
+$windows=Join-Path $root 'Windows'
+$panther=Join-Path $windows 'Panther'
+New-Item -ItemType Directory -Path $bootstrapParent,$panther -Force -ErrorAction Stop | Out-Null
+Assert-SafeOfflineGuestWriteAncestors $root
+$bootstrap=Join-Path $bootstrapParent 'Bootstrap'
+$outside=Join-Path $root 'outside'
+New-Item -ItemType Directory -Path $outside -ErrorAction Stop | Out-Null
+New-Item -ItemType Junction -Path $bootstrap -Target $outside -ErrorAction Stop | Out-Null
+[IO.Directory]::Delete($outside)
+$denied=$false
+try{Assert-SafeOfflineGuestWriteAncestors $root}catch{$denied=$true}
+if(-not $denied){throw 'Dangling bootstrap junction accepted'}
+$denied=$false
+try{
+    Assert-LabOfflineSetupMissingChildIsAbsent $bootstrapParent 'Bootstrap'
+}catch{$denied=$true}
+if(-not $denied){throw 'Dangling bootstrap directory entry accepted'}
+[IO.Directory]::Delete($bootstrap)
+Assert-SafeOfflineGuestWriteAncestors $root
+$target=Join-Path $panther 'Unattend.xml'
+[IO.File]::WriteAllText($target,'dummy non-secret')
+function Invoke-HiddenSetupLeafFixture {
+    $script:hiddenLeaf=$target
+    function Get-Item {
+        [CmdletBinding()]
+        param([string]$LiteralPath,[switch]$Force)
+        if($LiteralPath -ceq $script:hiddenLeaf){
+            throw [System.Management.Automation.ItemNotFoundException]::new('Leaf hidden by provider')
+        }
+        Microsoft.PowerShell.Management\Get-Item -LiteralPath $LiteralPath -Force -ErrorAction Stop
+    }
+    function Test-Path {
+        [CmdletBinding()]
+        param([string]$LiteralPath,[string]$PathType)
+        if($LiteralPath -ceq $script:hiddenLeaf){return $false}
+        return Microsoft.PowerShell.Management\Test-Path -LiteralPath $LiteralPath
+    }
+    Assert-SafeOfflineGuestWriteAncestors $root
+}
+$denied=$false
+try{Invoke-HiddenSetupLeafFixture}catch{$denied=$true}
+if(-not $denied){throw 'Unresolved existing answer-file leaf accepted'}
+[IO.File]::Delete($target)
+Assert-SafeOfflineGuestWriteAncestors $root
+'BROAD_OFFLINE_UNRESOLVED_ENTRY_GUARDS=PASS'
+""".replace("__ROOT__", quote(base))
+                result = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=60, check=False,
+                )
+                self.assertEqual(result.returncode, 0,
+                                 exe + ": " + result.stdout + result.stderr)
+                self.assertIn("BROAD_OFFLINE_UNRESOLVED_ENTRY_GUARDS=PASS", result.stdout)
 
 
 if __name__ == "__main__":

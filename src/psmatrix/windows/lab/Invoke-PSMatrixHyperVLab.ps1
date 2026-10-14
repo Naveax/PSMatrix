@@ -426,7 +426,10 @@ function Assert-SafeOfflineGuestWriteAncestors([string]$WindowsRoot) {
                 $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
             }
             catch [System.Management.Automation.ItemNotFoundException] {
-                # The offline writer may create missing directories later.
+                # A dangling junction can be hidden by Get-Item, even when
+                # its directory entry exists. Only truly absent paths may
+                # be created later.
+                Assert-LabOfflineSetupMissingChildIsAbsent (Split-Path -Parent $current) $segment
                 continue
             }
             if ($null -ne $item -and
@@ -448,7 +451,8 @@ function Assert-SafeOfflineGuestWriteAncestors([string]$WindowsRoot) {
             $existing = Get-Item -LiteralPath $target -Force -ErrorAction Stop
         }
         catch [System.Management.Automation.ItemNotFoundException] {
-            # Clean golden images have neither target.
+            # Do not mistake an unresolved setup leaf for a missing file.
+            Assert-LabOfflineSetupMissingChildIsAbsent (Split-Path -Parent $target) (Split-Path -Leaf $target)
         }
         if ($null -ne $existing -or (Test-Path -LiteralPath $target)) {
             throw 'Offline guest setup target already exists; refusing overwrite.'
@@ -541,7 +545,8 @@ function Assert-LabFreshGuestSetupTarget(
         $existing = Get-Item -LiteralPath $target -Force -ErrorAction Stop
     }
     catch [System.Management.Automation.ItemNotFoundException] {
-        # An absent file is expected; never overwrite an existing target.
+        # A broken symlink may be invisible to Get-Item and Test-Path.
+        Assert-LabOfflineSetupMissingChildIsAbsent $current $FileName
     }
     if ($null -ne $existing -or (Test-Path -LiteralPath $target)) {
         throw 'Offline guest setup target already exists; refusing overwrite.'
@@ -1091,6 +1096,8 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         if ($null -ne $existingBootstrap -or (Test-Path -LiteralPath $bootstrap)) {
             throw 'Guest bootstrap staging directory already exists; refusing overwrite.'
         }
+        # Refuse a broken junction that the provider reports as absent.
+        Assert-LabOfflineSetupMissingChildIsAbsent (Split-Path -Parent $bootstrap) (Split-Path -Leaf $bootstrap)
         Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
         Assert-NewLabInitializedDiskIdentity $output $diskNumber
         Assert-SafeOfflineGuestWriteAncestors $windowsRoot
