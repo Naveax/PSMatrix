@@ -78,7 +78,10 @@ function Assert-SafeWorkerInstallDestination([string]$Path, [bool]$ExpectDirecto
             }
         }
         if ($null -eq $match) {
-            foreach ($entry in @(Microsoft.PowerShell.Management\Get-ChildItem -LiteralPath $cursor -Force -ErrorAction Stop)) {
+            # Provider-side name filtering avoids listing thousands of
+            # unrelated siblings when this is a new, absent install path.
+            # Exact ordinal comparison below still rejects wildcard aliases.
+            foreach ($entry in @(Microsoft.PowerShell.Management\Get-ChildItem -LiteralPath $cursor -Filter $parts[$index] -Force -ErrorAction Stop)) {
                 if ([string]::Equals([string]$entry.Name, $parts[$index],
                         [StringComparison]::OrdinalIgnoreCase)) {
                     $match = $entry

@@ -4331,7 +4331,7 @@ foreach ($name in @('install','uninstall','cert_image','cert_worker','harness_en
         # The fast literal probe must retain a full-list fallback for broken
         # junctions rather than mistaking them for absent safe paths.
         self.assertIn("Get-Item -LiteralPath $candidate -Force -ErrorAction Stop", source)
-        self.assertIn("Get-ChildItem -LiteralPath $cursor -Force -ErrorAction Stop", source)
+        self.assertIn("Get-ChildItem -LiteralPath $cursor -Filter $parts[$index] -Force -ErrorAction Stop", source)
         self.assertIn("ErrorCategory]::ObjectNotFound", source)
         self.assertIn("$workerRoot = Assert-SafeWorkerInstallDestinations $InstallRoot $WorkerId", source)
         self.assertIn("Assert-SafeWorkerInstallDestinations $InstallRoot $WorkerId | Out-Null", source)
