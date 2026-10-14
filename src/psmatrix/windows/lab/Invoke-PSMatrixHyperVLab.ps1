@@ -432,6 +432,40 @@ function Assert-SafeOfflineGuestWriteAncestors([string]$WindowsRoot) {
     }
 }
 
+function Assert-LabSafeSetupDirectoryBeforeCreate(
+    [string]$WindowsRoot, [string]$RelativeDirectory
+) {
+    # SetupComplete.cmd legitimately exists by the time Panther is created.
+    # Recheck only the selected directory ancestry here: the broad initial
+    # preflight intentionally rejects any pre-existing setup answer files.
+    if ($RelativeDirectory -cne 'Windows\Setup\Scripts' -and
+        $RelativeDirectory -cne 'Windows\Panther') {
+        throw 'Unrecognized offline guest setup directory.'
+    }
+    $current = [IO.Path]::GetFullPath($WindowsRoot)
+    $base = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+    if ($null -eq $base -or -not $base.PSIsContainer -or
+        (($base.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+        throw 'Offline guest setup directory ancestor is unsafe.'
+    }
+    foreach ($segment in $RelativeDirectory.Split([char]'\')) {
+        $current = Join-Path $current $segment
+        $item = $null
+        try {
+            $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+        }
+        catch [System.Management.Automation.ItemNotFoundException] {
+            # New-Item may create a missing ancestor on a valid golden image.
+            continue
+        }
+        if ($null -ne $item -and
+            (-not $item.PSIsContainer -or
+                (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0))) {
+            throw 'Offline guest setup directory ancestor is unsafe.'
+        }
+    }
+}
+
 function Assert-LabFreshGuestSetupTarget(
     [string]$WindowsRoot, [string]$RelativeParent, [string]$FileName
 ) {
@@ -1055,6 +1089,7 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
         Assert-NewLabInitializedDiskIdentity $output $diskNumber
         Assert-SafeOfflineGuestWriteAncestors $windowsRoot
+        Assert-LabSafeSetupDirectoryBeforeCreate $windowsRoot 'Windows\Setup\Scripts'
         New-Item -ItemType Directory -Path $setupDir -Force -ErrorAction Stop | Out-Null
         Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
         Assert-NewLabInitializedDiskIdentity $output $diskNumber
@@ -1067,7 +1102,10 @@ exit /b %ERRORLEVEL%
         $panther = Join-Path $windowsRoot 'Windows\Panther'
         Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
         Assert-NewLabInitializedDiskIdentity $output $diskNumber
-        Assert-SafeOfflineGuestWriteAncestors $windowsRoot
+        # The initial broad preflight must not be rerun now that this build
+        # has legitimately written SetupComplete.cmd. Verify Panther ancestry
+        # without treating that file as an unexpected pre-existing target.
+        Assert-LabSafeSetupDirectoryBeforeCreate $windowsRoot 'Windows\Panther'
         New-Item -ItemType Directory -Path $panther -Force -ErrorAction Stop | Out-Null
         Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
         Assert-NewLabInitializedDiskIdentity $output $diskNumber

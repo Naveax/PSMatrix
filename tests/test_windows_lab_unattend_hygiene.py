@@ -11070,8 +11070,17 @@ foreach($badAt in @(1,2,3,4,5,6,999)){
                 expected = (
                     "Assert-LabFormattedVolume $windows 'NTFS' 'Windows'",
                     "Assert-NewLabInitializedDiskIdentity $output $diskNumber",
-                    "Assert-SafeOfflineGuestWriteAncestors $windowsRoot",
+                    (
+                        "Assert-SafeOfflineGuestWriteAncestors $windowsRoot"
+                        if variable == "setupDir" else ""
+                    ),
+                    (
+                        "Assert-LabSafeSetupDirectoryBeforeCreate $windowsRoot "
+                        + ("'Windows\\Setup\\Scripts'" if variable == "setupDir"
+                           else "'Windows\\Panther'")
+                    ),
                 )
+                expected = tuple(x for x in expected if x)
                 positions = [before.index(check) for check in expected]
                 self.assertEqual(positions, sorted(positions))
                 self.assertNotIn("New-Item -ItemType Directory", before)
@@ -11122,6 +11131,11 @@ function Assert-SafeOfflineGuestWriteAncestors {
     $script:log.Add('ancestors')
     if($script:mode -eq 'junction'){throw 'Unsafe reparse ancestor'}
 }
+function Assert-LabSafeSetupDirectoryBeforeCreate {
+    param([string]$WindowsRoot,[string]$RelativeDirectory)
+    $script:log.Add('target')
+    if($script:mode -eq 'junction'){throw 'Unsafe target ancestor'}
+}
 function New-Item {
     [CmdletBinding()]
     param([string]$ItemType,[string]$Path,[switch]$Force)
@@ -11146,7 +11160,11 @@ foreach($case in @('valid','driveReassigned','diskReused','junction')){
         try { & $fn } catch {$denied=$true}
         if($case -eq 'valid'){
             if($denied -or $script:mkdir -ne 1 -or
-                ($script:log -join ',') -cne 'volume,disk,ancestors,mkdir,volume,disk'){
+                ($script:log -join ',') -cne (
+                    $(if($fn -eq 'Invoke-SetupDirectoryGuards') {
+                        'volume,disk,ancestors,target,mkdir,volume,disk'
+                    } else {'volume,disk,target,mkdir,volume,disk'})
+                )){
                 throw ('Valid directory creation order rejected: '+$fn+':'+($script:log -join ','))
             }
         } elseif(-not $denied -or $script:mkdir -ne 0){
@@ -11169,6 +11187,102 @@ foreach($case in @('valid','driveReassigned','diskReused','junction')){
             )
             self.assertEqual(proc.returncode, 0, exe + ": " + proc.stdout + proc.stderr)
             self.assertIn("SETUP_DIRECTORY_PRECREATE_GUARDS=PASS", proc.stdout)
+
+
+    def test_panther_creation_after_setup_file_uses_targeted_ancestry_only(self):
+        source = HOST.read_text(encoding="utf-8")
+        begin = source.index("function Assert-LabSafeSetupDirectoryBeforeCreate(")
+        end = source.index("\nfunction Assert-LabFreshGuestSetupTarget(", begin)
+        helper = source[begin:end]
+        self.assertIn("Windows\\Panther", helper)
+        self.assertIn("Windows\\Setup\\Scripts", helper)
+        self.assertIn("[IO.FileAttributes]::ReparsePoint", helper)
+        self.assertNotIn("Join-Path $current 'SetupComplete.cmd'", helper)
+        build = source.split("function New-LabVhd(", 1)[1].split(
+            "\nfunction Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        setup_write = build.index(
+            "Write-LabFreshSetupText (Join-Path $setupDir 'SetupComplete.cmd')"
+        )
+        panther_start = build.index("$panther = Join-Path $windowsRoot", setup_write)
+        panther_mkdir = build.index(
+            "New-Item -ItemType Directory -Path $panther -Force", panther_start
+        )
+        before_mkdir = build[panther_start:panther_mkdir]
+        self.assertNotIn(
+            "Assert-SafeOfflineGuestWriteAncestors $windowsRoot", before_mkdir
+        )
+        self.assertIn(
+            "Assert-LabSafeSetupDirectoryBeforeCreate $windowsRoot 'Windows\\Panther'",
+            before_mkdir,
+        )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_panther_post_setup_preflight_real_filesystem_and_junctions(self):
+        import tempfile
+        import shutil
+        import subprocess
+
+        source = HOST.read_text(encoding="utf-8")
+        broad_start = source.index("function Assert-SafeOfflineGuestWriteAncestors(")
+        targeted_start = source.index("function Assert-LabSafeSetupDirectoryBeforeCreate(")
+        target_end = source.index("\nfunction Assert-LabFreshGuestSetupTarget(", targeted_start)
+        code = source[broad_start:target_end]
+        with tempfile.TemporaryDirectory(prefix="psmatrix-panther-after-setup-") as directory:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                root = Path(directory) / exe.replace(".", "-")
+                root.mkdir()
+                def psquote(x):
+                    return "'" + str(x).replace("'", "''") + "'"
+                script = code + r"""
+$ErrorActionPreference='Stop'
+$root=__ROOT__
+$setup=Join-Path $root 'Windows\Setup\Scripts'
+$panther=Join-Path $root 'Windows\Panther'
+$outside=Join-Path $root 'outside'
+New-Item -ItemType Directory -Path $setup -Force -ErrorAction Stop | Out-Null
+New-Item -ItemType Directory -Path $outside -ErrorAction Stop | Out-Null
+Assert-SafeOfflineGuestWriteAncestors $root
+$filename=Join-Path $setup 'SetupComplete.cmd'
+[IO.File]::WriteAllText($filename,'@echo off')
+$blocked=$false
+try { Assert-SafeOfflineGuestWriteAncestors $root } catch {$blocked=$true}
+if(-not $blocked){throw 'Broad initial preflight silently accepted preexisting SetupComplete'}
+Assert-LabSafeSetupDirectoryBeforeCreate $root 'Windows\Panther'
+New-Item -ItemType Directory -Path $panther -ErrorAction Stop | Out-Null
+Assert-LabSafeSetupDirectoryBeforeCreate $root 'Windows\Panther'
+$blocked=$false
+try { Assert-LabSafeSetupDirectoryBeforeCreate $root 'Windows\system32' }
+catch {$blocked=$true}
+if(-not $blocked){throw 'Unknown setup parent unexpectedly accepted'}
+Remove-Item -LiteralPath $panther -Force
+New-Item -ItemType Junction -Path $panther -Target $outside -ErrorAction Stop | Out-Null
+try {
+    $blocked=$false
+    try { Assert-LabSafeSetupDirectoryBeforeCreate $root 'Windows\Panther' }
+    catch {$blocked=$true}
+    if(-not $blocked){throw 'Redirected Panther parent accepted'}
+}
+finally {
+    & cmd.exe /d /c ('rmdir "' + $panther + '"') | Out-Null
+    if($LASTEXITCODE -ne 0){throw 'Fixture Panther junction cleanup failed'}
+}
+if([IO.File]::ReadAllText($filename) -cne '@echo off'){
+    throw 'Pre-existing SetupComplete file was changed'
+}
+'PANTHER_POST_SETUP_TARGETED_PREFLIGHT=PASS'
+""".replace("__ROOT__", psquote(root))
+                proc = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=50, check=False,
+                )
+                self.assertEqual(
+                    proc.returncode, 0, exe + ": " + proc.stdout + proc.stderr
+                )
+                self.assertIn("PANTHER_POST_SETUP_TARGETED_PREFLIGHT=PASS", proc.stdout)
 
 
 if __name__ == "__main__":
