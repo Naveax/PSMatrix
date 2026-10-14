@@ -1944,6 +1944,26 @@ function Get-LabVerifiedVmForMutation([string]$VmName, [guid]$ExpectedVmId) {
     return $vms[0]
 }
 
+function Assert-LabGuestServiceInterfaceEnabled([string]$VmName, [guid]$ExpectedVmId) {
+    # An attempted enablement is not evidence that the integration service
+    # is present and enabled. Bind the provider query to the exact verified
+    # guest, never to a reusable VM name.
+    try {
+        $services = @(Get-VMIntegrationService -VM (
+            Get-LabVerifiedVmForMutation $VmName $ExpectedVmId
+        ) -Name 'Guest Service Interface' -ErrorAction Stop)
+    }
+    catch {
+        throw ('Guest Service Interface read-back failed: ' + $VmName)
+    }
+    if ($services.Count -ne 1 -or $null -eq $services[0] -or
+        $services[0].Name -isnot [string] -or
+        [string]$services[0].Name -cne 'Guest Service Interface' -or
+        $services[0].Enabled -isnot [bool] -or $services[0].Enabled -ne $true) {
+        throw ('Guest Service Interface is missing, ambiguous or disabled: ' + $VmName)
+    }
+}
+
 function Wait-FirstBoot([string]$VmName, [int]$TimeoutSeconds, [guid]$ExpectedVmId) {
     # A VM name is reusable. Never stop or accept a replacement guest merely
     # because Get-VM returned the requested name during first-boot polling.
@@ -2300,7 +2320,8 @@ foreach ($image in $planValue.images) {
     Set-VMProcessor -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id) -Count ([int]$image.processors) -ErrorAction Stop
     Set-VMMemory -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id) -DynamicMemoryEnabled $false -ErrorAction Stop
     Set-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id) -AutomaticCheckpointsEnabled $false -CheckpointType Standard -ErrorAction Stop
-    Enable-VMIntegrationService -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id) -Name 'Guest Service Interface' -ErrorAction SilentlyContinue
+    Enable-VMIntegrationService -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id) -Name 'Guest Service Interface' -ErrorAction Stop
+    Assert-LabGuestServiceInterfaceEnabled $vmName $createdVm[0].Id
     Assert-LabVmConfigurationBeforeFirstBoot $vmName $createdVm[0].Id ([int]$image.processors) ([long]$image.memory_mb * 1MB)
     Start-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id) -ErrorAction Stop | Out-Null
     Wait-FirstBoot $vmName 3600 $createdVm[0].Id

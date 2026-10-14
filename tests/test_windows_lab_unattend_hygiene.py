@@ -10696,5 +10696,112 @@ if($script:starts -ne 0){throw 'Empty expected GUID started VM'}
         )
 
 
+    def test_guest_service_enablement_requires_verified_postcondition_before_boot(self):
+        source = HOST.read_text(encoding="utf-8")
+        assertion = "function Assert-LabGuestServiceInterfaceEnabled("
+        self.assertIn(assertion, source)
+        helper = source.split(assertion, 1)[1].split("\nfunction Wait-FirstBoot(", 1)[0]
+        self.assertIn("Get-VMIntegrationService -VM (", helper)
+        self.assertIn("Get-LabVerifiedVmForMutation $VmName $ExpectedVmId", helper)
+        self.assertIn("$services[0].Enabled -isnot [bool]", helper)
+        self.assertIn("$services[0].Enabled -ne $true", helper)
+        section = source.split("foreach ($image in $planValue.images) {", 1)[1]
+        enable = ("Enable-VMIntegrationService -VM "
+                  "(Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id) "
+                  "-Name 'Guest Service Interface' -ErrorAction Stop")
+        check = "Assert-LabGuestServiceInterfaceEnabled $vmName $createdVm[0].Id"
+        config = "Assert-LabVmConfigurationBeforeFirstBoot $vmName"
+        start = "Start-VM -VM (Get-LabVerifiedVmForMutation $vmName"
+        self.assertEqual(section.count(enable), 1)
+        self.assertEqual(section.count(check), 1)
+        self.assertLess(section.index(enable), section.index(check))
+        self.assertLess(section.index(check), section.index(config))
+        self.assertLess(section.index(config), section.index(start))
+        self.assertNotIn("Enable-VMIntegrationService -VMName $vmName", section)
+        self.assertNotIn("Guest Service Interface' -ErrorAction SilentlyContinue", section)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_guest_service_readback_mock_fails_closed_for_absent_or_disabled(self):
+        import shutil
+        import subprocess
+        src = HOST.read_text(encoding="utf-8")
+        vm_helper = "function Get-LabVerifiedVmForMutation(" + src.split(
+            "function Get-LabVerifiedVmForMutation(", 1
+        )[1].split("\nfunction Assert-LabGuestServiceInterfaceEnabled(", 1)[0]
+        service_helper = "function Assert-LabGuestServiceInterfaceEnabled(" + src.split(
+            "function Assert-LabGuestServiceInterfaceEnabled(", 1
+        )[1].split("\nfunction Wait-FirstBoot(", 1)[0]
+        fixture = vm_helper + service_helper + r"""
+$ErrorActionPreference='Stop'
+$script:id=[guid]'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+$script:other=[guid]'11111111-2222-3333-4444-555555555555'
+$script:reads=0
+$script:serviceCalls=0
+$script:mode='valid'
+function Get-VM {
+    [CmdletBinding()]
+    param([string]$Name)
+    $script:reads++
+    if ($script:mode -eq 'vmQueryFailed') { throw 'mock vm query error' }
+    $id=$script:id
+    if ($script:mode -eq 'replacedVm') { $id=$script:other }
+    [pscustomobject]@{Name=$Name;Id=$id;State='Off'}
+}
+function Get-VMIntegrationService {
+    [CmdletBinding()]
+    param([object]$VM,[string]$Name)
+    if ($VM.Id -ne $script:id) { throw 'Wrong VM queried for integration service' }
+    $script:serviceCalls++
+    if ($script:mode -eq 'queryFailed') { throw 'mock integration provider error' }
+    if ($script:mode -eq 'missing') { return }
+    $name='Guest Service Interface'
+    $enabled=$true
+    if ($script:mode -eq 'wrongName') { $name='Shutdown' }
+    if ($script:mode -eq 'disabled') { $enabled=$false }
+    if ($script:mode -eq 'stringTrue') { $enabled='True' }
+    if ($script:mode -eq 'nullEnabled') { $enabled=$null }
+    if ($script:mode -eq 'duplicate') {
+        [pscustomobject]@{Name=$name;Enabled=$enabled}
+    }
+    [pscustomobject]@{Name=$name;Enabled=$enabled}
+}
+foreach($mode in @(
+    'valid','replacedVm','vmQueryFailed','queryFailed','missing',
+    'wrongName','disabled','stringTrue','nullEnabled','duplicate'
+)) {
+    $script:mode=$mode
+    $script:reads=0
+    $script:serviceCalls=0
+    $message=''
+    try { Assert-LabGuestServiceInterfaceEnabled 'fixture-vm' $script:id }
+    catch { $message=$_.Exception.Message }
+    if($mode -eq 'valid') {
+        if($message -ne '' -or $script:serviceCalls -ne 1 -or $script:reads -ne 1) {
+            throw ('Valid enabled service rejected: '+$message)
+        }
+    }
+    elseif($message -eq '') { throw ('Invalid service accepted: '+$mode) }
+    if($mode -in @('replacedVm','vmQueryFailed') -and $script:serviceCalls -ne 0){
+        throw ('Unsafe provider query against replacement: '+$mode)
+    }
+}
+$script:mode='valid';$script:serviceCalls=0
+try { Assert-LabGuestServiceInterfaceEnabled 'fixture-vm' ([guid]::Empty) }
+catch {if($_.Exception.Message -notmatch 'read-back failed'){throw}}
+if($script:serviceCalls -ne 0){throw 'Empty VM GUID reached provider'}
+'GUEST_SERVICE_INTERFACE_READBACK_MOCK=PASS'
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            proc = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", fixture],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(proc.returncode, 0, exe + ": " + proc.stdout + proc.stderr)
+            self.assertIn("GUEST_SERVICE_INTERFACE_READBACK_MOCK=PASS", proc.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
