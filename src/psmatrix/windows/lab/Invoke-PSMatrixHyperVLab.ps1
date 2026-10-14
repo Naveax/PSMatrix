@@ -1625,6 +1625,38 @@ function Assert-LabPlanGuestIdentities([object[]]$Images) {
     }
 }
 
+function Assert-LabUnresolvedOutputEntryAbsent([string]$Candidate) {
+    # Get-Item can treat a dangling junction or symlink as missing while
+    # its parent still contains a real directory entry. Reject such
+    # entries before the first VM/VHDX side effect.
+    $full = [IO.Path]::GetFullPath($Candidate)
+    $parent = [IO.Path]::GetDirectoryName($full)
+    $leaf = [IO.Path]::GetFileName($full)
+    if ([string]::IsNullOrWhiteSpace($parent) -or
+        [string]::IsNullOrWhiteSpace($leaf)) {
+        throw 'Windows lab output entry path is invalid.'
+    }
+    $parentItem = $null
+    try {
+        $parentItem = Get-Item -LiteralPath $parent -Force -ErrorAction Stop
+    }
+    catch [System.Management.Automation.ItemNotFoundException] {
+        # The parent may itself be a valid not-yet-created directory. Its
+        # nearest existing ancestors are checked by the caller.
+        return
+    }
+    if ($null -eq $parentItem -or -not $parentItem.PSIsContainer -or
+        (($parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+        throw 'Windows lab output entry parent is unsafe.'
+    }
+    foreach ($entry in @(Get-ChildItem -LiteralPath $parent -Force -ErrorAction Stop)) {
+        if ([string]::Equals([string]$entry.Name, $leaf,
+            [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Windows lab output contains an unresolved existing entry.'
+        }
+    }
+}
+
 function Assert-SafeLabOutputAncestors([string]$Output) {
     # Reject existing file parents and reparse-point ancestors (junctions,
     # symlinks, mount points) before writing or creating a Windows VHDX.
@@ -1637,8 +1669,9 @@ function Assert-SafeLabOutputAncestors([string]$Output) {
             $item = Get-Item -LiteralPath $ancestor -Force -ErrorAction Stop
         }
         catch [System.Management.Automation.ItemNotFoundException] {
-            # A future directory does not exist yet. Its parent still must
-            # be inspected, and other IO/access errors remain fatal.
+            # Get-Item may hide a dangling directory junction. Inspect a
+            # present parent for the unresolved directory entry.
+            Assert-LabUnresolvedOutputEntryAbsent $ancestor
         }
         if ($null -ne $item -and
             (-not $item.PSIsContainer -or
@@ -1729,6 +1762,7 @@ function Assert-LabPlanMachineAndOutputPaths([object[]]$Images) {
             throw 'Windows lab plan output VHDX already exists; refusing provisioning.'
         }
         Assert-SafeLabOutputAncestors $canonicalDisk
+        Assert-LabUnresolvedOutputEntryAbsent $canonicalDisk
     }
 }
 

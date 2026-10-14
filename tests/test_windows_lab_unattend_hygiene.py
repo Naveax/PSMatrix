@@ -5508,7 +5508,7 @@ foreach($bad in @(('E'+[char]10),('E'+[char]13+[char]10),'EE')){
         script = """
 $ErrorActionPreference = 'Stop'
 $source = Get-Content -LiteralPath __HOST_PATH__ -Raw
-$a = $source.IndexOf('function Assert-SafeLabOutputAncestors(')
+$a = $source.IndexOf('function Assert-LabUnresolvedOutputEntryAbsent(')
 $b = $source.IndexOf('function Wait-FirstBoot(', $a)
 if ($a -lt 0 -or $b -le $a) { throw 'Missing host preflight.' }
 Invoke-Expression $source.Substring($a, $b-$a)
@@ -5766,7 +5766,7 @@ exit 0
                 script = """
 $ErrorActionPreference = 'Stop'
 $src = Get-Content -LiteralPath {host} -Raw
-$a = $src.IndexOf('function Assert-SafeLabOutputAncestors(')
+$a = $src.IndexOf('function Assert-LabUnresolvedOutputEntryAbsent(')
 $b = $src.IndexOf('function Assert-LabPlanMachineAndOutputPaths(', $a)
 if ($a -lt 0 -or $b -le $a) {{ throw 'Guard not found.' }}
 Invoke-Expression $src.Substring($a, $b - $a)
@@ -5787,7 +5787,10 @@ try {{
             Assert-SafeLabOutputAncestors $case
             throw 'Unsafe VHDX ancestor was allowed.'
         }} catch {{
-            if ($_.Exception.Message -ne 'Windows lab output VHDX ancestor is an unsafe directory.') {{
+            if ($_.Exception.Message -notin @(
+                'Windows lab output VHDX ancestor is an unsafe directory.',
+                'Windows lab output entry parent is unsafe.'
+            )) {{
                 throw
             }}
         }}
@@ -5844,7 +5847,7 @@ exit 0
                 script = """
 $ErrorActionPreference = 'Stop'
 $src = Get-Content -LiteralPath {source} -Raw
-$a = $src.IndexOf('function Assert-SafeLabOutputAncestors(')
+$a = $src.IndexOf('function Assert-LabUnresolvedOutputEntryAbsent(')
 $b = $src.IndexOf('function Wait-FirstBoot(', $a)
 if ($a -lt 0 -or $b -le $a) {{ throw 'Host preflight not found.' }}
 Invoke-Expression $src.Substring($a, $b - $a)
@@ -12252,6 +12255,110 @@ Assert-SafeOfflineGuestWriteAncestors $root
                 self.assertEqual(result.returncode, 0,
                                  exe + ": " + result.stdout + result.stderr)
                 self.assertIn("BROAD_OFFLINE_UNRESOLVED_ENTRY_GUARDS=PASS", result.stdout)
+
+
+    def test_plan_output_preflight_enumerates_unresolved_leaf_and_ancestor(self):
+        source = HOST.read_text(encoding="utf-8")
+        start = source.index("function Assert-LabUnresolvedOutputEntryAbsent(")
+        finish = source.index("\nfunction Assert-LabPlanStorageHeadroom(", start)
+        block = source[start:finish]
+        self.assertIn("Get-ChildItem -LiteralPath $parent -Force -ErrorAction Stop", block)
+        self.assertIn("[StringComparison]::OrdinalIgnoreCase", block)
+        self.assertIn("Windows lab output contains an unresolved existing entry.", block)
+        ancestor = block.split("function Assert-SafeLabOutputAncestors(", 1)[1].split(
+            "\nfunction Assert-LabFreshOutputVhdTarget(", 1
+        )[0]
+        self.assertIn("Assert-LabUnresolvedOutputEntryAbsent $ancestor", ancestor)
+        plan = block.split("function Assert-LabPlanMachineAndOutputPaths(", 1)[1]
+        self.assertLess(
+            plan.index("Assert-SafeLabOutputAncestors $canonicalDisk"),
+            plan.index("Assert-LabUnresolvedOutputEntryAbsent $canonicalDisk")
+        )
+        self.assertIn(
+            "Windows lab plan output VHDX already exists; refusing provisioning.",
+            plan,
+        )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_plan_output_preflight_rejects_dangling_third_leaf_and_parent(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        source = HOST.read_text(encoding="utf-8")
+        start = source.index("function Assert-LabUnresolvedOutputEntryAbsent(")
+        finish = source.index("\nfunction Assert-LabPlanStorageHeadroom(", start)
+        funcs = source[start:finish]
+        with tempfile.TemporaryDirectory(prefix="psmatrix-plan-output-junction-") as directory:
+            for executable in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(executable):
+                    continue
+                root = Path(directory) / executable.replace(".", "-")
+                root.mkdir()
+                escaped = "'" + str(root).replace("'", "''") + "'"
+                script = funcs + r"""
+$ErrorActionPreference='Stop'
+$root=__ROOT__
+$lab=Join-Path $root 'lab'
+New-Item -ItemType Directory -Path $lab -ErrorAction Stop | Out-Null
+$plan=@(
+    [pscustomobject]@{computer_name='PSLAB01';output_vhdx=(Join-Path $lab 'one.vhdx')},
+    [pscustomobject]@{computer_name='PSLAB02';output_vhdx=(Join-Path $lab 'two.vhdx')},
+    [pscustomobject]@{computer_name='PSLAB03';output_vhdx=(Join-Path $lab 'three.vhdx')}
+)
+function Expect-Fail([string]$Case) {
+    $blocked=$false
+    try{Assert-LabPlanMachineAndOutputPaths $plan}catch{$blocked=$true}
+    if(-not $blocked){throw ('Unsafe plan output accepted: '+$Case)}
+}
+Assert-LabPlanMachineAndOutputPaths $plan
+$outside=Join-Path $root 'outside'
+New-Item -ItemType Directory -Path $outside -ErrorAction Stop | Out-Null
+$third=$plan[2].output_vhdx
+New-Item -ItemType Junction -Path $third -Target $outside -ErrorAction Stop | Out-Null
+[IO.Directory]::Delete($outside)
+Expect-Fail 'dangling-third-leaf'
+[IO.Directory]::Delete($third)
+$nested=Join-Path $lab 'nested'
+$plan[2].output_vhdx=(Join-Path $nested 'three.vhdx')
+$outside=Join-Path $root 'outside2'
+New-Item -ItemType Directory -Path $outside -ErrorAction Stop | Out-Null
+New-Item -ItemType Junction -Path $nested -Target $outside -ErrorAction Stop | Out-Null
+[IO.Directory]::Delete($outside)
+Expect-Fail 'dangling-third-ancestor'
+[IO.Directory]::Delete($nested)
+# A genuinely absent parent is legal during the initial planning pass.
+Assert-LabPlanMachineAndOutputPaths $plan
+$plan[2].output_vhdx=$third
+# Force a synthetic missing result for an existing file system entry,
+# even on Windows builds where Get-Item returns dangling reparse metadata.
+[IO.File]::WriteAllText($third,'fixture bytes')
+function Invoke-HiddenLeaf {
+    function Get-Item {
+        [CmdletBinding()]
+        param([string]$LiteralPath,[switch]$Force)
+        if($LiteralPath -ceq $plan[2].output_vhdx){
+            throw [System.Management.Automation.ItemNotFoundException]::new('hidden entry')
+        }
+        Microsoft.PowerShell.Management\Get-Item -LiteralPath $LiteralPath -Force -ErrorAction Stop
+    }
+    Assert-LabPlanMachineAndOutputPaths $plan
+}
+$denied=$false
+try{Invoke-HiddenLeaf}catch{$denied=$true}
+if(-not $denied){throw 'Hidden existing third output accepted'}
+[IO.File]::Delete($third)
+Assert-LabPlanMachineAndOutputPaths $plan
+'PLAN_OUTPUT_DANGLING_PREFLIGHT=PASS'
+""".replace("__ROOT__", escaped)
+                result = subprocess.run(
+                    [executable, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=55, check=False,
+                )
+                self.assertEqual(result.returncode, 0,
+                                 executable+": "+result.stdout+result.stderr)
+                self.assertIn("PLAN_OUTPUT_DANGLING_PREFLIGHT=PASS", result.stdout)
 
 
 if __name__ == "__main__":
