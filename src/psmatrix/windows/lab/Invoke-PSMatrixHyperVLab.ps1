@@ -604,12 +604,21 @@ function Assert-LabCleanupIsoIdentity([string]$IsoPath, $DiskImage) {
         throw 'Lab cleanup ISO identity or attachment state is invalid; refusing dismount.'
     }
 }
-function Close-LabBuildMedia([string]$VhdPath, [string]$IsoPath, [bool]$WasMounted) {
+function Close-LabBuildMedia([string]$VhdPath, [string]$IsoPath, [bool]$WasMounted, [bool]$VhdCreated = $false) {
     # Mount-VHD can attach a disk and then fail before returning an object.
     # In that case $WasMounted is false even though the output VHDX exists
     # and is still attached. Always inspect a newly created output VHDX.
-    $vhdExists = $WasMounted -or (Test-Path -LiteralPath $VhdPath -PathType Leaf)
+    # A failed New-VHD must not adopt a foreign VHDX that appeared at
+    # the selected output path. Only a successful local create grants
+    # cleanup authority; a subsequent partial Mount-VHD is still handled.
+    $vhdExists = $VhdCreated -and ($WasMounted -or (Test-Path -LiteralPath $VhdPath -PathType Leaf))
     try {
+        if ($WasMounted -and -not $VhdCreated) {
+            throw 'VHDX mounted without confirmed creation ownership; refusing cleanup.'
+        }
+        if ($VhdCreated -and -not $vhdExists) {
+            throw 'Created VHDX disappeared before cleanup; refusing provisioning.'
+        }
         if ($WasMounted) {
             $before = Get-VHD -Path $VhdPath -ErrorAction Stop
             Assert-LabCleanupVhdIdentity $VhdPath $before
@@ -992,6 +1001,7 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         throw 'Windows source ISO was already mounted; refusing to touch a pre-existing attachment.'
     }
     $vhdMounted = $null
+    $vhdCreated = $false
     try {
         # A partial ISO mount can throw without returning an object.
         # Enter the guarded cleanup scope before invoking Mount-DiskImage.
@@ -1008,6 +1018,7 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         # preflight result when creating a privileged 64 GiB VHDX.
         Assert-LabFreshOutputVhdTarget $output
         New-VHD -Path $output -Dynamic -SizeBytes 64GB -ErrorAction Stop | Out-Null
+        $vhdCreated = $true
         Assert-NewLabVhdCreated $output 64GB
         $vhdMounted = Mount-VHD -Path $output -PassThru -ErrorAction Stop
         $diskNumber = Assert-NewLabVhdDiskIdentity $output $vhdMounted
@@ -1202,7 +1213,7 @@ exit /b %ERRORLEVEL%
         }
     }
     finally {
-        Close-LabBuildMedia -VhdPath $output -IsoPath $isoPath -WasMounted ([bool]$vhdMounted)
+        Close-LabBuildMedia -VhdPath $output -IsoPath $isoPath -WasMounted ([bool]$vhdMounted) -VhdCreated $vhdCreated
     }
     return $output
 }

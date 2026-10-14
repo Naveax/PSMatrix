@@ -889,7 +889,7 @@ foreach($initiallyMounted in @($true,$false)) {
     $script:vhdDismounts=0
     $script:isoDismounts=0
     $rejected=$false
-    try { Close-LabBuildMedia $expected 'D:\Fixture\source.iso' $initiallyMounted }
+    try { Close-LabBuildMedia $expected 'D:\Fixture\source.iso' $initiallyMounted $true }
     catch { $rejected=$true }
     if(-not $rejected){throw 'Unrelated VHDX cleanup was accepted.'}
     if($script:vhdDismounts -ne 0){throw 'Unrelated VHDX was detached.'}
@@ -900,7 +900,7 @@ foreach($initiallyMounted in @($true,$false)) {
     $script:attached=$true
     $script:vhdDismounts=0
     $script:isoDismounts=0
-    Close-LabBuildMedia $expected 'D:\Fixture\source.iso' $initiallyMounted
+    Close-LabBuildMedia $expected 'D:\Fixture\source.iso' $initiallyMounted $true
     if($script:vhdDismounts -ne 1 -or $script:isoDismounts -ne 1){
         throw 'Correct guest VHDX did not clean up exactly once.'
     }
@@ -2870,7 +2870,7 @@ if (-not $rejected) { throw 'Failed Storage volume query accepted.' }
             "function New-LabVhd(", 1
         )[0]
         for required in (
-            "$vhdExists = $WasMounted -or (Test-Path -LiteralPath $VhdPath -PathType Leaf)",
+            "$vhdExists = $VhdCreated -and ($WasMounted -or (Test-Path -LiteralPath $VhdPath -PathType Leaf))",
             "elseif ($vhdExists)",
             "$before = Get-VHD -Path $VhdPath -ErrorAction Stop",
             "$before.Attached -isnot [bool]",
@@ -2916,7 +2916,7 @@ if (-not $rejected) { throw 'Failed Storage volume query accepted.' }
         )
         self.assertRegex(
             build,
-            r"\$vhdMounted = \$null\s+try\s*\{\s+# A partial ISO mount",
+            r"\$vhdMounted = \$null\s+\$vhdCreated = \$false\s+try\s*\{\s+# A partial ISO mount",
         )
         self.assertLess(
             build.index("$iso = Mount-DiskImage"),
@@ -11995,6 +11995,141 @@ if(-not $rejected){throw 'Unresolved fake parent entry bypassed fallback'}
                 self.assertEqual(result.returncode, 0,
                                  executable+": "+result.stdout+result.stderr)
                 self.assertIn("OFFLINE_DANGLING_PARENT_REJECT=PASS", result.stdout)
+
+
+    def test_cleanup_does_not_adopt_uncreated_output_vhdx(self):
+        source = HOST.read_text(encoding="utf-8")
+        build = source.split("function New-LabVhd(", 1)[1].split(
+            "\nfunction Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        self.assertIn("$vhdCreated = $false", build)
+        create = build.index("New-VHD -Path $output -Dynamic -SizeBytes 64GB")
+        owned = build.index("$vhdCreated = $true", create)
+        checked = build.index("Assert-NewLabVhdCreated $output 64GB", create)
+        self.assertLess(create, owned)
+        self.assertLess(owned, checked)
+        self.assertIn(
+            "Close-LabBuildMedia -VhdPath $output -IsoPath $isoPath "
+            "-WasMounted ([bool]$vhdMounted) -VhdCreated $vhdCreated",
+            build,
+        )
+        cleanup = source.split("function Close-LabBuildMedia(", 1)[1].split(
+            "\nfunction Assert-LabPlanArtifactsReady(", 1
+        )[0]
+        self.assertIn("[bool]$VhdCreated = $false", source)
+        self.assertIn(
+            "$vhdExists = $VhdCreated -and "
+            "($WasMounted -or (Test-Path -LiteralPath $VhdPath -PathType Leaf))",
+            cleanup,
+        )
+        self.assertLess(
+            cleanup.index("if ($WasMounted -and -not $VhdCreated)"),
+            cleanup.index("if ($WasMounted) {"),
+        )
+        self.assertLess(
+            cleanup.index("if ($WasMounted -and -not $VhdCreated)"),
+            cleanup.index("finally {"),
+        )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_cleanup_native_mock_never_touches_vhdx_without_creation_ownership(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        a = host.index("function Assert-LabCleanupVhdIdentity(")
+        b = host.index("\nfunction Assert-LabPlanArtifactsReady(", a)
+        functions = host[a:b]
+        fixture = functions + r"""
+$ErrorActionPreference='Stop'
+$path='D:\Fixture\guest.vhdx'
+$iso='D:\Fixture\windows.iso'
+$script:attached=$true
+$script:isoAttached=$true
+$script:getVhd=0
+$script:testPath=0
+$script:targetExists=$true
+$script:vhdDismounts=0
+$script:isoDismounts=0
+function Test-Path {
+    [CmdletBinding()]
+    param([string]$LiteralPath,[string]$PathType)
+    $script:testPath++
+    return $script:targetExists
+}
+function Get-VHD {
+    [CmdletBinding()]
+    param([string]$Path)
+    $script:getVhd++
+    if($Path -cne $path){throw 'Unexpected VHD path'}
+    return [pscustomobject]@{Path=$path;Attached=$script:attached}
+}
+function Dismount-VHD {
+    [CmdletBinding()]
+    param([string]$Path)
+    $script:vhdDismounts++
+    $script:attached=$false
+}
+function Get-DiskImage {
+    [CmdletBinding()]
+    param([string]$ImagePath)
+    if($ImagePath -cne $iso){throw 'Unexpected ISO path'}
+    return [pscustomobject]@{ImagePath=$iso;Attached=$script:isoAttached}
+}
+function Dismount-DiskImage {
+    [CmdletBinding()]
+    param([string]$ImagePath)
+    $script:isoDismounts++
+    $script:isoAttached=$false
+}
+# A foreign file appears after the pre-New-VHD check. Creation was never
+# confirmed; no VHD query or dismount is permitted. ISO cleanup continues.
+Close-LabBuildMedia $path $iso $false $false
+if($script:testPath -ne 0 -or $script:getVhd -ne 0 -or
+    $script:vhdDismounts -ne 0 -or $script:isoDismounts -ne 1){
+    throw 'Foreign VHDX was inspected or dismounted'
+}
+# A failed mount that falsely claims mounted=true without ownership must
+# refuse VHDX detach but still release our source ISO.
+$script:isoAttached=$true
+$script:isoDismounts=0
+$denied=$false
+try{Close-LabBuildMedia $path $iso $true $false}catch{$denied=$true}
+if(-not $denied -or $script:getVhd -ne 0 -or
+    $script:vhdDismounts -ne 0 -or $script:isoDismounts -ne 1){
+    throw 'Inconsistent ownership flags touched a foreign VHDX'
+}
+# After New-VHD actually succeeded, a partial Mount-VHD must still be
+# cleaned up even when the mount command returned no object.
+$script:isoAttached=$true
+$script:isoDismounts=0
+Close-LabBuildMedia $path $iso $false $true
+if($script:vhdDismounts -ne 1 -or $script:getVhd -ne 2 -or
+    $script:isoDismounts -ne 1 -or $script:attached){
+    throw 'Created VHDX with a partial mount was not cleaned up'
+}
+# A successfully created VHDX that vanishes before cleanup is not success.
+$script:targetExists=$false
+$script:isoAttached=$true
+$script:isoDismounts=0
+$denied=$false
+try{Close-LabBuildMedia $path $iso $false $true}catch{$denied=$true}
+if(-not $denied -or $script:vhdDismounts -ne 1 -or
+    $script:isoDismounts -ne 1){
+    throw 'Missing owned VHDX did not fail closed and release ISO'
+}
+'VHD_CREATION_OWNERSHIP_CLEANUP=PASS'
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            proc = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", fixture],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=45, check=False,
+            )
+            self.assertEqual(proc.returncode, 0, exe+": "+proc.stdout+proc.stderr)
+            self.assertIn("VHD_CREATION_OWNERSHIP_CLEANUP=PASS", proc.stdout)
 
 
 if __name__ == "__main__":
