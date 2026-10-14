@@ -12378,7 +12378,7 @@ Assert-LabPlanMachineAndOutputPaths $plan
         self.assertLess(absent, guard)
         self.assertLess(guard, skip)
         self.assertIn("Windows\\System32\\Sysprep", body)
-        self.assertIn("Guest setup directory is a reparse point; refusing checkpoint.", body)
+        self.assertIn("Guest setup directory is an unsafe entry; refusing checkpoint.", body)
         helper = source.split(
             "function Assert-LabOfflineSetupMissingChildIsAbsent(", 1
         )[1].split("\nfunction Assert-LabSafeSetupDirectoryBeforeCreate(", 1)[0]
@@ -12406,7 +12406,10 @@ Assert-LabPlanMachineAndOutputPaths $plan
                 fixture = Path(temp) / executable.replace(".", "-")
                 fixture.mkdir()
                 quoted = "'" + str(fixture).replace("'", "''") + "'"
-                script = helper + scan + r"""
+                identity_a = source.index("function Assert-LabRestrictedAclEntryStable(")
+                identity_b = source.index("\nfunction Set-RestrictedDirectoryAcl(", identity_a)
+                identity = source[identity_a:identity_b]
+                script = identity + helper + scan + r"""
 $ErrorActionPreference='Stop'
 $root=__ROOT__
 $windows=Join-Path $root 'Windows'
@@ -12568,6 +12571,130 @@ foreach($case in @('reparse','file','differentPath','missing','providerError','d
             self.assertEqual(result.returncode, 0,
                              executable + ": " + result.stdout + result.stderr)
             self.assertIn("CHECKPOINT_ACL_REQUERY_MOCK=PASS", result.stdout)
+
+
+    def test_checkpoint_setup_tree_rebinds_discovered_directory_before_enumeration(self):
+        source = HOST.read_text(encoding="utf-8")
+        a = source.index("function Assert-NoGuestSetupAnswerFiles(")
+        b = source.index("\nfunction Assert-RestrictedGuestDirectoryAcl(", a)
+        scan = source[a:b]
+        self.assertIn("$pending.Push($searchRootItem[0])", scan)
+        self.assertIn("$currentItem = $pending.Pop()", scan)
+        self.assertIn("Assert-LabRestrictedAclEntryStable $currentItem", scan)
+        self.assertIn("Get-ChildItem -LiteralPath $currentItem.FullName", scan)
+        self.assertIn("if ($entry.PSIsContainer) { $pending.Push($entry) }", scan)
+        self.assertLess(scan.index("Assert-LabRestrictedAclEntryStable $currentItem"),
+                        scan.index("Get-ChildItem -LiteralPath $currentItem.FullName"))
+        self.assertNotIn("$pending.Push($entry.FullName)", scan)
+        self.assertNotIn("$current = [string]$pending.Pop()", scan)
+        identity = source.split("function Assert-LabRestrictedAclEntryStable(", 1)[1].split(
+            "\nfunction Set-RestrictedDirectoryAcl(", 1
+        )[0]
+        self.assertIn("Get-Item -LiteralPath", identity)
+        self.assertIn("[IO.FileAttributes]::ReparsePoint", identity)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_checkpoint_setup_tree_native_mock_rejects_changed_queued_directory(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        source = HOST.read_text(encoding="utf-8")
+        a = source.index("function Assert-LabRestrictedAclEntryStable(")
+        b = source.index("\nfunction Set-RestrictedDirectoryAcl(", a)
+        identity = source[a:b]
+        a = source.index("function Assert-LabOfflineSetupMissingChildIsAbsent(")
+        b = source.index("\nfunction Assert-LabSafeSetupDirectoryBeforeCreate(", a)
+        absent = source[a:b]
+        a = source.index("function Assert-NoGuestSetupAnswerFiles(")
+        b = source.index("\nfunction Assert-RestrictedGuestDirectoryAcl(", a)
+        scan = source[a:b]
+        with tempfile.TemporaryDirectory(prefix="psmatrix-checkpoint-tree-rebind-") as temp:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                fixture = Path(temp) / exe.replace(".", "-")
+                fixture.mkdir()
+                quoted = "'" + str(fixture).replace("'", "''") + "'"
+                script = identity + absent + scan + r"""
+$ErrorActionPreference='Stop'
+$root=__ROOT__
+$panther=Join-Path $root 'Windows\Panther'
+$nested=Join-Path $panther 'Queued'
+$system=Join-Path $root 'Windows\System32'
+New-Item -ItemType Directory -Path $nested,$system -Force -ErrorAction Stop | Out-Null
+$script:mode='valid'
+$script:queuedReads=0
+$script:queuedEnumerations=0
+function Get-Item {
+    [CmdletBinding()]
+    param([string]$LiteralPath,[switch]$Force)
+    if($LiteralPath -ceq $nested) {
+        $script:queuedReads++
+        $item=Microsoft.PowerShell.Management\Get-Item -LiteralPath $LiteralPath -Force -ErrorAction Stop
+        switch($script:mode) {
+            'reparse' {
+                return [pscustomobject]@{
+                    FullName=$LiteralPath
+                    PSIsContainer=$true
+                    Attributes=([IO.FileAttributes]::Directory -bor [IO.FileAttributes]::ReparsePoint)
+                }
+            }
+            'file' {
+                return [pscustomobject]@{
+                    FullName=$LiteralPath
+                    PSIsContainer=$false
+                    Attributes=[IO.FileAttributes]::Archive
+                }
+            }
+            'path' {
+                return [pscustomobject]@{
+                    FullName=(Join-Path $root 'Different')
+                    PSIsContainer=$true
+                    Attributes=[IO.FileAttributes]::Directory
+                }
+            }
+            'missing' {
+                throw [System.Management.Automation.ItemNotFoundException]::new('Queued directory disappeared')
+            }
+            'provider' { throw 'Injected provider failure' }
+            'duplicate' { return @($item,$item) }
+        }
+        return $item
+    }
+    Microsoft.PowerShell.Management\Get-Item -LiteralPath $LiteralPath -Force -ErrorAction Stop
+}
+function Get-ChildItem {
+    [CmdletBinding()]
+    param([string]$LiteralPath,[switch]$Force)
+    if($LiteralPath -ceq $nested){$script:queuedEnumerations++}
+    Microsoft.PowerShell.Management\Get-ChildItem -LiteralPath $LiteralPath -Force -ErrorAction Stop
+}
+foreach($case in @('valid','reparse','file','path','missing','provider','duplicate')) {
+    $script:mode=$case
+    $script:queuedReads=0
+    $script:queuedEnumerations=0
+    $denied=$false
+    try { Assert-NoGuestSetupAnswerFiles $root } catch {$denied=$true}
+    if($case -eq 'valid') {
+        if($denied -or $script:queuedReads -ne 1 -or $script:queuedEnumerations -ne 1){
+            throw 'Valid nested setup directory was rejected'
+        }
+    } elseif(-not $denied -or $script:queuedReads -ne 1 -or
+        $script:queuedEnumerations -ne 0) {
+        throw ('Changed queued setup directory was enumerated: '+$case)
+    }
+}
+'CHECKPOINT_SETUP_QUEUED_ENTRY_REBIND=PASS'
+""".replace("__ROOT__", quoted)
+                proc = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=60, check=False,
+                )
+                self.assertEqual(proc.returncode, 0,
+                                 exe + ": " + proc.stdout + proc.stderr)
+                self.assertIn("CHECKPOINT_SETUP_QUEUED_ENTRY_REBIND=PASS", proc.stdout)
 
 
 if __name__ == "__main__":

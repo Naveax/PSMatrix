@@ -1254,19 +1254,32 @@ function Assert-NoGuestSetupAnswerFiles([string]$WindowsRoot) {
             }
             continue
         }
-        if (((Get-Item -LiteralPath $searchRoot -Force -ErrorAction Stop).Attributes -band
-                [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw 'Guest setup directory is a reparse point; refusing checkpoint.'
+        $searchRootItem = @(Get-Item -LiteralPath $searchRoot -Force -ErrorAction Stop)
+        if ($searchRootItem.Count -ne 1 -or $null -eq $searchRootItem[0] -or
+            $searchRootItem[0].PSIsContainer -isnot [bool] -or
+            -not $searchRootItem[0].PSIsContainer -or
+            (($searchRootItem[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            throw 'Guest setup directory is an unsafe entry; refusing checkpoint.'
         }
+        # Hold the discovered entry rather than just its path. A nested
+        # directory can be replaced while it waits in this traversal stack.
         $pending = New-Object System.Collections.Stack
-        $pending.Push($searchRoot)
+        $pending.Push($searchRootItem[0])
         while ($pending.Count -gt 0) {
-            $current = [string]$pending.Pop()
-            foreach ($entry in @(Get-ChildItem -LiteralPath $current -Force -ErrorAction Stop)) {
+            $currentItem = $pending.Pop()
+            if ($null -eq $currentItem -or $currentItem.PSIsContainer -isnot [bool] -or
+                -not $currentItem.PSIsContainer -or
+                (($currentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                throw 'Guest setup directory tree contains an unsafe entry; refusing checkpoint.'
+            }
+            # Rebind before elevated enumeration; a cached FileSystemInfo
+            # or earlier root lookup does not authorize following a new link.
+            Assert-LabRestrictedAclEntryStable $currentItem
+            foreach ($entry in @(Get-ChildItem -LiteralPath $currentItem.FullName -Force -ErrorAction Stop)) {
                 if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
                     throw 'Guest setup directory tree contains a reparse point; refusing checkpoint.'
                 }
-                if ($entry.PSIsContainer) { $pending.Push($entry.FullName) }
+                if ($entry.PSIsContainer) { $pending.Push($entry) }
                 elseif ($entry.Name -match '^(?:Auto)?Unattend\.xml$') {
                     throw 'Guest setup answer file remains on the VHDX; refusing checkpoint.'
                 }
