@@ -1315,6 +1315,26 @@ function Get-SafeGuestWorkerConfigHash([string]$Path) {
     finally { $stream.Dispose() }
 }
 
+function Assert-LabCheckpointScanBoundary(
+    [string]$VhdPath, $MountedVhd, [int]$ExpectedDiskNumber,
+    [string]$ExpectedWindowsRoot
+) {
+    # An earlier volume lookup is not a lease on its disk number or drive
+    # letter. An offline scan can take time while Storage mappings change.
+    # Bind subsequent reads to the same attached VHDX and Windows partition.
+    $actualDiskNumber = Assert-CheckpointVhdDiskIdentity $VhdPath $MountedVhd
+    if ($actualDiskNumber -ne $ExpectedDiskNumber) {
+        throw 'Guest checkpoint disk number changed during offline scan.'
+    }
+    $actualWindowsRoot = Get-WindowsPartitionRoot $ExpectedDiskNumber
+    if ($actualWindowsRoot -isnot [string] -or
+        $ExpectedWindowsRoot -isnot [string] -or
+        -not [string]::Equals($actualWindowsRoot, $ExpectedWindowsRoot,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Guest Windows partition drive root changed during offline scan.'
+    }
+}
+
 function Read-BootstrapResult([string]$VhdPath, [string]$ExpectedBootstrapNonce) {
     # Never detach an unrelated pre-existing mount. Do not treat a partial
     # Mount-VHD failure as proof that the guest disk is unattached.
@@ -1335,6 +1355,7 @@ function Read-BootstrapResult([string]$VhdPath, [string]$ExpectedBootstrapNonce)
         }
         $diskNumber = Assert-CheckpointVhdDiskIdentity $VhdPath $mounted
         $root = Get-WindowsPartitionRoot $diskNumber
+        Assert-LabCheckpointScanBoundary $VhdPath $mounted $diskNumber $root
         # A mounted guest volume is untrusted input. Inspect ancestor links
         # before reading a result file so a junction cannot redirect host I/O.
         foreach ($relative in @('ProgramData', 'ProgramData\PSMatrix')) {
@@ -1357,6 +1378,7 @@ function Read-BootstrapResult([string]$VhdPath, [string]$ExpectedBootstrapNonce)
         }
         # Use one bounded read under an exclusive file handle for the JSON
         # parser and the result SHA-256. Never hash a separately reopened file.
+        Assert-LabCheckpointScanBoundary $VhdPath $mounted $diskNumber $root
         $readHandle = [IO.File]::Open(
             $path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None
         )
@@ -1454,6 +1476,7 @@ function Read-BootstrapResult([string]$VhdPath, [string]$ExpectedBootstrapNonce)
             $result.status -cnotin @('PASS','FAIL')) {
             throw 'Guest bootstrap result schema, kind or status is invalid.'
         }
+        Assert-LabCheckpointScanBoundary $VhdPath $mounted $diskNumber $root
         Assert-RestrictedGuestDirectoryAcl -Path (Join-Path $root 'ProgramData\PSMatrix\Bootstrap') -Label 'Bootstrap'
         Assert-RestrictedGuestDirectoryAcl -Path (Join-Path $root 'ProgramData\PSMatrix\Credentials') -Label 'Credentials'
         Assert-RestrictedGuestDirectoryAcl -Path (Join-Path $root 'ProgramData\PSMatrix\Signing') -Label 'Signing'
@@ -1469,6 +1492,7 @@ function Read-BootstrapResult([string]$VhdPath, [string]$ExpectedBootstrapNonce)
             if (-not (Test-Path -LiteralPath $workerConfig -PathType Leaf)) {
                 throw 'Guest worker configuration is missing; refusing checkpoint.'
             }
+            Assert-LabCheckpointScanBoundary $VhdPath $mounted $diskNumber $root
             $actualConfigHash = Get-SafeGuestWorkerConfigHash $workerConfig
             if ($actualConfigHash -cne $result.worker_config_sha256) {
                 throw 'Guest worker configuration SHA-256 mismatch; refusing checkpoint.'

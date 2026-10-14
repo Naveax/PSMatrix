@@ -11450,5 +11450,113 @@ foreach($failure in @('disk','drive','junction')){
             self.assertIn("BOOTSTRAP_STAGE_RECHECK_MOCK=PASS", proc.stdout)
 
 
+    def test_offline_bootstrap_scan_rebinds_disk_and_windows_root_at_read_boundaries(self):
+        source = HOST.read_text(encoding="utf-8")
+        begin = source.index("function Assert-LabCheckpointScanBoundary(")
+        finish = source.index("\nfunction Read-BootstrapResult(", begin)
+        helper = source[begin:finish]
+        self.assertIn("Assert-CheckpointVhdDiskIdentity $VhdPath $MountedVhd", helper)
+        self.assertIn("Get-WindowsPartitionRoot $ExpectedDiskNumber", helper)
+        self.assertIn("Guest checkpoint disk number changed during offline scan.", helper)
+        self.assertIn("Guest Windows partition drive root changed during offline scan.", helper)
+        read = source.split("function Read-BootstrapResult(", 1)[1].split(
+            "\nfunction Assert-LabPlanGuestIdentities(", 1
+        )[0]
+        check = "Assert-LabCheckpointScanBoundary $VhdPath $mounted $diskNumber $root"
+        self.assertEqual(read.count(check), 4)
+        boundaries = (
+            "$root = Get-WindowsPartitionRoot $diskNumber",
+            "[IO.File]::Open(\n            $path,",
+            "Assert-RestrictedGuestDirectoryAcl -Path (Join-Path $root",
+            "$actualConfigHash = Get-SafeGuestWorkerConfigHash $workerConfig",
+        )
+        prev = -1
+        for boundary in boundaries:
+            with self.subTest(boundary=boundary):
+                at = read.index(boundary)
+                if boundary == boundaries[0]:
+                    guard = read.index(check, at)
+                    parent_scan = read.index("foreach ($relative in @(", at)
+                    self.assertLess(guard, parent_scan)
+                else:
+                    guard = read.rfind(check, prev, at)
+                    self.assertGreater(guard, prev)
+                self.assertLess(guard, read.index(boundaries[-1]) if boundary==boundaries[-1] else len(read))
+                prev = at
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_offline_bootstrap_scan_identity_mock_rejects_disk_or_root_substitution(self):
+        import shutil
+        import subprocess
+        source = HOST.read_text(encoding="utf-8")
+        start = source.index("function Assert-LabCheckpointScanBoundary(")
+        end = source.index("\nfunction Read-BootstrapResult(", start)
+        helper = source[start:end]
+        script = helper + r"""
+$ErrorActionPreference='Stop'
+$script:disk=42
+$script:root='G:\'
+$script:diskCalls=0
+$script:rootCalls=0
+$script:mode='valid'
+function Assert-CheckpointVhdDiskIdentity {
+    param([string]$VhdPath,$MountedVhd)
+    $script:diskCalls++
+    if($script:mode -eq 'providerDiskFailed'){throw 'Disk provider unavailable'}
+    if($VhdPath -cne 'D:\Fixture\guest.vhdx' -or $MountedVhd.DiskNumber -ne 42){
+        throw 'Wrong original mounted VHDX'
+    }
+    return $script:disk
+}
+function Get-WindowsPartitionRoot {
+    param([int]$DiskNumber)
+    $script:rootCalls++
+    if($script:mode -eq 'providerRootFailed'){throw 'Partition provider unavailable'}
+    if($DiskNumber -ne 42){throw 'Queried wrong disk number'}
+    return $script:root
+}
+$mounted=[pscustomobject]@{DiskNumber=42}
+foreach($mode in @(
+    'valid','otherDisk','otherRoot','nullRoot','arrayRoot',
+    'providerDiskFailed','providerRootFailed'
+)){
+    $script:mode=$mode
+    $script:disk=42
+    $script:root='G:\'
+    $script:diskCalls=0
+    $script:rootCalls=0
+    if($mode -eq 'otherDisk'){$script:disk=43}
+    if($mode -eq 'otherRoot'){$script:root='H:\'}
+    if($mode -eq 'nullRoot'){$script:root=$null}
+    if($mode -eq 'arrayRoot'){$script:root=@('G:\','H:\')}
+    $blocked=$false
+    try {
+        Assert-LabCheckpointScanBoundary 'D:\Fixture\guest.vhdx' $mounted 42 'G:\'
+    } catch {$blocked=$true}
+    if($mode -eq 'valid'){
+        if($blocked -or $script:diskCalls -ne 1 -or $script:rootCalls -ne 1){
+            throw 'Valid checkpoint scan boundary rejected'
+        }
+    } elseif(-not $blocked){
+        throw ('Substituted scan disk/root accepted: '+$mode)
+    }
+    if($mode -in @('otherDisk','providerDiskFailed') -and $script:rootCalls -ne 0){
+        throw ('Unsafe drive-letter lookup reached after disk check: '+$mode)
+    }
+}
+'OFFLINE_SCAN_BOUNDARY_MOCK=PASS'
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+            self.assertIn("OFFLINE_SCAN_BOUNDARY_MOCK=PASS", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
