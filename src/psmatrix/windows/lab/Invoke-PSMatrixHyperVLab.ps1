@@ -1287,6 +1287,10 @@ function Assert-RestrictedGuestDirectoryAcl([string]$Path, [string]$Label) {
         if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
             throw ($Label + ' directory tree contains a reparse point; refusing checkpoint.')
         }
+        # A guest-tree item queued earlier is not stable authority for this
+        # elevated ACL read. Reject a replacement file, changed type or
+        # redirected reparse target at the actual read boundary.
+        Assert-LabRestrictedAclEntryStable $item
         $acl = Get-Acl -LiteralPath $item.FullName -ErrorAction Stop
         if (-not $acl.AreAccessRulesProtected) {
             throw ($Label + ' directory tree still inherits ACLs; refusing checkpoint.')
@@ -1348,6 +1352,9 @@ function Assert-RestrictedGuestDirectoryAcl([string]$Path, [string]$Label) {
             }
         }
         if ($item.PSIsContainer) {
+            # Enumerating a directory also follows its current path; do not
+            # trust the metadata from before the ACL checks.
+            Assert-LabRestrictedAclEntryStable $item
             foreach ($child in @(Get-ChildItem -LiteralPath $item.FullName -Force -ErrorAction Stop)) {
                 $pending.Push($child)
             }

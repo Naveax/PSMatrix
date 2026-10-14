@@ -12458,5 +12458,117 @@ if(-not $blocked){throw 'Existing Sysprep hidden by Test-Path was accepted'}
                 self.assertIn("CHECKPOINT_DANGLING_SYSPREP_GUARD=PASS", result.stdout)
 
 
+    def test_checkpoint_acl_verifier_rebinds_queued_entries_at_read_and_traversal(self):
+        source = HOST.read_text(encoding="utf-8")
+        start = source.index("function Assert-RestrictedGuestDirectoryAcl(")
+        end = source.index("\nfunction Assert-NoGuestBootstrapStagingSecrets(", start)
+        verifier = source[start:end]
+        check = "Assert-LabRestrictedAclEntryStable $item"
+        self.assertEqual(verifier.count(check), 2)
+        read = verifier.index("$acl = Get-Acl -LiteralPath $item.FullName")
+        traverse = verifier.index("Get-ChildItem -LiteralPath $item.FullName")
+        first = verifier.index(check)
+        second = verifier.index(check, first + 1)
+        self.assertLess(first, read)
+        self.assertLess(read, second)
+        self.assertLess(second, traverse)
+        # Reuse the checked host ACL identity helper, not a weaker second
+        # implementation that forgets to reject reparse-point metadata.
+        helper = source.split(
+            "function Assert-LabRestrictedAclEntryStable(", 1
+        )[1].split("\nfunction Set-RestrictedDirectoryAcl(", 1)[0]
+        self.assertIn("Get-Item -LiteralPath", helper)
+        self.assertIn("[IO.FileAttributes]::ReparsePoint", helper)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_checkpoint_acl_verifier_native_rejects_swapped_root_before_acl_read(self):
+        import shutil
+        import subprocess
+
+        source = HOST.read_text(encoding="utf-8")
+        a = source.index("function Assert-LabRestrictedAclEntryStable(")
+        b = source.index("\nfunction Set-RestrictedDirectoryAcl(", a)
+        helper = source[a:b]
+        a = source.index("function Assert-RestrictedGuestDirectoryAcl(")
+        b = source.index("\nfunction Assert-NoGuestBootstrapStagingSecrets(", a)
+        verifier = source[a:b]
+        script = helper + verifier + r"""
+$ErrorActionPreference='Stop'
+$path='G:\Fixture\Bootstrap'
+$script:read=0
+$script:aclRead=0
+$script:mode='valid'
+function Test-Path {
+    [CmdletBinding()]
+    param([string]$LiteralPath,[string]$PathType)
+    if($LiteralPath -cne $path){throw 'Unexpected Test-Path target'}
+    return $true
+}
+function Get-Item {
+    [CmdletBinding()]
+    param([string]$LiteralPath,[switch]$Force)
+    if($LiteralPath -cne $path){throw 'Unexpected Get-Item target'}
+    $script:read++
+    $item=[pscustomobject]@{
+        FullName=$path
+        PSIsContainer=$true
+        Attributes=[IO.FileAttributes]::Directory
+    }
+    if($script:read -ge 2){
+        if($script:mode -eq 'reparse'){
+            $item.Attributes=[IO.FileAttributes]::Directory -bor [IO.FileAttributes]::ReparsePoint
+        }
+        if($script:mode -eq 'file'){ $item.PSIsContainer=$false }
+        if($script:mode -eq 'differentPath'){ $item.FullName='H:\Elsewhere\Bootstrap' }
+        if($script:mode -eq 'missing'){ return }
+        if($script:mode -eq 'providerError'){ throw 'Provider failed' }
+        if($script:mode -eq 'duplicate'){ return @($item,$item) }
+    }
+    return $item
+}
+function Get-Acl {
+    [CmdletBinding()]
+    param([string]$LiteralPath)
+    $script:aclRead++
+    throw 'ACL_READ_SENTINEL'
+}
+function Get-ChildItem {
+    [CmdletBinding()]
+    param([string]$LiteralPath,[switch]$Force)
+    throw 'Unsafe traversal reached'
+}
+foreach($case in @('reparse','file','differentPath','missing','providerError','duplicate','valid')){
+    $script:mode=$case
+    $script:read=0
+    $script:aclRead=0
+    $errorMessage=''
+    try { Assert-RestrictedGuestDirectoryAcl $path 'Bootstrap' }
+    catch { $errorMessage=$_.Exception.Message }
+    if([string]::IsNullOrWhiteSpace($errorMessage) -or $script:read -ne 2){
+        throw ('Invalid checkpoint ACL outcome for '+$case)
+    }
+    if($case -eq 'valid'){
+        if($script:aclRead -ne 1 -or $errorMessage -cne 'ACL_READ_SENTINEL'){
+            throw 'Valid ACL target did not reach exactly one ACL read'
+        }
+    } elseif($script:aclRead -ne 0 -or $errorMessage -eq 'ACL_READ_SENTINEL'){
+        throw ('Changed ACL target was read: '+$case)
+    }
+}
+'CHECKPOINT_ACL_REQUERY_MOCK=PASS'
+"""
+        for executable in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(executable):
+                continue
+            result = subprocess.run(
+                [executable, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=50, check=False,
+            )
+            self.assertEqual(result.returncode, 0,
+                             executable + ": " + result.stdout + result.stderr)
+            self.assertIn("CHECKPOINT_ACL_REQUERY_MOCK=PASS", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
