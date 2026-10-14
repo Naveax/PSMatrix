@@ -64,14 +64,33 @@ function Assert-SafeWorkerInstallDestination([string]$Path, [bool]$ExpectDirecto
         [char[]]@('\', '/'), [StringSplitOptions]::RemoveEmptyEntries)
     for ($index = 0; $index -lt $parts.Length; $index++) {
         $match = $null
-        foreach ($entry in @(Microsoft.PowerShell.Management\Get-ChildItem -LiteralPath $cursor -Force -ErrorAction Stop)) {
-            if ([string]::Equals([string]$entry.Name, $parts[$index],
-                    [StringComparison]::OrdinalIgnoreCase)) {
-                $match = $entry
-                break
+        # A direct literal probe avoids enumerating every sibling in a busy
+        # install root. If it says 'not found', still enumerate the parent:
+        # a dangling junction may be invisible to Get-Item and must be
+        # rejected rather than misclassified as an absent safe destination.
+        $candidate = [IO.Path]::Combine($cursor, $parts[$index])
+        try {
+            $match = Microsoft.PowerShell.Management\Get-Item -LiteralPath $candidate -Force -ErrorAction Stop
+        }
+        catch {
+            if ($_.CategoryInfo.Category -ne [Management.Automation.ErrorCategory]::ObjectNotFound) {
+                throw
+            }
+        }
+        if ($null -eq $match) {
+            foreach ($entry in @(Microsoft.PowerShell.Management\Get-ChildItem -LiteralPath $cursor -Force -ErrorAction Stop)) {
+                if ([string]::Equals([string]$entry.Name, $parts[$index],
+                        [StringComparison]::OrdinalIgnoreCase)) {
+                    $match = $entry
+                    break
+                }
             }
         }
         if ($null -eq $match) { return }
+        if (-not [string]::Equals([string]$match.Name, $parts[$index],
+                [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Worker installation path provider returned an unexpected entry.'
+        }
         $directory = ($index -lt ($parts.Length - 1)) -or $ExpectDirectory
         if ((($match.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) -or
             ([bool]$match.PSIsContainer -ne [bool]$directory)) {

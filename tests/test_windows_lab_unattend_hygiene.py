@@ -4328,6 +4328,11 @@ foreach ($name in @('install','uninstall','cert_image','cert_worker','harness_en
         source = (ROOT / "src/psmatrix/windows/install-worker.ps1").read_text(encoding="utf-8")
         helper_name = "function Assert-SafeWorkerInstallDestinations("
         self.assertIn(helper_name, source)
+        # The fast literal probe must retain a full-list fallback for broken
+        # junctions rather than mistaking them for absent safe paths.
+        self.assertIn("Get-Item -LiteralPath $candidate -Force -ErrorAction Stop", source)
+        self.assertIn("Get-ChildItem -LiteralPath $cursor -Force -ErrorAction Stop", source)
+        self.assertIn("ErrorCategory]::ObjectNotFound", source)
         self.assertIn("$workerRoot = Assert-SafeWorkerInstallDestinations $InstallRoot $WorkerId", source)
         self.assertIn("Assert-SafeWorkerInstallDestinations $InstallRoot $WorkerId | Out-Null", source)
         helper = source[source.index("function Assert-SafeWorkerInstallDestination("):
@@ -4365,6 +4370,14 @@ Expect-UnsafeInstall $root
 New-Item -ItemType Directory -Path $worker -ErrorAction Stop | Out-Null
 $bin=Join-Path $worker 'bin'
 New-Item -ItemType Junction -Path $bin -Target $outside -ErrorAction Stop | Out-Null
+Expect-UnsafeInstall $root
+[IO.Directory]::Delete($bin)
+# A dangling junction is the adversarial case where a literal Get-Item
+# can report 'not found'; the parent-enumeration fallback must reject it.
+$missingTarget=Join-Path $top 'target-that-does-not-exist'
+New-Item -ItemType Directory -Path $missingTarget -ErrorAction Stop | Out-Null
+New-Item -ItemType Junction -Path $bin -Target $missingTarget -ErrorAction Stop | Out-Null
+[IO.Directory]::Delete($missingTarget)
 Expect-UnsafeInstall $root
 [IO.Directory]::Delete($bin)
 New-Item -ItemType Directory -Path $bin -ErrorAction Stop | Out-Null
