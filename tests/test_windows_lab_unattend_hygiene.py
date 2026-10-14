@@ -11799,5 +11799,98 @@ if(-not $blocked -or $script:lookup -ne 0){
             self.assertIn("HOST_ACL_STALE_ENTRY_MOCK=PASS", result.stdout)
 
 
+    def test_vhd_creation_rechecks_output_path_after_source_iso_lookup(self):
+        src = HOST.read_text(encoding="utf-8")
+        start = src.index("function Assert-LabFreshOutputVhdTarget(")
+        end = src.index("\nfunction Assert-LabPlanMachineAndOutputPaths(", start)
+        helper = src[start:end]
+        for required in (
+            "Assert-SafeLabOutputAncestors $Output",
+            "Get-Item -LiteralPath $fullOutput -Force -ErrorAction Stop",
+            "Get-ChildItem -LiteralPath $parent -Force -ErrorAction Stop",
+            "[StringComparison]::OrdinalIgnoreCase",
+            "[IO.FileAttributes]::ReparsePoint",
+        ):
+            self.assertIn(required, helper)
+        body = src.split("function New-LabVhd(", 1)[1].split(
+            "\nfunction Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        mount_iso = body.index("$iso = Mount-DiskImage -ImagePath $isoPath")
+        iso_root = body.index("$isoRoot = Get-LabIsoVolumeRoot $iso")
+        guard = body.index("Assert-LabFreshOutputVhdTarget $output")
+        new_vhd = body.index("New-VHD -Path $output -Dynamic -SizeBytes 64GB")
+        self.assertLess(mount_iso, iso_root)
+        self.assertLess(iso_root, guard)
+        self.assertLess(guard, new_vhd)
+        self.assertNotIn("New-VHD", body[guard:new_vhd])
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_vhd_fresh_target_rejects_hidden_leaf_and_reparse_ancestor(self):
+        import tempfile
+        import subprocess
+        import shutil
+
+        src = HOST.read_text(encoding="utf-8")
+        start = src.index("function Assert-SafeLabOutputAncestors(")
+        end = src.index("\nfunction Assert-LabPlanMachineAndOutputPaths(", start)
+        helpers = src[start:end]
+        with tempfile.TemporaryDirectory(prefix="psmatrix-new-vhd-boundary-") as tmp:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                base = Path(tmp) / exe.replace(".", "-")
+                base.mkdir()
+                def q(value):
+                    return "'" + str(value).replace("'", "''") + "'"
+                script = helpers + r"""
+$ErrorActionPreference='Stop'
+$base=__BASE__
+$work=Join-Path $base 'work'
+$outside=Join-Path $base 'outside'
+New-Item -ItemType Directory -Path $work,$outside -ErrorAction Stop | Out-Null
+$target=Join-Path $work 'guest.vhdx'
+function Expect-Refusal([string]$Label) {
+    $rejected=$false
+    try { Assert-LabFreshOutputVhdTarget $target }
+    catch { $rejected=$true }
+    if(-not $rejected){throw ('Unsafe VHDX output target accepted: '+$Label)}
+}
+Assert-LabFreshOutputVhdTarget $target
+[IO.File]::WriteAllText($target,'existing')
+Expect-Refusal 'occupied-file'
+Remove-Item -LiteralPath $target -Force -ErrorAction Stop
+[IO.File]::WriteAllText($target,'hidden-file')
+(Get-Item -LiteralPath $target -Force).Attributes = [IO.FileAttributes]::Hidden
+Expect-Refusal 'hidden-file'
+Remove-Item -LiteralPath $target -Force -ErrorAction Stop
+New-Item -ItemType Directory -Path $target -ErrorAction Stop | Out-Null
+Expect-Refusal 'occupied-directory'
+Remove-Item -LiteralPath $target -Force -ErrorAction Stop
+New-Item -ItemType Junction -Path $target -Target $outside -ErrorAction Stop | Out-Null
+Expect-Refusal 'junction-leaf'
+[IO.Directory]::Delete($target)
+$nonexistent=Join-Path $base 'missing'
+New-Item -ItemType Directory -Path $nonexistent -ErrorAction Stop | Out-Null
+New-Item -ItemType Junction -Path $target -Target $nonexistent -ErrorAction Stop | Out-Null
+[IO.Directory]::Delete($nonexistent)
+Expect-Refusal 'dangling-junction-leaf'
+[IO.Directory]::Delete($target)
+[IO.Directory]::Delete($work)
+New-Item -ItemType Junction -Path $work -Target $outside -ErrorAction Stop | Out-Null
+Expect-Refusal 'junction-parent'
+[IO.Directory]::Delete($work)
+New-Item -ItemType Directory -Path $work -ErrorAction Stop | Out-Null
+Assert-LabFreshOutputVhdTarget $target
+'VHD_FRESH_TARGET_BOUNDARY=PASS'
+""".replace("__BASE__", q(base))
+                proc = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=55, check=False,
+                )
+                self.assertEqual(proc.returncode, 0, exe+": "+proc.stdout+proc.stderr)
+                self.assertIn("VHD_FRESH_TARGET_BOUNDARY=PASS", proc.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -985,6 +985,9 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         $imageFile = Join-Path $isoRoot 'sources\install.wim'
         if (-not (Test-Path -LiteralPath $imageFile)) { $imageFile = Join-Path $isoRoot 'sources\install.esd' }
         if (-not (Test-Path -LiteralPath $imageFile)) { throw 'Windows install.wim or install.esd was not found.' }
+        # ISO discovery may have taken time. Do not reuse the original
+        # preflight result when creating a privileged 64 GiB VHDX.
+        Assert-LabFreshOutputVhdTarget $output
         New-VHD -Path $output -Dynamic -SizeBytes 64GB -ErrorAction Stop | Out-Null
         Assert-NewLabVhdCreated $output 64GB
         $vhdMounted = Mount-VHD -Path $output -PassThru -ErrorAction Stop
@@ -1606,6 +1609,39 @@ function Assert-SafeLabOutputAncestors([string]$Output) {
             throw 'Windows lab output VHDX ancestor is an unsafe directory.'
         }
         $ancestor = [IO.Path]::GetDirectoryName($ancestor)
+    }
+}
+
+function Assert-LabFreshOutputVhdTarget([string]$Output) {
+    # A valid plan/pre-ISO directory check is not authority for New-VHD
+    # after mounting media. Recheck both ancestor links and a pre-existing
+    # leaf immediately at the creation boundary.
+    Assert-SafeLabOutputAncestors $Output
+    $fullOutput = [IO.Path]::GetFullPath($Output)
+    $existing = $null
+    try {
+        $existing = Get-Item -LiteralPath $fullOutput -Force -ErrorAction Stop
+    }
+    catch [System.Management.Automation.ItemNotFoundException] {
+        # An absent VHDX is expected. Other provider failures are fatal.
+    }
+    if ($null -ne $existing) {
+        throw 'Windows lab output VHDX already exists at creation boundary.'
+    }
+    # A dangling reparse leaf may be invisible to a literal lookup. Query
+    # the parent entries to refuse even an unresolved link before New-VHD.
+    $parent = [IO.Path]::GetDirectoryName($fullOutput)
+    $leaf = [IO.Path]::GetFileName($fullOutput)
+    $parentItem = Get-Item -LiteralPath $parent -Force -ErrorAction Stop
+    if ($null -eq $parentItem -or -not $parentItem.PSIsContainer -or
+        (($parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+        throw 'Windows lab output parent is not a safe directory.'
+    }
+    foreach ($entry in @(Get-ChildItem -LiteralPath $parent -Force -ErrorAction Stop)) {
+        if ([string]::Equals([string]$entry.Name, $leaf,
+            [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Windows lab output VHDX directory entry already exists.'
+        }
     }
 }
 
