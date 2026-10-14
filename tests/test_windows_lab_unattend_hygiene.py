@@ -311,6 +311,7 @@ exit 0
         script = code + r"""
 $ErrorActionPreference = 'Stop'
 $script:power = 'Running'
+$script:expectedId = [guid]'12345678-1234-1234-1234-123456789abc'
 $script:mode = 'ignored'
 $script:stops = 0
 $script:reads = 0
@@ -319,12 +320,13 @@ function Get-VM {
     param([string]$Name)
     $script:reads++
     if ($script:mode -eq 'queryError') { Write-Error 'fixture state lookup failure' }
-    if ($script:mode -eq 'noState') { return [pscustomobject]@{Name = $Name; State = $null} }
-    return [pscustomobject]@{Name = $Name; State = $script:power}
+    if ($script:mode -eq 'noState') { return [pscustomobject]@{Name = $Name; State = $null; Id = $script:expectedId} }
+    return [pscustomobject]@{Name = $Name; State = $script:power; Id = $script:expectedId}
 }
 function Stop-VM {
     [CmdletBinding()]
-    param([string]$Name,[switch]$TurnOff,[switch]$Force)
+    param([object]$VM,[switch]$TurnOff,[switch]$Force)
+    if ($VM.Id -ne $script:expectedId) { throw 'Wrong VM identity passed to Stop-VM.' }
     $script:stops++
     if ($script:mode -eq 'error') {
         Write-Error 'fixture stop failure'
@@ -338,9 +340,10 @@ foreach ($mode in @('ignored','error','success','queryError','noState')) {
     $script:stops = 0
     $script:reads = 0
     $message = ''
-    try { Wait-FirstBoot -VmName 'fixture-vm' -TimeoutSeconds 0 }
+    try { Wait-FirstBoot -VmName 'fixture-vm' -TimeoutSeconds 0 -ExpectedVmId $script:expectedId }
     catch { $message = $_.Exception.Message }
-    if ($script:stops -ne 1) { throw ('Timeout did not attempt stop: ' + $mode) }
+    $expectedStops = if ($mode -in @('queryError','noState')) { 0 } else { 1 }
+    if ($script:stops -ne $expectedStops) { throw ('Unsafe timeout stop count: ' + $mode) }
     if ($mode -eq 'ignored') {
         if ($script:reads -eq 0 -or $message -notmatch 'still running|not off') {
             throw 'Timeout accepted an unconfirmed VM shutdown.'
@@ -357,12 +360,12 @@ foreach ($mode in @('ignored','error','success','queryError','noState')) {
         }
     }
     elseif ($mode -eq 'queryError') {
-        if ($message -notmatch 'shutdown state unavailable') {
+        if ($message -notmatch 'shutdown target unavailable') {
             throw 'Timeout accepted an unreadable VM state.'
         }
     }
     elseif ($mode -eq 'noState') {
-        if ($message -notmatch 'not Off') {
+        if ($message -notmatch 'shutdown target state invalid') {
             throw 'Timeout accepted a missing VM state.'
         }
     }
@@ -9908,35 +9911,36 @@ $ErrorActionPreference='Stop'
 $script:mode=''
 $script:queries=0
 $script:stops=0
+$script:expectedId=[guid]'12345678-1234-1234-1234-123456789abc'
 function Get-VM {
     [CmdletBinding()]
     param([string]$Name)
     $script:queries++
     if ($script:mode -eq 'twoStates' -and $script:queries -eq 1) {
-        [pscustomobject]@{Name=$Name; State='Running'}
-        [pscustomobject]@{Name=$Name; State='Off'}
+        [pscustomobject]@{Name=$Name; State='Running';Id=$script:expectedId}
+        [pscustomobject]@{Name=$Name; State='Off';Id=$script:expectedId}
         return
     }
     if ($script:mode -eq 'wrongName' -and $script:queries -eq 1) {
-        return [pscustomobject]@{Name='OTHER-VM'; State='Off'}
+        return [pscustomobject]@{Name='OTHER-VM'; State='Off';Id=$script:expectedId}
     }
     if ($script:mode -eq 'arrayState' -and $script:queries -eq 1) {
-        return [pscustomobject]@{Name=$Name; State=@('Running','Off')}
+        return [pscustomobject]@{Name=$Name; State=@('Running','Off');Id=$script:expectedId}
     }
     if ($script:mode -eq 'noVm' -and $script:queries -eq 1) { return }
     if ($script:mode -eq 'duplicateAfterStop') {
-        [pscustomobject]@{Name=$Name; State='Running'}
-        [pscustomobject]@{Name=$Name; State='Off'}
+        [pscustomobject]@{Name=$Name; State='Running';Id=$script:expectedId}
+        [pscustomobject]@{Name=$Name; State='Off';Id=$script:expectedId}
         return
     }
     if ($script:mode -eq 'validRunningThenOff') {
-        if ($script:queries -eq 1) { return [pscustomobject]@{Name=$Name; State='Running'} }
+        if ($script:queries -eq 1) { return [pscustomobject]@{Name=$Name; State='Running';Id=$script:expectedId} }
     }
-    return [pscustomobject]@{Name=$Name; State='Off'}
+    return [pscustomobject]@{Name=$Name; State='Off';Id=$script:expectedId}
 }
 function Stop-VM {
     [CmdletBinding()]
-    param([string]$Name,[switch]$TurnOff,[switch]$Force)
+    param([object]$VM,[switch]$TurnOff,[switch]$Force)
     $script:stops++
 }
 function Start-Sleep { param([int]$Seconds) }
@@ -9944,7 +9948,7 @@ foreach ($mode in @('twoStates','wrongName','arrayState','noVm','duplicateAfterS
     $script:mode=$mode; $script:queries=0; $script:stops=0
     $message=''
     try {
-        Wait-FirstBoot -VmName 'fixture-vm' -TimeoutSeconds 1
+        Wait-FirstBoot -VmName 'fixture-vm' -TimeoutSeconds 1 -ExpectedVmId $script:expectedId
     } catch { $message=$_.Exception.Message }
     if ($mode -eq 'validRunningThenOff') {
         if ($message -ne '' -or $script:queries -ne 2 -or $script:stops -ne 0) {
@@ -9952,12 +9956,12 @@ foreach ($mode in @('twoStates','wrongName','arrayState','noVm','duplicateAfterS
         }
     }
     elseif ($mode -eq 'duplicateAfterStop') {
-        if ($message -notmatch 'not Off' -or $script:stops -ne 1) {
+        if ($message -notmatch 'ambiguous or misidentified' -or $script:stops -ne 0) {
             throw 'Multiple post-stop states were accepted.'
         }
     }
     else {
-        if ($message -notmatch 'ambiguous or misidentified' -or $script:stops -ne 1) {
+        if ($message -notmatch 'ambiguous or misidentified' -or $script:stops -ne 0) {
             throw ('Ambiguous response falsely accepted: '+$mode+' '+$message)
         }
     }
@@ -10336,7 +10340,7 @@ foreach($mode in @('valid')+$bad) {
         loop = src.split("foreach ($image in $planValue.images) {", 1)[1]
         check = "Assert-LabGuestOfflineVhdBoundary $vmName $createdVm[0].Id $vhd"
         self.assertEqual(loop.count(check), 3)
-        before_reader = loop.index("Wait-FirstBoot $vmName 3600")
+        before_reader = loop.index("Wait-FirstBoot $vmName 3600 $createdVm[0].Id")
         first = loop.index(check, before_reader)
         reader = loop.index("$bootstrap = Read-BootstrapResult $vhd $bootstrapNonce")
         second = loop.index(check, reader)
@@ -10467,6 +10471,103 @@ foreach ($mode in @('valid') + $bad) {
         self.assertIn("$found[0].Id -ne $created.Id", helper)
         self.assertIn("$found[0].VMId -ne $ExpectedVmId", helper)
         self.assertIn("$created.VMId -ne $ExpectedVmId", helper)
+
+
+    def test_first_boot_requires_registered_vm_identity_before_any_timeout_stop(self):
+        host = HOST.read_text(encoding="utf-8")
+        guard = host.split("function Wait-FirstBoot(", 1)[1].split(
+            "\nfunction Assert-LabNewVmRegistered(", 1
+        )[0]
+        self.assertIn("$matches[0].Id -ne $ExpectedVmId", guard)
+        self.assertIn("$beforeStop[0].Id -ne $ExpectedVmId", guard)
+        self.assertIn("$afterStop[0].Id -ne $ExpectedVmId", guard)
+        self.assertIn("Stop-VM -VM $beforeStop[0] -TurnOff", guard)
+        self.assertNotIn("Stop-VM -Name $VmName", guard)
+        self.assertIn("Wait-FirstBoot $vmName 3600 $createdVm[0].Id", host)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_first_boot_vm_replacement_mock_never_stops_wrong_identity(self):
+        import shutil
+        import subprocess
+
+        raw = HOST.read_text(encoding="utf-8")
+        guard = "function Wait-FirstBoot(" + raw.split(
+            "function Wait-FirstBoot(", 1
+        )[1].split("\nfunction Assert-LabNewVmRegistered(", 1)[0]
+        script = guard + r"""
+$ErrorActionPreference='Stop'
+$script:expected=[guid]'12345678-1234-1234-1234-123456789abc'
+$script:replaced=[guid]'87654321-4321-4321-4321-cba987654321'
+$script:stops=0
+$script:reads=0
+$script:power='Running'
+function Get-VM {
+    [CmdletBinding()]
+    param([string]$Name)
+    $script:reads++
+    $identity=$script:expected
+    if ($script:mode -eq 'replacementAtTimeout' -or
+        ($script:mode -eq 'replacementDuringPolling' -and $script:reads -gt 1) -or
+        ($script:mode -eq 'replacementAfterStop' -and $script:stops -gt 0)) {
+        $identity=$script:replaced
+    }
+    $state=$script:power
+    if ($script:mode -eq 'replacementDuringPolling' -and $script:reads -gt 1) {
+        $state='Off'
+    }
+    return [pscustomobject]@{ Name=$Name; Id=$identity; State=$state }
+}
+function Stop-VM {
+    [CmdletBinding()]
+    param([object]$VM,[switch]$TurnOff,[switch]$Force)
+    if ($VM.Id -ne $script:expected) {
+        throw 'A replacement VM was passed to Stop-VM.'
+    }
+    $script:stops++
+    $script:power='Off'
+}
+function Start-Sleep { param([int]$Seconds) }
+foreach ($case in @(
+    @{name='replacementAtTimeout';timeout=0;error='shutdown target identity mismatch';stops=0},
+    @{name='replacementDuringPolling';timeout=1;error='ambiguous or misidentified';stops=0},
+    @{name='replacementAfterStop';timeout=0;error='replaced or not Off';stops=1},
+    @{name='normalTimeout';timeout=0;error='Guest bootstrap timed out:';stops=1}
+)) {
+    $script:mode=$case.name
+    $script:stops=0
+    $script:reads=0
+    $script:power='Running'
+    $message=''
+    try {
+        Wait-FirstBoot -VmName 'fixture-vm' -TimeoutSeconds $case.timeout -ExpectedVmId $script:expected
+    } catch { $message=$_.Exception.Message }
+    if ($message -notmatch [regex]::Escape($case.error)) {
+        throw ('Incorrect replacement response: '+$case.name+' '+$message)
+    }
+    if ($script:stops -ne $case.stops) {
+        throw ('Unsafe replacement stop count: '+$case.name)
+    }
+}
+$script:mode='normalTimeout';$script:stops=0
+try { Wait-FirstBoot -VmName 'fixture-vm' -TimeoutSeconds 0 -ExpectedVmId ([guid]::Empty) }
+catch {
+    if ($_.Exception.Message -notmatch 'expected VM identity is missing') { throw }
+}
+if ($script:stops -ne 0) { throw 'Empty identity allowed shutdown.' }
+'FIRST_BOOT_IDENTITY_MOCK=PASS'
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(
+                result.returncode, 0, exe + ": " + result.stdout + result.stderr
+            )
+            self.assertIn("FIRST_BOOT_IDENTITY_MOCK=PASS", result.stdout)
 
 
 if __name__ == "__main__":
