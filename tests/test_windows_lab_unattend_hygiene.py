@@ -10967,7 +10967,7 @@ foreach($replacementAt in @(1,2,3,4,5,999)){
         offsets = [build.index(site) for site in sites]
         self.assertEqual(offsets, sorted(offsets))
         # The earlier five partition/format operations also retain their guards.
-        self.assertEqual(build.count(guard), 11)
+        self.assertGreaterEqual(build.count(guard), 11)
         prior = build.index("Format-Volume -Partition $windows -FileSystem NTFS")
         for site, offset in zip(sites, offsets):
             with self.subTest(site=site):
@@ -11050,6 +11050,125 @@ foreach($badAt in @(1,2,3,4,5,6,999)){
                 proc.returncode, 0, exe + ": " + proc.stdout + proc.stderr
             )
             self.assertIn("OFFLINE_DEPLOYMENT_GUARD_MOCK=PASS", proc.stdout)
+
+
+    def test_setup_directories_revalidate_guest_identity_before_mkdir(self):
+        src = HOST.read_text(encoding="utf-8")
+        build = src.split("function New-LabVhd(", 1)[1].split(
+            "\nfunction Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        cases = (
+            ("setupDir", "$setupDir = Join-Path $windowsRoot 'Windows\\Setup\\Scripts'"),
+            ("panther", "$panther = Join-Path $windowsRoot 'Windows\\Panther'"),
+        )
+        for variable, marker in cases:
+            with self.subTest(variable=variable):
+                begin = build.index(marker)
+                mkdir = "New-Item -ItemType Directory -Path $" + variable + " -Force -ErrorAction Stop"
+                create = build.index(mkdir, begin)
+                before = build[begin:create]
+                expected = (
+                    "Assert-LabFormattedVolume $windows 'NTFS' 'Windows'",
+                    "Assert-NewLabInitializedDiskIdentity $output $diskNumber",
+                    "Assert-SafeOfflineGuestWriteAncestors $windowsRoot",
+                )
+                positions = [before.index(check) for check in expected]
+                self.assertEqual(positions, sorted(positions))
+                self.assertNotIn("New-Item -ItemType Directory", before)
+                after = build[create:]
+                next_identity = after.index(
+                    "Assert-NewLabInitializedDiskIdentity $output $diskNumber"
+                )
+                self.assertLess(after.index(mkdir), next_identity)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_setup_directory_creation_mock_fails_closed_on_late_substitution(self):
+        import shutil
+        import subprocess
+        source = HOST.read_text(encoding="utf-8")
+        block = source.split("function New-LabVhd(", 1)[1].split(
+            "\nfunction Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        commands = []
+        for variable, end in (
+            ("setupDir", "Assert-LabFreshGuestSetupTarget $windowsRoot 'Windows\\Setup\\Scripts'"),
+            ("panther", "Assert-LabFreshGuestSetupTarget $windowsRoot 'Windows\\Panther'"),
+        ):
+            start = block.index("        $" + variable + " = Join-Path")
+            stop = block.index(end, start)
+            commands.append(block[start:stop])
+        script = r"""
+$ErrorActionPreference='Stop'
+$windowsRoot='G:\'
+$windows=[pscustomobject]@{DiskNumber=42;PartitionNumber=3;DriveLetter='G'}
+$output='D:\Fixture\guest.vhdx'
+$diskNumber=42
+$script:mode='valid'
+$script:mkdir=0
+$script:log=New-Object 'System.Collections.Generic.List[string]'
+function Assert-LabFormattedVolume {
+    param([object]$Partition,[string]$FileSystem,[string]$FileSystemLabel)
+    $script:log.Add('volume')
+    if($script:mode -eq 'driveReassigned'){throw 'Wrong drive-letter owner'}
+}
+function Assert-NewLabInitializedDiskIdentity {
+    param([string]$VhdPath,[int]$DiskNumber)
+    $script:log.Add('disk')
+    if($VhdPath -cne $output -or $DiskNumber -ne 42 -or
+       $script:mode -eq 'diskReused'){throw 'Wrong attached VHDX'}
+}
+function Assert-SafeOfflineGuestWriteAncestors {
+    param([string]$WindowsRoot)
+    $script:log.Add('ancestors')
+    if($script:mode -eq 'junction'){throw 'Unsafe reparse ancestor'}
+}
+function New-Item {
+    [CmdletBinding()]
+    param([string]$ItemType,[string]$Path,[switch]$Force)
+    if($ItemType -cne 'Directory' -or -not $Force){
+        throw 'Unexpected filesystem operation'
+    }
+    $script:log.Add('mkdir')
+    $script:mkdir++
+}
+function Invoke-SetupDirectoryGuards {
+__SETUP_GUARD__
+}
+function Invoke-PantherDirectoryGuards {
+__PANTHER_GUARD__
+}
+foreach($case in @('valid','driveReassigned','diskReused','junction')){
+    foreach($fn in @('Invoke-SetupDirectoryGuards','Invoke-PantherDirectoryGuards')){
+        $script:mode=$case
+        $script:mkdir=0
+        $script:log.Clear()
+        $denied=$false
+        try { & $fn } catch {$denied=$true}
+        if($case -eq 'valid'){
+            if($denied -or $script:mkdir -ne 1 -or
+                ($script:log -join ',') -cne 'volume,disk,ancestors,mkdir,volume,disk'){
+                throw ('Valid directory creation order rejected: '+$fn+':'+($script:log -join ','))
+            }
+        } elseif(-not $denied -or $script:mkdir -ne 0){
+            throw ('Unsafe directory creation accepted: '+$case+'/'+$fn)
+        }
+    }
+}
+'SETUP_DIRECTORY_PRECREATE_GUARDS=PASS'
+"""
+        script = script.replace("__SETUP_GUARD__", commands[0]).replace(
+            "__PANTHER_GUARD__", commands[1]
+        )
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            proc = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(proc.returncode, 0, exe + ": " + proc.stdout + proc.stderr)
+            self.assertIn("SETUP_DIRECTORY_PRECREATE_GUARDS=PASS", proc.stdout)
 
 
 if __name__ == "__main__":

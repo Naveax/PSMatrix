@@ -1050,7 +1050,12 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         # staging, before writing Windows setup material elsewhere.
         Set-RestrictedDirectoryAcl $bootstrap
         $setupDir = Join-Path $windowsRoot 'Windows\Setup\Scripts'
-        New-Item -ItemType Directory -Path $setupDir -Force | Out-Null
+        # Directory creation is already a filesystem write; do not postpone
+        # ownership and reparse checks until after New-Item -Force.
+        Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
+        Assert-NewLabInitializedDiskIdentity $output $diskNumber
+        Assert-SafeOfflineGuestWriteAncestors $windowsRoot
+        New-Item -ItemType Directory -Path $setupDir -Force -ErrorAction Stop | Out-Null
         Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
         Assert-NewLabInitializedDiskIdentity $output $diskNumber
         Assert-LabFreshGuestSetupTarget $windowsRoot 'Windows\Setup\Scripts' 'SetupComplete.cmd'
@@ -1060,7 +1065,10 @@ exit /b %ERRORLEVEL%
 '
         Write-LabFreshSetupText (Join-Path $setupDir 'SetupComplete.cmd') $setupScript ([Text.Encoding]::ASCII)
         $panther = Join-Path $windowsRoot 'Windows\Panther'
-        New-Item -ItemType Directory -Path $panther -Force | Out-Null
+        Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
+        Assert-NewLabInitializedDiskIdentity $output $diskNumber
+        Assert-SafeOfflineGuestWriteAncestors $windowsRoot
+        New-Item -ItemType Directory -Path $panther -Force -ErrorAction Stop | Out-Null
         Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
         Assert-NewLabInitializedDiskIdentity $output $diskNumber
         Assert-LabFreshGuestSetupTarget $windowsRoot 'Windows\Panther' 'Unattend.xml'
