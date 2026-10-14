@@ -12361,5 +12361,102 @@ Assert-LabPlanMachineAndOutputPaths $plan
                 self.assertIn("PLAN_OUTPUT_DANGLING_PREFLIGHT=PASS", result.stdout)
 
 
+    def test_checkpoint_answer_scan_rechecks_absent_sysprep_directory_entry(self):
+        source = HOST.read_text(encoding="utf-8")
+        a = source.index("function Assert-NoGuestSetupAnswerFiles(")
+        b = source.index("\nfunction Assert-RestrictedGuestDirectoryAcl(", a)
+        body = source[a:b]
+        absent = body.index(
+            "if (-not (Test-Path -LiteralPath $searchRoot -PathType Container)) {"
+        )
+        guard = body.index(
+            "Assert-LabOfflineSetupMissingChildIsAbsent "
+            "(Split-Path -Parent $searchRoot) (Split-Path -Leaf $searchRoot)",
+            absent
+        )
+        skip = body.index("continue", guard)
+        self.assertLess(absent, guard)
+        self.assertLess(guard, skip)
+        self.assertIn("Windows\\System32\\Sysprep", body)
+        self.assertIn("Guest setup directory is a reparse point; refusing checkpoint.", body)
+        helper = source.split(
+            "function Assert-LabOfflineSetupMissingChildIsAbsent(", 1
+        )[1].split("\nfunction Assert-LabSafeSetupDirectoryBeforeCreate(", 1)[0]
+        self.assertIn(
+            "Get-ChildItem -LiteralPath $Parent -Force -ErrorAction Stop", helper
+        )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_checkpoint_answer_scan_native_missing_sysprep_and_dangling_junction(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        source = HOST.read_text(encoding="utf-8")
+        a = source.index("function Assert-LabOfflineSetupMissingChildIsAbsent(")
+        b = source.index("\nfunction Assert-LabSafeSetupDirectoryBeforeCreate(", a)
+        helper = source[a:b]
+        a = source.index("function Assert-NoGuestSetupAnswerFiles(")
+        b = source.index("\nfunction Assert-RestrictedGuestDirectoryAcl(", a)
+        scan = source[a:b]
+        with tempfile.TemporaryDirectory(prefix="psmatrix-sysprep-dangling-") as temp:
+            for executable in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(executable):
+                    continue
+                fixture = Path(temp) / executable.replace(".", "-")
+                fixture.mkdir()
+                quoted = "'" + str(fixture).replace("'", "''") + "'"
+                script = helper + scan + r"""
+$ErrorActionPreference='Stop'
+$root=__ROOT__
+$windows=Join-Path $root 'Windows'
+$system=Join-Path $windows 'System32'
+$sysprep=Join-Path $system 'Sysprep'
+$panther=Join-Path $windows 'Panther'
+New-Item -ItemType Directory -Path $panther,$system -Force -ErrorAction Stop | Out-Null
+function Expect-Refusal([string]$Case) {
+    $blocked=$false
+    try { Assert-NoGuestSetupAnswerFiles $root } catch {$blocked=$true}
+    if(-not $blocked){throw ('Unsafe checkpoint setup scan accepted: '+$Case)}
+}
+# Missing Sysprep is normal on minimal test images.
+Assert-NoGuestSetupAnswerFiles $root
+$outside=Join-Path $root 'outside'
+New-Item -ItemType Directory -Path $outside -ErrorAction Stop | Out-Null
+New-Item -ItemType Junction -Path $sysprep -Target $outside -ErrorAction Stop | Out-Null
+[IO.Directory]::Delete($outside)
+Expect-Refusal 'dangling-sysprep'
+[IO.Directory]::Delete($sysprep)
+Assert-NoGuestSetupAnswerFiles $root
+New-Item -ItemType Directory -Path $sysprep -ErrorAction Stop | Out-Null
+$answer=Join-Path $sysprep 'Unattend.xml'
+[IO.File]::WriteAllText($answer,'fixture')
+Expect-Refusal 'sysprep-answer-remains'
+[IO.File]::Delete($answer)
+Assert-NoGuestSetupAnswerFiles $root
+function Invoke-HiddenSysprep {
+    function Test-Path {
+        [CmdletBinding()]
+        param([string]$LiteralPath,[string]$PathType)
+        if($LiteralPath -ceq $sysprep){return $false}
+        Microsoft.PowerShell.Management\Test-Path -LiteralPath $LiteralPath -PathType $PathType
+    }
+    Assert-NoGuestSetupAnswerFiles $root
+}
+$blocked=$false
+try { Invoke-HiddenSysprep } catch {$blocked=$true}
+if(-not $blocked){throw 'Existing Sysprep hidden by Test-Path was accepted'}
+'CHECKPOINT_DANGLING_SYSPREP_GUARD=PASS'
+""".replace("__ROOT__", quoted)
+                result = subprocess.run(
+                    [executable, "-NoProfile", "-NonInteractive", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=50, check=False,
+                )
+                self.assertEqual(result.returncode, 0,
+                    executable+": "+result.stdout+result.stderr)
+                self.assertIn("CHECKPOINT_DANGLING_SYSPREP_GUARD=PASS", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

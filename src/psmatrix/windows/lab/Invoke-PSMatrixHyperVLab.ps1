@@ -1243,7 +1243,17 @@ function Assert-NoGuestSetupAnswerFiles([string]$WindowsRoot) {
     }
     foreach ($relativeRoot in @('Windows\Panther', 'Windows\System32\Sysprep')) {
         $searchRoot = Join-Path $WindowsRoot $relativeRoot
-        if (-not (Test-Path -LiteralPath $searchRoot -PathType Container)) { continue }
+        if (-not (Test-Path -LiteralPath $searchRoot -PathType Container)) {
+            # An absent Sysprep directory is fine, but a dangling junction
+            # may appear absent even while its entry survives in System32.
+            # Refuse checkpoint if that entry exists, instead of skipping
+            # the offline answer-file scan.
+            Assert-LabOfflineSetupMissingChildIsAbsent (Split-Path -Parent $searchRoot) (Split-Path -Leaf $searchRoot)
+            if ($relativeRoot -ceq 'Windows\Panther') {
+                throw 'Guest Windows Panther setup directory is missing; refusing checkpoint.'
+            }
+            continue
+        }
         if (((Get-Item -LiteralPath $searchRoot -Force -ErrorAction Stop).Attributes -band
                 [IO.FileAttributes]::ReparsePoint) -ne 0) {
             throw 'Guest setup directory is a reparse point; refusing checkpoint.'
