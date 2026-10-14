@@ -1039,14 +1039,33 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         # otherwise they could temporarily inherit broad guest permissions.
         Set-RestrictedDirectoryAcl $bootstrap
         Assert-Artifact $BootstrapArtifact 'Guest bootstrap script'
+        # A copied bootstrap payload can be large; the next stage must not
+        # assume the VHDX disk number, drive letter or directory ancestry
+        # remained unchanged after the previous write. This also protects
+        # the credential and signing ZIPs and final bootstrap configuration.
+        Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
+        Assert-NewLabInitializedDiskIdentity $output $diskNumber
+        Assert-SafeOfflineGuestWriteAncestors $windowsRoot
         Copy-LabFreshStagedArtifact $GuestBootstrap (Join-Path $bootstrap 'GuestBootstrap.ps1')
         Assert-StagedLabArtifact $BootstrapArtifact (Join-Path $bootstrap 'GuestBootstrap.ps1') 'Staged guest bootstrap script'
+        Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
+        Assert-NewLabInitializedDiskIdentity $output $diskNumber
+        Assert-SafeOfflineGuestWriteAncestors $windowsRoot
         Copy-LabFreshStagedArtifact ([string]$Image.worker_package.path) (Join-Path $bootstrap 'worker-package.zip')
         Assert-StagedLabArtifact $Image.worker_package (Join-Path $bootstrap 'worker-package.zip') 'Staged worker package'
+        Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
+        Assert-NewLabInitializedDiskIdentity $output $diskNumber
+        Assert-SafeOfflineGuestWriteAncestors $windowsRoot
         Copy-LabFreshStagedArtifact ([string]$Image.python_installer.path) (Join-Path $bootstrap 'python-installer.exe')
         Assert-StagedLabArtifact $Image.python_installer (Join-Path $bootstrap 'python-installer.exe') 'Staged Python installer'
+        Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
+        Assert-NewLabInitializedDiskIdentity $output $diskNumber
+        Assert-SafeOfflineGuestWriteAncestors $windowsRoot
         Copy-LabFreshStagedArtifact ([string]$Image.credential_bundle.path) (Join-Path $bootstrap 'credential-bundle.zip')
         Assert-StagedLabArtifact $Image.credential_bundle (Join-Path $bootstrap 'credential-bundle.zip') 'Staged credential bundle'
+        Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
+        Assert-NewLabInitializedDiskIdentity $output $diskNumber
+        Assert-SafeOfflineGuestWriteAncestors $windowsRoot
         Copy-LabFreshStagedArtifact ([string]$Image.signing_bundle.path) (Join-Path $bootstrap 'signing-bundle.zip')
         Assert-StagedLabArtifact $Image.signing_bundle (Join-Path $bootstrap 'signing-bundle.zip') 'Staged signing bundle'
         $bootstrapConfigJson = [ordered]@{
@@ -1079,6 +1098,9 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         } | ConvertTo-Json -Depth 6
         # Refuse a raced or preexisting configuration leaf, like other
         # sensitive bootstrap files, instead of silently truncating it.
+        Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
+        Assert-NewLabInitializedDiskIdentity $output $diskNumber
+        Assert-SafeOfflineGuestWriteAncestors $windowsRoot
         Write-LabFreshSetupText (Join-Path $bootstrap 'bootstrap-config.json') $bootstrapConfigJson ([Text.UTF8Encoding]::new($true))
         # Reassert exact ACLs on the newly created files immediately after
         # staging, before writing Windows setup material elsewhere.

@@ -5628,6 +5628,26 @@ $script:aclCalls = 0
 $script:copyCalls = 0
 $script:verifyCalls = 0
 $script:configCalls = 0
+$script:boundaryChecks=0
+$output='D:\Fixture\guest.vhdx'
+$diskNumber=42
+$windows=[pscustomobject]@{DiskNumber=42;PartitionNumber=3;DriveLetter='G'}
+function Assert-LabFormattedVolume {
+    param([object]$Partition,[string]$FileSystem,[string]$FileSystemLabel)
+    if($FileSystem -cne 'NTFS' -or $FileSystemLabel -cne 'Windows' -or
+       $Partition.DiskNumber -ne 42){throw 'Wrong staging volume guard'}
+    $script:boundaryChecks++
+}
+function Assert-NewLabInitializedDiskIdentity {
+    param([string]$VhdPath,[int]$DiskNumber)
+    if($VhdPath -cne $output -or $DiskNumber -ne 42){throw 'Wrong staging VHD guard'}
+    $script:boundaryChecks++
+}
+function Assert-SafeOfflineGuestWriteAncestors {
+    param([string]$WindowsRoot)
+    if($WindowsRoot -cne $windowsRoot){throw 'Wrong staging directory guard'}
+    $script:boundaryChecks++
+}
 function Assert-Artifact {
     param($Artifact,[string]$Label)
     if ($script:copyCalls -ne 0 -or $script:aclCalls -ne 1) {
@@ -5666,7 +5686,7 @@ function Set-RestrictedDirectoryAcl([string]$Path) {
     }
 }
 Invoke-Expression $section
-if ($script:aclCalls -ne 2 -or $script:copyCalls -ne 5 -or $script:verifyCalls -ne 5) {
+if ($script:aclCalls -ne 2 -or $script:copyCalls -ne 5 -or $script:verifyCalls -ne 5 -or $script:boundaryChecks -ne 18) {
     throw 'Incorrect staging order.'
 }
 try {
@@ -5677,7 +5697,7 @@ try {
         throw
     }
 }
-if ($script:aclCalls -ne 2 -or $script:copyCalls -ne 5 -or $script:verifyCalls -ne 5) {
+if ($script:aclCalls -ne 2 -or $script:copyCalls -ne 5 -or $script:verifyCalls -ne 5 -or $script:boundaryChecks -ne 18) {
     throw 'Existing target changed staging operations.'
 }
 exit 0
@@ -8655,6 +8675,23 @@ exit 0
 $ErrorActionPreference='Stop'
 $bootstrap=__BOOTSTRAP__
 $BootstrapNonce=('b' * 64)
+$output='D:\Fixture\guest.vhdx'
+$diskNumber=42
+$windowsRoot='G:\'
+$windows=[pscustomobject]@{DiskNumber=42;PartitionNumber=3;DriveLetter='G'}
+function Assert-LabFormattedVolume {
+    param([object]$Partition,[string]$FileSystem,[string]$FileSystemLabel)
+    if($Partition.DiskNumber -ne 42 -or $FileSystem -cne 'NTFS' -or
+       $FileSystemLabel -cne 'Windows'){throw 'Wrong config volume'}
+}
+function Assert-NewLabInitializedDiskIdentity {
+    param([string]$VhdPath,[int]$DiskNumber)
+    if($VhdPath -cne $output -or $DiskNumber -ne 42){throw 'Wrong config VHD'}
+}
+function Assert-SafeOfflineGuestWriteAncestors {
+    param([string]$WindowsRoot)
+    if($WindowsRoot -cne $windowsRoot){throw 'Wrong config ancestors'}
+}
 $Image=[pscustomobject]@{
     worker_id='synthetic-worker'
     expected_version='5.1'
@@ -11283,6 +11320,134 @@ if([IO.File]::ReadAllText($filename) -cne '@echo off'){
                     proc.returncode, 0, exe + ": " + proc.stdout + proc.stderr
                 )
                 self.assertIn("PANTHER_POST_SETUP_TARGETED_PREFLIGHT=PASS", proc.stdout)
+
+
+    def test_all_bootstrap_stage_writes_recheck_guest_disk_volume_and_ancestors(self):
+        host = HOST.read_text(encoding="utf-8")
+        build = host.split("function New-LabVhd(", 1)[1].split(
+            "\nfunction Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        expected = (
+            "Copy-LabFreshStagedArtifact $GuestBootstrap (Join-Path $bootstrap 'GuestBootstrap.ps1')",
+            "Copy-LabFreshStagedArtifact ([string]$Image.worker_package.path) (Join-Path $bootstrap 'worker-package.zip')",
+            "Copy-LabFreshStagedArtifact ([string]$Image.python_installer.path) (Join-Path $bootstrap 'python-installer.exe')",
+            "Copy-LabFreshStagedArtifact ([string]$Image.credential_bundle.path) (Join-Path $bootstrap 'credential-bundle.zip')",
+            "Copy-LabFreshStagedArtifact ([string]$Image.signing_bundle.path) (Join-Path $bootstrap 'signing-bundle.zip')",
+            "Write-LabFreshSetupText (Join-Path $bootstrap 'bootstrap-config.json') $bootstrapConfigJson ([Text.UTF8Encoding]::new($true))",
+        )
+        last = -1
+        for marker in expected:
+            with self.subTest(write=marker):
+                self.assertEqual(build.count(marker), 1)
+                offset = build.index(marker)
+                self.assertGreater(offset, last)
+                preceding = build[:offset].splitlines()[-4:-1]
+                self.assertEqual(preceding, [
+                    "        Assert-LabFormattedVolume $windows 'NTFS' 'Windows'",
+                    "        Assert-NewLabInitializedDiskIdentity $output $diskNumber",
+                    "        Assert-SafeOfflineGuestWriteAncestors $windowsRoot",
+                ])
+                last = offset
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_bootstrap_stage_rejects_remapped_disk_or_junction_before_next_write(self):
+        import shutil
+        import subprocess
+
+        host = HOST.read_text(encoding="utf-8")
+        build = host.split("function New-LabVhd(", 1)[1].split(
+            "\nfunction Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        stage = []
+        for line in build.splitlines():
+            if ("        Copy-LabFreshStagedArtifact " in line or
+                    "        Write-LabFreshSetupText (Join-Path $bootstrap 'bootstrap-config.json')" in line):
+                stage.extend((
+                    "        Assert-LabFormattedVolume $windows 'NTFS' 'Windows'",
+                    "        Assert-NewLabInitializedDiskIdentity $output $diskNumber",
+                    "        Assert-SafeOfflineGuestWriteAncestors $windowsRoot",
+                    line,
+                ))
+        self.assertEqual(len(stage), 24)
+        fixture = r"""
+$ErrorActionPreference='Stop'
+$script:mode='safe'
+$script:writes=0
+$script:mutateAt=999
+$script:failureMode='disk'
+$windows=[pscustomobject]@{DiskNumber=42;PartitionNumber=3;DriveLetter='G'}
+$windowsRoot='G:\'
+$output='D:\Fixture\guest.vhdx'
+$diskNumber=42
+$bootstrap='G:\ProgramData\PSMatrix\Bootstrap'
+$GuestBootstrap='D:\Fixture\bootstrap.ps1'
+$Image=[pscustomobject]@{
+    worker_package=[pscustomobject]@{path='D:\Fixture\worker.zip'}
+    python_installer=[pscustomobject]@{path='D:\Fixture\python.exe'}
+    credential_bundle=[pscustomobject]@{path='D:\Fixture\credentials.zip'}
+    signing_bundle=[pscustomobject]@{path='D:\Fixture\signing.zip'}
+}
+$bootstrapConfigJson='{"schema":1}'
+function Assert-LabFormattedVolume {
+    param([object]$Partition,[string]$FileSystem,[string]$FileSystemLabel)
+    if($script:mode -eq 'drive'){throw 'Disk drive letter was remapped'}
+}
+function Assert-NewLabInitializedDiskIdentity {
+    param([string]$VhdPath,[int]$DiskNumber)
+    if($VhdPath -cne $output -or $DiskNumber -ne 42 -or
+       $script:mode -eq 'disk'){throw 'VHDX attachment changed'}
+}
+function Assert-SafeOfflineGuestWriteAncestors {
+    param([string]$WindowsRoot)
+    if($script:mode -eq 'junction'){throw 'Unsafe ancestor'}
+}
+function Register-FakeWrite {
+    $script:writes++
+    if($script:writes -ge $script:mutateAt){
+        $script:mode=$script:failureMode
+    }
+}
+function Copy-LabFreshStagedArtifact {
+    param([string]$Source,[string]$Destination)
+    Register-FakeWrite
+}
+function Write-LabFreshSetupText {
+    param([string]$Path,[string]$Text,[Text.Encoding]$Encoding)
+    Register-FakeWrite
+}
+function Invoke-StagedWrites {
+__EXTRACTED_WRITES__
+}
+foreach($failure in @('disk','drive','junction')){
+    foreach($changedAt in @(1,2,3,4,5,999)){
+        $script:mode='safe'
+        $script:writes=0
+        $script:failureMode=$failure
+        $script:mutateAt=$changedAt
+        $blocked=$false
+        try{Invoke-StagedWrites}catch{$blocked=$true}
+        if($changedAt -eq 999){
+            if($blocked -or $script:writes -ne 6){
+                throw ('Valid staging did not finish: '+$failure)
+            }
+        }
+        elseif(-not $blocked -or $script:writes -ne $changedAt){
+            throw ('Changed target received an unsafe next write: '+$failure+'/'+$changedAt)
+        }
+    }
+}
+'BOOTSTRAP_STAGE_RECHECK_MOCK=PASS'
+""".replace("__EXTRACTED_WRITES__", "\n".join(stage))
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            proc = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", fixture],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(proc.returncode, 0, exe + ": " + proc.stdout + proc.stderr)
+            self.assertIn("BOOTSTRAP_STAGE_RECHECK_MOCK=PASS", proc.stdout)
 
 
 if __name__ == "__main__":
