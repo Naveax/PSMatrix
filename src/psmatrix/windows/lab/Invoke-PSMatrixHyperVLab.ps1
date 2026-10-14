@@ -968,6 +968,9 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         if ($recheckedIsoRoot -cne $isoRoot) {
             throw 'Windows source ISO drive letter changed before DISM image application.'
         }
+        # Disk number ownership is rechecked after the potentially lengthy
+        # ISO provider queries and immediately before applying the image.
+        Assert-NewLabInitializedDiskIdentity $output $diskNumber
         Invoke-HostDism @('/English','/Apply-Image',('/ImageFile:' + $imageFile),('/Index:' + [int]$Image.edition_index),('/ApplyDir:' + $windowsRoot))
         if ($Image.wmf_package) {
             # Image application can take time; confirm the offline Windows
@@ -976,16 +979,19 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
             # Applying the base image may take minutes. Revalidate the
             # source package immediately before privileged DISM reads it.
             Assert-Artifact $Image.wmf_package 'WMF package'
+            Assert-NewLabInitializedDiskIdentity $output $diskNumber
             Invoke-HostDism @('/English',('/Image:' + $windowsRoot),'/Add-Package',('/PackagePath:' + [string]$Image.wmf_package.path),'/NoRestart')
         }
         # DISM may take time; do not let a reassigned EFI/Windows letter
         # become a BCDBoot target without a fresh ownership check.
         Assert-LabFormattedVolume $efi 'FAT32' 'SYSTEM'
         Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
+        Assert-NewLabInitializedDiskIdentity $output $diskNumber
         Invoke-HostBcdBoot $windowsRoot $efiRoot
         # BCDBoot may also take time. Refuse to stage bootstrap files if the
         # Windows drive letter no longer resolves to this guest partition.
         Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
+        Assert-NewLabInitializedDiskIdentity $output $diskNumber
         Assert-SafeOfflineGuestWriteAncestors $windowsRoot
         $bootstrap = Join-Path $windowsRoot 'ProgramData\PSMatrix\Bootstrap'
         # A golden image must not provide a preexisting staging tree, which
@@ -1046,6 +1052,7 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         $setupDir = Join-Path $windowsRoot 'Windows\Setup\Scripts'
         New-Item -ItemType Directory -Path $setupDir -Force | Out-Null
         Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
+        Assert-NewLabInitializedDiskIdentity $output $diskNumber
         Assert-LabFreshGuestSetupTarget $windowsRoot 'Windows\Setup\Scripts' 'SetupComplete.cmd'
         $setupScript = '@echo off
 powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\ProgramData\PSMatrix\Bootstrap\GuestBootstrap.ps1
@@ -1055,6 +1062,7 @@ exit /b %ERRORLEVEL%
         $panther = Join-Path $windowsRoot 'Windows\Panther'
         New-Item -ItemType Directory -Path $panther -Force | Out-Null
         Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
+        Assert-NewLabInitializedDiskIdentity $output $diskNumber
         Assert-LabFreshGuestSetupTarget $windowsRoot 'Windows\Panther' 'Unattend.xml'
         $secretName = [string]$Image.admin_password_env
         $password = [Environment]::GetEnvironmentVariable($secretName,'Process')

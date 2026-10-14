@@ -1224,6 +1224,12 @@ $source=Join-Path __ROOT__ 'wmf.msu'
 [IO.File]::WriteAllBytes($source,[byte[]](1,2,3,4,5,6))
 $script:dismCalls=0
 $script:volumeChecks=0
+$output='D:\Fixture\guest.vhdx'
+$diskNumber=42
+function Assert-NewLabInitializedDiskIdentity {
+    param([string]$VhdPath,[int]$DiskNumber)
+    if($VhdPath -cne $output -or $DiskNumber -ne 42){throw 'Wrong WMF VHDX.'}
+}
 $Image=[pscustomobject]@{
     wmf_package=[pscustomobject]@{
         path=$source
@@ -1333,6 +1339,12 @@ $script:realOwner=42
 $script:volumeChecks=0
 $script:packageCalls=0
 $script:stagingGuardCalls=0
+$output='D:\Fixture\guest.vhdx'
+$diskNumber=42
+function Assert-NewLabInitializedDiskIdentity {
+    param([string]$VhdPath,[int]$DiskNumber)
+    if($VhdPath -cne $output -or $DiskNumber -ne 42){throw 'Wrong deployment disk guard target'}
+}
 function Get-Volume {
     [CmdletBinding()]
     param([object]$Partition)
@@ -1447,6 +1459,12 @@ $script:currentPath='D:\Fixture\install.iso'
 $script:isAttached=$true
 $script:queryFails=$false
 $script:volumeCopies=1
+$output='D:\Fixture\guest.vhdx'
+$diskNumber=42
+function Assert-NewLabInitializedDiskIdentity {
+    param([string]$VhdPath,[int]$DiskNumber)
+    if($VhdPath -cne $output -or $DiskNumber -ne 42){throw 'Wrong deployment disk guard target'}
+}
 $isoPath='D:\Fixture\install.iso'
 $isoRoot='F:\'
 $iso=[pscustomobject]@{ImagePath=$isoPath;Attached=$true;Origin='mounted'}
@@ -1545,6 +1563,7 @@ foreach($case in @(
         before_bcdboot = (
             "        Assert-LabFormattedVolume $efi 'FAT32' 'SYSTEM'\n"
             "        Assert-LabFormattedVolume $windows 'NTFS' 'Windows'\n"
+            "        Assert-NewLabInitializedDiskIdentity $output $diskNumber\n"
             "        Invoke-HostBcdBoot $windowsRoot $efiRoot"
         )
         self.assertIn(before_dism, build)
@@ -1566,6 +1585,14 @@ $script:substituteAfterDism=$false
 $script:dismCalls=0
 $script:bootCalls=0
 $script:volumeChecks=0
+$output='D:\Fixture\guest.vhdx'
+$diskNumber=42
+function Assert-NewLabInitializedDiskIdentity {
+    param([string]$VhdPath,[int]$DiskNumber)
+    if($VhdPath -cne $output -or $DiskNumber -ne 42){
+        throw 'Unexpected VHDX boundary check target.'
+    }
+}
 $isoRoot='X:\'
 $isoPath='D:\Fixture\source.iso'
 $iso=[pscustomobject]@{ImagePath=$isoPath;Attached=$true}
@@ -10825,7 +10852,7 @@ if($script:serviceCalls -ne 0){throw 'Empty VM GUID reached provider'}
             "$windows = New-Partition -DiskNumber $diskNumber -UseMaximumSize",
             "Format-Volume -Partition $windows -FileSystem NTFS",
         )
-        self.assertEqual(build.count(guard), len(mutations))
+        self.assertGreaterEqual(build.count(guard), len(mutations))
         previous_mutation_index = -1
         for mutation in mutations:
             with self.subTest(mutation=mutation):
@@ -10921,6 +10948,108 @@ foreach($replacementAt in @(1,2,3,4,5,999)){
                 proc.returncode, 0, exe + ": " + proc.stdout + proc.stderr
             )
             self.assertIn("PARTITION_DISK_REUSE_MOCK=PASS", proc.stdout)
+
+
+    def test_offline_deployment_privileged_writes_recheck_exact_vhd_identity(self):
+        source = HOST.read_text(encoding="utf-8")
+        build = source.split("function New-LabVhd(", 1)[1].split(
+            "\nfunction Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        guard = "Assert-NewLabInitializedDiskIdentity $output $diskNumber"
+        sites = (
+            "Invoke-HostDism @('/English','/Apply-Image'",
+            "Invoke-HostDism @('/English',('/Image:' + $windowsRoot)",
+            "Invoke-HostBcdBoot $windowsRoot $efiRoot",
+            "Assert-SafeOfflineGuestWriteAncestors $windowsRoot",
+            "Assert-LabFreshGuestSetupTarget $windowsRoot 'Windows\\Setup\\Scripts' 'SetupComplete.cmd'",
+            "Assert-LabFreshGuestSetupTarget $windowsRoot 'Windows\\Panther' 'Unattend.xml'",
+        )
+        offsets = [build.index(site) for site in sites]
+        self.assertEqual(offsets, sorted(offsets))
+        # The earlier five partition/format operations also retain their guards.
+        self.assertEqual(build.count(guard), 11)
+        prior = build.index("Format-Volume -Partition $windows -FileSystem NTFS")
+        for site, offset in zip(sites, offsets):
+            with self.subTest(site=site):
+                fresh = build.rfind(guard, 0, offset)
+                self.assertGreater(fresh, prior)
+                self.assertLess(fresh, offset)
+                prior = offset
+        self.assertLess(
+            build.index("Assert-LabFormattedVolume $efi 'FAT32' 'SYSTEM'\n"
+                        "        Assert-LabFormattedVolume $windows 'NTFS' 'Windows'"),
+            offsets[0],
+        )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_privileged_deployment_guard_blocks_rebound_vhd_before_each_write(self):
+        import shutil
+        import subprocess
+
+        source = HOST.read_text(encoding="utf-8")
+        begin = source.index("function Assert-NewLabInitializedDiskIdentity(")
+        end = source.index("\nfunction Assert-CheckpointVhdDiskIdentity(", begin)
+        helper = source[begin:end]
+        fixture = helper + r"""
+$ErrorActionPreference='Stop'
+$script:expected='D:\Fixture\guest.vhdx'
+$script:replacement='D:\Fixture\other.vhdx'
+$script:query=0
+$script:writes=0
+$script:substituteAt=999
+function Get-VHD {
+    [CmdletBinding()]
+    param([uint32]$DiskNumber)
+    $script:query++
+    $path=$script:expected
+    if($script:query -ge $script:substituteAt){$path=$script:replacement}
+    [pscustomobject]@{Path=$path;Attached=$true}
+}
+function Get-Disk {
+    [CmdletBinding()]
+    param([int]$Number)
+    [pscustomobject]@{
+        Number=$Number;IsBoot=$false;IsSystem=$false;PartitionStyle='GPT'
+    }
+}
+foreach($badAt in @(1,2,3,4,5,6,999)){
+    $script:query=0;$script:writes=0;$script:substituteAt=$badAt
+    $failed=$false
+    foreach($write in 1..6){
+        try {
+            Assert-NewLabInitializedDiskIdentity $script:expected 42
+            $script:writes++
+        } catch {
+            if($_.Exception.Message -notmatch 'Initialized lab disk no longer resolves'){
+                throw ('Unexpected failure: '+$_.Exception.Message)
+            }
+            $failed=$true
+            break
+        }
+    }
+    if($badAt -eq 999){
+        if($failed -or $script:writes -ne 6 -or $script:query -ne 6){
+            throw 'Correct VHDX blocked'
+        }
+    } elseif(-not $failed -or $script:writes -ne ($badAt-1) -or
+        $script:query -ne $badAt){
+        throw ('Wrong VHDX reached privileged write boundary: '+$badAt)
+    }
+}
+'OFFLINE_DEPLOYMENT_GUARD_MOCK=PASS'
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            proc = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", fixture],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(
+                proc.returncode, 0, exe + ": " + proc.stdout + proc.stderr
+            )
+            self.assertIn("OFFLINE_DEPLOYMENT_GUARD_MOCK=PASS", proc.stdout)
 
 
 if __name__ == "__main__":
