@@ -2784,7 +2784,7 @@ if (-not $rejected) { throw 'Failed Storage volume query accepted.' }
         self.assertIn("Guest setup answer file remains on the VHDX; refusing checkpoint.", text)
         self.assertIn("Assert-NoGuestSetupAnswerFiles -WindowsRoot $root", text)
         self.assertLess(text.index("Assert-NoGuestSetupAnswerFiles -WindowsRoot $root"),
-                        text.index("    Checkpoint-VM -Name $vmName"))
+                        text.index("    Checkpoint-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)"))
         self.assertIn("Dismount-VHD -Path $VhdPath", text)
 
     def test_host_build_cleanup_rejects_attached_vhd_or_failed_iso_eject(self):
@@ -2823,7 +2823,7 @@ if (-not $rejected) { throw 'Failed Storage volume query accepted.' }
         )
         self.assertLess(
             host.index("Close-LabBuildMedia -VhdPath $output"),
-            host.index("    Checkpoint-VM -Name $vmName"),
+            host.index("    Checkpoint-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)"),
         )
         self.assertNotIn("Dismount-VHD -Path $output -ErrorAction SilentlyContinue", build)
         self.assertNotIn("Dismount-DiskImage -ImagePath ([string]$Image.source_iso.path) -ErrorAction SilentlyContinue", build)
@@ -2888,7 +2888,7 @@ if (-not $rejected) { throw 'Failed Storage volume query accepted.' }
         )
         self.assertLess(
             host.index("Close-LabBuildMedia -VhdPath $output"),
-            host.index("    Checkpoint-VM -Name $vmName"),
+            host.index("    Checkpoint-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)"),
         )
 
     def test_host_confirms_iso_dismount_state_before_returning_vhd(self):
@@ -2977,7 +2977,7 @@ if (-not $rejected) { throw 'Failed Storage volume query accepted.' }
         )
         self.assertLess(
             loop.index("Guest runtime identity mismatch for "),
-            loop.index("Checkpoint-VM -Name $vmName"),
+            loop.index("Checkpoint-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)"),
         )
 
     def test_vhdx_report_hash_is_taken_offline_before_checkpoint_and_restart(self):
@@ -2986,8 +2986,8 @@ if (-not $rejected) { throw 'Failed Storage volume query accepted.' }
         for fragment in (
             "Read-BootstrapResult $vhd $bootstrapNonce",
             "$verifiedVhdxSha256 = Get-Sha256 $vhd",
-            "Checkpoint-VM -Name $vmName",
-            "Start-VM -Name $vmName | Out-Null",
+            "Checkpoint-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)",
+            "Start-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id) -ErrorAction Stop | Out-Null",
             "vhdx_sha256 = $verifiedVhdxSha256",
         ):
             self.assertIn(fragment, loop)
@@ -3001,14 +3001,14 @@ if (-not $rejected) { throw 'Failed Storage volume query accepted.' }
         )
         self.assertLess(
             loop.index("$verifiedVhdxSha256 = Get-Sha256 $vhd"),
-            loop.index("Checkpoint-VM -Name $vmName"),
+            loop.index("Checkpoint-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)"),
         )
         self.assertLess(
-            loop.index("Checkpoint-VM -Name $vmName"),
-            loop.rindex("Start-VM -Name $vmName | Out-Null"),
+            loop.index("Checkpoint-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)"),
+            loop.rindex("Start-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id) -ErrorAction Stop | Out-Null"),
         )
         self.assertLess(
-            loop.rindex("Start-VM -Name $vmName | Out-Null"),
+            loop.rindex("Start-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id) -ErrorAction Stop | Out-Null"),
             loop.index("vhdx_sha256 = $verifiedVhdxSha256"),
         )
         self.assertNotIn("vhdx_sha256 = Get-Sha256 $vhd", host)
@@ -3033,7 +3033,7 @@ if (-not $rejected) { throw 'Failed Storage volume query accepted.' }
         )
         self.assertLess(
             host.index("Read-BootstrapResult $vhd $bootstrapNonce"),
-            host.index("    Checkpoint-VM -Name $vmName"),
+            host.index("    Checkpoint-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)"),
         )
 
     def test_offline_guest_mount_partial_failure_is_detached(self):
@@ -3067,7 +3067,7 @@ if (-not $rejected) { throw 'Failed Storage volume query accepted.' }
         )
         self.assertLess(
             host.index("Read-BootstrapResult $vhd $bootstrapNonce"),
-            host.index("    Checkpoint-VM -Name $vmName"),
+            host.index("    Checkpoint-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)"),
         )
 
     def test_host_rejects_unsafe_bootstrap_result_file_and_schema(self):
@@ -3199,7 +3199,7 @@ Test-HostNonce $hostResult $valid
         )
         self.assertLess(
             host.index("$result.bootstrap_nonce -cne $ExpectedBootstrapNonce"),
-            host.index("    Checkpoint-VM -Name $vmName"),
+            host.index("    Checkpoint-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)"),
         )
         self.assertLess(
             host.index("$bootstrapNonce = New-LabBootstrapNonce"),
@@ -3268,7 +3268,7 @@ Test-HostNonce $hostResult $valid
         )
         self.assertLess(
             host.index("Read-BootstrapResult $vhd"),
-            host.index("    Checkpoint-VM -Name $vmName"),
+            host.index("    Checkpoint-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)"),
         )
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
@@ -3363,7 +3363,7 @@ Test-ReportedWorkerDigest $result
         self.assertIn("$bootstrap.computer_name -ine [string]$image.computer_name", host)
         self.assertLess(
             host.index("Guest bootstrap worker/computer identity mismatch"),
-            host.index("    Checkpoint-VM -Name $vmName"),
+            host.index("    Checkpoint-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)"),
         )
 
     def test_worker_config_is_acl_locked_before_sensitive_write_and_rechecked(self):
@@ -7595,7 +7595,7 @@ exit 0
         )
         self.assertLess(
             host.index("Assert-LabPlanCheckpointNames $planValue.images"),
-            host.index("Checkpoint-VM -Name $vmName"),
+            host.index("Checkpoint-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)"),
         )
 
     @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
@@ -9576,7 +9576,7 @@ exit 0
         )
         self.assertLess(
             host.index("Assert-RestrictedGuestDirectoryAcl -Path"),
-            host.index("    Checkpoint-VM -Name $vmName"),
+            host.index("    Checkpoint-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)"),
         )
 
     def test_sensitive_ntfs_owner_is_restricted_before_guest_checkpoint(self):
@@ -9606,7 +9606,7 @@ exit 0
         )
         self.assertLess(
             host.index("Assert-RestrictedGuestDirectoryAcl -Path"),
-            host.index("    Checkpoint-VM -Name $vmName"),
+            host.index("    Checkpoint-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)"),
         )
 
     def test_bootstrap_acl_owner_is_set_on_host_and_relocked_by_guest(self):
@@ -9626,7 +9626,7 @@ exit 0
             )
         self.assertLess(
             host.index("Set-RestrictedDirectoryAcl $bootstrap"),
-            host.index("    Checkpoint-VM -Name $vmName"),
+            host.index("    Checkpoint-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)"),
         )
         self.assertLess(
             guest.index("Remove-GuestBootstrapStagingSecrets -Root $bootstrapRoot"),
@@ -9656,7 +9656,7 @@ exit 0
         ):
             self.assertIn(relative, text)
         verify = text.index("Assert-RestrictedGuestDirectoryAcl -Path")
-        checkpoint = text.index("    Checkpoint-VM -Name $vmName")
+        checkpoint = text.index("    Checkpoint-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)")
         self.assertLess(verify, checkpoint)
 
     def test_sensitive_directories_use_localization_independent_restricted_acls(self):
@@ -9711,7 +9711,7 @@ exit 0
         self.assertIn("function Assert-NoGuestBootstrapStagingSecrets", text)
         self.assertIn("Guest bootstrap credential/signing staging archive remains; refusing checkpoint.", text)
         self.assertLess(text.index("Assert-NoGuestBootstrapStagingSecrets -WindowsRoot $root"),
-                        text.index("    Checkpoint-VM -Name $vmName"))
+                        text.index("    Checkpoint-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)"))
 
     def test_missing_setup_root_is_fail_closed(self):
         guest = GUEST.read_text(encoding="utf-8")
@@ -9984,9 +9984,9 @@ foreach ($mode in @('twoStates','wrongName','arrayState','noVm','duplicateAfterS
         src = HOST.read_text(encoding="utf-8")
         self.assertIn("function Assert-LabCheckpointCreated(", src)
         self.assertIn("function Assert-LabGuestRunningAfterRestart(", src)
-        a = src.index("    Checkpoint-VM -Name $vmName")
+        a = src.index("    Checkpoint-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)")
         b = src.index("    Assert-LabCheckpointCreated $createdSnapshots $vmName $createdVm[0].Id", a)
-        c = src.index("    Start-VM -Name $vmName | Out-Null", b)
+        c = src.index("    Start-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id) -ErrorAction Stop | Out-Null", b)
         d = src.index("    Assert-LabGuestRunningAfterRestart $vmName $createdVm[0].Id", c)
         e = src.index("        status = 'PASS'", d)
         self.assertLess(a, b)
@@ -10233,7 +10233,7 @@ foreach($mode in @('ok','creationMissing','creationWrongName','creationWrongId',
         b = guest_loop.index("Set-VMMemory -VMName $vmName")
         c = guest_loop.index("Set-VM -Name $vmName")
         d = guest_loop.index("Assert-LabVmConfigurationBeforeFirstBoot $vmName")
-        e = guest_loop.index("Start-VM -Name $vmName")
+        e = guest_loop.index("Start-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id) -ErrorAction Stop")
         self.assertLess(a, b)
         self.assertLess(b, c)
         self.assertLess(c, d)
@@ -10346,7 +10346,7 @@ foreach($mode in @('valid')+$bad) {
         second = loop.index(check, reader)
         hash_position = loop.index("$verifiedVhdxSha256 = Get-Sha256 $vhd")
         third = loop.index(check, hash_position)
-        checkpoint = loop.index("Checkpoint-VM -Name $vmName -SnapshotName")
+        checkpoint = loop.index("Checkpoint-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id) -SnapshotName")
         self.assertLess(before_reader, first)
         self.assertLess(first, reader)
         self.assertLess(reader, second)
@@ -10458,9 +10458,9 @@ foreach ($mode in @('valid') + $bad) {
         src = HOST.read_text(encoding="utf-8")
         loop = src.split("foreach ($image in $planValue.images) {", 1)[1]
         create = loop.index("$createdSnapshots = @(")
-        command = loop.index("Checkpoint-VM -Name $vmName", create)
+        command = loop.index("Checkpoint-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)", create)
         verify = loop.index("Assert-LabCheckpointCreated $createdSnapshots $vmName $createdVm[0].Id", command)
-        reboot = loop.index("Start-VM -Name $vmName", verify)
+        reboot = loop.index("Start-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id) -ErrorAction Stop", verify)
         self.assertIn("-Passthru -ErrorAction Stop", loop[command:verify])
         self.assertLess(create, command)
         self.assertLess(command, verify)
@@ -10568,6 +10568,100 @@ if ($script:stops -ne 0) { throw 'Empty identity allowed shutdown.' }
                 result.returncode, 0, exe + ": " + result.stdout + result.stderr
             )
             self.assertIn("FIRST_BOOT_IDENTITY_MOCK=PASS", result.stdout)
+
+
+    def test_vm_mutations_are_bound_to_created_vm_identity_and_off_state(self):
+        source = HOST.read_text(encoding="utf-8")
+        helper = source.split("function Get-LabVerifiedVmForMutation(", 1)[1].split(
+            "\nfunction Wait-FirstBoot(", 1
+        )[0]
+        self.assertIn("$vms[0].Id -ne $ExpectedVmId", helper)
+        self.assertIn("[string]$vms[0].State -cne 'Off'", helper)
+        loop = source.split("foreach ($image in $planValue.images) {", 1)[1]
+        start = "Start-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id) -ErrorAction Stop"
+        checkpoint = "Checkpoint-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id)"
+        self.assertEqual(loop.count(start), 2)
+        self.assertEqual(loop.count(checkpoint), 1)
+        self.assertNotIn("Start-VM -Name $vmName", loop)
+        self.assertNotIn("Checkpoint-VM -Name $vmName", loop)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_vm_mutation_identity_mock_rejects_name_reuse_and_malformed_inventory(self):
+        import shutil
+        import subprocess
+        raw = HOST.read_text(encoding="utf-8")
+        helper = "function Get-LabVerifiedVmForMutation(" + raw.split(
+            "function Get-LabVerifiedVmForMutation(", 1
+        )[1].split("\nfunction Wait-FirstBoot(", 1)[0]
+        fixture = helper + r"""
+$ErrorActionPreference = 'Stop'
+$script:id=[guid]'ab102030-1234-5678-9012-abcdabcdabcd'
+$script:replacement=[guid]'bb102030-1234-5678-9012-abcdabcdabcd'
+$script:state='Off'
+$script:mode='valid'
+$script:starts=0
+$script:checkpoints=0
+function Get-VM {
+    [CmdletBinding()]
+    param([string]$Name)
+    if($script:mode -eq 'queryFailure'){throw 'mock Get-VM failure'}
+    if($script:mode -eq 'empty'){return}
+    $id=$script:id; $state=$script:state; $name=$Name
+    if($script:mode -eq 'replaced'){$id=$script:replacement}
+    if($script:mode -eq 'wrongName'){$name='other-vm'}
+    if($script:mode -eq 'badId'){$id=[string]$script:id}
+    if($script:mode -eq 'badState'){$state=@('Running','Off')}
+    if($script:mode -eq 'running'){$state='Running'}
+    if($script:mode -eq 'nullState'){$state=$null}
+    if($script:mode -eq 'duplicate'){
+        [pscustomobject]@{Name=$name;Id=$id;State=$state}
+    }
+    [pscustomobject]@{Name=$name;Id=$id;State=$state}
+}
+function Start-VM {
+    [CmdletBinding()]
+    param([object]$VM)
+    if($VM.Id -ne $script:id){throw 'wrong VM was started'}
+    $script:starts++
+}
+function Checkpoint-VM {
+    [CmdletBinding()]
+    param([object]$VM,[string]$SnapshotName,[switch]$Passthru)
+    if($VM.Id -ne $script:id){throw 'wrong VM checkpointed'}
+    $script:checkpoints++
+}
+foreach($mode in @('valid','replaced','wrongName','badId','badState',
+    'running','nullState','duplicate','empty','queryFailure')){
+    $script:mode=$mode; $script:starts=0; $script:checkpoints=0
+    $errorText=''
+    try {
+        Start-VM -VM (Get-LabVerifiedVmForMutation 'fixture-vm' $script:id)
+        Checkpoint-VM -VM (Get-LabVerifiedVmForMutation 'fixture-vm' $script:id) -SnapshotName clean
+    } catch {$errorText=$_.Exception.Message}
+    if($mode -eq 'valid'){
+        if($errorText -ne '' -or $script:starts -ne 1 -or $script:checkpoints -ne 1){
+            throw ('Valid VM rejected: '+$errorText)
+        }
+    } elseif($errorText -eq '' -or $script:starts -ne 0 -or $script:checkpoints -ne 0) {
+        throw ('Unsafe VM mutation accepted: '+$mode+' '+$errorText)
+    }
+}
+$script:mode='valid';$script:starts=0;$script:checkpoints=0
+try{Start-VM -VM (Get-LabVerifiedVmForMutation 'fixture-vm' ([guid]::Empty))}
+catch{if($_.Exception.Message -notmatch 'identity is missing'){throw}}
+if($script:starts -ne 0){throw 'Empty expected GUID started VM'}
+'VM_MUTATION_IDENTITY_MOCK=PASS'
+"""
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            run = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", fixture],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(run.returncode, 0, exe + ": " + run.stdout + run.stderr)
+            self.assertIn("VM_MUTATION_IDENTITY_MOCK=PASS", run.stdout)
 
 
 if __name__ == "__main__":

@@ -1919,6 +1919,31 @@ function Assert-LabPlanOutputRoot([string]$LabRoot, [object[]]$Images) {
     }
 }
 
+function Get-LabVerifiedVmForMutation([string]$VmName, [guid]$ExpectedVmId) {
+    # Resolve the exact registered VM again immediately before a state
+    # mutation. Name-only Start-VM or Checkpoint-VM can operate on a
+    # replacement VM that reused the expected name after preflight.
+    if ($ExpectedVmId -eq [guid]::Empty) {
+        throw ('Guest VM mutation identity is missing: ' + $VmName)
+    }
+    try {
+        $vms = @(Get-VM -Name $VmName -ErrorAction Stop)
+    }
+    catch {
+        throw ('Guest VM mutation identity read-back failed: ' + $VmName)
+    }
+    if ($vms.Count -ne 1 -or $null -eq $vms[0] -or
+        $vms[0].Name -isnot [string] -or
+        -not [string]::Equals([string]$vms[0].Name, $VmName,
+            [StringComparison]::OrdinalIgnoreCase) -or
+        $vms[0].Id -isnot [guid] -or $vms[0].Id -ne $ExpectedVmId -or
+        $null -eq $vms[0].State -or $vms[0].State -is [array] -or
+        [string]$vms[0].State -cne 'Off') {
+        throw ('Guest VM mutation target identity or Off state mismatch: ' + $VmName)
+    }
+    return $vms[0]
+}
+
 function Wait-FirstBoot([string]$VmName, [int]$TimeoutSeconds, [guid]$ExpectedVmId) {
     # A VM name is reusable. Never stop or accept a replacement guest merely
     # because Get-VM returned the requested name during first-boot polling.
@@ -2277,7 +2302,7 @@ foreach ($image in $planValue.images) {
     Set-VM -Name $vmName -AutomaticCheckpointsEnabled $false -CheckpointType Standard
     Enable-VMIntegrationService -VMName $vmName -Name 'Guest Service Interface' -ErrorAction SilentlyContinue
     Assert-LabVmConfigurationBeforeFirstBoot $vmName $createdVm[0].Id ([int]$image.processors) ([long]$image.memory_mb * 1MB)
-    Start-VM -Name $vmName | Out-Null
+    Start-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id) -ErrorAction Stop | Out-Null
     Wait-FirstBoot $vmName 3600 $createdVm[0].Id
     Assert-LabGuestOfflineVhdBoundary $vmName $createdVm[0].Id $vhd
     $bootstrap = Read-BootstrapResult $vhd $bootstrapNonce
@@ -2298,10 +2323,10 @@ foreach ($image in $planValue.images) {
     $verifiedVhdxSha256 = Get-Sha256 $vhd
     Assert-LabGuestOfflineVhdBoundary $vmName $createdVm[0].Id $vhd
     $createdSnapshots = @(
-        Checkpoint-VM -Name $vmName -SnapshotName ([string]$image.checkpoint_name) -Passthru -ErrorAction Stop
+        Checkpoint-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id) -SnapshotName ([string]$image.checkpoint_name) -Passthru -ErrorAction Stop
     )
     Assert-LabCheckpointCreated $createdSnapshots $vmName $createdVm[0].Id ([string]$image.checkpoint_name)
-    Start-VM -Name $vmName | Out-Null
+    Start-VM -VM (Get-LabVerifiedVmForMutation $vmName $createdVm[0].Id) -ErrorAction Stop | Out-Null
     Assert-LabGuestRunningAfterRestart $vmName $createdVm[0].Id
     $results += [ordered]@{
         runtime_id = [string]$image.runtime_id
