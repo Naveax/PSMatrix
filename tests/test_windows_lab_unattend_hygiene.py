@@ -5686,7 +5686,7 @@ function Set-RestrictedDirectoryAcl([string]$Path) {
     }
 }
 Invoke-Expression $section
-if ($script:aclCalls -ne 2 -or $script:copyCalls -ne 5 -or $script:verifyCalls -ne 5 -or $script:boundaryChecks -ne 18) {
+if ($script:aclCalls -ne 2 -or $script:copyCalls -ne 5 -or $script:verifyCalls -ne 5 -or $script:boundaryChecks -ne 27) {
     throw 'Incorrect staging order.'
 }
 try {
@@ -5697,7 +5697,7 @@ try {
         throw
     }
 }
-if ($script:aclCalls -ne 2 -or $script:copyCalls -ne 5 -or $script:verifyCalls -ne 5 -or $script:boundaryChecks -ne 18) {
+if ($script:aclCalls -ne 2 -or $script:copyCalls -ne 5 -or $script:verifyCalls -ne 5 -or $script:boundaryChecks -ne 27) {
     throw 'Existing target changed staging operations.'
 }
 exit 0
@@ -11556,6 +11556,143 @@ foreach($mode in @(
             )
             self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
             self.assertIn("OFFLINE_SCAN_BOUNDARY_MOCK=PASS", result.stdout)
+
+
+    def test_guest_acl_and_setup_metadata_mutations_rebind_before_use(self):
+        host = HOST.read_text(encoding="utf-8")
+        block = host.split("function New-LabVhd(", 1)[1].split(
+            "\nfunction Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        lines = block.splitlines()
+        writes = (
+            "New-Item -ItemType Directory -Path $bootstrap -ErrorAction Stop | Out-Null",
+            "Set-RestrictedDirectoryAcl $bootstrap",
+            "New-Unattend (Join-Path $panther 'Unattend.xml')",
+        )
+        offsets = []
+        for name in writes:
+            matches = [i for i, line in enumerate(lines) if name in line]
+            count = 2 if name == "Set-RestrictedDirectoryAcl $bootstrap" else 1
+            self.assertEqual(len(matches), count)
+            offsets.extend(matches)
+        offsets = sorted(set(offsets))
+        self.assertEqual(len(offsets), 4)
+        for i in offsets:
+            with self.subTest(command=lines[i].strip()):
+                guard_lines = [line.strip() for line in lines[i-3:i]]
+                self.assertEqual(guard_lines[:2], [
+                    "Assert-LabFormattedVolume $windows 'NTFS' 'Windows'",
+                    "Assert-NewLabInitializedDiskIdentity $output $diskNumber",
+                ])
+                self.assertEqual(guard_lines[2],
+                    "Assert-LabFreshGuestSetupTarget $windowsRoot 'Windows\\Panther' 'Unattend.xml'"
+                    if "New-Unattend" in lines[i]
+                    else "Assert-SafeOfflineGuestWriteAncestors $windowsRoot"
+                )
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_acl_and_answer_file_mutation_mocks_block_changed_storage(self):
+        import subprocess
+        import shutil
+        host = HOST.read_text(encoding="utf-8")
+        block = host.split("function New-LabVhd(", 1)[1].split(
+            "\nfunction Assert-NoGuestSetupAnswerFiles(", 1
+        )[0]
+        lines = block.splitlines()
+        commands = []
+        for i, line in enumerate(lines):
+            if ("New-Item -ItemType Directory -Path $bootstrap -ErrorAction Stop" in line
+                or "Set-RestrictedDirectoryAcl $bootstrap" in line
+                or "New-Unattend (Join-Path $panther 'Unattend.xml')" in line):
+                commands.extend(lines[i-3:i+1])
+        self.assertEqual(len(commands), 16)
+        script = r"""
+$ErrorActionPreference='Stop'
+$output='D:\Fixture\guest.vhdx'
+$diskNumber=42
+$windowsRoot='G:\'
+$windows=[pscustomobject]@{DiskNumber=42;DriveLetter='G';PartitionNumber=3}
+$bootstrap='G:\ProgramData\PSMatrix\Bootstrap'
+$panther='G:\Windows\Panther'
+$Image=[pscustomobject]@{computer_name='EXAMPLE-WIN'}
+$password='fixture'
+$script:writes=0
+$script:mode='valid'
+$script:nextFailureAt=999
+$script:failure='disk'
+function Assert-LabFormattedVolume {
+    param($Partition,[string]$FileSystem,[string]$FileSystemLabel)
+    if($script:mode -eq 'drive'){throw 'Volume mapping changed'}
+}
+function Assert-NewLabInitializedDiskIdentity {
+    param([string]$VhdPath,[int]$DiskNumber)
+    if($VhdPath -cne $output -or $DiskNumber -ne 42 -or
+       $script:mode -eq 'disk'){throw 'Disk mapping changed'}
+}
+function Assert-SafeOfflineGuestWriteAncestors {
+    param([string]$WindowsRoot)
+    if($script:mode -eq 'junction'){throw 'Parent directory redirected'}
+}
+function Assert-LabFreshGuestSetupTarget {
+    param([string]$WindowsRoot,[string]$RelativeParent,[string]$FileName)
+    if($script:mode -in @('target','junction')){throw 'Answer file destination redirected'}
+}
+function Register-Mutation {
+    $script:writes++
+    if($script:writes -ge $script:nextFailureAt){
+        $script:mode=$script:failure
+    }
+}
+function New-Item {
+    [CmdletBinding()]
+    param([string]$ItemType,[string]$Path)
+    Register-Mutation
+}
+function Set-RestrictedDirectoryAcl {
+    param([string]$Path)
+    Register-Mutation
+}
+function New-Unattend {
+    param([string]$Path,[string]$ComputerName,[string]$Password)
+    Register-Mutation
+}
+function Invoke-MetadataChanges {
+__STAGING_LINES__
+}
+foreach($failMode in @('disk','drive','junction')){
+    foreach($after in @(1,2,3,999)){
+        $script:writes=0;$script:mode='valid'
+        $script:nextFailureAt=$after;$script:failure=$failMode
+        $denied=$false
+        try{Invoke-MetadataChanges}catch{$denied=$true}
+        if($after -eq 999){
+            if($denied -or $script:writes -ne 4){
+                throw ('Valid ACL/setup path rejected: '+$failMode)
+            }
+        } elseif(-not $denied -or $script:writes -ne $after){
+            throw ('Unsafe next metadata write occurred: '+$failMode+'/'+$after)
+        }
+    }
+}
+$script:writes=0;$script:mode='valid'
+$script:nextFailureAt=3;$script:failure='target'
+$denied=$false
+try{Invoke-MetadataChanges}catch{$denied=$true}
+if(-not $denied -or $script:writes -ne 3){
+    throw 'Redirected answer file was accepted'
+}
+'METADATA_WRITE_REBIND_MOCK=PASS'
+""".replace("__STAGING_LINES__", "\n".join(commands))
+        for exe in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(exe):
+                continue
+            result = subprocess.run(
+                [exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=40, check=False,
+            )
+            self.assertEqual(result.returncode, 0, exe+": "+result.stdout+result.stderr)
+            self.assertIn("METADATA_WRITE_REBIND_MOCK=PASS", result.stdout)
 
 
 if __name__ == "__main__":

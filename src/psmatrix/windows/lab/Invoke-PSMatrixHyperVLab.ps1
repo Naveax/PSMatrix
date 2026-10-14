@@ -1034,9 +1034,15 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         if ($null -ne $existingBootstrap -or (Test-Path -LiteralPath $bootstrap)) {
             throw 'Guest bootstrap staging directory already exists; refusing overwrite.'
         }
+        Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
+        Assert-NewLabInitializedDiskIdentity $output $diskNumber
+        Assert-SafeOfflineGuestWriteAncestors $windowsRoot
         New-Item -ItemType Directory -Path $bootstrap -ErrorAction Stop | Out-Null
         # Restrict the parent ACL before copying credential and signing ZIPs;
         # otherwise they could temporarily inherit broad guest permissions.
+        Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
+        Assert-NewLabInitializedDiskIdentity $output $diskNumber
+        Assert-SafeOfflineGuestWriteAncestors $windowsRoot
         Set-RestrictedDirectoryAcl $bootstrap
         Assert-Artifact $BootstrapArtifact 'Guest bootstrap script'
         # A copied bootstrap payload can be large; the next stage must not
@@ -1104,6 +1110,9 @@ function New-LabVhd($Image, [string]$GuestBootstrap, [string]$BootstrapNonce, $B
         Write-LabFreshSetupText (Join-Path $bootstrap 'bootstrap-config.json') $bootstrapConfigJson ([Text.UTF8Encoding]::new($true))
         # Reassert exact ACLs on the newly created files immediately after
         # staging, before writing Windows setup material elsewhere.
+        Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
+        Assert-NewLabInitializedDiskIdentity $output $diskNumber
+        Assert-SafeOfflineGuestWriteAncestors $windowsRoot
         Set-RestrictedDirectoryAcl $bootstrap
         $setupDir = Join-Path $windowsRoot 'Windows\Setup\Scripts'
         # Directory creation is already a filesystem write; do not postpone
@@ -1136,6 +1145,9 @@ exit /b %ERRORLEVEL%
         $password = [Environment]::GetEnvironmentVariable($secretName,'Process')
         if ([string]::IsNullOrWhiteSpace($password)) { throw ('Required secret environment variable is missing: ' + $secretName) }
         try {
+            Assert-LabFormattedVolume $windows 'NTFS' 'Windows'
+            Assert-NewLabInitializedDiskIdentity $output $diskNumber
+            Assert-LabFreshGuestSetupTarget $windowsRoot 'Windows\Panther' 'Unattend.xml'
             New-Unattend (Join-Path $panther 'Unattend.xml') ([string]$Image.computer_name) $password
         }
         finally {
