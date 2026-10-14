@@ -2125,10 +2125,31 @@ function Assert-LabGuestOfflineVhdBoundary(
     }
 }
 
-function Assert-LabCheckpointCreated([string]$VmName, [string]$CheckpointName) {
-    # Checkpoint-VM returning without a terminating error is not evidence
-    # that the requested checkpoint is present. Get-VMSnapshot is a separate
-    # provider read; require exactly one correctly named Standard snapshot.
+function Assert-LabCheckpointCreated(
+    [object[]]$CreatedSnapshots, [string]$VmName, [guid]$ExpectedVmId,
+    [string]$CheckpointName
+) {
+    # -Passthru must return the newly created checkpoint identity. A
+    # matching name in the existing snapshot inventory is not evidence that
+    # Checkpoint-VM created it for this VM in the current provisioning run.
+    if ($ExpectedVmId -eq [guid]::Empty -or
+        $null -eq $CreatedSnapshots -or $CreatedSnapshots.Count -ne 1 -or
+        $null -eq $CreatedSnapshots[0]) {
+        throw ('Guest checkpoint creation returned no unique snapshot: ' + $VmName)
+    }
+    $created = $CreatedSnapshots[0]
+    if ($created.Id -isnot [guid] -or $created.Id -eq [guid]::Empty -or
+        $created.VMId -isnot [guid] -or $created.VMId -ne $ExpectedVmId -or
+        $created.Name -isnot [string] -or
+        [string]$created.Name -cne $CheckpointName -or
+        $created.VMName -isnot [string] -or
+        -not [string]::Equals([string]$created.VMName, $VmName,
+            [StringComparison]::OrdinalIgnoreCase) -or
+        $null -eq $created.SnapshotType -or
+        $created.SnapshotType -is [array] -or
+        [string]$created.SnapshotType -cne 'Standard') {
+        throw ('Guest checkpoint creation identity or type is unexpected: ' + $VmName)
+    }
     try {
         $found = @(Get-VMSnapshot -VMName $VmName -Name $CheckpointName -SnapshotType Standard -ErrorAction Stop)
     }
@@ -2136,18 +2157,17 @@ function Assert-LabCheckpointCreated([string]$VmName, [string]$CheckpointName) {
         throw ('Guest checkpoint verification query failed: ' + $VmName)
     }
     if ($found.Count -ne 1 -or $null -eq $found[0] -or
+        $found[0].Id -isnot [guid] -or $found[0].Id -ne $created.Id -or
+        $found[0].VMId -isnot [guid] -or $found[0].VMId -ne $ExpectedVmId -or
         $found[0].Name -isnot [string] -or
-        [string]$found[0].Name -cne $CheckpointName) {
-        throw ('Guest checkpoint was not independently confirmed: ' + $VmName)
-    }
-    # VMName is exposed by current Hyper-V versions. If a provider exposes
-    # it, reject even a correctly named snapshot from the wrong guest.
-    $snapshotVmName = $found[0].PSObject.Properties['VMName']
-    if ($null -ne $snapshotVmName -and
-        ($snapshotVmName.Value -isnot [string] -or
-         -not [string]::Equals([string]$snapshotVmName.Value, $VmName,
-             [StringComparison]::OrdinalIgnoreCase))) {
-        throw ('Guest checkpoint belongs to an unexpected VM: ' + $VmName)
+        [string]$found[0].Name -cne $CheckpointName -or
+        $found[0].VMName -isnot [string] -or
+        -not [string]::Equals([string]$found[0].VMName, $VmName,
+            [StringComparison]::OrdinalIgnoreCase) -or
+        $null -eq $found[0].SnapshotType -or
+        $found[0].SnapshotType -is [array] -or
+        [string]$found[0].SnapshotType -cne 'Standard') {
+        throw ('Guest checkpoint was not independently confirmed as newly created: ' + $VmName)
     }
 }
 
@@ -2255,8 +2275,10 @@ foreach ($image in $planValue.images) {
     Assert-LabGuestOfflineVhdBoundary $vmName $createdVm[0].Id $vhd
     $verifiedVhdxSha256 = Get-Sha256 $vhd
     Assert-LabGuestOfflineVhdBoundary $vmName $createdVm[0].Id $vhd
-    Checkpoint-VM -Name $vmName -SnapshotName ([string]$image.checkpoint_name) | Out-Null
-    Assert-LabCheckpointCreated $vmName ([string]$image.checkpoint_name)
+    $createdSnapshots = @(
+        Checkpoint-VM -Name $vmName -SnapshotName ([string]$image.checkpoint_name) -Passthru -ErrorAction Stop
+    )
+    Assert-LabCheckpointCreated $createdSnapshots $vmName $createdVm[0].Id ([string]$image.checkpoint_name)
     Start-VM -Name $vmName | Out-Null
     Assert-LabGuestRunningAfterRestart $vmName $createdVm[0].Id
     $results += [ordered]@{

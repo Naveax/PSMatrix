@@ -9968,7 +9968,7 @@ foreach ($mode in @('twoStates','wrongName','arrayState','noVm','duplicateAfterS
         self.assertIn("function Assert-LabCheckpointCreated(", src)
         self.assertIn("function Assert-LabGuestRunningAfterRestart(", src)
         a = src.index("    Checkpoint-VM -Name $vmName")
-        b = src.index("    Assert-LabCheckpointCreated $vmName", a)
+        b = src.index("    Assert-LabCheckpointCreated $createdSnapshots $vmName $createdVm[0].Id", a)
         c = src.index("    Start-VM -Name $vmName | Out-Null", b)
         d = src.index("    Assert-LabGuestRunningAfterRestart $vmName $createdVm[0].Id", c)
         e = src.index("        status = 'PASS'", d)
@@ -9989,9 +9989,30 @@ foreach ($mode in @('twoStates','wrongName','arrayState','noVm','duplicateAfterS
         fixture = body + r"""
 $ErrorActionPreference='Stop'
 $script:checkpointMode='ok'
+$script:expectedSnapshotId=[guid]'ba1fe040-4ea9-476c-8f50-e920ca3783dc'
+$script:wrongSnapshotId=[guid]'1d7e8ce3-350f-4b56-b786-be17ba53a82e'
+$script:wrongVmId=[guid]'c2c12986-a199-46e4-9596-d198ec70dc78'
 $script:restartMode='ok'
 $script:restartReads=0
 $script:expectedVmId=[guid]'f54c93e7-51d8-4afc-a993-0038b83c5a89'
+function New-SnapshotFixture([string]$mode) {
+    $id=$script:expectedSnapshotId
+    $vmId=$script:expectedVmId
+    $name='after-boot'
+    $vmName='fixture-vm'
+    $type='Standard'
+    if ($mode -eq 'wrongName') {$name='other'}
+    if ($mode -eq 'wrongVm') {$vmName='other-vm'}
+    if ($mode -eq 'wrongVmId') {$vmId=$script:wrongVmId}
+    if ($mode -eq 'wrongSnapshotId') {$id=$script:wrongSnapshotId}
+    if ($mode -eq 'wrongSnapshotType') {$type='Production'}
+    if ($mode -eq 'missingSnapshotId') {$id=$null}
+    if ($mode -eq 'stringSnapshotId') {$id=[string]$id}
+    if ($mode -eq 'missingVmId') {$vmId=$null}
+    return [pscustomobject]@{
+        Name=$name;VMName=$vmName;Id=$id;VMId=$vmId;SnapshotType=$type
+    }
+}
 function Get-VMSnapshot {
     [CmdletBinding()]
     param([string]$VMName,[string]$Name,[string]$SnapshotType)
@@ -10000,18 +10021,12 @@ function Get-VMSnapshot {
     }
     if ($script:checkpointMode -eq 'error') { throw 'provider failure' }
     if ($script:checkpointMode -eq 'missing') { return }
-    if ($script:checkpointMode -eq 'wrongName') {
-        return [pscustomobject]@{Name='other';VMName=$VMName}
-    }
-    if ($script:checkpointMode -eq 'wrongVm') {
-        return [pscustomobject]@{Name=$Name;VMName='other-vm'}
-    }
     if ($script:checkpointMode -eq 'duplicate') {
-        [pscustomobject]@{Name=$Name;VMName=$VMName}
-        [pscustomobject]@{Name=$Name;VMName=$VMName}
+        New-SnapshotFixture 'ok'
+        New-SnapshotFixture 'ok'
         return
     }
-    return [pscustomobject]@{Name=$Name;VMName=$VMName}
+    New-SnapshotFixture $script:checkpointMode
 }
 function Get-VM {
     [CmdletBinding()]
@@ -10051,13 +10066,31 @@ function Get-VM {
     return [pscustomobject]@{Name=$Name;Id=$script:expectedVmId;State='Running'}
 }
 function Start-Sleep {param([int]$Seconds)}
-foreach ($mode in @('ok','missing','error','wrongName','wrongVm','duplicate')) {
+$bad=@('missing','error','wrongName','wrongVm','wrongVmId',
+    'wrongSnapshotId','wrongSnapshotType','missingSnapshotId',
+    'stringSnapshotId','missingVmId','duplicate',
+    'noCreation','duplicateCreation','createdWrongId','createdWrongVm',
+    'createdWrongType','createdStringId')
+foreach ($mode in @('ok')+$bad) {
     $script:checkpointMode=$mode
+    $created=@(New-SnapshotFixture 'ok')
+    if ($mode -eq 'noCreation') {$created=@()}
+    if ($mode -eq 'duplicateCreation') {$created=@(New-SnapshotFixture 'ok';New-SnapshotFixture 'ok')}
+    if ($mode -eq 'createdWrongId') {$created=@(New-SnapshotFixture 'wrongSnapshotId')}
+    if ($mode -eq 'createdWrongVm') {$created=@(New-SnapshotFixture 'wrongVmId')}
+    if ($mode -eq 'createdWrongType') {$created=@(New-SnapshotFixture 'wrongSnapshotType')}
+    if ($mode -eq 'createdStringId') {$created=@(New-SnapshotFixture 'stringSnapshotId')}
+    # In creation-invalid scenarios, the provider's stored snapshot is still valid.
+    if ($mode -like 'created*' -or $mode -eq 'noCreation' -or $mode -eq 'duplicateCreation') {
+        $script:checkpointMode='ok'
+    }
     $failed=$false
-    try { Assert-LabCheckpointCreated 'fixture-vm' 'after-boot' }
+    try {
+        Assert-LabCheckpointCreated -CreatedSnapshots $created -VmName 'fixture-vm' -ExpectedVmId $script:expectedVmId -CheckpointName 'after-boot'
+    }
     catch { $failed=$true }
     if (($mode -eq 'ok' -and $failed) -or ($mode -ne 'ok' -and -not $failed)) {
-        throw ('Checkpoint verification mismatch: '+$mode)
+        throw ('Checkpoint provenance mismatch: '+$mode)
     }
 }
 foreach ($mode in @('ok','startingThenRunning','missing','error','duplicate','wrongName','arrayState','off','wrongId','noId','stringId','changedIdAfterStarting')) {
@@ -10402,6 +10435,25 @@ foreach ($mode in @('valid') + $bad) {
         self.assertIn("$matches[0].Id -ne $ExpectedVmId", guard)
         self.assertIn("$ExpectedVmId -eq [guid]::Empty", guard)
         self.assertIn("Assert-LabGuestRunningAfterRestart $vmName $createdVm[0].Id", text)
+
+
+    def test_checkpoint_passthru_provenance_precedes_reboot(self):
+        src = HOST.read_text(encoding="utf-8")
+        loop = src.split("foreach ($image in $planValue.images) {", 1)[1]
+        create = loop.index("$createdSnapshots = @(")
+        command = loop.index("Checkpoint-VM -Name $vmName", create)
+        verify = loop.index("Assert-LabCheckpointCreated $createdSnapshots $vmName $createdVm[0].Id", command)
+        reboot = loop.index("Start-VM -Name $vmName", verify)
+        self.assertIn("-Passthru -ErrorAction Stop", loop[command:verify])
+        self.assertLess(create, command)
+        self.assertLess(command, verify)
+        self.assertLess(verify, reboot)
+        helper = src.split("function Assert-LabCheckpointCreated(", 1)[1].split(
+            "function Assert-LabGuestRunningAfterRestart(", 1
+        )[0]
+        self.assertIn("$found[0].Id -ne $created.Id", helper)
+        self.assertIn("$found[0].VMId -ne $ExpectedVmId", helper)
+        self.assertIn("$created.VMId -ne $ExpectedVmId", helper)
 
 
 if __name__ == "__main__":
