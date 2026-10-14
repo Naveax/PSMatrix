@@ -11695,5 +11695,109 @@ if(-not $denied -or $script:writes -ne 3){
             self.assertIn("METADATA_WRITE_REBIND_MOCK=PASS", result.stdout)
 
 
+    def test_host_acl_target_is_requeried_before_acl_read_and_mutation(self):
+        code = HOST.read_text(encoding="utf-8")
+        start = code.index("function Assert-LabRestrictedAclEntryStable(")
+        stop = code.index("\nfunction Set-RestrictedDirectoryAcl(", start)
+        helper = code[start:stop]
+        self.assertIn("Get-Item -LiteralPath", helper)
+        self.assertIn("[IO.FileAttributes]::ReparsePoint", helper)
+        self.assertIn("Restricted ACL target was replaced or redirected", helper)
+        setter = code.split("function Set-RestrictedDirectoryAcl(", 1)[1].split(
+            "\nfunction Get-WindowsPartitionRoot(", 1
+        )[0]
+        scoped = setter.split(
+            "    foreach ($item in @($items | Sort-Object",
+            1
+        )[1]
+        before = scoped.index("Assert-LabRestrictedAclEntryStable $item")
+        read = scoped.index("Get-Acl -LiteralPath $item.FullName")
+        after = scoped.rindex("Assert-LabRestrictedAclEntryStable $item")
+        write = scoped.index("Set-Acl -LiteralPath $item.FullName")
+        self.assertLess(before, read)
+        self.assertLess(read, after)
+        self.assertLess(after, write)
+        self.assertEqual(scoped.count("Assert-LabRestrictedAclEntryStable $item"), 2)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_acl_entry_readback_mock_refuses_swapped_files(self):
+        import shutil
+        import subprocess
+        source = HOST.read_text(encoding="utf-8")
+        begin = source.index("function Assert-LabRestrictedAclEntryStable(")
+        end = source.index("\nfunction Set-RestrictedDirectoryAcl(", begin)
+        helper = source[begin:end]
+        fixture = helper + r"""
+$ErrorActionPreference='Stop'
+$script:lookup=0
+$script:mode='valid'
+$path='G:\Fixture\Bootstrap\credential-bundle.zip'
+$original=[pscustomobject]@{
+    FullName=$path
+    PSIsContainer=$false
+    Attributes=[IO.FileAttributes]::Archive
+}
+function Get-Item {
+    [CmdletBinding()]
+    param([string]$LiteralPath,[switch]$Force)
+    $script:lookup++
+    if($LiteralPath -cne $path){throw 'Unexpected ACL query'}
+    if($script:mode -eq 'providerFailed'){throw 'ACL provider error'}
+    if($script:mode -eq 'missing'){return}
+    $item=[pscustomobject]@{
+        FullName=$path
+        PSIsContainer=$false
+        Attributes=[IO.FileAttributes]::Archive
+    }
+    if($script:mode -eq 'junction'){
+        $item.Attributes=[IO.FileAttributes]::ReparsePoint
+    }
+    if($script:mode -eq 'typeChanged'){$item.PSIsContainer=$true}
+    if($script:mode -eq 'pathChanged'){
+        $item.FullName='H:\Different\credential-bundle.zip'
+    }
+    if($script:mode -eq 'nonBoolType'){$item.PSIsContainer='False'}
+    if($script:mode -eq 'duplicate'){return @($item,$item)}
+    return $item
+}
+foreach($mode in @(
+    'valid','junction','typeChanged','pathChanged','nonBoolType',
+    'duplicate','missing','providerFailed'
+)){
+    $script:mode=$mode
+    $script:lookup=0
+    $blocked=$false
+    try{Assert-LabRestrictedAclEntryStable $original}catch{$blocked=$true}
+    if($mode -eq 'valid'){
+        if($blocked -or $script:lookup -ne 1){throw 'Valid ACL entry rejected'}
+    } elseif(-not $blocked -or $script:lookup -ne 1){
+        throw ('Unsafe ACL entry accepted: '+$mode)
+    }
+}
+$invalid=[pscustomobject]@{
+    FullName=$path;PSIsContainer=$false
+    Attributes=[IO.FileAttributes]::ReparsePoint
+}
+$script:mode='valid'
+$script:lookup=0
+$blocked=$false
+try{Assert-LabRestrictedAclEntryStable $invalid}catch{$blocked=$true}
+if(-not $blocked -or $script:lookup -ne 0){
+    throw 'Initially redirected ACL inventory accepted'
+}
+'HOST_ACL_STALE_ENTRY_MOCK=PASS'
+"""
+        for shell in ("powershell.exe", "pwsh.exe"):
+            if not shutil.which(shell):
+                continue
+            result = subprocess.run(
+                [shell, "-NoProfile", "-NonInteractive", "-Command", fixture],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=45, check=False,
+            )
+            self.assertEqual(result.returncode, 0, shell + ": " + result.stdout + result.stderr)
+            self.assertIn("HOST_ACL_STALE_ENTRY_MOCK=PASS", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

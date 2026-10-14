@@ -184,6 +184,27 @@ function Invoke-Checked([string]$File, [string[]]$Arguments) {
     if ($LASTEXITCODE -ne 0) { throw ($File + ' failed with exit code ' + $LASTEXITCODE) }
 }
 function Escape-Xml([string]$Value) { return [Security.SecurityElement]::Escape($Value) }
+function Assert-LabRestrictedAclEntryStable($DiscoveredItem) {
+    # A cached FileSystemInfo from the discovery pass is not authority to
+    # set ACLs after another process replaces a directory or file.
+    if ($null -eq $DiscoveredItem -or $DiscoveredItem.FullName -isnot [string] -or
+        $DiscoveredItem.PSIsContainer -isnot [bool] -or
+        [string]::IsNullOrWhiteSpace([string]$DiscoveredItem.FullName) -or
+        (($DiscoveredItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+        throw 'Restricted ACL target identity is unavailable.'
+    }
+    $current = @(Get-Item -LiteralPath ([string]$DiscoveredItem.FullName) -Force -ErrorAction Stop)
+    if ($current.Count -ne 1 -or $null -eq $current[0] -or
+        $current[0].PSIsContainer -isnot [bool] -or
+        $current[0].PSIsContainer -ne [bool]$DiscoveredItem.PSIsContainer -or
+        $current[0].FullName -isnot [string] -or
+        -not [string]::Equals([string]$current[0].FullName, [string]$DiscoveredItem.FullName,
+            [StringComparison]::OrdinalIgnoreCase) -or
+        (($current[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+        throw 'Restricted ACL target was replaced or redirected after inventory.'
+    }
+}
+
 function Set-RestrictedDirectoryAcl([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
         throw ('Restricted directory is missing: ' + $Path)
@@ -208,6 +229,7 @@ function Set-RestrictedDirectoryAcl([string]$Path) {
     $systemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
     $adminSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
     foreach ($item in @($items | Sort-Object { $_.FullName.Length } -Descending)) {
+        Assert-LabRestrictedAclEntryStable $item
         $acl = Get-Acl -LiteralPath $item.FullName -ErrorAction Stop
         $acl.SetAccessRuleProtection($true, $false)
 
@@ -249,6 +271,8 @@ function Set-RestrictedDirectoryAcl([string]$Path) {
         )
         # The offline bootstrap tree must not retain an untrusted owner.
         $acl.SetOwner($adminSid)
+        # ACL construction can take time; rebind again at the write boundary.
+        Assert-LabRestrictedAclEntryStable $item
         Set-Acl -LiteralPath $item.FullName -AclObject $acl -ErrorAction Stop
     }
 }
