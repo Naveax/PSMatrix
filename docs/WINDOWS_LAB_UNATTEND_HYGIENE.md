@@ -1387,6 +1387,17 @@ These path-based checks are fail-closed against the tested replacement
 metadata, not a handle-locked or kernel-atomic guarantee against arbitrary
 concurrent NTFS changes.
 
+The elevated offline host's \`Assert-NoGuestBootstrapStagingSecrets\` now also
+retains the initially discovered Bootstrap directory and rebinds it with
+\`Assert-LabRestrictedAclEntryStable\` directly before enumerating its
+directory entries. This closes an independently reproduced mock replacement
+window: a directory that changed into a reparse-point-shaped target after the
+first metadata read previously yielded a false-clean staging check without
+a second identity lookup. Native Windows PowerShell 5.1 / PowerShell 7 tests
+prove refusal before enumeration. A passing scan does not make later path
+operations atomic against concurrent replacements, or prove a real VHDX
+checkpoint safe without its separate offline disk-identity and ACL gates.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted

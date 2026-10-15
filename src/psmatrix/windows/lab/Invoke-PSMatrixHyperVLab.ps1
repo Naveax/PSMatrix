@@ -1380,13 +1380,17 @@ function Assert-NoGuestBootstrapStagingSecrets([string]$WindowsRoot) {
     if (-not (Test-Path -LiteralPath $staging -PathType Container)) {
         throw 'Guest bootstrap staging directory is missing; refusing checkpoint.'
     }
-    if (((Get-Item -LiteralPath $staging -Force -ErrorAction Stop).Attributes -band
-        [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    $stagingItem = @(Get-Item -LiteralPath $staging -Force -ErrorAction Stop)
+    if ($stagingItem.Count -ne 1 -or $null -eq $stagingItem[0] -or
+        $stagingItem[0].PSIsContainer -isnot [bool] -or
+        -not $stagingItem[0].PSIsContainer -or
+        (($stagingItem[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
         throw 'Guest bootstrap staging directory is a reparse point; refusing checkpoint.'
     }
-    # Inspect the directory entries, not Test-Path on each target.
-    # Test-Path can hide dangling symlinks, even when a sensitive archive
-    # name still exists as an NTFS reparse-point directory entry.
+    # Inspect actual entries, not Test-Path on each leaf. Rebind the root
+    # before elevated enumeration so a replacement junction is rejected.
+    # Test-Path can hide dangling symlinks whose NTFS entries still remain.
+    Assert-LabRestrictedAclEntryStable $stagingItem[0]
     foreach ($entry in @(Get-ChildItem -LiteralPath $staging -Force -ErrorAction Stop)) {
         if ($entry.Name -iin @('credential-bundle.zip', 'signing-bundle.zip')) {
             throw 'Guest bootstrap credential/signing staging archive remains; refusing checkpoint.'

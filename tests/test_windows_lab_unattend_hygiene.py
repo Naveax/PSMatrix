@@ -9539,9 +9539,14 @@ exit 0
                 script = r"""
 $ErrorActionPreference = 'Stop'
 $hostCode = Get-Content -LiteralPath __HOST__ -Raw
+$ha = $hostCode.IndexOf('function Assert-LabRestrictedAclEntryStable(')
+$hb = $hostCode.IndexOf('function Set-RestrictedDirectoryAcl(', $ha)
 $a = $hostCode.IndexOf('function Assert-NoGuestBootstrapStagingSecrets(')
 $b = $hostCode.IndexOf('function Get-SafeGuestWorkerConfigHash(', $a)
-if ($a -lt 0 -or $b -le $a) { throw 'Missing host staging verifier.' }
+if ($ha -lt 0 -or $hb -le $ha -or $a -lt 0 -or $b -le $a) {
+    throw 'Missing host staging verifier or entry identity helper.'
+}
+Invoke-Expression $hostCode.Substring($ha,$hb-$ha)
 Invoke-Expression $hostCode.Substring($a,$b-$a)
 $guestCode = Get-Content -LiteralPath __GUEST__ -Raw
 $h = $guestCode.IndexOf('function Assert-GuestFilesystemEntryStable(')
@@ -12893,6 +12898,82 @@ if (-not $failed -or $script:leafReads -ne 1 -or
                 )
                 self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
                 self.assertIn("STAGING_ARCHIVE_PREDELETE_REBIND_PASS", result.stdout)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_staging_scan_refuses_root_replacement_before_enumeration(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        host = HOST.read_text(encoding="utf-8")
+        a = host.index("function Assert-LabRestrictedAclEntryStable(")
+        b = host.index("\nfunction Set-RestrictedDirectoryAcl(", a)
+        c = host.index("function Assert-NoGuestBootstrapStagingSecrets(")
+        e = host.index("\nfunction Get-SafeGuestWorkerConfigHash(", c)
+        functions = host[a:b] + "\n" + host[c:e]
+        with tempfile.TemporaryDirectory(prefix="psmatrix-host-stage-rebind-") as tmp:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                root = Path(tmp) / exe.replace(".", "-")
+                stage = root / "ProgramData" / "PSMatrix" / "Bootstrap"
+                stage.mkdir(parents=True)
+                quote = "'" + str(root).replace("'", "''") + "'"
+                script = functions + r"""
+$ErrorActionPreference='Stop'
+$root=__ROOT__
+$stage=Join-Path $root 'ProgramData\PSMatrix\Bootstrap'
+$script:rootReads=0
+$script:enumerations=0
+function Get-Item {
+    [CmdletBinding()]
+    param([string]$LiteralPath,[switch]$Force)
+    if ([string]::Equals($LiteralPath,$stage,[StringComparison]::OrdinalIgnoreCase)) {
+        $script:rootReads++
+        if ($script:rootReads -gt 1) {
+            return [pscustomobject]@{
+                FullName=$LiteralPath
+                PSIsContainer=$true
+                Attributes=([IO.FileAttributes]::Directory -bor [IO.FileAttributes]::ReparsePoint)
+            }
+        }
+    }
+    Microsoft.PowerShell.Management\Get-Item -LiteralPath $LiteralPath -Force -ErrorAction Stop
+}
+function Get-ChildItem {
+    [CmdletBinding()]
+    param([string]$LiteralPath,[switch]$Force)
+    if ([string]::Equals($LiteralPath,$stage,[StringComparison]::OrdinalIgnoreCase)) {
+        $script:enumerations++
+        return @()
+    }
+    Microsoft.PowerShell.Management\Get-ChildItem -LiteralPath $LiteralPath -Force -ErrorAction Stop
+}
+$rejected=$false
+try { Assert-NoGuestBootstrapStagingSecrets -WindowsRoot $root }
+catch {
+    if ($_.Exception.Message -notlike '*Restricted ACL target was replaced or redirected*') {
+        throw ('Unexpected host error: '+$_.Exception.Message)
+    }
+    $rejected=$true
+}
+if (-not $rejected -or $script:rootReads -ne 2 -or $script:enumerations -ne 0) {
+    throw ('Offline host scan accepted changed staging root: refused='+$rejected+
+           ' reads='+$script:rootReads+' enumerations='+$script:enumerations)
+}
+'HOST_STAGING_PRE_ENUMERATION_REBIND_PASS'
+""".replace("__ROOT__", quote)
+                fixture = root / "host_staging_fixture.ps1"
+                fixture.write_text(script, encoding="utf-8-sig")
+                completed = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-File", str(fixture)],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=50, check=False,
+                )
+                self.assertEqual(
+                    completed.returncode, 0, exe + ": " + completed.stdout + completed.stderr
+                )
+                self.assertIn("HOST_STAGING_PRE_ENUMERATION_REBIND_PASS", completed.stdout)
 
 if __name__ == "__main__":
     unittest.main()
