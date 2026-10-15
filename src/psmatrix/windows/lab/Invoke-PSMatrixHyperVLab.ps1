@@ -1407,6 +1407,10 @@ function Get-SafeGuestWorkerConfigHash([string]$Path) {
         (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
         throw 'Guest worker configuration is an unsafe file type; refusing checkpoint.'
     }
+    # Guest content can replace worker.json after the first metadata read.
+    # Rebind immediately before opening the exclusive read stream. This is
+    # fail-closed against a changed reparse/type, not an atomic NTFS handle.
+    Assert-LabRestrictedAclEntryStable $item
     $stream = [IO.File]::Open(
         $Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None
     )

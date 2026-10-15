@@ -7469,9 +7469,14 @@ exit 0
             script = r"""
 $ErrorActionPreference = 'Stop'
 $source = Get-Content -LiteralPath __HOST__ -Raw
+$ha = $source.IndexOf('function Assert-LabRestrictedAclEntryStable(')
+$hb = $source.IndexOf('function Set-RestrictedDirectoryAcl(', $ha)
 $a = $source.IndexOf('function Get-SafeGuestWorkerConfigHash(')
 $b = $source.IndexOf('function Read-BootstrapResult(', $a)
-if ($a -lt 0 -or $b -le $a) { throw 'Safe worker hash helper missing.' }
+if ($ha -lt 0 -or $hb -le $ha -or $a -lt 0 -or $b -le $a) {
+    throw 'Safe worker hash or entry identity helper missing.'
+}
+Invoke-Expression $source.Substring($ha, $hb - $ha)
 Invoke-Expression $source.Substring($a, $b - $a)
 $path = __WORKER__
 $script:mode = 'normal'
@@ -9254,9 +9259,14 @@ exit 0
                 script = r"""
 $ErrorActionPreference = 'Stop'
 $src = Get-Content -LiteralPath __HOST__ -Raw
+$ha = $src.IndexOf('function Assert-LabRestrictedAclEntryStable(')
+$hb = $src.IndexOf('function Set-RestrictedDirectoryAcl(', $ha)
 $a = $src.IndexOf('function Get-SafeGuestWorkerConfigHash(')
 $b = $src.IndexOf('function Read-BootstrapResult(', $a)
-if ($a -lt 0 -or $b -le $a) { throw 'Safe worker config verifier missing.' }
+if ($ha -lt 0 -or $hb -le $ha -or $a -lt 0 -or $b -le $a) {
+    throw 'Safe worker config verifier or entry helper missing.'
+}
+Invoke-Expression $src.Substring($ha,$hb-$ha)
 Invoke-Expression $src.Substring($a,$b-$a)
 if ((Get-SafeGuestWorkerConfigHash __NORMAL__) -cne '__NORMAL_HASH__') {
     throw 'Normal JSON proof hash differs from independent Python SHA-256.'
@@ -12974,6 +12984,74 @@ if (-not $rejected -or $script:rootReads -ne 2 -or $script:enumerations -ne 0) {
                     completed.returncode, 0, exe + ": " + completed.stdout + completed.stderr
                 )
                 self.assertIn("HOST_STAGING_PRE_ENUMERATION_REBIND_PASS", completed.stdout)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_worker_hash_refuses_replaced_reparse_before_stream_open(self):
+        import hashlib
+        import shutil
+        import subprocess
+        import tempfile
+
+        host = HOST.read_text(encoding="utf-8")
+        a = host.index("function Assert-LabRestrictedAclEntryStable(")
+        b = host.index("\nfunction Set-RestrictedDirectoryAcl(", a)
+        c = host.index("function Get-SafeGuestWorkerConfigHash(")
+        e = host.index("\nfunction Assert-LabCheckpointScanBoundary(", c)
+        functions = host[a:b] + "\n" + host[c:e]
+        with tempfile.TemporaryDirectory(prefix="psmatrix-worker-rebind-") as tmp:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                root = Path(tmp) / exe.replace(".", "-")
+                root.mkdir()
+                worker = root / "worker.json"
+                data = b'{"fixture":"worker-hash-only"}'
+                worker.write_bytes(data)
+                quote = "'" + str(worker).replace("'", "''") + "'"
+                script = functions + r"""
+$ErrorActionPreference='Stop'
+$path=__WORKER__
+$script:reads=0
+function Get-Item {
+    [CmdletBinding()]
+    param([string]$LiteralPath,[switch]$Force)
+    if ([string]::Equals($LiteralPath,$path,[StringComparison]::OrdinalIgnoreCase)) {
+        $script:reads++
+        if ($script:reads -gt 1) {
+            return [pscustomobject]@{
+                FullName=$LiteralPath
+                PSIsContainer=$false
+                Attributes=[IO.FileAttributes]::ReparsePoint
+            }
+        }
+    }
+    Microsoft.PowerShell.Management\Get-Item -LiteralPath $LiteralPath -Force -ErrorAction Stop
+}
+$rejected=$false
+try { $out=Get-SafeGuestWorkerConfigHash $path }
+catch {
+    if ($_.Exception.Message -notlike '*Restricted ACL target was replaced or redirected*') {
+        throw ('Unexpected rejection: '+$_.Exception.Message)
+    }
+    $rejected=$true
+}
+if (-not $rejected -or $script:reads -ne 2 -or -not [IO.File]::Exists($path)) {
+    throw ('Changed worker hash source accepted: refused='+$rejected+
+           ' reads='+$script:reads+' returned='+$out)
+}
+'WORKER_HASH_PREOPEN_REBIND_PASS'
+""".replace("__WORKER__", quote)
+                fixture = root / "worker_hash_race.ps1"
+                fixture.write_text(script, encoding="utf-8-sig")
+                proc = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-File", str(fixture)],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=50, check=False,
+                )
+                self.assertEqual(
+                    proc.returncode, 0, exe + ": " + proc.stdout + proc.stderr
+                )
+                self.assertIn("WORKER_HASH_PREOPEN_REBIND_PASS", proc.stdout)
 
 if __name__ == "__main__":
     unittest.main()

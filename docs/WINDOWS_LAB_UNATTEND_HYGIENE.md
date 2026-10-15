@@ -1398,6 +1398,16 @@ prove refusal before enumeration. A passing scan does not make later path
 operations atomic against concurrent replacements, or prove a real VHDX
 checkpoint safe without its separate offline disk-identity and ACL gates.
 
+The offline host's `Get-SafeGuestWorkerConfigHash` also now rebinds
+`worker.json` through `Assert-LabRestrictedAclEntryStable` immediately
+before the exclusive hash-stream open. In an isolated Windows PowerShell
+5.1/7 RED regression, a test-only Get-Item replacement changed a
+regular worker-config lookup into a reparse-point-shaped result after its
+first metadata check; previously a SHA-256 was still returned. The new
+lookup refuses that stale target (GREEN). The byte hash continues to use
+one exclusively opened stream; path-based rechecks alone do not provide
+kernel-atomic object identity if a privileged process races the final open.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted
