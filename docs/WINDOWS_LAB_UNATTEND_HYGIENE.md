@@ -1408,6 +1408,16 @@ lookup refuses that stale target (GREEN). The byte hash continues to use
 one exclusively opened stream; path-based rechecks alone do not provide
 kernel-atomic object identity if a privileged process races the final open.
 
+The offline host's `Read-BootstrapResult` now also rebinds the
+inventoried `bootstrap-result.json` file immediately before opening its
+exclusive bounded JSON/SHA-256 read stream, after the VHDX disk/partition
+boundary check. A native Windows PowerShell 5.1/7 disposable mock
+changes the second file lookup to a reparse-point-shaped object:
+previously the old host code opened the test receipt and reached JSON
+validation (RED); the new code refuses the replaced entry before file
+I/O while still detaching the mocked VHDX (GREEN). The check is
+path-based, not a kernel-atomic guarantee against privileged races.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted

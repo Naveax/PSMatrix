@@ -13053,5 +13053,108 @@ if (-not $rejected -or $script:reads -ne 2 -or -not [IO.File]::Exists($path)) {
                 )
                 self.assertIn("WORKER_HASH_PREOPEN_REBIND_PASS", proc.stdout)
 
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_host_bootstrap_receipt_rebinds_file_before_guarded_read(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        host = HOST.read_text(encoding="utf-8")
+        a = host.index("function Assert-LabRestrictedAclEntryStable(")
+        b = host.index("\nfunction Set-RestrictedDirectoryAcl(", a)
+        c = host.index("function Read-BootstrapResult(")
+        e = host.index("\nfunction Assert-LabPlanGuestIdentities(", c)
+        functions = host[a:b] + "\n" + host[c:e]
+        with tempfile.TemporaryDirectory(prefix="psmatrix-receipt-rebind-") as tmp:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                root = Path(tmp) / exe.replace(".", "-")
+                receipt = root / "ProgramData" / "PSMatrix" / "bootstrap-result.json"
+                receipt.parent.mkdir(parents=True)
+                receipt.write_bytes(b'{"test_only":"untrusted dummy receipt"}')
+                quoted_root = "'" + str(root).replace("'", "''") + "'"
+                script = functions + r"""
+$ErrorActionPreference='Stop'
+$root=__ROOT__
+$receipt=Join-Path $root 'ProgramData\PSMatrix\bootstrap-result.json'
+$script:attached=$false
+$script:receiptReads=0
+$script:mounts=0
+$script:unmounts=0
+function Get-VHD {
+    [CmdletBinding()]
+    param([string]$Path)
+    return [pscustomobject]@{Attached=[bool]$script:attached;Path=$Path}
+}
+function Mount-VHD {
+    [CmdletBinding()]
+    param([string]$Path,[switch]$PassThru)
+    $script:attached=$true
+    $script:mounts++
+    return [pscustomobject]@{DiskNumber=22}
+}
+function Dismount-VHD {
+    [CmdletBinding()]
+    param([string]$Path)
+    $script:attached=$false
+    $script:unmounts++
+}
+function Assert-LabCleanupVhdIdentity {
+    param([string]$VhdPath,$Vhd)
+}
+function Assert-CheckpointVhdDiskIdentity {
+    param([string]$VhdPath,$Vhd)
+    return 22
+}
+function Get-WindowsPartitionRoot {
+    param([int]$DiskNumber)
+    return $root
+}
+function Assert-LabCheckpointScanBoundary {
+    param([string]$VhdPath,$MountedVhd,[int]$ExpectedDiskNumber,[string]$ExpectedWindowsRoot)
+}
+function Get-Item {
+    [CmdletBinding()]
+    param([string]$LiteralPath,[switch]$Force)
+    if ([string]::Equals($LiteralPath,$receipt,[StringComparison]::OrdinalIgnoreCase)) {
+        $script:receiptReads++
+        if ($script:receiptReads -gt 1) {
+            return [pscustomobject]@{
+                FullName=$LiteralPath
+                PSIsContainer=$false
+                Attributes=[IO.FileAttributes]::ReparsePoint
+            }
+        }
+    }
+    Microsoft.PowerShell.Management\Get-Item -LiteralPath $LiteralPath -Force -ErrorAction Stop
+}
+$rejected=$false
+try { Read-BootstrapResult -VhdPath 'test-only-fake.vhdx' -ExpectedBootstrapNonce ('a' * 64) | Out-Null }
+catch {
+    if ($_.Exception.Message -notlike '*Restricted ACL target was replaced or redirected*') {
+        throw ('Wrong rejection: '+$_.Exception.Message)
+    }
+    $rejected=$true
+}
+if (-not $rejected -or $script:receiptReads -ne 2 -or
+    $script:mounts -ne 1 -or $script:unmounts -ne 1 -or
+    $script:attached -or -not [IO.File]::Exists($receipt)) {
+    throw ('Receipt read allowed stale path. rejected='+$rejected+
+           ' reads='+$script:receiptReads+' mounts='+$script:mounts+
+           ' unmounts='+$script:unmounts)
+}
+'HOST_RECEIPT_PREOPEN_REBIND=PASS'
+""".replace("__ROOT__", quoted_root)
+                fixture = root / "test_only_fake_mount_receipt.ps1"
+                fixture.write_text(script, encoding="utf-8-sig")
+                proc = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-File", str(fixture)],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=50, check=False,
+                )
+                self.assertEqual(proc.returncode, 0, exe + ": " + proc.stdout + proc.stderr)
+                self.assertIn("HOST_RECEIPT_PREOPEN_REBIND=PASS", proc.stdout)
+
 if __name__ == "__main__":
     unittest.main()

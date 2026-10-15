@@ -1493,6 +1493,10 @@ function Read-BootstrapResult([string]$VhdPath, [string]$ExpectedBootstrapNonce)
         # Use one bounded read under an exclusive file handle for the JSON
         # parser and the result SHA-256. Never hash a separately reopened file.
         Assert-LabCheckpointScanBoundary $VhdPath $mounted $diskNumber $root
+        # Metadata inspected before the disk boundary check may now refer to
+        # a redirected guest file. Refuse reparse/type replacements before
+        # opening the receipt's only read stream.
+        Assert-LabRestrictedAclEntryStable $resultFile
         $readHandle = [IO.File]::Open(
             $path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None
         )
