@@ -1377,6 +1377,16 @@ queued path and removed the dummy answer file; the hardened code refuses the
 replacement before enumeration and before ACL access. No real guest,
 production credential or system ACL is modified by these fixtures.
 
+Guest deletion of staged `credential-bundle.zip` and `signing-bundle.zip` now
+also rebinds the bootstrap directory before each enumeration and verifies
+each selected archive immediately before `Remove-Item`. A native Windows
+PowerShell 5.1 and PowerShell 7 regression injects a reparse-point-shaped
+replacement between listing and deletion, proving that the attempted
+privileged delete is rejected and the disposable fixture remains intact.
+These path-based checks are fail-closed against the tested replacement
+metadata, not a handle-locked or kernel-atomic guarantee against arbitrary
+concurrent NTFS changes.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted

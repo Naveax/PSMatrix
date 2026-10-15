@@ -9544,9 +9544,14 @@ $b = $hostCode.IndexOf('function Get-SafeGuestWorkerConfigHash(', $a)
 if ($a -lt 0 -or $b -le $a) { throw 'Missing host staging verifier.' }
 Invoke-Expression $hostCode.Substring($a,$b-$a)
 $guestCode = Get-Content -LiteralPath __GUEST__ -Raw
+$h = $guestCode.IndexOf('function Assert-GuestFilesystemEntryStable(')
+$helperEnd = $guestCode.IndexOf('function Set-RestrictedDirectoryAcl(', $h)
 $c = $guestCode.IndexOf('function Remove-GuestBootstrapStagingSecrets(')
 $e = $guestCode.IndexOf('function Invoke-GuestBootstrapFailureCleanup(', $c)
-if ($c -lt 0 -or $e -le $c) { throw 'Missing guest cleanup function.' }
+if ($h -lt 0 -or $helperEnd -le $h -or $c -lt 0 -or $e -le $c) {
+    throw 'Missing guest cleanup or filesystem rebind function.'
+}
+Invoke-Expression $guestCode.Substring($h,$helperEnd-$h)
 Invoke-Expression $guestCode.Substring($c,$e-$c)
 $root = __ROOT__
 $stage = Join-Path $root 'ProgramData\PSMatrix\Bootstrap'
@@ -12816,6 +12821,78 @@ if (-not $rejected -or $script:pantherReads -lt 2 -or $script:aclReads -ne 0) {
                 self.assertEqual(proc.returncode, 0, exe + ": " + proc.stdout + proc.stderr)
                 self.assertIn("GUEST_QUEUED_SETUP_AND_ACL_REBIND=PASS", proc.stdout)
 
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_guest_staging_cleanup_rebinds_archives_before_delete(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        guest = GUEST.read_text(encoding="utf-8")
+        helper_start = guest.index("function Assert-GuestFilesystemEntryStable(")
+        helper_end = guest.index("\nfunction Set-RestrictedDirectoryAcl(", helper_start)
+        staging_start = guest.index("function Remove-GuestBootstrapStagingSecrets(")
+        staging_end = guest.index("\nfunction Invoke-GuestBootstrapFailureCleanup(", staging_start)
+        functions = guest[helper_start:helper_end] + "\n" + guest[staging_start:staging_end]
+        with tempfile.TemporaryDirectory(prefix="psmatrix-staging-rebind-") as tmp:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                root = Path(tmp) / exe.replace(".", "-")
+                stage = root / "Bootstrap"
+                stage.mkdir(parents=True)
+                target = stage / "credential-bundle.zip"
+                target.write_bytes(b"dummy-archive-only")
+                quoted_stage = "'" + str(stage).replace("'", "''") + "'"
+                script = functions + r"""
+$ErrorActionPreference='Stop'
+$stage=__STAGE__
+$target=Join-Path $stage 'credential-bundle.zip'
+$script:leafReads=0
+$script:deleteCalls=0
+function Get-Item {
+    [CmdletBinding()]
+    param([string]$LiteralPath,[switch]$Force)
+    if ([string]::Equals($LiteralPath,$target,[StringComparison]::OrdinalIgnoreCase)) {
+        $script:leafReads++
+        return [pscustomobject]@{
+            FullName=$LiteralPath
+            PSIsContainer=$false
+            Attributes=[IO.FileAttributes]::ReparsePoint
+        }
+    }
+    Microsoft.PowerShell.Management\Get-Item -LiteralPath $LiteralPath -Force -ErrorAction Stop
+}
+function Remove-Item {
+    [CmdletBinding()]
+    param([string]$LiteralPath,[switch]$Force)
+    $script:deleteCalls++
+    throw 'SYNTHETIC_DELETE_REACHED'
+}
+$failed=$false
+try { Remove-GuestBootstrapStagingSecrets -Root $stage }
+catch {
+    if ($_.Exception.Message -notlike '*Guest filesystem entry was replaced or redirected*') {
+        throw ('Wrong failure: ' + $_.Exception.Message)
+    }
+    $failed=$true
+}
+if (-not $failed -or $script:leafReads -ne 1 -or
+    $script:deleteCalls -ne 0 -or -not [IO.File]::Exists($target)) {
+    throw ('Reparse replacement allowed deletion. failed='+$failed+
+        ' reads='+$script:leafReads+' deletes='+$script:deleteCalls)
+}
+'STAGING_ARCHIVE_PREDELETE_REBIND_PASS'
+""".replace("__STAGE__", quoted_stage)
+                fixture = root / "staging_mock.ps1"
+                fixture.write_text(script, encoding="utf-8-sig")
+                result = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-File", str(fixture)],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=45, check=False,
+                )
+                self.assertEqual(result.returncode, 0, exe + ": " + result.stdout + result.stderr)
+                self.assertIn("STAGING_ARCHIVE_PREDELETE_REBIND_PASS", result.stdout)
 
 if __name__ == "__main__":
     unittest.main()

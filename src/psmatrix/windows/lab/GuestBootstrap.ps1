@@ -658,13 +658,15 @@ function Remove-GuestBootstrapStagingSecrets([string]$Root) {
     if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
         throw 'Guest bootstrap staging directory is missing.'
     }
-    if (((Get-Item -LiteralPath $Root -Force -ErrorAction Stop).Attributes -band
-        [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    $rootItem = Get-Item -LiteralPath $Root -Force -ErrorAction Stop
+    if ($null -eq $rootItem -or -not $rootItem.PSIsContainer -or
+        (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
         throw 'Guest bootstrap staging directory is a reparse point.'
     }
     # Enumerate actual directory entries. Test-Path on a missing target
     # can report false for a dangling file symlink which still exists.
     foreach ($name in @('credential-bundle.zip', 'signing-bundle.zip')) {
+        Assert-GuestFilesystemEntryStable $rootItem
         $found = @(Get-ChildItem -LiteralPath $Root -Force -ErrorAction Stop |
             Where-Object { $_.Name -ieq $name })
         foreach ($file in $found) {
@@ -672,8 +674,12 @@ function Remove-GuestBootstrapStagingSecrets([string]$Root) {
                 (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
                 throw 'Guest bootstrap staging material is an unsafe file type.'
             }
+            # A discovered regular archive may have become a reparse point.
+            # Rebind before privileged deletion rather than trusting inventory.
+            Assert-GuestFilesystemEntryStable $file
             Remove-Item -LiteralPath $file.FullName -Force -ErrorAction Stop
         }
+        Assert-GuestFilesystemEntryStable $rootItem
         $remaining = @(Get-ChildItem -LiteralPath $Root -Force -ErrorAction Stop |
             Where-Object { $_.Name -ieq $name })
         if ($remaining.Count -ne 0) {
