@@ -246,10 +246,15 @@ exit 0
                 script = r"""
 $ErrorActionPreference = 'Stop'
 $source = Get-Content -LiteralPath __GUEST__ -Raw
+$h = $source.IndexOf('function Assert-GuestFilesystemEntryStable(')
 $a = $source.IndexOf('function Remove-GuestSetupAnswerFiles(')
 $b = $source.IndexOf('function Invoke-GuestBootstrapFailureCleanup(', $a)
 $c = $source.IndexOf(([string][char]10 + 'try {' + [char]10 + '    if (-not (Test-Path -LiteralPath $ConfigPath'), $b)
-if ($a -lt 0 -or $b -le $a -or $c -le $b) { throw 'Real guest cleanup functions are missing.' }
+if ($h -lt 0 -or $a -le $h -or $b -le $a -or $c -le $b) {
+    throw 'Real guest cleanup and entry-rebind functions are missing.'
+}
+# Load the real guest rebind helper and keep the protected implementation.
+Invoke-Expression $source.Substring($h, $a - $h)
 $sanitize = $source.Substring($a, $b - $a)
 $sanitize = $sanitize.Replace('function Remove-GuestSetupAnswerFiles(', 'function Invoke-RealGuestSetupCleanup(')
 Invoke-Expression $sanitize
@@ -12695,6 +12700,121 @@ foreach($case in @('valid','reparse','file','path','missing','provider','duplica
                 self.assertEqual(proc.returncode, 0,
                                  exe + ": " + proc.stdout + proc.stderr)
                 self.assertIn("CHECKPOINT_SETUP_QUEUED_ENTRY_REBIND=PASS", proc.stdout)
+
+
+    def test_guest_privileged_trees_rebind_entries_before_acl_and_cleanup(self):
+        guest = GUEST.read_text(encoding="utf-8")
+        self.assertIn("function Assert-GuestFilesystemEntryStable(", guest)
+        acl = guest.split("function Set-RestrictedDirectoryAcl(", 1)[1].split(
+            "\nfunction Remove-GuestSetupAnswerFiles(", 1
+        )[0]
+        self.assertGreaterEqual(acl.count("Assert-GuestFilesystemEntryStable $item"), 3)
+        self.assertLess(acl.index("Assert-GuestFilesystemEntryStable $item"),
+                        acl.index("Get-Acl -LiteralPath $item.FullName"))
+        self.assertIn("Assert-GuestFilesystemEntryStable $item\n        Set-Acl", acl)
+        cleanup = guest.split("function Remove-GuestSetupAnswerFiles(", 1)[1].split(
+            "\nfunction Remove-GuestBootstrapStagingSecrets(", 1
+        )[0]
+        self.assertEqual(cleanup.count("$pending.Push($searchRootItem[0])"), 2)
+        self.assertEqual(cleanup.count("Assert-GuestFilesystemEntryStable $currentItem"), 2)
+        self.assertEqual(cleanup.count("Get-ChildItem -LiteralPath $currentItem.FullName"), 2)
+        self.assertNotIn("$pending.Push($entry.FullName)", cleanup)
+        self.assertIn("Assert-GuestFilesystemEntryStable $entry", cleanup)
+
+    @unittest.skipUnless(__import__("os").name == "nt", "requires Windows")
+    def test_guest_queued_cleanup_and_acl_refuse_replaced_entries_native(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        guest = GUEST.read_text(encoding="utf-8")
+        start = guest.find("function Assert-GuestFilesystemEntryStable(")
+        if start < 0:
+            start = guest.index("function Set-RestrictedDirectoryAcl(")
+        end = guest.index("\nfunction Remove-GuestBootstrapStagingSecrets(", start)
+        code = guest[start:end]
+        with tempfile.TemporaryDirectory(prefix="psmatrix-guest-rebind-") as tmp:
+            for exe in ("powershell.exe", "pwsh.exe"):
+                if not shutil.which(exe):
+                    continue
+                root = Path(tmp) / exe.replace(".", "-")
+                quoted = "'" + str(root).replace("'", "''") + "'"
+                script = code + r"""
+$ErrorActionPreference='Stop'
+$root=__ROOT__
+$panther=Join-Path $root 'Windows\Panther'
+$nested=Join-Path $panther 'Queued'
+$sysprep=Join-Path $root 'Windows\System32\Sysprep'
+[void][IO.Directory]::CreateDirectory($nested)
+[void][IO.Directory]::CreateDirectory($sysprep)
+$secret=Join-Path $nested 'Unattend.xml'
+[IO.File]::WriteAllText($secret,'test-only-no-real-credentials')
+$script:mode='cleanup'
+$script:queuedReads=0
+$script:queuedEnumerations=0
+$script:pantherReads=0
+$script:aclReads=0
+function Get-Item {
+    [CmdletBinding()]
+    param([string]$LiteralPath,[switch]$Force)
+    if ($script:mode -ceq 'cleanup' -and $LiteralPath -ceq $nested) {
+        $script:queuedReads++
+        return [pscustomobject]@{
+            FullName=$LiteralPath
+            PSIsContainer=$true
+            Attributes=([IO.FileAttributes]::Directory -bor [IO.FileAttributes]::ReparsePoint)
+        }
+    }
+    if ($script:mode -ceq 'acl' -and $LiteralPath -ceq $panther) {
+        $script:pantherReads++
+        if ($script:pantherReads -gt 1) {
+            return [pscustomobject]@{
+                FullName=$LiteralPath
+                PSIsContainer=$true
+                Attributes=([IO.FileAttributes]::Directory -bor [IO.FileAttributes]::ReparsePoint)
+            }
+        }
+    }
+    Microsoft.PowerShell.Management\Get-Item -LiteralPath $LiteralPath -Force -ErrorAction Stop
+}
+function Get-ChildItem {
+    [CmdletBinding()]
+    param([string]$LiteralPath,[switch]$Force)
+    if ($LiteralPath -ceq $nested) {$script:queuedEnumerations++}
+    Microsoft.PowerShell.Management\Get-ChildItem -LiteralPath $LiteralPath -Force -ErrorAction Stop
+}
+function Get-Acl {
+    [CmdletBinding()]
+    param([string]$LiteralPath)
+    $script:aclReads++
+    throw 'SYNTHETIC_ACL_READ_REACHED'
+}
+$rejected=$false
+try { Remove-GuestSetupAnswerFiles -WindowsRoot $root } catch { $rejected=$true }
+if (-not $rejected -or $script:queuedReads -ne 1 -or
+    $script:queuedEnumerations -ne 0 -or -not [IO.File]::Exists($secret)) {
+    throw ('Queued directory was followed/deleted: rejected='+$rejected+
+           ' rebinds='+$script:queuedReads+' enumerations='+$script:queuedEnumerations)
+}
+$script:mode='acl'
+$rejected=$false
+try { Set-RestrictedDirectoryAcl -Path $panther } catch {$rejected=$true}
+if (-not $rejected -or $script:pantherReads -lt 2 -or $script:aclReads -ne 0) {
+    throw ('ACL read attempted after directory replacement: reads='+$script:pantherReads+
+           ' acl='+$script:aclReads)
+}
+'GUEST_QUEUED_SETUP_AND_ACL_REBIND=PASS'
+""".replace("__ROOT__", quoted)
+                fixture_script = root / "mock_guest_rebind.ps1"
+                fixture_script.parent.mkdir(parents=True, exist_ok=True)
+                fixture_script.write_text(script, encoding="utf-8-sig")
+                proc = subprocess.run(
+                    [exe, "-NoProfile", "-NonInteractive", "-File", str(fixture_script)],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=50, check=False
+                )
+                self.assertEqual(proc.returncode, 0, exe + ": " + proc.stdout + proc.stderr)
+                self.assertIn("GUEST_QUEUED_SETUP_AND_ACL_REBIND=PASS", proc.stdout)
 
 
 if __name__ == "__main__":

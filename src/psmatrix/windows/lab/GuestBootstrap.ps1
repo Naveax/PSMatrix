@@ -484,6 +484,27 @@ function Resolve-TrustedGuestPython() {
     return $null
 }
 
+function Assert-GuestFilesystemEntryStable($DiscoveredItem) {
+    # A discovered entry is not authority for later elevated ACL mutations,
+    # secret deletion, or recursive traversal. Rebind at each operation.
+    if ($null -eq $DiscoveredItem -or $DiscoveredItem.FullName -isnot [string] -or
+        $DiscoveredItem.PSIsContainer -isnot [bool] -or
+        [string]::IsNullOrWhiteSpace([string]$DiscoveredItem.FullName) -or
+        (($DiscoveredItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+        throw 'Guest filesystem entry identity is unavailable.'
+    }
+    $current = @(Get-Item -LiteralPath ([string]$DiscoveredItem.FullName) -Force -ErrorAction Stop)
+    if ($current.Count -ne 1 -or $null -eq $current[0] -or
+        $current[0].PSIsContainer -isnot [bool] -or
+        $current[0].PSIsContainer -ne [bool]$DiscoveredItem.PSIsContainer -or
+        $current[0].FullName -isnot [string] -or
+        -not [string]::Equals([string]$current[0].FullName, [string]$DiscoveredItem.FullName,
+            [StringComparison]::OrdinalIgnoreCase) -or
+        (($current[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+        throw 'Guest filesystem entry was replaced or redirected after inventory.'
+    }
+}
+
 function Set-RestrictedDirectoryAcl([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
         throw ('Restricted directory is missing: ' + $Path)
@@ -494,6 +515,7 @@ function Set-RestrictedDirectoryAcl([string]$Path) {
     $pending.Push((Get-Item -LiteralPath $Path -Force -ErrorAction Stop))
     while ($pending.Count -gt 0) {
         $item = $pending.Pop()
+        Assert-GuestFilesystemEntryStable $item
         if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
             throw ('Restricted directory tree contains a reparse point: ' + $item.FullName)
         }
@@ -508,6 +530,7 @@ function Set-RestrictedDirectoryAcl([string]$Path) {
     $systemSid = New-Object -TypeName System.Security.Principal.SecurityIdentifier -ArgumentList 'S-1-5-18'
     $adminSid = New-Object -TypeName System.Security.Principal.SecurityIdentifier -ArgumentList 'S-1-5-32-544'
     foreach ($item in @($items | Sort-Object { $_.FullName.Length } -Descending)) {
+        Assert-GuestFilesystemEntryStable $item
         $acl = Get-Acl -LiteralPath $item.FullName -ErrorAction Stop
         $acl.SetAccessRuleProtection($true, $false)
 
@@ -548,6 +571,7 @@ function Set-RestrictedDirectoryAcl([string]$Path) {
         # Explicit trustees do not remove the NTFS owner's right to rewrite
         # the DACL; fail closed if elevated bootstrap cannot set trusted owner.
         $acl.SetOwner($adminSid)
+        Assert-GuestFilesystemEntryStable $item
         Set-Acl -LiteralPath $item.FullName -AclObject $acl -ErrorAction Stop
     }
 }
@@ -571,23 +595,28 @@ function Remove-GuestSetupAnswerFiles([string]$WindowsRoot = ($env:SystemDrive +
     foreach ($relativeRoot in @('Windows\Panther', 'Windows\System32\Sysprep')) {
         $searchRoot = Join-Path $WindowsRoot $relativeRoot
         if (-not (Test-Path -LiteralPath $searchRoot -PathType Container)) { continue }
-        if (((Get-Item -LiteralPath $searchRoot -Force -ErrorAction Stop).Attributes -band
-                [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        $searchRootItem = @(Get-Item -LiteralPath $searchRoot -Force -ErrorAction Stop)
+        if ($searchRootItem.Count -ne 1 -or $null -eq $searchRootItem[0] -or
+            $searchRootItem[0].PSIsContainer -isnot [bool] -or
+            -not $searchRootItem[0].PSIsContainer -or
+            (($searchRootItem[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
             throw 'Setup directory is a reparse point.'
         }
         $pending = New-Object System.Collections.Stack
-        $pending.Push($searchRoot)
+        $pending.Push($searchRootItem[0])
         while ($pending.Count -gt 0) {
-            $current = [string]$pending.Pop()
-            $entries = @(Get-ChildItem -LiteralPath $current -Force -ErrorAction Stop)
+            $currentItem = $pending.Pop()
+            Assert-GuestFilesystemEntryStable $currentItem
+            $entries = @(Get-ChildItem -LiteralPath $currentItem.FullName -Force -ErrorAction Stop)
             foreach ($entry in $entries) {
                 if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
                     throw 'Setup file scan encountered a reparse point.'
                 }
                 if ($entry.PSIsContainer) {
-                    $pending.Push($entry.FullName)
+                    $pending.Push($entry)
                 }
                 elseif ($entry.Name -match '^(?:Auto)?Unattend\.xml$') {
+                    Assert-GuestFilesystemEntryStable $entry
                     Remove-Item -LiteralPath $entry.FullName -Force -ErrorAction Stop
                     if (Test-Path -LiteralPath $entry.FullName) {
                         throw 'A setup answer file could not be removed.'
@@ -600,15 +629,23 @@ function Remove-GuestSetupAnswerFiles([string]$WindowsRoot = ($env:SystemDrive +
     foreach ($relativeRoot in @('Windows\Panther', 'Windows\System32\Sysprep')) {
         $searchRoot = Join-Path $WindowsRoot $relativeRoot
         if (-not (Test-Path -LiteralPath $searchRoot -PathType Container)) { continue }
+        $searchRootItem = @(Get-Item -LiteralPath $searchRoot -Force -ErrorAction Stop)
+        if ($searchRootItem.Count -ne 1 -or $null -eq $searchRootItem[0] -or
+            $searchRootItem[0].PSIsContainer -isnot [bool] -or
+            -not $searchRootItem[0].PSIsContainer -or
+            (($searchRootItem[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            throw 'Post-cleanup setup directory is unsafe.'
+        }
         $pending = New-Object System.Collections.Stack
-        $pending.Push($searchRoot)
+        $pending.Push($searchRootItem[0])
         while ($pending.Count -gt 0) {
-            $current = [string]$pending.Pop()
-            foreach ($entry in @(Get-ChildItem -LiteralPath $current -Force -ErrorAction Stop)) {
+            $currentItem = $pending.Pop()
+            Assert-GuestFilesystemEntryStable $currentItem
+            foreach ($entry in @(Get-ChildItem -LiteralPath $currentItem.FullName -Force -ErrorAction Stop)) {
                 if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
                     throw 'Post-cleanup setup scan encountered a reparse point.'
                 }
-                if ($entry.PSIsContainer) { $pending.Push($entry.FullName) }
+                if ($entry.PSIsContainer) { $pending.Push($entry) }
                 elseif ($entry.Name -match '^(?:Auto)?Unattend\.xml$') {
                     throw 'A setup answer file remains after cleanup.'
                 }

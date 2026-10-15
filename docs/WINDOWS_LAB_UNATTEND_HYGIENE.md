@@ -1355,6 +1355,28 @@ creation reduces overwrite races, but cannot establish the trust of a privileged
 guest, prevent concurrent ancestor replacement, or substitute for
 offline VHDX and real Hyper-V acceptance.
 
+## Guest queued-directory and ACL mutation rebinding
+
+The guest first-boot script now keeps discovered filesystem entries rather than
+queueing only directory path strings during Panther/Sysprep cleanup and its
+independent post-cleanup scan. It re-queries each queued entry immediately
+before enumeration, rejecting missing, redirected, reparse-point or changed-type
+entries. An answer-file candidate is also rebound immediately before removal.
+
+Guest recursive ACL locking now revalidates each discovered item before tree
+enumeration, again before the ACL read, and directly before applying the ACL
+mutation. These checks reduce the window for accidentally following a replaced
+guest path under elevated privileges. They cannot make path-based file I/O
+atomic against a privileged concurrent replacement: real NTFS handle-based
+identity and actual elevated Hyper-V acceptance remain separate work.
+
+The native Windows PowerShell 5.1 / PowerShell 7 regression simulates replacement
+of a queued guest setup directory and a privileged ACL target with reparse
+metadata in disposable filesystem fixtures. The previous cleanup followed the
+queued path and removed the dummy answer file; the hardened code refuses the
+replacement before enumeration and before ACL access. No real guest,
+production credential or system ACL is modified by these fixtures.
+
 ## Important limitations
 
 This is **file-presence hygiene, not cryptographic credential erasure**. Deleted
