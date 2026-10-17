@@ -85,6 +85,37 @@ class LabProvisioningTests(unittest.TestCase):
         path.write_text(json.dumps(value), encoding="utf-8")
         return path
 
+    def test_evaluation_media_template_matches_standard_gui_image_selection(self):
+        """Keep the operator example consistent with Server 2012 R2/2016 eval ISO WIM indexes."""
+        source = Path(__file__).resolve().parents[1]
+        template_path = source / "examples" / "windows-lab-media.template.json"
+        value = json.loads(template_path.read_text(encoding="utf-8"))
+        images = value["images"]
+        self.assertEqual(
+            [image["runtime_id"] for image in images],
+            ["windows-powershell-4.0", "windows-powershell-5.0", "windows-powershell-5.1"],
+        )
+        expected = {
+            "windows-powershell-4.0": ("Microsoft Windows Server 2012 R2 Standard Evaluation", "6.3.9600", "9600"),
+            "windows-powershell-5.0": ("Microsoft Windows Server 2012 R2 Standard Evaluation", "6.3.9600", "9600"),
+            "windows-powershell-5.1": ("Microsoft Windows Server 2016 Standard Evaluation", "10.0.14393", "14393"),
+        }
+        for image in images:
+            with self.subTest(runtime=image["runtime_id"]):
+                self.assertEqual(image["edition_index"], 2)  # Standard Evaluation with GUI/Desktop Experience
+                expected_os = image["expected_os"]
+                self.assertEqual(
+                    (expected_os["product_name"], expected_os["version"], expected_os["build"]),
+                    expected[image["runtime_id"]],
+                )
+                self.assertTrue(image["worker_package"]["path"].endswith("psmatrix-2.0.0-windows-workers.zip"))
+                # This is an illustrative template, never a runnable artifact without real SHA-256 bindings.
+                for kind in ("source_iso", "worker_package", "python_installer", "credential_bundle", "signing_bundle"):
+                    self.assertEqual(image[kind]["sha256"], "REPLACE_64_HEX")
+        self.assertEqual(images[1]["wmf_package"]["sha256"], "REPLACE_64_HEX")
+        with self.assertRaises(LabProvisioningError):
+            WindowsLabManifest.load(template_path)
+
     def test_profiles_cover_exact_historical_windows_runtimes(self):
         value = lab_profiles()
         self.assertEqual(
