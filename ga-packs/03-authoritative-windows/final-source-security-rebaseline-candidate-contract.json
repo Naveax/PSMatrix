@@ -1,0 +1,79 @@
+{
+  "schema": 1,
+  "kind": "psmatrix.windows-authority-final-source-security-rebaseline-candidate",
+  "pack": "03-authoritative-windows",
+  "frozen_final_source": {
+    "branch": "final/2.0.0-release-candidate-anchor-v2",
+    "commit": "43922a5544745c64165df4aedd9c57391bfe6c51",
+    "tree": "05cb5337e507be23791f4de22442a79802dc5c8e",
+    "immutable": true
+  },
+  "security_source_candidate": {
+    "branch": "security/2.0.0-unattend-hygiene-source-candidate-v4-20261007",
+    "commit": "af90094d9104c0ae4d932462f45bdc020ea35b14",
+    "tree": "e6966e2bb84815c647ea91eb1e41aa2c6c661f98",
+    "parent_commit": "43922a5544745c64165df4aedd9c57391bfe6c51",
+    "changed_path_count": 4,
+    "changed_paths": [
+      "docs/WINDOWS_LAB_UNATTEND_HYGIENE.md",
+      "src/psmatrix/windows/lab/GuestBootstrap.ps1",
+      "src/psmatrix/windows/lab/Invoke-PSMatrixHyperVLab.ps1",
+      "tests/test_windows_lab_unattend_hygiene.py"
+    ],
+    "baseline_tests": {
+      "passed": 20,
+      "total": 20
+    },
+    "windows_powershell_51_security_synthetic": {
+      "passed": 19,
+      "total": 19,
+      "elevated_recursive_acl_acceptance_required": true
+    },
+    "repository_private_material_scan": {
+      "files": 998,
+      "findings": 0,
+      "receipt_sha256": "a26d6c5e35df3217cd57b04ebfa57df035392cc919d3a9e306052708752b15cf"
+    },
+    "supersedes": {
+      "branch": "security/2.0.0-unattend-hygiene-source-candidate-v3-20261007",
+      "commit": "adfa7610c31813818ff532cfdc9f98fbddc01832",
+      "tree": "c286e6ea3da016753488ab5b2d1af362bd93abe9",
+      "reason": "exact per-entry DACL rebuild for SYSTEM and built-in Administrators replaces recursive icacls inheritance assumptions"
+    }
+  },
+  "review_evidence": {
+    "patch_sha256": "860f8a8c1afeb904b84606c4863850c7ba9889fa6dc050ee106cfc242c5f3040",
+    "control_rebaseline_plan_sha256": "0941d23fe9ef4989fce34d5a30930e9fa1b3822824e1538f717f78bcfe655426"
+  },
+  "human_review": {
+    "required": true,
+    "complete": false,
+    "reviewer": null,
+    "reviewed_at": null
+  },
+  "promotion": {
+    "old_frozen_branch_must_not_move": true,
+    "new_immutable_final_source_ref_required": true,
+    "proposed_new_final_source_branch": "final/2.0.0-release-candidate-anchor-v3",
+    "exact_candidate_commit_required": true,
+    "fresh_unsigned_staging_required": true,
+    "fresh_windows_certification_required": true,
+    "fresh_signing_required": true,
+    "fresh_release_intake_required": true,
+    "fresh_security_review_required": true,
+    "fresh_evidence_rebind_required": true,
+    "fresh_ga_closure_required": true,
+    "signed_rc4_reuse_prohibited": true
+  },
+  "claims": {
+    "authoritative": false,
+    "ga_eligible": false,
+    "signed": false,
+    "certified": false
+  },
+  "handoff_policy": {
+    "review_manifest_is_authority": false,
+    "review_manifest_may_evolve_without_changing_source_candidate": true,
+    "immutable_evidence_must_remain_hash_bound": true
+  }
+}
